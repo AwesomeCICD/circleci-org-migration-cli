@@ -1,0 +1,74 @@
+version: 2.1
+
+executors:
+  go:
+    docker:
+      - image: cimg/go:1.26
+    environment:
+      CGO_ENABLED: "0"
+
+commands:
+  gomod:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-gomod-{{ arch }}-{{ checksum "go.sum" }}
+            - v1-gomod-{{ arch }}-
+      - run:
+          name: Download Go module dependencies
+          command: go mod download
+      - save_cache:
+          key: v1-gomod-{{ arch }}-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+
+jobs:
+  lint:
+    executor: go
+    steps:
+      - checkout
+      - gomod
+      - run:
+          name: go vet
+          command: go vet ./...
+      - run:
+          name: gofmt check
+          command: |
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "The following files are not gofmt-clean:"
+              echo "$unformatted"
+              exit 1
+            fi
+
+  test:
+    executor: go
+    steps:
+      - checkout
+      - gomod
+      - run:
+          name: Run tests
+          command: |
+            mkdir -p /tmp/test-results
+            go test -v -coverprofile=/tmp/test-results/coverage.out ./... \
+              | tee /tmp/test-results/go-test.out
+      - store_test_results:
+          path: /tmp/test-results
+      - store_artifacts:
+          path: /tmp/test-results
+
+  build:
+    executor: go
+    steps:
+      - checkout
+      - gomod
+      - run:
+          name: Build binary
+          command: go build ./...
+
+workflows:
+  build-test-lint:
+    jobs:
+      - lint
+      - test
+      - build

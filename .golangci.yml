@@ -1,0 +1,40 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Close
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+      # Style suggestions, not errors.
+      - linters: [staticcheck]
+        text: "ST1023"
+      - linters: [staticcheck]
+        text: "ST1005"
+      - linters: [staticcheck]
+        text: "QF"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
