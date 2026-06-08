@@ -1,0 +1,6 @@
+/bin/
+/dist/
+
+# Test coverage
+*.out
+coverage.txt

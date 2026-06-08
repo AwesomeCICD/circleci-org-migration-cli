@@ -1,0 +1,40 @@
+# GoReleaser v2 configuration. See https://goreleaser.com
+version: 2
+
+project_name: circleci-migrate
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: circleci-migrate
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+    goos:
+      - linux
+      - darwin
+      # windows: deferred — uncomment to enable Windows builds
+      # - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      # -s  Omit the symbol table and debug information.
+      # -w  Omit the DWARF symbol table.
+      - >-
+        -s -w
+        -X github.com/CircleCI-Public/circleci-org-migration-cli/version.Version={{.Version}}
+        -X github.com/CircleCI-Public/circleci-org-migration-cli/version.Commit={{.ShortCommit}}
+
+archives:
+  - id: primary
+    wrap_in_directory: true
+    # windows: uncomment when windows builds are enabled
+    # format_overrides:
+    #   - goos: windows
+    #     format: zip
+
+checksum:
+  name_template: "checksums.txt"
