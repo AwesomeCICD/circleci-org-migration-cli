@@ -145,6 +145,29 @@ func (c *Client) DoRequest(req *http.Request, resp interface{}) (int, error) {
 	return httpResp.StatusCode, nil
 }
 
+// EnrichDownloadRequest adds the Circle-Token authentication header (and
+// User-Agent) to req so that private artifacts on circle-artifacts.com can be
+// downloaded using the same token as the rest of the API calls. It does NOT
+// set Content-Type (artifact requests have no body).
+func (c *Client) EnrichDownloadRequest(req *http.Request) {
+	if c.circleToken != "" {
+		req.Header.Set("Circle-Token", c.circleToken)
+	}
+	req.Header.Set("User-Agent", version.UserAgent())
+}
+
+// RawDo executes req and returns the raw *http.Response without decoding.
+// The caller is responsible for closing resp.Body. Unlike DoRequest it does
+// not interpret the response body; it is used for artifact downloads where the
+// content-type may not be JSON.
+func (c *Client) RawDo(req *http.Request) (*http.Response, error) {
+	resp, err := c.client.Do(req) // #nosec G704 -- caller-provided URL, not attacker-controlled
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	return resp, nil
+}
+
 // HTTPError represents an HTTP-level error response from the CircleCI API.
 type HTTPError struct {
 	Code    int

@@ -30,6 +30,7 @@ keep it out of version control, and delete it once the sync is complete.`,
 	}
 	cmd.AddCommand(newSecretsExtractCommand())
 	cmd.AddCommand(newSecretsMergeCommand())
+	cmd.AddCommand(newSecretsCaptureCommand())
 	return cmd
 }
 
