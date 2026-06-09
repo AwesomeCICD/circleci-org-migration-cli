@@ -47,6 +47,8 @@ type ProjectAPI interface {
 	ListWebhooks(projectID string) ([]project.Webhook, error)
 	ListSchedules(slug string) ([]project.Schedule, error)
 	FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error)
+	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
+	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 }
 
 // Options configures an export run.
@@ -212,6 +214,33 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 
 		if opts.IncludeExtras {
 			e.exportProjectExtras(m, &mp, p)
+		}
+
+		// Project OIDC custom claims (best-effort; requires org ID and project UUID).
+		if o.ID != "" && p.ID != "" {
+			if audience, ttl, oerr := e.Projects.GetProjectOIDCClaims(o.ID, p.ID); oerr != nil {
+				m.AddWarning("project:"+slug, "oidc_claims_unreadable", fmt.Sprintf("could not read project OIDC claims: %v", oerr))
+			} else if len(audience) > 0 || ttl != "" {
+				mp.OIDCAudience = audience
+				mp.OIDCTTL = ttl
+			}
+		}
+
+		// Per-project v1.1 feature flags (best-effort).
+		if flags, ferr := e.Projects.GetV11ProjectFeatureFlags(slug); ferr != nil {
+			m.AddWarning("project:"+slug, "v11_feature_flags_unreadable", fmt.Sprintf("could not read project v1.1 feature flags: %v", ferr))
+		} else if len(flags) > 0 {
+			if mp.Settings == nil {
+				mp.Settings = &manifest.AdvancedSettings{}
+			}
+			if v, ok := flags["api-trigger-with-config"]; ok {
+				v := v
+				mp.Settings.APITriggerWithConfig = &v
+			}
+			if v, ok := flags["drop-all-build-requests"]; ok {
+				v := v
+				mp.Settings.DropAllBuildRequests = &v
+			}
 		}
 
 		m.Projects = append(m.Projects, mp)

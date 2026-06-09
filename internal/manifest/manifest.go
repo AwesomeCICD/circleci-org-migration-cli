@@ -196,6 +196,12 @@ type Project struct {
 	Webhooks     []Webhook     `json:"webhooks,omitempty"`
 	Schedules    []Schedule    `json:"schedules,omitempty"`
 
+	// OIDCAudience and OIDCTTL are per-project OIDC custom claims captured from
+	// GET /api/v2/org/{orgID}/project/{projID}/oidc-custom-claims.
+	// They mirror the org-level OIDCAudience/OIDCTTL fields in OrgSettings.
+	OIDCAudience []string `json:"oidc_audience,omitempty"`
+	OIDCTTL      string   `json:"oidc_ttl,omitempty"`
+
 	// Followed records whether the source token's user follows this project.
 	Followed *bool `json:"followed,omitempty"`
 }
@@ -221,6 +227,12 @@ type AdvancedSettings struct {
 	SetupWorkflows             *bool    `json:"setup_workflows,omitempty"`
 	WriteSettingsRequiresAdmin *bool    `json:"write_settings_requires_admin,omitempty"`
 	PROnlyBranchOverrides      []string `json:"pr_only_branch_overrides,omitempty"`
+
+	// APITriggerWithConfig and DropAllBuildRequests are per-project feature
+	// flags from the v1.1 project settings endpoint (GET/PUT
+	// /api/v1.1/project/{slug}/settings, feature_flags blob).
+	APITriggerWithConfig *bool `json:"api_trigger_with_config,omitempty"`
+	DropAllBuildRequests *bool `json:"drop_all_build_requests,omitempty"`
 }
 
 // ProjectEnvVar is a project environment variable. MaskedValue is the

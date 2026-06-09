@@ -127,13 +127,15 @@ func (f *fakeContextAPI) ListRestrictions(contextID string) ([]cctx.Restriction,
 }
 
 type fakeProjectAPI struct {
-	getProject             func(slug string) (*project.Project, error)
-	getSettings            func(provider, orgName, proj string) (*project.AdvancedSettings, error)
-	listEnvVars            func(slug string) ([]project.EnvVar, error)
-	listCheckoutKeys       func(slug string) ([]project.CheckoutKey, error)
-	listWebhooks           func(projectID string) ([]project.Webhook, error)
-	listSchedules          func(slug string) ([]project.Schedule, error)
-	followedProjectsForOrg func(orgName string) ([]project.FollowedProject, error)
+	getProject                func(slug string) (*project.Project, error)
+	getSettings               func(provider, orgName, proj string) (*project.AdvancedSettings, error)
+	listEnvVars               func(slug string) ([]project.EnvVar, error)
+	listCheckoutKeys          func(slug string) ([]project.CheckoutKey, error)
+	listWebhooks              func(projectID string) ([]project.Webhook, error)
+	listSchedules             func(slug string) ([]project.Schedule, error)
+	followedProjectsForOrg    func(orgName string) ([]project.FollowedProject, error)
+	getProjectOIDCClaims      func(orgID, projID string) ([]string, string, error)
+	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
 }
 
 func (f *fakeProjectAPI) GetProject(slug string) (*project.Project, error) {
@@ -181,6 +183,20 @@ func (f *fakeProjectAPI) ListSchedules(slug string) ([]project.Schedule, error) 
 func (f *fakeProjectAPI) FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error) {
 	if f.followedProjectsForOrg != nil {
 		return f.followedProjectsForOrg(orgName)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) GetProjectOIDCClaims(orgID, projID string) ([]string, string, error) {
+	if f.getProjectOIDCClaims != nil {
+		return f.getProjectOIDCClaims(orgID, projID)
+	}
+	return nil, "", nil
+}
+
+func (f *fakeProjectAPI) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
+	if f.getV11ProjectFeatureFlags != nil {
+		return f.getV11ProjectFeatureFlags(slug)
 	}
 	return nil, nil
 }
@@ -1565,4 +1581,252 @@ func TestExport_OrgSettings_FullCapture(t *testing.T) {
 		t.Error("PolicyEnforcementEnabled should be true")
 	}
 	_ = trueVal
+}
+
+// ---------------------------------------------------------------------------
+// Project-level OIDC capture
+// ---------------------------------------------------------------------------
+
+func TestExport_Projects_OIDCCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-uuid-999", Name: "web"}, nil
+			},
+			getProjectOIDCClaims: func(orgID, projID string) ([]string, string, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("GetProjectOIDCClaims orgID: got %q want org-uuid-123", orgID)
+				}
+				if projID != "proj-uuid-999" {
+					t.Errorf("GetProjectOIDCClaims projID: got %q want proj-uuid-999", projID)
+				}
+				return []string{"https://oidc.example.com"}, "8h", nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	p := m.Projects[0]
+	if len(p.OIDCAudience) != 1 || p.OIDCAudience[0] != "https://oidc.example.com" {
+		t.Errorf("OIDCAudience: got %v", p.OIDCAudience)
+	}
+	if p.OIDCTTL != "8h" {
+		t.Errorf("OIDCTTL: got %q want 8h", p.OIDCTTL)
+	}
+}
+
+func TestExport_Projects_OIDCError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-uuid-err", Name: "web"}, nil
+			},
+			getProjectOIDCClaims: func(orgID, projID string) ([]string, string, error) {
+				return nil, "", errors.New("oidc API down")
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "oidc_claims_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected oidc_claims_unreadable warning for project, not found")
+	}
+}
+
+func TestExport_Projects_OIDCEmpty_NotSet(t *testing.T) {
+	// When OIDC returns empty audience and empty TTL, fields must remain unset.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-uuid-empty", Name: "web"}, nil
+			},
+			getProjectOIDCClaims: func(orgID, projID string) ([]string, string, error) {
+				return nil, "", nil // empty
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	p := m.Projects[0]
+	if len(p.OIDCAudience) != 0 {
+		t.Errorf("OIDCAudience should be empty when OIDC returns nothing, got %v", p.OIDCAudience)
+	}
+	if p.OIDCTTL != "" {
+		t.Errorf("OIDCTTL should be empty when OIDC returns nothing, got %q", p.OIDCTTL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Project-level v1.1 feature flag capture
+// ---------------------------------------------------------------------------
+
+func TestExport_Projects_V11FlagsCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			getV11ProjectFeatureFlags: func(slug string) (map[string]bool, error) {
+				return map[string]bool{
+					"api-trigger-with-config": true,
+					"drop-all-build-requests": false,
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	s := m.Projects[0].Settings
+	if s == nil {
+		t.Fatal("Settings should not be nil when v1.1 flags are captured")
+		return
+	}
+	if s.APITriggerWithConfig == nil || !*s.APITriggerWithConfig {
+		t.Errorf("APITriggerWithConfig: expected *true, got %v", s.APITriggerWithConfig)
+	}
+	if s.DropAllBuildRequests == nil || *s.DropAllBuildRequests {
+		t.Errorf("DropAllBuildRequests: expected *false, got %v", s.DropAllBuildRequests)
+	}
+}
+
+func TestExport_Projects_V11FlagsError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			getV11ProjectFeatureFlags: func(slug string) (map[string]bool, error) {
+				return nil, errors.New("v1.1 flags API down")
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "v11_feature_flags_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected v11_feature_flags_unreadable warning, not found")
+	}
+}
+
+func TestExport_Projects_V11Flags_DoNotClobberV2Settings(t *testing.T) {
+	// v1.1 flags must not overwrite existing v2 advanced settings fields.
+	trueVal := true
+
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			getSettings: func(provider, orgName, proj string) (*project.AdvancedSettings, error) {
+				return &project.AdvancedSettings{AutocancelBuilds: &trueVal}, nil
+			},
+			getV11ProjectFeatureFlags: func(slug string) (map[string]bool, error) {
+				return map[string]bool{"api-trigger-with-config": true}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	s := m.Projects[0].Settings
+	if s == nil {
+		t.Fatal("Settings should not be nil")
+		return
+	}
+	// v2 setting preserved.
+	if s.AutocancelBuilds == nil || !*s.AutocancelBuilds {
+		t.Error("AutocancelBuilds should still be true (v2 setting not clobbered)")
+	}
+	// v1.1 flag also set.
+	if s.APITriggerWithConfig == nil || !*s.APITriggerWithConfig {
+		t.Error("APITriggerWithConfig should be true (from v1.1)")
+	}
 }
