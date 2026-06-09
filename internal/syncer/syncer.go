@@ -10,9 +10,15 @@ import (
 	"strings"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/github"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
+
+// resolveRepoID is a package-level variable so tests can inject a stub.
+// Production code points to github.ResolveRepoID.
+var resolveRepoID = github.ResolveRepoID
 
 // DefaultPlaceholder is the value used for variables whose real value was not
 // captured, when the placeholder policy is selected.
@@ -24,9 +30,13 @@ const (
 	MissingPlaceholder = "placeholder"
 )
 
-// OrgResolver resolves a destination org slug to its UUID.
+// OrgResolver resolves a destination org slug to its UUID and retrieves org
+// metadata needed to decide which project-creation path to take.
 type OrgResolver interface {
 	ResolveOrgID(slug string) (string, error)
+	// GetOrganization returns the full organization record (id, name, vcs_type, …)
+	// for the given slug or bare UUID.
+	GetOrganization(slug string) (*org.Organization, error)
 }
 
 // Group is a destination CIAM group (id + name) used to resolve group-type
@@ -67,16 +77,34 @@ type ProjectWriter interface {
 	SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+
+	// App-org (circleci/ vcs_type) project management.
+	CreateAppProject(orgID, name string) (*project.Project, error)
+	CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error)
+	CreateTrigger(projectID, defID string, spec project.TriggerSpec) (string, error)
+	EnableTrigger(projectID, triggerID string) error
+	ListOrgProjects(orgID string) ([]project.OrgProject, error)
 }
 
-// EnableTarget holds the coordinates needed to follow (enable builds for) a
-// newly-created OAuth project.  App-org projects (circleci/ slugs) are not
-// included here — App-org enable-builds support is a separate milestone.
+// EnableTarget holds the coordinates needed to enable builds for a
+// newly-created project.
+//
+// Kind selects the enable mechanism:
+//   - "follow": OAuth/Bitbucket path — calls FollowProject(VCSType, Org, Repo).
+//   - "trigger": GitHub App path — calls EnableTrigger(ProjectID, TriggerID).
 type EnableTarget struct {
+	// Kind is "follow" for OAuth projects and "trigger" for App trigger enablement.
+	Kind string
+
+	// OAuth / follow fields (Kind == "follow").
 	Slug    string // full project slug, e.g. "gh/acme/web"
 	VCSType string // vcs type as expected by v1.1 follow, e.g. "github"
 	Org     string // org name, e.g. "acme"
 	Repo    string // repo name, e.g. "web"
+
+	// App trigger fields (Kind == "trigger").
+	ProjectID string // project UUID
+	TriggerID string // trigger UUID
 }
 
 // Options configures a sync run.
@@ -87,6 +115,15 @@ type Options struct {
 	MissingSecrets string
 	// Placeholder overrides DefaultPlaceholder when the placeholder policy is used.
 	Placeholder string
+	// GitHubToken is an optional GitHub personal access token used to resolve
+	// repository external IDs when creating pipeline definitions in a GitHub App
+	// destination org. When empty, the captured RepoExternalID from the source
+	// manifest is reused directly (valid for same-org migrations). When set, the
+	// token is used to call the GitHub API and remap the external_id — useful when
+	// the destination org is connected to a different GitHub org.
+	//
+	// TODO: cross-owner full_name remapping via a mapping file is a future follow-on.
+	GitHubToken string
 }
 
 func (o Options) placeholder() string {
@@ -337,9 +374,17 @@ func (s *Syncer) resolveDestGroup(name, destOrgID string, groupCache *map[string
 	return uuid, ok
 }
 
-// SyncProjects applies project advanced settings and environment-variable
-// values to EXISTING destination projects. Projects missing in the destination
-// are reported for manual handling — creation/follow is a separate opt-in step.
+// SyncProjects creates and configures destination projects from the manifest.
+//
+// Destination org type detection: the first time a project needs creation, the
+// syncer calls GetOrganization on the destination slug to read its vcs_type.
+// If vcs_type == "circleci" (GitHub App), the App creation path is used for all
+// projects; otherwise the existing OAuth/Bitbucket path is used.
+//
+// App path per project: find by name in the dest org via ListOrgProjects; if
+// found reuse the existing project; if not found create it with CreateAppProject,
+// then create pipeline definitions and (disabled) triggers, queuing each trigger
+// as an App EnableTarget for the enable-builds step.
 func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
@@ -359,31 +404,98 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 
 	s.logf("Syncing %d project(s)%s", len(m.Projects), dryRunSuffix(opts.Apply))
 
+	// Detect destination org type once (lazy: only when a project actually needs
+	// to be looked up/created by name).
+	var destVCSType string // "circleci" for App; other values for OAuth
+	destTypeLoaded := false
+
+	// destOrgProjectsByName is the name→OrgProject map for App destinations,
+	// built once on first use.
+	var destOrgProjectsByName map[string]project.OrgProject
+	destOrgProjectsLoaded := false
+
+	loadDestType := func() error {
+		if destTypeLoaded {
+			return nil
+		}
+		destTypeLoaded = true
+		o, err := s.Org.GetOrganization(destSlug)
+		if err != nil {
+			return fmt.Errorf("get destination org %q: %w", destSlug, err)
+		}
+		destVCSType = strings.ToLower(o.VCSType)
+		return nil
+	}
+
+	loadDestOrgProjects := func() error {
+		if destOrgProjectsLoaded {
+			return nil
+		}
+		destOrgProjectsLoaded = true
+		projs, err := s.Projects.ListOrgProjects(destOrgID)
+		if err != nil {
+			return fmt.Errorf("list destination org projects: %w", err)
+		}
+		destOrgProjectsByName = make(map[string]project.OrgProject, len(projs))
+		for _, p := range projs {
+			destOrgProjectsByName[p.Name] = p
+		}
+		return nil
+	}
+
 	for _, p := range m.Projects {
+		// --- determine destination slug / path ---
 		dst, ok := mapping.ResolveProjectSlug(p.Slug)
 		if !ok {
+			// No explicit mapping: need to detect dest org type to decide.
+			if err := loadDestType(); err != nil {
+				report.add("project", p.Slug, "error", err.Error())
+				continue
+			}
+			if destVCSType == "circleci" {
+				// App org: route through App path (dst will be derived after create).
+				s.syncAppProject(report, p, destOrgID, destSlug, bundle, opts,
+					loadDestOrgProjects, &destOrgProjectsByName)
+				continue
+			}
+			// OAuth: no mapping → manual.
 			report.add("project", p.Slug, "manual", "no destination mapping (a GitHub App destination needs an explicit project mapping)")
 			continue
 		}
+
+		// Explicit mapping provided — detect dest type to decide path.
+		if err := loadDestType(); err != nil {
+			report.add("project", dst, "error", err.Error())
+			continue
+		}
+
+		if destVCSType == "circleci" {
+			// App org with explicit mapping: still go through App path.
+			s.syncAppProject(report, p, destOrgID, destSlug, bundle, opts,
+				loadDestOrgProjects, &destOrgProjectsByName)
+			continue
+		}
+
+		// --- OAuth / Bitbucket path (existing behaviour) ---
 		destProj, err := s.Projects.GetProject(dst)
 		if err != nil {
-			// Project does not exist in destination — decide whether to create it.
-			provider, org, repo, splitErr := project.SplitSlug(dst)
+			provider, orgName, repo, splitErr := project.SplitSlug(dst)
 			if splitErr != nil {
 				report.add("project", dst, "error", fmt.Sprintf("invalid destination slug: %v", splitErr))
 				continue
 			}
 			if strings.ToLower(provider) == "circleci" {
-				// App-org project creation is a separate milestone.
-				report.add("project", dst, "manual", "project not found in destination — App-org project creation is a future milestone; create/follow it, then re-run")
+				// App-org slug given explicitly via mapping but dest org is not
+				// a circleci type (rare/misconfigured) — surface as manual.
+				report.add("project", dst, "manual", "project not found in destination — App-org project creation requires a circleci-type destination org; create/follow it, then re-run")
 				continue
 			}
 
-			// OAuth/Bitbucket path: create the project shell (paused — not followed).
+			// Create the project shell (paused — not followed).
 			if !opts.Apply {
 				report.add("project", dst, "created", "would create project (paused — not followed)")
 			} else {
-				created, createErr := s.Projects.CreateProjectShell(provider, org, repo)
+				created, createErr := s.Projects.CreateProjectShell(provider, orgName, repo)
 				if createErr != nil {
 					report.add("project", dst, "error", fmt.Sprintf("create project shell: %v", createErr))
 					continue
@@ -392,16 +504,16 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 				report.add("project", dst, "created", "created (paused — not followed)")
 			}
 
-			// Queue this project for the enable-builds step regardless of dry-run.
+			// Queue for the enable-builds step regardless of dry-run.
 			report.PendingEnable = append(report.PendingEnable, EnableTarget{
+				Kind:    "follow",
 				Slug:    dst,
 				VCSType: provider,
-				Org:     org,
+				Org:     orgName,
 				Repo:    repo,
 			})
 
-			// For apply mode, if destProj is still nil (create succeeded but
-			// returned no useful ID), do a best-effort re-fetch so webhooks work.
+			// For apply mode, re-fetch so we have a real project ID.
 			if opts.Apply && (destProj == nil || destProj.ID == "") {
 				if fetched, fetchErr := s.Projects.GetProject(dst); fetchErr == nil {
 					destProj = fetched
@@ -411,9 +523,6 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 				}
 			}
 			if !opts.Apply {
-				// In dry-run mode we have no real project ID — use empty string so
-				// downstream helpers behave as normal dry-run (they check !opts.Apply
-				// before using the ID).
 				destProj = &project.Project{Slug: dst}
 			}
 		}
@@ -428,36 +537,306 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 	return report, nil
 }
 
-// EnableBuilds follows a project that was previously created paused, installing
-// the webhook and enabling builds (which may trigger an initial build).
+// syncAppProject handles project sync when the destination org is a circleci-type
+// (GitHub App) org. It finds or creates the project by name, then creates pipeline
+// definitions and disabled triggers, queuing enable targets.
+func (s *Syncer) syncAppProject(
+	report *Report,
+	p manifest.Project,
+	destOrgID, destSlug string,
+	bundle *manifest.SecretBundle,
+	opts Options,
+	loadDestOrgProjects func() error,
+	destOrgProjectsByName *map[string]project.OrgProject,
+) {
+	name := p.Name
+	if name == "" {
+		// Fall back to the last component of the source slug.
+		_, _, repoName, err := project.SplitSlug(p.Slug)
+		if err != nil {
+			report.add("project", p.Slug, "error", fmt.Sprintf("project name and slug both invalid: %v", err))
+			return
+		}
+		name = repoName
+	}
+
+	// Load existing dest-org projects once.
+	if err := loadDestOrgProjects(); err != nil {
+		report.add("project", name, "error", err.Error())
+		return
+	}
+
+	existing, exists := (*destOrgProjectsByName)[name]
+
+	if exists {
+		// Reuse the existing project — configure settings/vars with the real slug.
+		dst := existing.Slug
+		s.syncProjectSettings(report, p, dst, opts)
+		s.syncProjectVars(report, p, bundle, dst, opts)
+		s.syncProjectWebhooks(report, p, dst, existing.ID, opts)
+		s.syncProjectSchedules(report, p, dst, opts)
+		s.syncProjectOIDCClaims(report, p, dst, destOrgID, existing.ID, opts)
+		s.syncProjectV11Flags(report, p, dst, opts)
+		return
+	}
+
+	// Project does not exist — create it.
+	nDefs := len(p.PipelineDefinitions)
+	if !opts.Apply {
+		report.add("project", name, "created",
+			fmt.Sprintf("would create App project + %d pipeline-definition(s)", nDefs))
+		// Still run configure helpers so dry-run shows what would happen.
+		drySlug := "circleci/" + destOrgID + "/<new>"
+		s.syncProjectSettings(report, p, drySlug, opts)
+		s.syncProjectVars(report, p, bundle, drySlug, opts)
+		s.syncProjectWebhooks(report, p, drySlug, "", opts)
+		s.syncProjectSchedules(report, p, drySlug, opts)
+		s.syncProjectOIDCClaims(report, p, drySlug, destOrgID, "", opts)
+		s.syncProjectV11Flags(report, p, drySlug, opts)
+		return
+	}
+
+	// Apply: create the project.
+	created, err := s.Projects.CreateAppProject(destOrgID, name)
+	if err != nil {
+		report.add("project", name, "error", fmt.Sprintf("create App project: %v", err))
+		return
+	}
+	report.add("project", name, "created", "created App project")
+	newSlug := created.Slug
+	newProjectID := created.ID
+
+	// Update the local cache so subsequent projects (if re-run) see this one.
+	(*destOrgProjectsByName)[name] = project.OrgProject{
+		ID:   newProjectID,
+		Slug: newSlug,
+		Name: name,
+	}
+
+	// Create pipeline definitions and triggers.
+	for _, def := range p.PipelineDefinitions {
+		s.syncAppPipelineDefinition(report, name, newProjectID, def, destSlug, opts)
+	}
+
+	// Configure settings, vars, etc. on the new slug.
+	s.syncProjectSettings(report, p, newSlug, opts)
+	s.syncProjectVars(report, p, bundle, newSlug, opts)
+	s.syncProjectWebhooks(report, p, newSlug, newProjectID, opts)
+	s.syncProjectSchedules(report, p, newSlug, opts)
+	s.syncProjectOIDCClaims(report, p, newSlug, destOrgID, newProjectID, opts)
+	s.syncProjectV11Flags(report, p, newSlug, opts)
+}
+
+// syncAppPipelineDefinition creates one pipeline definition plus its triggers
+// for a freshly-created App project.
+func (s *Syncer) syncAppPipelineDefinition(
+	report *Report,
+	projectName, projectID string,
+	def manifest.PipelineDefinition,
+	destSlug string,
+	opts Options,
+) {
+	// Resolve the external_id for config and checkout sources.
+	// Strategy (per spec):
+	//  1. If GitHubToken is set and RepoFullName is non-empty, call ResolveRepoID.
+	//  2. Otherwise reuse the captured RepoExternalID.
+	//  3. If neither is available, emit "manual".
+	configExtID, configOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/config",
+		def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID, opts)
+	if !configOK {
+		return
+	}
+	checkoutExtID, checkoutOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/checkout",
+		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID, opts)
+	if !checkoutOK {
+		return
+	}
+
+	filePath := def.ConfigSource.FilePath
+	if filePath == "" {
+		filePath = ".circleci/config.yml"
+	}
+	configProvider := def.ConfigSource.Provider
+	if configProvider == "" {
+		configProvider = "github_app"
+	}
+	checkoutProvider := def.CheckoutSource.Provider
+	if checkoutProvider == "" {
+		checkoutProvider = "github_app"
+	}
+
+	spec := project.PipelineDefinitionSpec{
+		Name:               def.Name,
+		Description:        def.Description,
+		ConfigProvider:     configProvider,
+		ConfigExternalID:   configExtID,
+		ConfigFilePath:     filePath,
+		CheckoutProvider:   checkoutProvider,
+		CheckoutExternalID: checkoutExtID,
+	}
+
+	defID, err := s.Projects.CreatePipelineDefinition(projectID, spec)
+	if err != nil {
+		report.add("project-pipeline-def", projectName+"/def:"+def.Name, "error",
+			fmt.Sprintf("create pipeline definition: %v", err))
+		return
+	}
+	report.add("project-pipeline-def", projectName+"/def:"+def.Name, "created",
+		"created pipeline definition")
+
+	// Create triggers.
+	for _, trig := range def.Triggers {
+		s.syncAppTrigger(report, projectName, projectID, def.Name, defID, trig, opts)
+	}
+}
+
+// syncAppTrigger creates one trigger (disabled) on a pipeline definition and
+// queues an App EnableTarget for later enablement.
+func (s *Syncer) syncAppTrigger(
+	report *Report,
+	projectName, projectID, defName, defID string,
+	trig manifest.Trigger,
+	opts Options,
+) {
+	target := projectName + "/def:" + defName + "/trigger:" + trig.Name
+	provider := trig.EventSource.Provider
+
+	// Only github_app / github_server triggers are recreated automatically.
+	// webhook and schedule triggers must be handled manually.
+	switch provider {
+	case "github_app", "github_server":
+		// Continue below.
+	case "webhook":
+		report.add("project-trigger", target, "manual",
+			fmt.Sprintf("trigger %q has provider %q (webhook secret cannot be migrated automatically) — recreate manually", trig.Name, provider))
+		return
+	case "schedule":
+		report.add("project-trigger", target, "manual",
+			fmt.Sprintf("trigger %q has provider %q (schedule-trigger creation is a follow-on) — recreate manually", trig.Name, provider))
+		return
+	default:
+		report.add("project-trigger", target, "manual",
+			fmt.Sprintf("trigger %q has unsupported provider %q — recreate manually", trig.Name, provider))
+		return
+	}
+
+	extID, ok := s.resolveExternalID(report, target,
+		trig.EventSource.RepoFullName, trig.EventSource.RepoExternalID, opts)
+	if !ok {
+		return
+	}
+
+	trigSpec := project.TriggerSpec{
+		Provider:    provider,
+		ExternalID:  extID,
+		EventPreset: trig.EventPreset,
+		Disabled:    true,
+	}
+
+	trigID, err := s.Projects.CreateTrigger(projectID, defID, trigSpec)
+	if err != nil {
+		report.add("project-trigger", target, "error",
+			fmt.Sprintf("create trigger: %v", err))
+		return
+	}
+	report.add("project-trigger", target, "created", "created trigger (disabled — not yet enabled)")
+
+	// Queue for the enable-builds step.
+	report.PendingEnable = append(report.PendingEnable, EnableTarget{
+		Kind:      "trigger",
+		ProjectID: projectID,
+		TriggerID: trigID,
+	})
+}
+
+// resolveExternalID returns the external_id to use for a pipeline-definition or
+// trigger. Resolution order:
+//  1. If opts.GitHubToken != "" and fullName != "", call github.ResolveRepoID.
+//     On success → use the resolved id. On failure → warn + fall through to 2.
+//  2. Use capturedID if non-empty (normal same-GitHub-org case — silent).
+//  3. Neither available → emit "manual" action and return ok=false.
+func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID string, opts Options) (string, bool) {
+	if opts.GitHubToken != "" && fullName != "" {
+		id, err := resolveRepoID(fullName, opts.GitHubToken, "")
+		if err != nil {
+			// Resolution failed — warn, fall back to captured id.
+			report.add("project-ext-id", target, "manual",
+				fmt.Sprintf("GitHub repo ID resolution failed for %q: %v — using captured id %q if available", fullName, err, capturedID))
+			// Fall through to capturedID below.
+		} else {
+			return id, true
+		}
+	}
+	if capturedID != "" {
+		return capturedID, true
+	}
+	report.add("project-ext-id", target, "manual",
+		"no external_id available (no GitHub token and no captured id) — create pipeline definition manually")
+	return "", false
+}
+
+// EnableBuilds enables builds for a project that was previously created paused.
+//
+// For OAuth projects (Kind == "follow" or legacy empty Kind): calls FollowProject
+// which installs the webhook and may trigger an initial build.
+//
+// For App trigger targets (Kind == "trigger"): calls EnableTrigger to set
+// disabled=false on the specified trigger.
 //
 // In dry-run mode (apply=false) no API call is made and the returned Action has
-// status "manual" with a detail explaining what would happen.  In apply mode
-// FollowProject is called and the Action status reflects the result.
+// status "manual" with a detail explaining what would happen.  In apply mode the
+// appropriate API is called and the Action status reflects the result.
 func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
-	if !apply {
+	switch t.Kind {
+	case "trigger":
+		target := t.ProjectID + "/trigger/" + t.TriggerID
+		if !apply {
+			return Action{
+				Kind:   "project",
+				Target: target,
+				Status: "manual",
+				Detail: "would enable trigger (set disabled=false)",
+			}, nil
+		}
+		if err := s.Projects.EnableTrigger(t.ProjectID, t.TriggerID); err != nil {
+			return Action{
+				Kind:   "project",
+				Target: target,
+				Status: "error",
+				Detail: fmt.Sprintf("enable trigger: %v", err),
+			}, err
+		}
+		return Action{
+			Kind:   "project",
+			Target: target,
+			Status: "set",
+			Detail: "enabled trigger (disabled=false)",
+		}, nil
+	default: // "follow" or legacy empty Kind
+		if !apply {
+			return Action{
+				Kind:   "project",
+				Target: t.Slug,
+				Status: "manual",
+				Detail: "would enable builds (follow)",
+			}, nil
+		}
+		_, err := s.Projects.FollowProject(t.VCSType, t.Org, t.Repo)
+		if err != nil {
+			return Action{
+				Kind:   "project",
+				Target: t.Slug,
+				Status: "error",
+				Detail: fmt.Sprintf("enable builds (follow): %v", err),
+			}, err
+		}
 		return Action{
 			Kind:   "project",
 			Target: t.Slug,
-			Status: "manual",
-			Detail: "would enable builds (follow)",
+			Status: "set",
+			Detail: "enabled builds (followed)",
 		}, nil
 	}
-	_, err := s.Projects.FollowProject(t.VCSType, t.Org, t.Repo)
-	if err != nil {
-		return Action{
-			Kind:   "project",
-			Target: t.Slug,
-			Status: "error",
-			Detail: fmt.Sprintf("enable builds (follow): %v", err),
-		}, err
-	}
-	return Action{
-		Kind:   "project",
-		Target: t.Slug,
-		Status: "set",
-		Detail: "enabled builds (followed)",
-	}, nil
 }
 
 func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst string, opts Options) {

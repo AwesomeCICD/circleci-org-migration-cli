@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -15,7 +16,8 @@ import (
 
 // fakeOrgResolver is a configurable OrgResolver for testing.
 type fakeOrgResolver struct {
-	resolveOrgID func(slug string) (string, error)
+	resolveOrgID    func(slug string) (string, error)
+	getOrganization func(slug string) (*org.Organization, error)
 }
 
 func (f *fakeOrgResolver) ResolveOrgID(slug string) (string, error) {
@@ -23,6 +25,14 @@ func (f *fakeOrgResolver) ResolveOrgID(slug string) (string, error) {
 		return f.resolveOrgID(slug)
 	}
 	return "org-uuid-" + slug, nil
+}
+
+func (f *fakeOrgResolver) GetOrganization(slug string) (*org.Organization, error) {
+	if f.getOrganization != nil {
+		return f.getOrganization(slug)
+	}
+	// Default: return a GitHub OAuth org so existing tests are unaffected.
+	return &org.Organization{ID: "org-uuid-" + slug, Slug: slug, VCSType: "github"}, nil
 }
 
 // call records one call to a ContextWriter method.
