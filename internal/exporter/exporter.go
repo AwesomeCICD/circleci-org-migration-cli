@@ -26,6 +26,7 @@ type OrgAPI interface {
 	GetURLOrbAllowList(slugOrID string) ([]org.URLOrbAllowEntry, error)
 	GetPolicyBundle(ownerID string) (map[string]string, error)
 	GetPolicyEnforcement(ownerID string) (bool, error)
+	GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -366,6 +367,30 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			m.AddWarning("org", "policy_enforcement_unreadable", fmt.Sprintf("could not read policy enforcement setting: %v", eerr))
 		} else {
 			s.PolicyEnforcementEnabled = &enabled
+			hasAny = true
+		}
+
+		// Audit-log streaming configs (v2; org-scoped). Captured for the record
+		// only — never auto-synced (their S3 ARN/region/bucket/endpoint are
+		// environment-specific to the source org's AWS account).
+		if configs, aerr := e.Org.GetAuditLogConfigs(o.ID); aerr != nil {
+			m.AddWarning("org", "audit_log_configs_unreadable", fmt.Sprintf("could not read audit-log configs: %v", aerr))
+		} else if len(configs) > 0 {
+			for _, cfg := range configs {
+				s.AuditLogConfigs = append(s.AuditLogConfigs, manifest.AuditLogConfig{
+					ID:         cfg.ID,
+					Purpose:    cfg.Purpose,
+					TargetType: cfg.TargetType,
+					IsDisabled: cfg.IsDisabled,
+					Config: manifest.AuditLogTarget{
+						ARN:          cfg.Config.ARN,
+						Region:       cfg.Config.Region,
+						BucketName:   cfg.Config.BucketName,
+						BucketPrefix: cfg.Config.BucketPrefix,
+						Endpoint:     cfg.Config.Endpoint,
+					},
+				})
+			}
 			hasAny = true
 		}
 	}

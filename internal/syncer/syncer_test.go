@@ -102,6 +102,20 @@ func (f *fakeContextWriter) callsTo(method string) []call {
 	return out
 }
 
+// fakeGroupLister is a configurable GroupLister for testing.
+type fakeGroupLister struct {
+	listGroups func(orgID string) ([]Group, error)
+	calls      int
+}
+
+func (f *fakeGroupLister) ListGroups(orgID string) ([]Group, error) {
+	f.calls++
+	if f.listGroups != nil {
+		return f.listGroups(orgID)
+	}
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -543,8 +557,10 @@ func TestSyncContexts_Restriction_Expression_Exists(t *testing.T) {
 	}
 }
 
-// TestSyncContexts_Restriction_ProjectAndGroup_Manual verifies that "project"
-// and "group" restrictions produce "manual" actions and no CreateRestriction.
+// TestSyncContexts_Restriction_ProjectAndGroup_Manual verifies that a "project"
+// restriction always produces a "manual" action, and that a "group" restriction
+// falls back to "manual" when no GroupLister is wired (Syncer.Groups == nil) —
+// the nil-safe path preserving previous behaviour. Neither calls CreateRestriction.
 func TestSyncContexts_Restriction_ProjectAndGroup_Manual(t *testing.T) {
 	ctxID := "ctx-manual"
 	fw := &fakeContextWriter{
@@ -587,6 +603,244 @@ func TestSyncContexts_Restriction_ProjectAndGroup_Manual(t *testing.T) {
 	}
 	if fw.hasCalled("CreateRestriction") {
 		t.Error("CreateRestriction must NOT be called for project or group restrictions")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Restrictions: group (resolved via GroupLister)
+// ---------------------------------------------------------------------------
+
+// groupRestrictionManifest builds a single-context manifest with one group
+// restriction named groupName.
+func groupRestrictionManifest(ctxName, groupName, sourceValue string) *manifest.Manifest {
+	return &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
+		Contexts: []manifest.Context{
+			{
+				Name: ctxName,
+				Restrictions: []manifest.Restriction{
+					{Type: "group", Value: sourceValue, Name: groupName},
+				},
+			},
+		},
+	}
+}
+
+// groupRestrictionAction returns the single restriction action from the report.
+func groupRestrictionAction(t *testing.T, rep *Report) Action {
+	t.Helper()
+	for _, a := range rep.Actions {
+		if a.Kind == "restriction" {
+			return a
+		}
+	}
+	t.Fatalf("no restriction action found in report: %+v", rep.Actions)
+	return Action{}
+}
+
+func TestSyncContexts_GroupRestriction_AllMembers_UsesDestOrgID(t *testing.T) {
+	const ctxID = "ctx-grp"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(string) ([]Group, error) {
+			t.Error("ListGroups must NOT be called for the All members group")
+			return nil, nil
+		},
+	}
+	// fakeOrgResolver returns "org-uuid-" + slug → "org-uuid-gh/dest".
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := groupRestrictionManifest("prod", "All members", "src-org-id")
+	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := groupRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("status: got %q want %q", a.Status, "set")
+	}
+	creates := fw.callsTo("CreateRestriction")
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 CreateRestriction call, got %d", len(creates))
+	}
+	if creates[0].args[1] != "group" {
+		t.Errorf("restriction type: got %q want %q", creates[0].args[1], "group")
+	}
+	if creates[0].args[2] != "org-uuid-gh/dest" {
+		t.Errorf("restriction value: got %q want dest org id %q", creates[0].args[2], "org-uuid-gh/dest")
+	}
+}
+
+func TestSyncContexts_GroupRestriction_NamedGroup_FoundResolvesUUID(t *testing.T) {
+	const ctxID = "ctx-grp"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(orgID string) ([]Group, error) {
+			return []Group{
+				{ID: "dest-grp-uuid", Name: "sec-team"},
+				{ID: "other-uuid", Name: "platform"},
+			}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
+	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := groupRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("status: got %q want %q", a.Status, "set")
+	}
+	creates := fw.callsTo("CreateRestriction")
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 CreateRestriction call, got %d", len(creates))
+	}
+	if creates[0].args[1] != "group" || creates[0].args[2] != "dest-grp-uuid" {
+		t.Errorf("CreateRestriction args: got (%q,%q) want (group,dest-grp-uuid)", creates[0].args[1], creates[0].args[2])
+	}
+}
+
+func TestSyncContexts_GroupRestriction_NotFound_Manual(t *testing.T) {
+	const ctxID = "ctx-grp"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(string) ([]Group, error) {
+			return []Group{{ID: "other-uuid", Name: "platform"}}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
+	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := groupRestrictionAction(t, rep)
+	if a.Status != "manual" {
+		t.Errorf("status: got %q want %q", a.Status, "manual")
+	}
+	if !strings.Contains(a.Detail, "not found in destination") {
+		t.Errorf("detail %q should mention 'not found in destination'", a.Detail)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when the group is not found")
+	}
+}
+
+func TestSyncContexts_GroupRestriction_Idempotent_SkipWhenPresent(t *testing.T) {
+	const ctxID = "ctx-grp"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) {
+			return []cctx.Restriction{
+				{Type: "group", Value: "dest-grp-uuid"},
+			}, nil
+		},
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(string) ([]Group, error) {
+			return []Group{{ID: "dest-grp-uuid", Name: "sec-team"}}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
+	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := groupRestrictionAction(t, rep)
+	if a.Status != "exists" {
+		t.Errorf("status: got %q want %q", a.Status, "exists")
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when the group restriction already exists")
+	}
+}
+
+func TestSyncContexts_GroupRestriction_DryRun_NoWrite(t *testing.T) {
+	const ctxID = "ctx-grp"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(string) ([]Group, error) {
+			return []Group{{ID: "dest-grp-uuid", Name: "sec-team"}}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
+	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := groupRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("status: got %q want %q", a.Status, "set")
+	}
+	if !strings.Contains(a.Detail, "would add") {
+		t.Errorf("detail %q should mention 'would add'", a.Detail)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called in dry-run mode")
+	}
+}
+
+func TestSyncContexts_GroupRestriction_CacheLoadedOnce(t *testing.T) {
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: "c1", Name: "a"}, {ID: "c2", Name: "b"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	gl := &fakeGroupLister{
+		listGroups: func(string) ([]Group, error) {
+			return []Group{{ID: "dest-grp-uuid", Name: "sec-team"}}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
+		Contexts: []manifest.Context{
+			{Name: "a", Restrictions: []manifest.Restriction{{Type: "group", Name: "sec-team"}}},
+			{Name: "b", Restrictions: []manifest.Restriction{{Type: "group", Name: "sec-team"}}},
+		},
+	}
+	if _, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gl.calls != 1 {
+		t.Errorf("ListGroups should be called exactly once (cached per run), got %d", gl.calls)
 	}
 }
 

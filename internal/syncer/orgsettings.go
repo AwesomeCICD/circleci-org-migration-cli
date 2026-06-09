@@ -72,8 +72,31 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.syncOIDCClaims(report, src, destOrgID, opts)
 	s.syncURLOrbAllowList(report, src, destSlug, opts)
 	s.syncPolicies(report, src, destOrgID, opts)
+	s.reportAuditLogConfigs(report, src)
 
 	return report, nil
+}
+
+// reportAuditLogConfigs records each captured audit-log config as a "manual"
+// action. These are never auto-applied: the S3 ARN/region/bucket/endpoint are
+// environment-specific and point at the SOURCE org's AWS account, so POSTing the
+// source values to the destination would stream audit logs to the wrong account.
+func (s *Syncer) reportAuditLogConfigs(report *Report, src *manifest.OrgSettings) {
+	for _, cfg := range src.AuditLogConfigs {
+		target := "audit_log_config"
+		if cfg.Purpose != "" {
+			target += ":" + cfg.Purpose
+		}
+		bucket := cfg.Config.BucketName
+		if cfg.Config.BucketPrefix != "" {
+			bucket += "/" + cfg.Config.BucketPrefix
+		}
+		detail := fmt.Sprintf(
+			"audit-log config (purpose=%q, target=%q, bucket=%q, region=%q, arn=%q, endpoint=%q) is environment-specific and must be recreated in the destination — its S3 ARN/region/bucket/endpoint point at the source org's AWS account and are not copied automatically",
+			cfg.Purpose, cfg.TargetType, bucket, cfg.Config.Region, cfg.Config.ARN, cfg.Config.Endpoint,
+		)
+		report.add("org-settings", target, "manual", detail)
+	}
 }
 
 // syncFeatureFlags writes each feature flag to the destination. Danger flags

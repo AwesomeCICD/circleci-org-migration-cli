@@ -28,6 +28,19 @@ type OrgResolver interface {
 	ResolveOrgID(slug string) (string, error)
 }
 
+// Group is a destination CIAM group (id + name) used to resolve group-type
+// context restrictions by name.
+type Group struct {
+	ID   string
+	Name string
+}
+
+// GroupLister lists the destination org's CIAM groups so the syncer can resolve
+// a source group restriction (captured by name) to the destination group UUID.
+type GroupLister interface {
+	ListGroups(orgID string) ([]Group, error)
+}
+
 // ContextWriter is the destination context API the syncer needs.
 type ContextWriter interface {
 	ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error)
@@ -68,7 +81,10 @@ type Syncer struct {
 	Contexts    ContextWriter
 	Projects    ProjectWriter
 	OrgSettings OrgSettingsWriter
-	Out         io.Writer
+	// Groups, when set, resolves destination group restrictions by name. When
+	// nil, group-type restrictions fall back to "manual" (the previous behaviour).
+	Groups GroupLister
+	Out    io.Writer
 }
 
 func (s *Syncer) logf(format string, args ...any) {
@@ -135,6 +151,11 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 		byName[c.Name] = c
 	}
 
+	// groupCache memoizes the destination group list (name → UUID) for the run.
+	// nil until first needed; the bool guards a single lookup even on failure.
+	var groupCache map[string]string
+	groupCacheLoaded := false
+
 	for _, c := range m.Contexts {
 		ctxID, err := s.ensureContext(report, c.Name, destOrgID, byName, opts)
 		if err != nil {
@@ -142,7 +163,7 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 			continue
 		}
 		s.syncContextVars(report, c, bundle, ctxID, opts)
-		s.syncContextRestrictions(report, c, ctxID, opts)
+		s.syncContextRestrictions(report, c, ctxID, destOrgID, &groupCache, &groupCacheLoaded, opts)
 	}
 	return report, nil
 }
@@ -202,7 +223,7 @@ func (s *Syncer) writeVar(ctxID, name, value string, apply bool) error {
 	return s.Contexts.UpsertEnvVar(ctxID, name, value)
 }
 
-func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctxID string, opts Options) {
+func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
 	var existing []cctx.Restriction
 	if opts.Apply && ctxID != "" {
 		if rs, err := s.Contexts.ListRestrictions(ctxID); err == nil {
@@ -211,26 +232,87 @@ func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctx
 	}
 	for _, r := range c.Restrictions {
 		target := c.Name + " [" + r.Type + "]"
-		if r.Type != "expression" {
-			// project-type values are source-org UUIDs (need remap); group
-			// restriction writes are not GA. Both need manual handling.
+		switch r.Type {
+		case "expression":
+			s.syncExpressionRestriction(report, target, ctxID, existing, r, opts)
+		case "group":
+			s.syncGroupRestriction(report, target, ctxID, destOrgID, existing, r, groupCache, groupCacheLoaded, opts)
+		default:
+			// project-type values are source-org UUIDs (need remap) and have no
+			// name-based equivalent in the destination — manual handling.
 			report.add("restriction", target, "manual", fmt.Sprintf("%s restriction %q must be recreated manually", r.Type, restrictionLabel(r)))
-			continue
 		}
-		if hasExpressionRestriction(existing, r.Value) {
-			report.add("restriction", target, "exists", "expression restriction already present")
-			continue
-		}
-		if !opts.Apply || ctxID == "" {
-			report.add("restriction", target, "set", "would add expression restriction")
-			continue
-		}
-		if err := s.Contexts.CreateRestriction(ctxID, "expression", r.Value); err != nil {
-			report.add("restriction", target, "error", err.Error())
-			continue
-		}
-		report.add("restriction", target, "set", "added expression restriction")
 	}
+}
+
+func (s *Syncer) syncExpressionRestriction(report *Report, target, ctxID string, existing []cctx.Restriction, r manifest.Restriction, opts Options) {
+	if hasExpressionRestriction(existing, r.Value) {
+		report.add("restriction", target, "exists", "expression restriction already present")
+		return
+	}
+	if !opts.Apply || ctxID == "" {
+		report.add("restriction", target, "set", "would add expression restriction")
+		return
+	}
+	if err := s.Contexts.CreateRestriction(ctxID, "expression", r.Value); err != nil {
+		report.add("restriction", target, "error", err.Error())
+		return
+	}
+	report.add("restriction", target, "set", "added expression restriction")
+}
+
+// syncGroupRestriction resolves a source group restriction (captured by name) to
+// a destination group UUID and recreates it. The special "All members" group's
+// UUID equals the destination org id; other groups are matched by name against
+// the destination group list. When no GroupLister is wired (s.Groups == nil) the
+// restriction falls back to "manual", preserving the previous behaviour.
+func (s *Syncer) syncGroupRestriction(report *Report, target, ctxID, destOrgID string, existing []cctx.Restriction, r manifest.Restriction, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
+	name := restrictionLabel(r)
+
+	if s.Groups == nil {
+		report.add("restriction", target, "manual", fmt.Sprintf("group restriction %q must be recreated manually", name))
+		return
+	}
+
+	destUUID, resolved := s.resolveDestGroup(name, destOrgID, groupCache, groupCacheLoaded)
+	if !resolved {
+		report.add("restriction", target, "manual", fmt.Sprintf("group %q not found in destination — create it, then re-run", name))
+		return
+	}
+
+	if hasGroupRestriction(existing, destUUID) {
+		report.add("restriction", target, "exists", fmt.Sprintf("group restriction %q already present", name))
+		return
+	}
+	if !opts.Apply || ctxID == "" {
+		report.add("restriction", target, "set", fmt.Sprintf("would add group restriction %q", name))
+		return
+	}
+	if err := s.Contexts.CreateRestriction(ctxID, "group", destUUID); err != nil {
+		report.add("restriction", target, "error", err.Error())
+		return
+	}
+	report.add("restriction", target, "set", fmt.Sprintf("added group restriction %q", name))
+}
+
+// resolveDestGroup returns the destination UUID for a group named name. The
+// "All members" group resolves to the destination org id; other names are looked
+// up in the destination group list (loaded once and cached for the run).
+func (s *Syncer) resolveDestGroup(name, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool) (string, bool) {
+	if name == "All members" {
+		return destOrgID, true
+	}
+	if !*groupCacheLoaded {
+		*groupCacheLoaded = true
+		*groupCache = map[string]string{}
+		if groups, err := s.Groups.ListGroups(destOrgID); err == nil {
+			for _, g := range groups {
+				(*groupCache)[g.Name] = g.ID
+			}
+		}
+	}
+	uuid, ok := (*groupCache)[name]
+	return uuid, ok
 }
 
 // SyncProjects applies project advanced settings and environment-variable
@@ -348,6 +430,15 @@ func toProjectSettings(s *manifest.AdvancedSettings) *project.AdvancedSettings {
 func hasExpressionRestriction(existing []cctx.Restriction, value string) bool {
 	for _, e := range existing {
 		if e.Type == "expression" && e.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGroupRestriction(existing []cctx.Restriction, value string) bool {
+	for _, e := range existing {
+		if e.Type == "group" && e.Value == value {
 			return true
 		}
 	}

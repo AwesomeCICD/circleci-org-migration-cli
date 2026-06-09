@@ -83,6 +83,31 @@ type OrgSettings struct {
 	// RequireContextGroupRestriction mirrors the same-named feature flag, kept as
 	// a convenience pointer (also present in FeatureFlags). Nil when not captured.
 	RequireContextGroupRestriction *bool `json:"require_context_group_restriction,omitempty"`
+
+	// AuditLogConfigs are the org's audit-log streaming configurations (v2). These
+	// are captured for the record but NOT auto-synced: their S3 ARN/region/bucket/
+	// endpoint are environment-specific and point at the SOURCE org's AWS account,
+	// so sync surfaces them as manual actions to recreate in the destination.
+	AuditLogConfigs []AuditLogConfig `json:"audit_log_configs,omitempty"`
+}
+
+// AuditLogConfig is one audit-log streaming configuration on an org.
+type AuditLogConfig struct {
+	ID         string         `json:"id,omitempty"`
+	Purpose    string         `json:"purpose,omitempty"`
+	TargetType string         `json:"target_type,omitempty"`
+	IsDisabled bool           `json:"is_disabled,omitempty"`
+	Config     AuditLogTarget `json:"config"`
+}
+
+// AuditLogTarget is the destination (typically S3) of an audit-log config. All
+// fields are environment-specific to the source org's AWS account.
+type AuditLogTarget struct {
+	ARN          string `json:"arn,omitempty"`
+	Region       string `json:"region,omitempty"`
+	BucketName   string `json:"bucket_name,omitempty"`
+	BucketPrefix string `json:"bucket_prefix,omitempty"`
+	Endpoint     string `json:"endpoint,omitempty"`
 }
 
 // URLOrbAllowEntry is one entry of a circleci-type org's URL-orb allow list.
