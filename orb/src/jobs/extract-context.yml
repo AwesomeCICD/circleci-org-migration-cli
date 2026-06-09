@@ -1,0 +1,41 @@
+description: |
+  Checkout, install the CLI, capture one context's secrets, and persist the
+  bundle to the workspace. Invoke once per context with the workflow `context:`
+  key set to that context. Per-context bundles are NOT stored as artifacts to
+  minimise the number of places plaintext secrets are retained — the merge job
+  produces the single artifact.
+parameters:
+  version:
+    type: string
+    default: latest
+    description: circleci-migrate release tag to install, or "latest".
+  manifest:
+    type: string
+    default: manifest.json
+    description: Path to the exported manifest file.
+  context-name:
+    type: string
+    description: The context name (must match the manifest and the workflow context key).
+  cache-cli:
+    type: boolean
+    default: true
+    description: Cache the CLI binary between runs.
+  cache-key-prefix:
+    type: string
+    default: v1
+    description: Bump to bust the CLI binary cache.
+executor: default
+steps:
+  - checkout
+  - install:
+      version: <<parameters.version>>
+      cache-cli: <<parameters.cache-cli>>
+      cache-key-prefix: <<parameters.cache-key-prefix>>
+  - extract-context:
+      manifest: <<parameters.manifest>>
+      context-name: <<parameters.context-name>>
+      output: secrets-context-<<parameters.context-name>>.json
+  - persist_to_workspace:
+      root: .
+      paths:
+        - secrets-context-<<parameters.context-name>>.json

@@ -1,0 +1,23 @@
+description: |
+  Capture one project's secret values. The invoking job MUST run within that
+  project so its variables are injected.
+parameters:
+  manifest:
+    type: string
+    default: manifest.json
+    description: Path to the exported manifest file.
+  project-slug:
+    type: string
+    description: The project slug (e.g. gh/my-org/my-repo).
+  output:
+    type: string
+    default: secrets.json
+    description: Output path for the secrets bundle.
+steps:
+  - run:
+      name: Extract secrets for project <<parameters.project-slug>>
+      command: |
+        circleci-migrate secrets extract \
+          --manifest "<<parameters.manifest>>" \
+          --project "<<parameters.project-slug>>" \
+          --output "<<parameters.output>>"

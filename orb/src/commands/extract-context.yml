@@ -1,0 +1,23 @@
+description: |
+  Capture one context's secret values. The invoking job MUST reference that
+  context (via the workflow `context:` key) so its variables are injected.
+parameters:
+  manifest:
+    type: string
+    default: manifest.json
+    description: Path to the exported manifest file.
+  context-name:
+    type: string
+    description: The context name (must match the manifest).
+  output:
+    type: string
+    default: secrets.json
+    description: Output path for the secrets bundle.
+steps:
+  - run:
+      name: Extract secrets for context <<parameters.context-name>>
+      command: |
+        circleci-migrate secrets extract \
+          --manifest "<<parameters.manifest>>" \
+          --context "<<parameters.context-name>>" \
+          --output "<<parameters.output>>"

@@ -1,0 +1,21 @@
+version: 2.1
+
+description: |
+  Capture CircleCI secret VALUES from inside a pipeline, for org-to-org
+  migration with circleci-migrate.
+
+  CircleCI's API masks environment-variable values, so `circleci-migrate export`
+  captures only their names. This orb runs `circleci-migrate secrets extract`
+  inside a job — where a context's (or project's) variables are injected as real
+  environment variables — to capture the values into a bundle, then merges the
+  per-context bundles into a single `secrets.json` artifact.
+
+  Run one extract job PER CONTEXT (each referencing exactly that context, so its
+  variables are injected without colliding with other contexts), then a merge
+  job to combine them. With many contexts, use a matrix to fan out a single job
+  stanza over a list of context names (see the matrix example) instead of
+  writing one stanza each.
+
+display:
+  home_url: https://circleci.com/docs/
+  source_url: https://github.com/CircleCI-Public/circleci-org-migration-cli

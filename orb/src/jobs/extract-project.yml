@@ -1,0 +1,40 @@
+description: |
+  Checkout, install the CLI, capture one project's secrets, and persist the
+  bundle to the workspace. The job must run in the target project so its
+  environment variables are injected. Per-project bundles are NOT stored as
+  artifacts — the merge job produces the single artifact.
+parameters:
+  version:
+    type: string
+    default: latest
+    description: circleci-migrate release tag to install, or "latest".
+  manifest:
+    type: string
+    default: manifest.json
+    description: Path to the exported manifest file.
+  project-slug:
+    type: string
+    description: The project slug (e.g. gh/my-org/my-repo).
+  cache-cli:
+    type: boolean
+    default: true
+    description: Cache the CLI binary between runs.
+  cache-key-prefix:
+    type: string
+    default: v1
+    description: Bump to bust the CLI binary cache.
+executor: default
+steps:
+  - checkout
+  - install:
+      version: <<parameters.version>>
+      cache-cli: <<parameters.cache-cli>>
+      cache-key-prefix: <<parameters.cache-key-prefix>>
+  - extract-project:
+      manifest: <<parameters.manifest>>
+      project-slug: <<parameters.project-slug>>
+      output: secrets-project-<<parameters.project-slug>>.json
+  - persist_to_workspace:
+      root: .
+      paths:
+        - secrets-project-<<parameters.project-slug>>.json

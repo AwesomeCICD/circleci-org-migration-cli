@@ -1,0 +1,33 @@
+description: |
+  Combine all per-context/project bundles persisted to the workspace into a
+  single secrets.json artifact. Run after all extract jobs (add them to
+  `requires:`). CAUTION: secrets.json contains PLAINTEXT secret values. Use a
+  private project, set a SHORT artifact retention period, download it over a
+  secure channel, and DELETE the artifact as soon as the destination sync is
+  complete. Never expose it on a public project or echo its contents.
+parameters:
+  version:
+    type: string
+    default: latest
+    description: circleci-migrate release tag to install, or "latest".
+  cache-cli:
+    type: boolean
+    default: true
+    description: Cache the CLI binary between runs.
+  cache-key-prefix:
+    type: string
+    default: v1
+    description: Bump to bust the CLI binary cache.
+executor: default
+steps:
+  - install:
+      version: <<parameters.version>>
+      cache-cli: <<parameters.cache-cli>>
+      cache-key-prefix: <<parameters.cache-key-prefix>>
+  - attach_workspace:
+      at: .
+  - run:
+      name: Merge secret bundles
+      command: circleci-migrate secrets merge -o secrets.json secrets-*.json
+  - store_artifacts:
+      path: secrets.json

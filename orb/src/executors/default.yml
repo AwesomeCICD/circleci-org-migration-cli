@@ -1,0 +1,9 @@
+description: Small Docker executor based on cimg/base. Suitable for CLI install and secret-extraction jobs.
+parameters:
+  tag:
+    type: string
+    default: current
+    description: cimg/base image tag (e.g. current, stable, edge).
+docker:
+  - image: cimg/base:<<parameters.tag>>
+resource_class: small
