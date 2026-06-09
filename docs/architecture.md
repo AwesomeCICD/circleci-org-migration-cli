@@ -12,27 +12,27 @@ graph TD
     subgraph cmd ["cmd/ (Cobra commands)"]
         ROOT[root]
         EXPORT[export]
-        SECRETS_CMD[secrets extract / merge]
+        SECRETS_CMD["secrets extract / merge"]
         SYNC[sync]
-        MIGRATE[migrate *future*]
+        MIGRATE["migrate (future)"]
     end
 
     subgraph internal ["internal/"]
-        EXPORTER[exporter\nOrchestrates API reads\ninto a Manifest]
-        SYNCER[syncer\nApplies a Manifest + SecretBundle\nto the destination org]
-        SECRETS_PKG[secrets\nReads live env vars\ninto a SecretBundle]
-        REPORT[report\nFormats terminal summary\nand audit Markdown]
-        MANIFEST[manifest\nShared on-disk contract:\nManifest · SecretBundle · Mapping]
+        EXPORTER["exporter<br/>Orchestrates API reads<br/>into a Manifest"]
+        SYNCER["syncer<br/>Applies a Manifest + SecretBundle<br/>to the destination org"]
+        SECRETS_PKG["secrets<br/>Reads live env vars<br/>into a SecretBundle"]
+        REPORT["report<br/>Formats terminal summary<br/>and audit Markdown"]
+        MANIFEST["manifest<br/>Shared on-disk contract:<br/>Manifest · SecretBundle · Mapping"]
     end
 
     subgraph api ["api/ (thin HTTP clients)"]
-        ORG_API[org\nv2: GetOrg, ResolveOrgID\nv1.1: GetOrgSettings]
-        CTX_API[context\nv2: List, Create, UpsertEnvVar\nListRestrictions, CreateRestriction]
-        PROJ_API[project\nv2: GetProject, GetSettings,\nListEnvVars, ListCheckoutKeys,\nListWebhooks, ListSchedules\nv1.1: ListFollowedProjects, FollowProject]
-        REST[rest\nShared HTTP client\nCircle-Token header\nJSON encode / decode]
+        ORG_API["org<br/>v2: GetOrg, ResolveOrgID<br/>v1.1: GetOrgSettings"]
+        CTX_API["context<br/>v2: List, Create, UpsertEnvVar<br/>ListRestrictions, CreateRestriction"]
+        PROJ_API["project<br/>v2: GetProject, GetSettings<br/>ListEnvVars, ListCheckoutKeys<br/>ListWebhooks, ListSchedules<br/>v1.1: ListFollowedProjects, FollowProject"]
+        REST["rest<br/>Shared HTTP client<br/>Circle-Token header<br/>JSON encode / decode"]
     end
 
-    CIRCLE_API["CircleCI API\ncircleci.com/api/v2\ncircleci.com/api/v1.1"]
+    CIRCLE_API["CircleCI API<br/>circleci.com/api/v2<br/>circleci.com/api/v1.1<br/>app.circleci.com/private/ciam"]
 
     ROOT --> EXPORT
     ROOT --> SECRETS_CMD
@@ -76,61 +76,84 @@ the manifest types.
 ```mermaid
 sequenceDiagram
     participant User
-    participant export as cmd/export
-    participant ex as internal/exporter
-    participant orgAPI as api/org
-    participant ctxAPI as api/context
-    participant projAPI as api/project
-    participant CCI as CircleCI API
+    participant export as "cmd/export"
+    participant ex as "internal/exporter"
+    participant orgAPI as "api/org"
+    participant ctxAPI as "api/context"
+    participant projAPI as "api/project"
+    participant CCI as "CircleCI API"
 
     User->>export: circleci-migrate export --org gh/acme
 
-    export->>ex: Export(Options{OrgSlug: "gh/acme", ...})
+    export->>ex: Export(Options)
 
     ex->>orgAPI: GetOrganization("gh/acme")
     orgAPI->>CCI: GET /api/v2/organization/gh%2Facme
-    CCI-->>orgAPI: {id, name, slug, vcs_type}
+    CCI-->>orgAPI: id, name, slug, vcs_type
     orgAPI-->>ex: Organization
 
-    ex->>orgAPI: GetOrgSettings("github", "acme")
+    ex->>orgAPI: GetFeatureFlags("github", "acme")
     orgAPI->>CCI: GET /api/v1.1/organization/github/acme/settings
-    CCI-->>orgAPI: {feature_flags: {require_context_group_restriction}}
-    orgAPI-->>ex: OrgSettings (best-effort; warning added on error)
+    CCI-->>orgAPI: feature_flags map
+    orgAPI-->>ex: OrgSettings
+
+    ex->>orgAPI: GetOIDCClaims(orgID)
+    orgAPI->>CCI: GET /api/v2/org/orgID/oidc-custom-claims
+    CCI-->>orgAPI: audience, ttl
+    orgAPI-->>ex: OIDCClaims
+
+    ex->>orgAPI: GetURLOrbAllowList(orgSlug)
+    orgAPI->>CCI: GET /api/v2/organization/orgSlug/url-orb-allow-list
+    CCI-->>orgAPI: items
+    orgAPI-->>ex: URLOrbAllowList
+
+    ex->>orgAPI: GetPolicyBundle(ownerID)
+    orgAPI->>CCI: GET /api/v2/owner/ownerID/context/config/policy-bundle
+    CCI-->>orgAPI: policy name to Rego map
+    orgAPI-->>ex: ConfigPolicies
+
+    ex->>orgAPI: GetAuditLogConfigs(orgID)
+    orgAPI->>CCI: GET /api/v2/organizations/orgID/audit-log/configs
+    CCI-->>orgAPI: audit-log config items
+    orgAPI-->>ex: AuditLogConfigs
+
+    ex->>orgAPI: GetSSOEnforced(orgID)
+    orgAPI->>CCI: GET app.circleci.com/private/ciam/orgs/orgID/sso/enforced
+    CCI-->>orgAPI: enforced bool
+    orgAPI-->>ex: SSOEnforced
 
     loop For each context page
         ex->>ctxAPI: ListContexts(ownerID)
-        ctxAPI->>CCI: GET /api/v2/context?owner-id=<id>
-        CCI-->>ctxAPI: {items: [...], next_page_token}
+        ctxAPI->>CCI: GET /api/v2/context?owner-id=id
+        CCI-->>ctxAPI: items, next_page_token
     end
 
     loop For each context
         ex->>ctxAPI: ListEnvVars(contextID)
-        ctxAPI->>CCI: GET /api/v2/context/<id>/environment-variable
-        CCI-->>ctxAPI: {items: [{variable, created_at}]} — values masked
+        ctxAPI->>CCI: GET /api/v2/context/id/environment-variable
+        CCI-->>ctxAPI: items with names only (values masked)
 
         ex->>ctxAPI: ListRestrictions(contextID)
-        ctxAPI->>CCI: GET /api/v2/context/<id>/restrictions
-        CCI-->>ctxAPI: {items: [{restriction_type, restriction_value, name}]}
-
-        Note over ex: Group restrictions → warning added\n(writes not yet GA)
+        ctxAPI->>CCI: GET /api/v2/context/id/restrictions
+        CCI-->>ctxAPI: restriction_type, restriction_value, name
     end
 
     ex->>projAPI: FollowedProjectsForOrg("acme")
     projAPI->>CCI: GET /api/v1.1/projects
-    CCI-->>projAPI: [{username, reponame, ...}] — flat array
+    CCI-->>projAPI: flat array of project objects
 
     loop For each project slug
         ex->>projAPI: GetProject(slug)
-        projAPI->>CCI: GET /api/v2/project/<slug>
-        CCI-->>projAPI: {id, name, slug, vcs_info}
+        projAPI->>CCI: GET /api/v2/project/slug
+        CCI-->>projAPI: id, name, slug, vcs_info
 
         ex->>projAPI: GetSettings(provider, org, proj)
-        projAPI->>CCI: GET /api/v2/project/<provider>/<org>/<proj>/settings
-        CCI-->>projAPI: {advanced: {...}}
+        projAPI->>CCI: GET /api/v2/project/provider/org/proj/settings
+        CCI-->>projAPI: advanced settings object
 
         ex->>projAPI: ListEnvVars(slug)
-        projAPI->>CCI: GET /api/v2/project/<slug>/envvar
-        CCI-->>projAPI: {items: [{name, value: "xxxx1234"}]} — values masked
+        projAPI->>CCI: GET /api/v2/project/slug/envvar
+        CCI-->>projAPI: names with masked values
 
         opt --skip-extras not set
             ex->>projAPI: ListCheckoutKeys, ListWebhooks, ListSchedules
@@ -159,27 +182,27 @@ Key properties of the export phase:
 
 ```mermaid
 flowchart TD
-    START([User commits manifest.json\nto source-org repo])
+    START(["User commits manifest.json to source-org repo"])
 
-    START --> TRIGGER[Push triggers CircleCI pipeline\nin source org]
+    START --> TRIGGER["Push triggers CircleCI pipeline in source org"]
 
     TRIGGER --> PARALLEL
 
     subgraph PARALLEL ["Parallel extract jobs — one per context"]
-        J1["Job: extract-deploy-prod\ncontext: [deploy-prod]\n\n1. checkout\n2. orb: install circleci-migrate\n3. secrets extract\n   --context deploy-prod\n4. persist secrets-context-deploy-prod.json\n   to workspace + artifacts"]
+        J1["Job: extract-deploy-prod<br/>context: deploy-prod<br/><br/>1. checkout<br/>2. orb: install circleci-migrate<br/>3. secrets extract --context deploy-prod<br/>4. persist bundle to workspace"]
 
-        J2["Job: extract-shared\ncontext: [shared]\n\n1. checkout\n2. orb: install circleci-migrate\n3. secrets extract\n   --context shared\n4. persist secrets-context-shared.json\n   to workspace + artifacts"]
+        J2["Job: extract-shared<br/>context: shared<br/><br/>1. checkout<br/>2. orb: install circleci-migrate<br/>3. secrets extract --context shared<br/>4. persist bundle to workspace"]
 
         JN["... one job per context ..."]
     end
 
     PARALLEL --> MERGE
 
-    MERGE["Job: merge\n(requires all extract jobs)\n\n1. attach_workspace\n2. circleci-migrate secrets merge\n   -o secrets.json secrets-*.json\n3. store_artifacts: secrets.json"]
+    MERGE["Job: merge<br/>(requires all extract jobs)<br/><br/>1. attach_workspace<br/>2. circleci-migrate secrets merge -o secrets.json<br/>3. store_artifacts: secrets.json"]
 
-    MERGE --> DOWNLOAD[User downloads secrets.json\nartifact from CircleCI UI]
+    MERGE --> DOWNLOAD["User downloads secrets.json artifact from CircleCI UI"]
 
-    DOWNLOAD --> NOTE["secrets.json contains plaintext values\nProtect it — do not commit it"]
+    DOWNLOAD --> NOTE["secrets.json contains plaintext values<br/>Protect it and do not commit it"]
 ```
 
 **Why one job per context?**
@@ -203,49 +226,51 @@ bundles into a single `secrets.json` using `secrets merge`.
 
 ```mermaid
 flowchart TD
-    START([User runs: circleci-migrate sync\n--manifest manifest.json\n--secrets secrets.json])
+    START(["User runs: circleci-migrate sync --manifest manifest.json --secrets secrets.json"])
 
-    START --> LOAD["Load manifest.json\nLoad secrets.json (optional)\nLoad mapping.json (optional)"]
+    START --> LOAD["Load manifest.json<br/>Load secrets.json (optional)<br/>Load mapping.json (optional)"]
 
-    LOAD --> RESOLVE["Resolve destination org slug → UUID\nGET /api/v2/organization/<slug>"]
+    LOAD --> RESOLVE["Resolve destination org slug to UUID<br/>GET /api/v2/organization/slug"]
 
-    RESOLVE --> LIST_CTX["List existing contexts in destination org\nGET /api/v2/context?owner-id=<dest-id>"]
+    RESOLVE --> ORG_SETTINGS["Sync org settings<br/>(feature flags, OIDC, URL-orb allow list, config policies)<br/>Skipped with --skip-org-settings"]
+
+    ORG_SETTINGS --> LIST_CTX["List existing contexts in destination org<br/>GET /api/v2/context?owner-id=dest-id"]
 
     LIST_CTX --> LOOP
 
     subgraph LOOP ["For each context in manifest"]
-        ENSURE{"Context exists\nin destination?"}
+        ENSURE{"Context exists<br/>in destination?"}
 
-        ENSURE -->|Yes| REUSE["Status: exists\nReuse existing context ID"]
-        ENSURE -->|No, dry run| WOULD_CREATE["Status: created (would create)\nNo API call"]
-        ENSURE -->|No, --apply| CREATE["POST /api/v2/context\nStatus: created"]
+        ENSURE -->|Yes| REUSE["Status: exists<br/>Reuse existing context ID"]
+        ENSURE -->|"No, dry run"| WOULD_CREATE["Status: created (would create)<br/>No API call"]
+        ENSURE -->|"No, --apply"| CREATE["POST /api/v2/context<br/>Status: created"]
 
         REUSE --> VARS
         WOULD_CREATE --> VARS
         CREATE --> VARS
 
         subgraph VARS ["For each env var in context"]
-            HAS_VAL{"Value in\nsecret bundle?"}
-            HAS_VAL -->|Yes, --apply| UPSERT["PUT /api/v2/context/<id>/environment-variable/<name>\nStatus: set"]
-            HAS_VAL -->|Yes, dry run| DRY_SET["Status: set (would set)\nNo API call"]
-            HAS_VAL -->|No, skip policy| SKIP["Status: manual\nSkipped — set manually"]
-            HAS_VAL -->|No, placeholder policy| PLACEHOLDER["PUT with REPLACE_ME value\nStatus: set (placeholder)"]
+            HAS_VAL{"Value in<br/>secret bundle?"}
+            HAS_VAL -->|"Yes, --apply"| UPSERT["PUT /api/v2/context/id/environment-variable/name<br/>Status: set"]
+            HAS_VAL -->|"Yes, dry run"| DRY_SET["Status: set (would set)<br/>No API call"]
+            HAS_VAL -->|"No, skip policy"| SKIP["Status: manual<br/>Skipped — set manually"]
+            HAS_VAL -->|"No, placeholder policy"| PLACEHOLDER["PUT with REPLACE_ME value<br/>Status: set (placeholder)"]
         end
 
         VARS --> RESTRS
 
         subgraph RESTRS ["For each restriction in context"]
-            RTYPE{"Restriction\ntype?"}
-            RTYPE -->|expression| EXPR_CHECK{"Already exists\nin destination?"}
+            RTYPE{"Restriction<br/>type?"}
+            RTYPE -->|expression| EXPR_CHECK{"Already exists<br/>in destination?"}
             EXPR_CHECK -->|Yes| EXISTS["Status: exists"]
-            EXPR_CHECK -->|No, --apply| CREATE_RESTR["POST /api/v2/context/<id>/restrictions\nStatus: set"]
-            EXPR_CHECK -->|No, dry run| WOULD_RESTR["Status: set (would add)"]
-            RTYPE -->|project| MANUAL_P["Status: manual\nSource-org project UUID\ndoes not transfer"]
-            RTYPE -->|group| MANUAL_G["Status: manual\nGroup-restriction writes\nnot yet GA"]
+            EXPR_CHECK -->|"No, --apply"| CREATE_RESTR["POST /api/v2/context/id/restrictions<br/>Status: set"]
+            EXPR_CHECK -->|"No, dry run"| WOULD_RESTR["Status: set (would add)"]
+            RTYPE -->|project| MANUAL_P["Status: manual<br/>Source-org project UUID does not transfer"]
+            RTYPE -->|group| MANUAL_G["Status: manual<br/>Group-restriction writes not yet GA"]
         end
     end
 
-    LOOP --> REPORT["Print sync report:\nDRY RUN / APPLIED\ncreated / exists / set / manual / error counts\nNeeds-attention list"]
+    LOOP --> REPORT["Print sync report:<br/>DRY RUN or APPLIED<br/>created / exists / set / manual / error counts<br/>Needs-attention list"]
 
     REPORT --> END([Done])
 ```
