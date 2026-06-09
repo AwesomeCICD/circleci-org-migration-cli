@@ -24,6 +24,7 @@ type fakeOrgAPI struct {
 	getURLOrbAllowList func(slugOrID string) ([]org.URLOrbAllowEntry, error)
 	getPolicyBundle    func(ownerID string) (map[string]string, error)
 	getPolicyEnf       func(ownerID string) (bool, error)
+	getAuditLogConfigs func(orgID string) ([]org.AuditLogConfig, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -73,6 +74,13 @@ func (f *fakeOrgAPI) GetPolicyEnforcement(ownerID string) (bool, error) {
 		return f.getPolicyEnf(ownerID)
 	}
 	return false, nil
+}
+
+func (f *fakeOrgAPI) GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error) {
+	if f.getAuditLogConfigs != nil {
+		return f.getAuditLogConfigs(orgID)
+	}
+	return nil, nil
 }
 
 type fakeContextAPI struct {
@@ -1222,6 +1230,85 @@ func TestExport_Projects_VCSFieldsMapped(t *testing.T) {
 	}
 	if vcs.URL != "https://github.com/myorg/web" {
 		t.Errorf("VCS.URL: got %q want %q", vcs.URL, "https://github.com/myorg/web")
+	}
+}
+
+func TestExport_OrgSettings_AuditLogConfigsCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getAuditLogConfigs: func(orgID string) ([]org.AuditLogConfig, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("GetAuditLogConfigs orgID: got %q want %q", orgID, "org-uuid-123")
+				}
+				return []org.AuditLogConfig{
+					{
+						ID:         "cfg-1",
+						Purpose:    "security",
+						TargetType: "s3",
+						IsDisabled: false,
+						Config: org.AuditLogTarget{
+							ARN:          "arn:aws:iam::123:role/audit",
+							Region:       "us-east-1",
+							BucketName:   "acme-audit",
+							BucketPrefix: "logs/",
+							Endpoint:     "https://s3.amazonaws.com",
+						},
+					},
+				}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil")
+	}
+	configs := m.Source.Org.Settings.AuditLogConfigs
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 audit-log config, got %d", len(configs))
+	}
+	got := configs[0]
+	if got.ID != "cfg-1" || got.Purpose != "security" || got.TargetType != "s3" {
+		t.Errorf("unexpected config metadata: %+v", got)
+	}
+	if got.Config.ARN != "arn:aws:iam::123:role/audit" || got.Config.BucketName != "acme-audit" {
+		t.Errorf("unexpected config target: %+v", got.Config)
+	}
+	if got.Config.Region != "us-east-1" || got.Config.BucketPrefix != "logs/" || got.Config.Endpoint != "https://s3.amazonaws.com" {
+		t.Errorf("unexpected config target: %+v", got.Config)
+	}
+}
+
+func TestExport_OrgSettings_AuditLogConfigsError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getAuditLogConfigs: func(orgID string) ([]org.AuditLogConfig, error) {
+				return nil, errors.New("audit-log API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("audit-log error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "audit_log_configs_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected audit_log_configs_unreadable warning, not found")
 	}
 }
 

@@ -19,9 +19,13 @@ import (
 const uuidLen = 36
 
 // Client holds REST clients for API v2 and v1.1.
+//
+// app is a client against the app.circleci.com host (NOT circleci.com), used for
+// the private CIAM endpoints (e.g. groups). circleci.com 404s on those paths.
 type Client struct {
 	v2  *rest.Client
 	v11 *rest.Client
+	app *rest.Client
 }
 
 // NewClient constructs a Client from the provided config and token.
@@ -45,21 +49,52 @@ func NewClient(cfg *settings.Config, token string) (*Client, error) {
 	v2Base := base.ResolveReference(&url.URL{Path: "/api/v2/"})
 	v11Base := base.ResolveReference(&url.URL{Path: "/api/v1.1/"})
 
+	// The private CIAM endpoints live on app.circleci.com, not circleci.com.
+	// Derive the app host by swapping the leading "circleci.com" with
+	// "app.circleci.com"; otherwise fall back to the default app host.
+	appBase := appBaseURL(base)
+
 	return &Client{
 		v2:  rest.New(v2Base, token, httpClient),
 		v11: rest.New(v11Base, token, httpClient),
+		app: rest.New(appBase, token, httpClient),
 	}, nil
 }
 
+// appBaseURL derives the app.circleci.com base from the configured host. If the
+// host is "circleci.com" (the default), the "app." prefix is added; any other
+// host (e.g. a server install) is reused as-is. The returned URL has an empty
+// path so private CIAM paths can be appended directly.
+func appBaseURL(base *url.URL) *url.URL {
+	app := *base
+	app.Path = "/"
+	app.RawPath = ""
+	if app.Host == "circleci.com" {
+		app.Host = "app.circleci.com"
+	} else if app.Host == "" {
+		app.Scheme = "https"
+		app.Host = "app.circleci.com"
+	}
+	return &app
+}
+
 // newClientFromBases is an unexported constructor used by tests to inject
-// explicit base URLs without going through settings.Config.
+// explicit base URLs without going through settings.Config. The app (CIAM) base
+// is derived from v2Base's host.
 func newClientFromBases(v2Base, v11Base *url.URL, token string, httpClient *http.Client) *Client {
+	return newClientFromAllBases(v2Base, v11Base, appBaseURL(v2Base), token, httpClient)
+}
+
+// newClientFromAllBases is an unexported constructor used by tests that need to
+// point the app (CIAM) client at a distinct host from the v2/v11 clients.
+func newClientFromAllBases(v2Base, v11Base, appBase *url.URL, token string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
 	return &Client{
 		v2:  rest.New(v2Base, token, httpClient),
 		v11: rest.New(v11Base, token, httpClient),
+		app: rest.New(appBase, token, httpClient),
 	}
 }
 

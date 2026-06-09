@@ -87,7 +87,7 @@ Examples:
 				return fmt.Errorf("creating project client: %w", err)
 			}
 
-			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, OrgSettings: orgClient, Out: cmd.ErrOrStderr()}
+			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, OrgSettings: orgClient, Groups: orgGroupLister{orgClient}, Out: cmd.ErrOrStderr()}
 			opts := syncer.Options{Apply: apply, MissingSecrets: missing}
 
 			if !skipOrgSettings {
@@ -126,6 +126,24 @@ Examples:
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 
 	return cmd
+}
+
+// orgGroupLister adapts the org client's ListGroups (returning []org.Group) to
+// the syncer.GroupLister interface (returning []syncer.Group).
+type orgGroupLister struct {
+	c *org.Client
+}
+
+func (g orgGroupLister) ListGroups(orgID string) ([]syncer.Group, error) {
+	groups, err := g.c.ListGroups(orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]syncer.Group, len(groups))
+	for i, gr := range groups {
+		out[i] = syncer.Group{ID: gr.ID, Name: gr.Name}
+	}
+	return out, nil
 }
 
 // loadBundleIfPresent loads the secret bundle at path if it exists; a missing

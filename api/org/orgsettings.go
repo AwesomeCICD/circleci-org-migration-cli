@@ -201,6 +201,56 @@ func (c *Client) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) err
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Audit-log configs
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AuditLogConfig is one audit-log streaming configuration on an org, as returned
+// by GET /api/v2/organizations/{orgID}/audit-log/configs.
+type AuditLogConfig struct {
+	ID         string         `json:"id"`
+	OrgID      string         `json:"org_id"`
+	Purpose    string         `json:"purpose"`
+	TargetType string         `json:"target_type"`
+	IsDisabled bool           `json:"is_disabled"`
+	Config     AuditLogTarget `json:"config"`
+}
+
+// AuditLogTarget is the (typically S3) destination of an audit-log config.
+type AuditLogTarget struct {
+	ARN          string `json:"arn"`
+	Region       string `json:"region"`
+	BucketName   string `json:"bucket_name"`
+	BucketPrefix string `json:"bucket_prefix"`
+	Endpoint     string `json:"endpoint"`
+}
+
+// auditLogConfigsResponse mirrors GET /api/v2/organizations/{orgID}/audit-log/configs.
+type auditLogConfigsResponse struct {
+	Items []AuditLogConfig `json:"items"`
+}
+
+// GetAuditLogConfigs retrieves the org's audit-log streaming configurations.
+//
+// Endpoint: GET /api/v2/organizations/{orgID}/audit-log/configs
+func (c *Client) GetAuditLogConfigs(orgID string) ([]AuditLogConfig, error) {
+	u, err := url.Parse("organizations/" + url.PathEscape(orgID) + "/audit-log/configs")
+	if err != nil {
+		return nil, fmt.Errorf("GetAuditLogConfigs: build URL: %w", err)
+	}
+
+	req, err := c.v2.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetAuditLogConfigs: build request: %w", err)
+	}
+
+	var raw auditLogConfigsResponse
+	if _, err := c.v2.DoRequest(req, &raw); err != nil {
+		return nil, fmt.Errorf("GetAuditLogConfigs %s: %w", orgID, err)
+	}
+	return raw.Items, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Config policies (policy-bundle + enforcement)
 // ─────────────────────────────────────────────────────────────────────────────
 

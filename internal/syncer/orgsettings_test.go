@@ -161,6 +161,59 @@ func actionsOfStatus(rep *Report, status string) []Action {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SyncOrgSettings: audit-log configs (manual report, never auto-applied)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_AuditLogConfigs_ManualNoWrite(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		AuditLogConfigs: []manifest.AuditLogConfig{
+			{
+				ID:         "cfg-1",
+				Purpose:    "security",
+				TargetType: "s3",
+				Config: manifest.AuditLogTarget{
+					ARN:          "arn:aws:iam::123:role/audit",
+					Region:       "us-east-1",
+					BucketName:   "acme-audit",
+					BucketPrefix: "logs/",
+					Endpoint:     "https://s3.amazonaws.com",
+				},
+			},
+		},
+	})
+
+	// Even with Apply=true, audit-log configs must never trigger a write.
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manual := actionsOfStatus(rep, "manual")
+	var found *Action
+	for i := range manual {
+		if manual[i].Target == "audit_log_config:security" {
+			found = &manual[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a manual action for audit_log_config:security, got %+v", rep.Actions)
+		return
+	}
+	for _, want := range []string{"security", "us-east-1", "acme-audit", "arn:aws:iam::123:role/audit", "environment-specific"} {
+		if !strings.Contains(found.Detail, want) {
+			t.Errorf("detail %q missing %q", found.Detail, want)
+		}
+	}
+	// No org-settings writer method should have been called for audit-log configs.
+	if len(fw.calls) != 0 {
+		t.Errorf("expected no writer calls for audit-log configs, got %v", fw.calls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SyncOrgSettings: basic
 // ─────────────────────────────────────────────────────────────────────────────
 
