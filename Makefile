@@ -112,6 +112,17 @@ snapshot:
 		echo "goreleaser not found — see https://goreleaser.com/install/"; \
 	fi
 
+# release-snapshot builds all cross-platform archives locally without publishing.
+# Useful for validating the GoReleaser config and archive naming before tagging.
+.PHONY: release-snapshot
+release-snapshot:
+	goreleaser release --snapshot --clean --skip=publish
+
+# release-check validates .goreleaser.yml against the GoReleaser v2 schema.
+.PHONY: release-check
+release-check:
+	goreleaser check
+
 .PHONY: clean
 clean:
 	rm -rf bin/ dist/ coverage.out coverage.html test-results/ *.sarif
