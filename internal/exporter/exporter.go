@@ -29,6 +29,8 @@ type OrgAPI interface {
 	GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error)
 	GetSSOEnforced(orgID string) (bool, error)
 	GetSSOConnection(orgID string) (connection map[string]any, found bool, err error)
+	GetOTelExporters(orgID string) ([]org.OTelExporter, error)
+	GetContacts(orgID string) (primary, security []string, err error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -429,6 +431,30 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// auto-synced (recreation needs DNS domain verification + IdP setup), so
 		// it is recorded for the operator and surfaced as a manual sync action.
 		if e.exportSSO(m, o.ID, s) {
+			hasAny = true
+		}
+
+		// OTel exporters (EXPERIMENTAL; up to 5 per org). Header values are
+		// redacted by the server and captured for reference only.
+		if exporters, oerr := e.Org.GetOTelExporters(o.ID); oerr != nil {
+			m.AddWarning("org", "otel_exporters_unreadable", fmt.Sprintf("could not read OTel exporters: %v", oerr))
+		} else if len(exporters) > 0 {
+			for _, ex := range exporters {
+				s.OTelExporters = append(s.OTelExporters, manifest.OTelExporter{
+					Endpoint: ex.Endpoint,
+					Protocol: ex.Protocol,
+					Insecure: ex.Insecure,
+					Headers:  ex.Headers,
+				})
+			}
+			hasAny = true
+		}
+
+		// Org contacts (primary/security email lists).
+		if primary, security, cerr := e.Org.GetContacts(o.ID); cerr != nil {
+			m.AddWarning("org", "contacts_unreadable", fmt.Sprintf("could not read org contacts: %v", cerr))
+		} else if len(primary) > 0 || len(security) > 0 {
+			s.Contacts = &manifest.OrgContacts{Primary: primary, Security: security}
 			hasAny = true
 		}
 	}

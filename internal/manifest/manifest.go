@@ -96,6 +96,18 @@ type OrgSettings struct {
 	// surfaces it as a manual action and never writes it. Nil when the org has no
 	// SSO configured and enforcement is off.
 	SSO *SSOSettings `json:"sso,omitempty"`
+
+	// OTelExporters are the org's OpenTelemetry exporter configurations
+	// (EXPERIMENTAL; up to 5 per org). Header values are redacted ("xxxx") by
+	// the server and are captured for reference only — they cannot be replayed
+	// automatically to the destination. Sync creates each exporter (without
+	// headers) and emits manual actions for header keys so operators can
+	// re-add the secret values.
+	OTelExporters []OTelExporter `json:"otel_exporters,omitempty"`
+
+	// Contacts holds the org's technical (primary) and security contact email
+	// lists. Up to 5 addresses per list. Sync uses PUT (overwrites).
+	Contacts *OrgContacts `json:"contacts,omitempty"`
 }
 
 // SSOSettings is a reference snapshot of an org's SSO (SAML) configuration.
@@ -108,6 +120,23 @@ type SSOSettings struct {
 	// SSOConnection shape), captured whole for reference. Nil when no connection
 	// is configured. It is never written back to the destination.
 	Connection map[string]any `json:"connection,omitempty"`
+}
+
+// OTelExporter is one OpenTelemetry exporter configuration on an org
+// (EXPERIMENTAL feature; max 5 per org). Header values come back redacted as
+// "xxxx" (encrypted at rest) and are captured for reference only.
+type OTelExporter struct {
+	Endpoint string            `json:"endpoint"`
+	Protocol string            `json:"protocol"`
+	Insecure bool              `json:"insecure"`
+	Headers  map[string]string `json:"headers,omitempty"`
+}
+
+// OrgContacts holds the org's technical (primary) and security contact email
+// lists. Each list may contain up to 5 addresses.
+type OrgContacts struct {
+	Primary  []string `json:"primary,omitempty"`
+	Security []string `json:"security,omitempty"`
 }
 
 // AuditLogConfig is one audit-log streaming configuration on an org.

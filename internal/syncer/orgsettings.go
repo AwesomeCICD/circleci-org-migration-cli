@@ -8,13 +8,16 @@ import (
 )
 
 // OrgSettingsWriter is the destination org-settings API the syncer needs.
-// It is a narrow interface over the methods defined in api/org/orgsettings.go.
+// It is a narrow interface over the methods defined in api/org/orgsettings.go,
+// api/org/otel.go, and api/org/contacts.go.
 type OrgSettingsWriter interface {
 	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
 	SetOIDCClaims(orgID string, audience []string, ttl string) error
 	CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error
 	PutPolicyBundle(ownerID string, policies map[string]string) error
 	SetPolicyEnforcement(ownerID string, enabled bool) error
+	CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
+	SetContacts(orgID string, primary, security []string) error
 }
 
 // dangerFlags are flags that are skipped by default during sync because
@@ -74,6 +77,8 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.syncPolicies(report, src, destOrgID, opts)
 	s.reportAuditLogConfigs(report, src)
 	s.reportSSO(report, src)
+	s.syncOTelExporters(report, src, destOrgID, opts)
+	s.syncContacts(report, src, destOrgID, opts)
 
 	return report, nil
 }
@@ -219,6 +224,103 @@ func (s *Syncer) syncPolicies(report *Report, src *manifest.OrgSettings, destOrg
 		} else {
 			report.add("org-settings", target, "set",
 				fmt.Sprintf("set policy enforcement enabled=%v", enabled))
+		}
+	}
+}
+
+// syncOTelExporters creates each OTel exporter on the destination. Because
+// there is no list-by-destination method, creation is attempted unconditionally
+// (best-effort idempotency). Header values are NOT sent — they were redacted on
+// export and are unusable. When an exporter had headers, a "manual" action is
+// emitted listing the header keys that must be re-added as secrets. The 5-exporter
+// cap is enforced by the API; if more than 5 exporters are present a note is
+// included in the detail.
+func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+	if len(src.OTelExporters) == 0 {
+		return
+	}
+
+	capNote := ""
+	if len(src.OTelExporters) > 5 {
+		capNote = " (warning: source has >5 exporters; the API enforces a 5-exporter cap per org)"
+	}
+
+	for i, ex := range src.OTelExporters {
+		target := fmt.Sprintf("otel:%d", i)
+
+		if !opts.Apply {
+			report.add("org-settings", target, "set",
+				fmt.Sprintf("would create OTel exporter endpoint=%q protocol=%q insecure=%v%s",
+					ex.Endpoint, ex.Protocol, ex.Insecure, capNote))
+			if len(ex.Headers) > 0 {
+				keys := headerKeys(ex.Headers)
+				report.add("org-settings", target, "manual",
+					fmt.Sprintf("OTel exporter header values were redacted on export and cannot be replayed; re-add these header keys manually: %v", keys))
+			}
+			continue
+		}
+
+		if err := s.OrgSettings.CreateOTelExporter(destOrgID, ex.Endpoint, ex.Protocol, ex.Insecure, nil); err != nil {
+			report.add("org-settings", target, "error", fmt.Sprintf("could not create OTel exporter: %v", err))
+			continue
+		}
+		report.add("org-settings", target, "set",
+			fmt.Sprintf("created OTel exporter endpoint=%q protocol=%q insecure=%v%s",
+				ex.Endpoint, ex.Protocol, ex.Insecure, capNote))
+
+		if len(ex.Headers) > 0 {
+			keys := headerKeys(ex.Headers)
+			report.add("org-settings", target, "manual",
+				fmt.Sprintf("OTel exporter header values were redacted on export and cannot be replayed; re-add these header keys manually: %v", keys))
+		}
+	}
+}
+
+// syncContacts applies the org's primary and security contact email lists to
+// the destination via PUT (overwrites). Skipped silently when Contacts is nil
+// or both lists are empty.
+func (s *Syncer) syncContacts(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+	if src.Contacts == nil {
+		return
+	}
+	if len(src.Contacts.Primary) == 0 && len(src.Contacts.Security) == 0 {
+		return
+	}
+
+	target := "contacts"
+	if !opts.Apply {
+		report.add("org-settings", target, "set",
+			fmt.Sprintf("would set contacts primary=%v security=%v",
+				src.Contacts.Primary, src.Contacts.Security))
+		return
+	}
+
+	if err := s.OrgSettings.SetContacts(destOrgID, src.Contacts.Primary, src.Contacts.Security); err != nil {
+		report.add("org-settings", target, "error", fmt.Sprintf("could not set contacts: %v", err))
+		return
+	}
+	report.add("org-settings", target, "set",
+		fmt.Sprintf("set contacts primary=%v security=%v",
+			src.Contacts.Primary, src.Contacts.Security))
+}
+
+// headerKeys returns a sorted list of keys from a map for deterministic output.
+func headerKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Sort for deterministic output in test assertions and reports.
+	sortStrings(keys)
+	return keys
+}
+
+// sortStrings is a simple insertion sort for short key slices (avoids importing
+// "sort" only for this helper).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
 }

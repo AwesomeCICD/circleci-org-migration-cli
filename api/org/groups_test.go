@@ -110,7 +110,23 @@ func newTestClientWithAppServer(t *testing.T, srv *httptest.Server) *Client {
 	v2Base := serverURL.ResolveReference(&url.URL{Path: "/api/v2/"})
 	v11Base := serverURL.ResolveReference(&url.URL{Path: "/api/v1.1/"})
 	appBase := serverURL.ResolveReference(&url.URL{Path: "/"})
-	return newClientFromAllBases(v2Base, v11Base, appBase, "test-token", srv.Client())
+	privateBase := serverURL.ResolveReference(&url.URL{Path: "/api/private/"})
+	return newClientFromAllBases(v2Base, v11Base, appBase, privateBase, "test-token", srv.Client())
+}
+
+// newTestClientWithPrivateServer builds a Client whose private API client
+// targets the given server, isolating path assertions for /api/private/ endpoints.
+func newTestClientWithPrivateServer(t *testing.T, srv *httptest.Server) *Client {
+	t.Helper()
+	serverURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	v2Base := serverURL.ResolveReference(&url.URL{Path: "/api/v2/"})
+	v11Base := serverURL.ResolveReference(&url.URL{Path: "/api/v1.1/"})
+	appBase := serverURL.ResolveReference(&url.URL{Path: "/"})
+	privateBase := serverURL.ResolveReference(&url.URL{Path: "/api/private/"})
+	return newClientFromAllBases(v2Base, v11Base, appBase, privateBase, "test-token", srv.Client())
 }
 
 func TestListGroups_HappyPath(t *testing.T) {
