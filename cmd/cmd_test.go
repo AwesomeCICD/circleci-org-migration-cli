@@ -99,13 +99,13 @@ func TestVersionCommand_PrintsCommit(t *testing.T) {
 // export subcommand
 // ---------------------------------------------------------------------------
 
-func TestExportCommand_NotImplementedMessage(t *testing.T) {
-	out, _, err := runCmd(t, "export")
-	if err != nil {
-		t.Fatalf("export command error: %v", err)
+func TestExportCommand_RequiresOrgFlag(t *testing.T) {
+	_, _, err := runCmd(t, "export")
+	if err == nil {
+		t.Fatal("export without --org should return an error")
 	}
-	if !strings.Contains(out, "not implemented") {
-		t.Errorf("export output %q does not contain 'not implemented'", out)
+	if !strings.Contains(err.Error(), "org") {
+		t.Errorf("error %q does not mention 'org'", err.Error())
 	}
 }
 

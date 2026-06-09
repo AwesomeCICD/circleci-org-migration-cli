@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 )
 
 // SchemaVersion is the version of the manifest format this build understands.
@@ -202,6 +203,22 @@ type Warning struct {
 // AddWarning appends a warning to the manifest.
 func (m *Manifest) AddWarning(scope, code, message string) {
 	m.Warnings = append(m.Warnings, Warning{Scope: scope, Code: code, Message: message})
+}
+
+// SortStable orders contexts, projects, and their environment variables by
+// name so repeated exports of unchanged data produce identical files (clean
+// diffs). It does not touch the warnings order (kept in discovery order).
+func (m *Manifest) SortStable() {
+	sort.SliceStable(m.Contexts, func(i, j int) bool { return m.Contexts[i].Name < m.Contexts[j].Name })
+	sort.SliceStable(m.Projects, func(i, j int) bool { return m.Projects[i].Slug < m.Projects[j].Slug })
+	for i := range m.Contexts {
+		ev := m.Contexts[i].EnvVars
+		sort.SliceStable(ev, func(a, b int) bool { return ev[a].Name < ev[b].Name })
+	}
+	for i := range m.Projects {
+		ev := m.Projects[i].EnvVars
+		sort.SliceStable(ev, func(a, b int) bool { return ev[a].Name < ev[b].Name })
+	}
 }
 
 // Save writes the manifest to path as indented JSON.
