@@ -289,6 +289,7 @@ func TestListRestrictions_IncludingGroup(t *testing.T) {
 	}
 	if groupRestr == nil {
 		t.Fatal("group restriction not found")
+		return
 	}
 	if groupRestr.Value != "group-uuid" {
 		t.Errorf("group restriction value: got %q, want %q", groupRestr.Value, "group-uuid")

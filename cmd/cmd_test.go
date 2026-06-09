@@ -113,13 +113,14 @@ func TestExportCommand_RequiresOrgFlag(t *testing.T) {
 // sync subcommand
 // ---------------------------------------------------------------------------
 
-func TestSyncCommand_NotImplementedMessage(t *testing.T) {
-	out, _, err := runCmd(t, "sync")
-	if err != nil {
-		t.Fatalf("sync command error: %v", err)
+func TestSyncCommand_RequiresManifest(t *testing.T) {
+	// The sync command is implemented and requires --manifest.
+	_, _, err := runCmd(t, "sync")
+	if err == nil {
+		t.Fatal("sync without --manifest should return an error")
 	}
-	if !strings.Contains(out, "not implemented") {
-		t.Errorf("sync output %q does not contain 'not implemented'", out)
+	if !strings.Contains(err.Error(), "manifest") {
+		t.Errorf("error %q does not mention 'manifest'", err.Error())
 	}
 }
 
