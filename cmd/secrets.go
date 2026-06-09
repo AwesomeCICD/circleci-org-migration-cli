@@ -29,6 +29,54 @@ and the orb). The resulting bundle contains plaintext secrets: protect it,
 keep it out of version control, and delete it once the sync is complete.`,
 	}
 	cmd.AddCommand(newSecretsExtractCommand())
+	cmd.AddCommand(newSecretsMergeCommand())
+	return cmd
+}
+
+func newSecretsMergeCommand() *cobra.Command {
+	var output string
+
+	cmd := &cobra.Command{
+		Use:   "merge -o <out> <bundle.json>...",
+		Short: "Merge multiple secret bundles into one.",
+		Long: `merge combines several secret bundles (for example, the per-context
+bundles produced by separate extraction jobs) into a single bundle.
+
+Example:
+  circleci-migrate secrets merge -o secrets.json artifacts/*/secrets.json`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			merged := manifest.NewSecretBundle()
+			for _, path := range args {
+				b, err := manifest.LoadSecretBundle(path)
+				if err != nil {
+					return err
+				}
+				merged.Merge(b)
+			}
+			merged.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+			merged.ToolVersion = version.UserAgent()
+			if err := merged.Save(output); err != nil {
+				return fmt.Errorf("writing merged bundle: %w", err)
+			}
+
+			ctxN, varN := 0, 0
+			for _, vars := range merged.ContextSecrets {
+				ctxN++
+				varN += len(vars)
+			}
+			projN := 0
+			for _, vars := range merged.ProjectSecrets {
+				projN++
+				varN += len(vars)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Merged %d bundle(s) → %s (%d context(s), %d project(s), %d value(s))\n",
+				len(args), output, ctxN, projN, varN)
+			fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: "+output+" contains plaintext secrets — protect it and do not commit it.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&output, "output", "o", "secrets.json", "Path to write the merged bundle")
 	return cmd
 }
 

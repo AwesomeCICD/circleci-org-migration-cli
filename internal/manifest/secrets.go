@@ -55,6 +55,25 @@ func (b *SecretBundle) SetProjectSecret(projectSlug, name, value string) {
 	b.ProjectSecrets[projectSlug][name] = value
 }
 
+// Merge copies all context and project secrets from other into b. Later values
+// win on key collisions. Used to combine the per-context bundles produced by
+// separate extraction jobs into one.
+func (b *SecretBundle) Merge(other *SecretBundle) {
+	if other == nil {
+		return
+	}
+	for ctx, vars := range other.ContextSecrets {
+		for name, val := range vars {
+			b.SetContextSecret(ctx, name, val)
+		}
+	}
+	for slug, vars := range other.ProjectSecrets {
+		for name, val := range vars {
+			b.SetProjectSecret(slug, name, val)
+		}
+	}
+}
+
 // Save writes the bundle to path as indented JSON with 0600 permissions.
 func (b *SecretBundle) Save(path string) error {
 	if b.SchemaVersion == "" {
