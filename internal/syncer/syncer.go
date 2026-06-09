@@ -7,6 +7,7 @@ package syncer
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
@@ -53,6 +54,8 @@ type ContextWriter interface {
 // ProjectWriter is the destination project API the syncer needs.
 type ProjectWriter interface {
 	GetProject(slug string) (*project.Project, error)
+	CreateProjectShell(provider, org, name string) (*project.Project, error)
+	FollowProject(vcsType, org, repo string) (*project.FollowResult, error)
 	ListEnvVars(slug string) ([]project.EnvVar, error)
 	CreateEnvVar(slug, name, value string) error
 	UpdateSettings(provider, org, proj string, s *project.AdvancedSettings) error
@@ -64,6 +67,16 @@ type ProjectWriter interface {
 	SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+}
+
+// EnableTarget holds the coordinates needed to follow (enable builds for) a
+// newly-created OAuth project.  App-org projects (circleci/ slugs) are not
+// included here — App-org enable-builds support is a separate milestone.
+type EnableTarget struct {
+	Slug    string // full project slug, e.g. "gh/acme/web"
+	VCSType string // vcs type as expected by v1.1 follow, e.g. "github"
+	Org     string // org name, e.g. "acme"
+	Repo    string // repo name, e.g. "web"
 }
 
 // Options configures a sync run.
@@ -111,10 +124,11 @@ type Action struct {
 
 // Report is the outcome of a sync run.
 type Report struct {
-	DestOrgSlug string
-	DestOrgID   string
-	Applied     bool
-	Actions     []Action
+	DestOrgSlug   string
+	DestOrgID     string
+	Applied       bool
+	Actions       []Action
+	PendingEnable []EnableTarget // OAuth projects created paused; waiting for FollowProject
 }
 
 func (r *Report) add(kind, target, status, detail string) {
@@ -353,9 +367,57 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 		}
 		destProj, err := s.Projects.GetProject(dst)
 		if err != nil {
-			report.add("project", dst, "manual", "project not found in destination — create/follow it, then re-run (auto-create is opt-in)")
-			continue
+			// Project does not exist in destination — decide whether to create it.
+			provider, org, repo, splitErr := project.SplitSlug(dst)
+			if splitErr != nil {
+				report.add("project", dst, "error", fmt.Sprintf("invalid destination slug: %v", splitErr))
+				continue
+			}
+			if strings.ToLower(provider) == "circleci" {
+				// App-org project creation is a separate milestone.
+				report.add("project", dst, "manual", "project not found in destination — App-org project creation is a future milestone; create/follow it, then re-run")
+				continue
+			}
+
+			// OAuth/Bitbucket path: create the project shell (paused — not followed).
+			if !opts.Apply {
+				report.add("project", dst, "created", "would create project (paused — not followed)")
+			} else {
+				created, createErr := s.Projects.CreateProjectShell(provider, org, repo)
+				if createErr != nil {
+					report.add("project", dst, "error", fmt.Sprintf("create project shell: %v", createErr))
+					continue
+				}
+				destProj = created
+				report.add("project", dst, "created", "created (paused — not followed)")
+			}
+
+			// Queue this project for the enable-builds step regardless of dry-run.
+			report.PendingEnable = append(report.PendingEnable, EnableTarget{
+				Slug:    dst,
+				VCSType: provider,
+				Org:     org,
+				Repo:    repo,
+			})
+
+			// For apply mode, if destProj is still nil (create succeeded but
+			// returned no useful ID), do a best-effort re-fetch so webhooks work.
+			if opts.Apply && (destProj == nil || destProj.ID == "") {
+				if fetched, fetchErr := s.Projects.GetProject(dst); fetchErr == nil {
+					destProj = fetched
+				} else {
+					s.logf("warning: could not re-fetch %q after create (webhooks skipped): %v", dst, fetchErr)
+					destProj = &project.Project{Slug: dst}
+				}
+			}
+			if !opts.Apply {
+				// In dry-run mode we have no real project ID — use empty string so
+				// downstream helpers behave as normal dry-run (they check !opts.Apply
+				// before using the ID).
+				destProj = &project.Project{Slug: dst}
+			}
 		}
+
 		s.syncProjectSettings(report, p, dst, opts)
 		s.syncProjectVars(report, p, bundle, dst, opts)
 		s.syncProjectWebhooks(report, p, dst, destProj.ID, opts)
@@ -364,6 +426,38 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 		s.syncProjectV11Flags(report, p, dst, opts)
 	}
 	return report, nil
+}
+
+// EnableBuilds follows a project that was previously created paused, installing
+// the webhook and enabling builds (which may trigger an initial build).
+//
+// In dry-run mode (apply=false) no API call is made and the returned Action has
+// status "manual" with a detail explaining what would happen.  In apply mode
+// FollowProject is called and the Action status reflects the result.
+func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
+	if !apply {
+		return Action{
+			Kind:   "project",
+			Target: t.Slug,
+			Status: "manual",
+			Detail: "would enable builds (follow)",
+		}, nil
+	}
+	_, err := s.Projects.FollowProject(t.VCSType, t.Org, t.Repo)
+	if err != nil {
+		return Action{
+			Kind:   "project",
+			Target: t.Slug,
+			Status: "error",
+			Detail: fmt.Sprintf("enable builds (follow): %v", err),
+		}, err
+	}
+	return Action{
+		Kind:   "project",
+		Target: t.Slug,
+		Status: "set",
+		Detail: "enabled builds (followed)",
+	}, nil
 }
 
 func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst string, opts Options) {

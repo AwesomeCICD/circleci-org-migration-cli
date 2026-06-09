@@ -21,6 +21,8 @@ type projectCall struct {
 // fakeProjectWriter records all calls for later assertion.
 type fakeProjectWriter struct {
 	getProject                func(slug string) (*project.Project, error)
+	createProjectShell        func(provider, org, name string) (*project.Project, error)
+	followProject             func(vcsType, org, repo string) (*project.FollowResult, error)
 	listEnvVars               func(slug string) ([]project.EnvVar, error)
 	createEnvVar              func(slug, name, value string) error
 	updateSettings            func(provider, org, proj string, s *project.AdvancedSettings) error
@@ -43,6 +45,23 @@ func (f *fakeProjectWriter) GetProject(slug string) (*project.Project, error) {
 		return f.getProject(slug)
 	}
 	return &project.Project{Slug: slug, ID: "proj-id-" + slug, Name: slug}, nil
+}
+
+func (f *fakeProjectWriter) CreateProjectShell(provider, org, name string) (*project.Project, error) {
+	f.calls = append(f.calls, projectCall{"CreateProjectShell", []string{provider, org, name}})
+	if f.createProjectShell != nil {
+		return f.createProjectShell(provider, org, name)
+	}
+	slug := provider + "/" + org + "/" + name
+	return &project.Project{Slug: slug, ID: "new-proj-id-" + name, Name: name}, nil
+}
+
+func (f *fakeProjectWriter) FollowProject(vcsType, org, repo string) (*project.FollowResult, error) {
+	f.calls = append(f.calls, projectCall{"FollowProject", []string{vcsType, org, repo}})
+	if f.followProject != nil {
+		return f.followProject(vcsType, org, repo)
+	}
+	return &project.FollowResult{Followed: true}, nil
 }
 
 func (f *fakeProjectWriter) ListEnvVars(slug string) ([]project.EnvVar, error) {
@@ -227,10 +246,77 @@ func newSyncerProjects(fp *fakeProjectWriter) *Syncer {
 // SyncProjects: project missing in destination
 // ---------------------------------------------------------------------------
 
-// TestSyncProjects_ProjectMissingInDest verifies that when GetProject returns
-// an error, a "manual" action is recorded and UpdateSettings / CreateEnvVar are
-// never called.
-func TestSyncProjects_ProjectMissingInDest(t *testing.T) {
+// TestSyncProjects_ProjectMissingInDest_OAuth verifies that when GetProject
+// returns an error for an OAuth (gh/) slug, the project shell is created
+// (apply=true), a "created" action is recorded, and settings/vars are still
+// applied.  PendingEnable is also populated.
+func TestSyncProjects_ProjectMissingInDest_OAuth(t *testing.T) {
+	getCount := 0
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			getCount++
+			// First call (initial lookup) fails; second call (re-fetch after create) succeeds.
+			if getCount == 1 {
+				return nil, errors.New("project not found")
+			}
+			return &project.Project{Slug: slug, ID: "created-proj-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	p := manifest.Project{
+		Slug:    "gh/acme/web",
+		Name:    "web",
+		EnvVars: []manifest.ProjectEnvVar{{Name: "DB_URL"}},
+		Settings: &manifest.AdvancedSettings{
+			SetGitHubStatus: &trueVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+	bundle := projectBundleWith("gh/acme/web", "DB_URL", "postgres://localhost")
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Project action must be "created".
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+		return
+	}
+	if a.Status != "created" {
+		t.Errorf("status: got %q want %q", a.Status, "created")
+	}
+
+	// CreateProjectShell must have been called.
+	if !fp.hasCalled("CreateProjectShell") {
+		t.Error("CreateProjectShell must be called for a missing OAuth project when Apply=true")
+	}
+
+	// After creation the settings and vars helpers should still run.
+	if !fp.hasCalled("UpdateSettings") {
+		t.Error("UpdateSettings must be called even for a freshly created project")
+	}
+	if !fp.hasCalled("CreateEnvVar") {
+		t.Error("CreateEnvVar must be called for a freshly created project when Apply=true and value exists")
+	}
+
+	// PendingEnable must contain one entry for the created project.
+	if len(rep.PendingEnable) != 1 {
+		t.Fatalf("PendingEnable: got %d entries, want 1", len(rep.PendingEnable))
+	}
+	if rep.PendingEnable[0].Slug != "gh/acme/web" {
+		t.Errorf("PendingEnable[0].Slug: got %q, want %q", rep.PendingEnable[0].Slug, "gh/acme/web")
+	}
+}
+
+// TestSyncProjects_ProjectMissingInDest_OAuth_DryRun verifies that in dry-run
+// mode the project is not created but a "created" plan action is recorded and
+// PendingEnable is populated.
+func TestSyncProjects_ProjectMissingInDest_OAuth_DryRun(t *testing.T) {
 	fp := &fakeProjectWriter{
 		getProject: func(slug string) (*project.Project, error) {
 			return nil, errors.New("project not found")
@@ -241,7 +327,49 @@ func TestSyncProjects_ProjectMissingInDest(t *testing.T) {
 	p := simpleProject("gh/acme/web", "DB_URL")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+		return
+	}
+	if a.Status != "created" {
+		t.Errorf("status: got %q want %q", a.Status, "created")
+	}
+	if fp.hasCalled("CreateProjectShell") {
+		t.Error("CreateProjectShell must NOT be called in dry-run mode")
+	}
+
+	// PendingEnable should be populated even in dry-run.
+	if len(rep.PendingEnable) != 1 {
+		t.Fatalf("PendingEnable: got %d entries, want 1", len(rep.PendingEnable))
+	}
+}
+
+// TestSyncProjects_ProjectMissingInDest_App_Manual verifies that when GetProject
+// returns an error for a circleci/ slug, a "manual" action is recorded
+// (App creation is a future milestone) and CreateProjectShell is not called.
+func TestSyncProjects_ProjectMissingInDest_App_Manual(t *testing.T) {
+	appDstSlug := "circleci/org-id-abc/proj-id-def"
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := simpleProject("gh/acme/web", "DB_URL")
+	m := projectManifest("gh/acme", p)
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/acme", To: "circleci/org-id-abc"},
+		Projects: map[string]string{"gh/acme/web": appDstSlug},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -254,11 +382,11 @@ func TestSyncProjects_ProjectMissingInDest(t *testing.T) {
 	if a.Status != "manual" {
 		t.Errorf("status: got %q want %q", a.Status, "manual")
 	}
-	if fp.hasCalled("UpdateSettings") {
-		t.Error("UpdateSettings must NOT be called when project is missing")
+	if fp.hasCalled("CreateProjectShell") {
+		t.Error("CreateProjectShell must NOT be called for App-org (circleci/) slugs")
 	}
-	if fp.hasCalled("CreateEnvVar") {
-		t.Error("CreateEnvVar must NOT be called when project is missing")
+	if len(rep.PendingEnable) != 0 {
+		t.Errorf("PendingEnable must be empty for App-org slugs, got %d", len(rep.PendingEnable))
 	}
 }
 
@@ -1507,5 +1635,110 @@ func TestSyncProjects_APITriggerFlag_DryRun(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected a 'set' (would set) project-flag action in dry-run")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnableBuilds
+// ---------------------------------------------------------------------------
+
+// TestEnableBuilds_Apply_CallsFollowProject verifies that EnableBuilds with
+// apply=true calls FollowProject and returns a "set" Action.
+func TestEnableBuilds_Apply_CallsFollowProject(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	action, err := sy.EnableBuilds(target, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("FollowProject") {
+		t.Error("FollowProject must be called when apply=true")
+	}
+	if action.Status != "set" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "set")
+	}
+	if action.Target != "gh/acme/web" {
+		t.Errorf("action.Target: got %q, want %q", action.Target, "gh/acme/web")
+	}
+}
+
+// TestEnableBuilds_DryRun_NoFollowProject verifies that EnableBuilds with
+// apply=false does not call FollowProject and returns a "manual" Action.
+func TestEnableBuilds_DryRun_NoFollowProject(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	action, err := sy.EnableBuilds(target, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("FollowProject") {
+		t.Error("FollowProject must NOT be called in dry-run mode")
+	}
+	if action.Status != "manual" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "manual")
+	}
+}
+
+// TestEnableBuilds_Apply_FollowError_ReturnsError verifies that a FollowProject
+// error is returned and reflected in the Action status.
+func TestEnableBuilds_Apply_FollowError_ReturnsError(t *testing.T) {
+	fp := &fakeProjectWriter{
+		followProject: func(vcsType, org, repo string) (*project.FollowResult, error) {
+			return nil, errors.New("follow API down")
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	action, err := sy.EnableBuilds(target, true)
+	if err == nil {
+		t.Fatal("expected error from FollowProject failure, got nil")
+	}
+	if action.Status != "error" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "error")
+	}
+}
+
+// TestSyncProjects_CreateProjectShell_Error_IsErrorAction verifies that a
+// CreateProjectShell failure is recorded as an "error" action and the project
+// is skipped (no settings/vars helpers called).
+func TestSyncProjects_CreateProjectShell_Error_IsErrorAction(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return nil, errors.New("project not found")
+		},
+		createProjectShell: func(provider, org, name string) (*project.Project, error) {
+			return nil, errors.New("create shell API down")
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := simpleProject("gh/acme/web", "DB_URL")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+		return
+	}
+	if a.Status != "error" {
+		t.Errorf("status: got %q want %q", a.Status, "error")
+	}
+	if fp.hasCalled("UpdateSettings") {
+		t.Error("UpdateSettings must NOT be called when CreateProjectShell fails")
+	}
+	if fp.hasCalled("CreateEnvVar") {
+		t.Error("CreateEnvVar must NOT be called when CreateProjectShell fails")
 	}
 }

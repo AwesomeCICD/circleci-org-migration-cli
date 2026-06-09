@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
@@ -19,6 +21,7 @@ func newSyncCommand() *cobra.Command {
 		secretsPath     string
 		mappingPath     string
 		apply           bool
+		yes             bool
 		missing         string
 		skipContexts    bool
 		skipProjects    bool
@@ -40,13 +43,17 @@ re-run with --apply. Group and project-type context restrictions are flagged
 for manual recreation (group writes are not GA; project restriction values are
 source-org IDs).
 
-This milestone syncs contexts (env-var values + expression restrictions).
-Project settings/variables and project creation are handled separately.
+When OAuth projects are missing in the destination, --apply creates them in a
+paused state (no webhook, no builds). After creation you are prompted to enable
+builds (follow the project, which installs the webhook and may trigger an
+initial build). Pass --yes / -y to auto-confirm without a prompt, or run without
+a TTY and later re-run with --apply --yes to enable builds.
 
 Examples:
   circleci-migrate sync --manifest manifest.json --secrets secrets.json
   circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply
-  circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply`,
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
+  circleci-migrate sync --manifest manifest.json --apply --yes`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if manifestPath == "" {
 				return fmt.Errorf("--manifest is required")
@@ -110,6 +117,11 @@ Examples:
 					return err
 				}
 				printSyncReport(cmd, "Projects", rep)
+
+				// Handle the enable-builds (follow) step for paused projects.
+				if err := handleEnableBuilds(cmd, sy, rep, apply, yes); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -120,12 +132,82 @@ Examples:
 	f.StringVar(&secretsPath, "secrets", "secrets.json", "Path to the captured secret bundle (optional)")
 	f.StringVar(&mappingPath, "mapping", "", "Path to a source->destination mapping file (optional)")
 	f.BoolVar(&apply, "apply", false, "Write changes to the destination (default: dry run)")
+	f.BoolVarP(&yes, "yes", "y", false, "Auto-confirm enabling builds after project creation (skip the interactive prompt)")
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 
 	return cmd
+}
+
+// handleEnableBuilds decides whether to follow (enable builds for) the
+// paused projects collected in rep.PendingEnable, then executes that decision.
+// It prints results to cmd's output/error streams.
+func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Report, apply, yes bool) error {
+	pending := rep.PendingEnable
+	if len(pending) == 0 {
+		return nil
+	}
+	n := len(pending)
+
+	if !apply {
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+		return nil
+	}
+
+	// Detect TTY on stdin.
+	fi, _ := os.Stdin.Stat()
+	isTTY := fi != nil && fi.Mode()&os.ModeCharDevice != 0
+
+	// confirm reads one line from stdin and returns true if it is "y" or "yes".
+	confirm := func() bool {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Enable builds for %d project(s) now? [y/N]: ", n)
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
+			return ans == "y" || ans == "yes"
+		}
+		return false
+	}
+
+	if !decideEnable(apply, yes, isTTY, confirm) {
+		if !isTTY && !yes {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"\nSkipped enabling builds (no TTY). Re-run with --yes to follow the %d created project(s).\n", n)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "\nSkipped enabling builds.\n")
+		}
+		return nil
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "\nEnabling builds for %d project(s)...\n", n)
+	for _, t := range pending {
+		action, _ := sy.EnableBuilds(t, true)
+		fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
+	}
+	return nil
+}
+
+// decideEnable returns true when builds should be enabled right now.
+//
+// Rules:
+//   - dry run (!apply): never enable.
+//   - apply + yes: always enable (non-interactive auto-confirm).
+//   - apply + TTY + !yes: call confirm() and return its result.
+//   - apply + no TTY + !yes: never enable (caller prints a how-to message).
+func decideEnable(apply, yes, isTTY bool, confirm func() bool) bool {
+	if !apply {
+		return false
+	}
+	if yes {
+		return true
+	}
+	if isTTY {
+		return confirm()
+	}
+	return false
 }
 
 // orgGroupLister adapts the org client's ListGroups (returning []org.Group) to
