@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
@@ -34,6 +35,13 @@ type fakeProjectWriter struct {
 	setProjectOIDCClaims      func(orgID, projID string, audience []string, ttl string) error
 	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
 	setV11ProjectFeatureFlags func(slug string, flags map[string]bool) error
+
+	// App-org methods
+	createAppProject         func(orgID, name string) (*project.Project, error)
+	createPipelineDefinition func(projectID string, spec project.PipelineDefinitionSpec) (string, error)
+	createTrigger            func(projectID, defID string, spec project.TriggerSpec) (string, error)
+	enableTrigger            func(projectID, triggerID string) error
+	listOrgProjects          func(orgID string) ([]project.OrgProject, error)
 
 	calls           []projectCall
 	settingsUpdates []*project.AdvancedSettings // captures the settings arg each time UpdateSettings is called
@@ -157,6 +165,47 @@ func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[str
 	return nil
 }
 
+func (f *fakeProjectWriter) CreateAppProject(orgID, name string) (*project.Project, error) {
+	f.calls = append(f.calls, projectCall{"CreateAppProject", []string{orgID, name}})
+	if f.createAppProject != nil {
+		return f.createAppProject(orgID, name)
+	}
+	slug := "circleci/" + orgID + "/new-proj-" + name
+	return &project.Project{Slug: slug, ID: "app-proj-id-" + name, Name: name}, nil
+}
+
+func (f *fakeProjectWriter) CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+	f.calls = append(f.calls, projectCall{"CreatePipelineDefinition", []string{projectID, spec.Name}})
+	if f.createPipelineDefinition != nil {
+		return f.createPipelineDefinition(projectID, spec)
+	}
+	return "def-id-" + spec.Name, nil
+}
+
+func (f *fakeProjectWriter) CreateTrigger(projectID, defID string, spec project.TriggerSpec) (string, error) {
+	f.calls = append(f.calls, projectCall{"CreateTrigger", []string{projectID, defID, spec.EventPreset}})
+	if f.createTrigger != nil {
+		return f.createTrigger(projectID, defID, spec)
+	}
+	return "trigger-id-" + spec.EventPreset, nil
+}
+
+func (f *fakeProjectWriter) EnableTrigger(projectID, triggerID string) error {
+	f.calls = append(f.calls, projectCall{"EnableTrigger", []string{projectID, triggerID}})
+	if f.enableTrigger != nil {
+		return f.enableTrigger(projectID, triggerID)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) ListOrgProjects(orgID string) ([]project.OrgProject, error) {
+	f.calls = append(f.calls, projectCall{"ListOrgProjects", []string{orgID}})
+	if f.listOrgProjects != nil {
+		return f.listOrgProjects(orgID)
+	}
+	return nil, nil
+}
+
 // hasCalled reports whether any call with the given method name was recorded.
 func (f *fakeProjectWriter) hasCalled(method string) bool {
 	for _, c := range f.calls {
@@ -235,9 +284,24 @@ func firstActionOfKind(rep *Report, kind string) *Action {
 }
 
 // newSyncerProjects builds a Syncer with a stubbed Projects writer.
+// The default OrgResolver returns vcs_type "github" (OAuth) so existing tests
+// are unaffected.
 func newSyncerProjects(fp *fakeProjectWriter) *Syncer {
 	return &Syncer{
 		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+}
+
+// newSyncerAppProjects builds a Syncer whose OrgResolver reports the dest org
+// as a "circleci"-type (GitHub App) org.
+func newSyncerAppProjects(fp *fakeProjectWriter) *Syncer {
+	return &Syncer{
+		Org: &fakeOrgResolver{
+			getOrganization: func(slug string) (*org.Organization, error) {
+				return &org.Organization{ID: "dest-org-id", Slug: slug, VCSType: "circleci"}, nil
+			},
+		},
 		Projects: fp,
 	}
 }
@@ -1643,12 +1707,12 @@ func TestSyncProjects_APITriggerFlag_DryRun(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEnableBuilds_Apply_CallsFollowProject verifies that EnableBuilds with
-// apply=true calls FollowProject and returns a "set" Action.
+// Kind="follow" and apply=true calls FollowProject and returns a "set" Action.
 func TestEnableBuilds_Apply_CallsFollowProject(t *testing.T) {
 	fp := &fakeProjectWriter{}
 	sy := newSyncerProjects(fp)
 
-	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
 	action, err := sy.EnableBuilds(target, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1666,12 +1730,12 @@ func TestEnableBuilds_Apply_CallsFollowProject(t *testing.T) {
 }
 
 // TestEnableBuilds_DryRun_NoFollowProject verifies that EnableBuilds with
-// apply=false does not call FollowProject and returns a "manual" Action.
+// Kind="follow" and apply=false does not call FollowProject and returns a "manual" Action.
 func TestEnableBuilds_DryRun_NoFollowProject(t *testing.T) {
 	fp := &fakeProjectWriter{}
 	sy := newSyncerProjects(fp)
 
-	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
 	action, err := sy.EnableBuilds(target, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1695,10 +1759,74 @@ func TestEnableBuilds_Apply_FollowError_ReturnsError(t *testing.T) {
 	}
 	sy := newSyncerProjects(fp)
 
-	target := EnableTarget{Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
+	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
 	action, err := sy.EnableBuilds(target, true)
 	if err == nil {
 		t.Fatal("expected error from FollowProject failure, got nil")
+	}
+	if action.Status != "error" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnableBuilds: App trigger path
+// ---------------------------------------------------------------------------
+
+// TestEnableBuilds_Trigger_Apply_CallsEnableTrigger verifies that EnableBuilds
+// with Kind="trigger" and apply=true calls EnableTrigger and returns a "set" Action.
+func TestEnableBuilds_Trigger_Apply_CallsEnableTrigger(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
+	action, err := sy.EnableBuilds(target, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("EnableTrigger") {
+		t.Error("EnableTrigger must be called when Kind=trigger and apply=true")
+	}
+	if action.Status != "set" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "set")
+	}
+}
+
+// TestEnableBuilds_Trigger_DryRun_NoEnableTrigger verifies that EnableBuilds
+// with Kind="trigger" and apply=false does not call EnableTrigger.
+func TestEnableBuilds_Trigger_DryRun_NoEnableTrigger(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
+	action, err := sy.EnableBuilds(target, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("EnableTrigger") {
+		t.Error("EnableTrigger must NOT be called in dry-run mode")
+	}
+	if action.Status != "manual" {
+		t.Errorf("action.Status: got %q, want %q", action.Status, "manual")
+	}
+}
+
+// TestEnableBuilds_Trigger_Error_ReturnsError verifies that an EnableTrigger
+// error is returned and reflected in the Action status.
+func TestEnableBuilds_Trigger_Error_ReturnsError(t *testing.T) {
+	fp := &fakeProjectWriter{
+		enableTrigger: func(projectID, triggerID string) error {
+			return errors.New("enable trigger API down")
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
+	action, err := sy.EnableBuilds(target, true)
+	if err == nil {
+		t.Fatal("expected error from EnableTrigger failure, got nil")
 	}
 	if action.Status != "error" {
 		t.Errorf("action.Status: got %q, want %q", action.Status, "error")
@@ -1741,4 +1869,459 @@ func TestSyncProjects_CreateProjectShell_Error_IsErrorAction(t *testing.T) {
 	if fp.hasCalled("CreateEnvVar") {
 		t.Error("CreateEnvVar must NOT be called when CreateProjectShell fails")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: GitHub App (circleci vcs_type) destination path
+// ---------------------------------------------------------------------------
+
+// appManifestProject builds a manifest.Project suitable for App-path tests
+// with a github_app pipeline definition and one github_app trigger.
+func appManifestProject(name, srcSlug, extID, preset string) manifest.Project {
+	return manifest.Project{
+		Slug: srcSlug,
+		Name: name,
+		PipelineDefinitions: []manifest.PipelineDefinition{
+			{
+				Name: "default",
+				ConfigSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoFullName:   "acme/" + name,
+					RepoExternalID: extID,
+					FilePath:       ".circleci/config.yml",
+				},
+				CheckoutSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoFullName:   "acme/" + name,
+					RepoExternalID: extID,
+				},
+				Triggers: []manifest.Trigger{
+					{
+						Name:        "push",
+						EventPreset: preset,
+						EventSource: manifest.TriggerEventSource{
+							Provider:       "github_app",
+							RepoFullName:   "acme/" + name,
+							RepoExternalID: extID,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestSyncProjects_AppDest_CreateProject_Apply verifies that when the destination
+// org is circleci-type, a missing project is created with CreateAppProject, a
+// pipeline definition is created, and a disabled trigger is queued for enabling.
+func TestSyncProjects_AppDest_CreateProject_Apply(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreateAppProject") {
+		t.Error("CreateAppProject must be called for a missing App project when Apply=true")
+	}
+	if !fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must be called after App project creation")
+	}
+	if !fp.hasCalled("CreateTrigger") {
+		t.Error("CreateTrigger must be called for github_app triggers")
+	}
+
+	// Project action should be "created".
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+		return
+	}
+	if a.Status != "created" {
+		t.Errorf("project action.Status: got %q, want created", a.Status)
+	}
+
+	// A trigger should be queued for enabling.
+	if len(rep.PendingEnable) != 1 {
+		t.Fatalf("PendingEnable: got %d, want 1", len(rep.PendingEnable))
+	}
+	if rep.PendingEnable[0].Kind != "trigger" {
+		t.Errorf("PendingEnable[0].Kind: got %q, want trigger", rep.PendingEnable[0].Kind)
+	}
+}
+
+// TestSyncProjects_AppDest_CreateProject_DryRun verifies that in dry-run mode
+// CreateAppProject is not called but a "created" plan action is recorded.
+func TestSyncProjects_AppDest_CreateProject_DryRun(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateAppProject") {
+		t.Error("CreateAppProject must NOT be called in dry-run mode")
+	}
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called in dry-run mode")
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action in dry-run")
+		return
+	}
+	if a.Status != "created" {
+		t.Errorf("project action.Status: got %q, want created", a.Status)
+	}
+	if !containsStr(a.Detail, "would create App project") {
+		t.Errorf("detail %q should mention 'would create App project'", a.Detail)
+	}
+}
+
+// TestSyncProjects_AppDest_ExistingProject_Reused verifies that when a project
+// with the same name exists in the dest org, it is reused and configured (no create).
+func TestSyncProjects_AppDest_ExistingProject_Reused(t *testing.T) {
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "existing-proj-id", Slug: "circleci/dest-org-id/existing-proj-id", Name: "web"},
+			}, nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	p.EnvVars = []manifest.ProjectEnvVar{{Name: "MY_VAR"}}
+	m := projectManifest("gh/acme", p)
+	bundle := projectBundleWith("gh/acme/web", "MY_VAR", "secretval")
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateAppProject") {
+		t.Error("CreateAppProject must NOT be called when project already exists")
+	}
+
+	// Env var should be synced to the existing project's slug.
+	creates := fp.callsTo("CreateEnvVar")
+	if len(creates) == 0 {
+		t.Fatal("CreateEnvVar must be called for the reused project")
+	}
+	if creates[0].args[0] != "circleci/dest-org-id/existing-proj-id" {
+		t.Errorf("CreateEnvVar slug: got %q, want circleci/dest-org-id/existing-proj-id", creates[0].args[0])
+	}
+
+	_ = rep
+}
+
+// TestSyncProjects_AppDest_WebhookTrigger_Manual verifies that webhook-provider
+// triggers are recorded as "manual" actions (not created).
+func TestSyncProjects_AppDest_WebhookTrigger_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		PipelineDefinitions: []manifest.PipelineDefinition{
+			{
+				Name: "default",
+				ConfigSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoExternalID: "111",
+					FilePath:       ".circleci/config.yml",
+				},
+				CheckoutSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoExternalID: "111",
+				},
+				Triggers: []manifest.Trigger{
+					{
+						Name: "my-webhook",
+						EventSource: manifest.TriggerEventSource{
+							Provider:      "webhook",
+							WebhookSender: "someone",
+						},
+					},
+				},
+			},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateTrigger") {
+		t.Error("CreateTrigger must NOT be called for webhook triggers")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-trigger") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-trigger action for webhook trigger")
+	}
+}
+
+// TestSyncProjects_AppDest_ScheduleTrigger_Manual verifies that schedule-provider
+// triggers are recorded as "manual" actions.
+func TestSyncProjects_AppDest_ScheduleTrigger_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		PipelineDefinitions: []manifest.PipelineDefinition{
+			{
+				Name: "default",
+				ConfigSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoExternalID: "222",
+					FilePath:       ".circleci/config.yml",
+				},
+				CheckoutSource: manifest.PipelineSource{
+					Provider:       "github_app",
+					RepoExternalID: "222",
+				},
+				Triggers: []manifest.Trigger{
+					{
+						Name: "nightly",
+						EventSource: manifest.TriggerEventSource{
+							Provider:     "schedule",
+							ScheduleCron: "0 2 * * *",
+						},
+					},
+				},
+			},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateTrigger") {
+		t.Error("CreateTrigger must NOT be called for schedule triggers")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-trigger") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-trigger action for schedule trigger")
+	}
+}
+
+// TestSyncProjects_AppDest_ExternalID_CapturedReused verifies that when no
+// GitHub token is provided, the captured RepoExternalID is used directly.
+func TestSyncProjects_AppDest_ExternalID_CapturedReused(t *testing.T) {
+	var gotSpec project.PipelineDefinitionSpec
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			gotSpec = spec
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "captured-ext-id", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotSpec.ConfigExternalID != "captured-ext-id" {
+		t.Errorf("ConfigExternalID: got %q, want captured-ext-id", gotSpec.ConfigExternalID)
+	}
+}
+
+// TestSyncProjects_AppDest_ExternalID_TokenResolved verifies that when a
+// GitHubToken is set, the resolved ID is used instead of the captured one.
+func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
+	origResolve := resolveRepoID
+	defer func() { resolveRepoID = origResolve }()
+	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+		if fullName == "acme/web" && token == "gh-tok" {
+			return "resolved-id-999", nil
+		}
+		return "", errors.New("unexpected call")
+	}
+
+	var gotSpec project.PipelineDefinitionSpec
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			gotSpec = spec
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-captured-id", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotSpec.ConfigExternalID != "resolved-id-999" {
+		t.Errorf("ConfigExternalID: got %q, want resolved-id-999 (token-resolved)", gotSpec.ConfigExternalID)
+	}
+}
+
+// TestSyncProjects_AppDest_ExternalID_ResolveFails_FallbackToCaptured verifies
+// that when token resolution fails, the captured ID is used with a warning action.
+func TestSyncProjects_AppDest_ExternalID_ResolveFails_FallbackToCaptured(t *testing.T) {
+	origResolve := resolveRepoID
+	defer func() { resolveRepoID = origResolve }()
+	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+		return "", errors.New("GitHub API unreachable")
+	}
+
+	var gotSpec project.PipelineDefinitionSpec
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			gotSpec = spec
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "captured-fallback", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Captured ID should be used as fallback.
+	if gotSpec.ConfigExternalID != "captured-fallback" {
+		t.Errorf("ConfigExternalID: got %q, want captured-fallback (fallback)", gotSpec.ConfigExternalID)
+	}
+
+	// A warning (manual) action should be emitted.
+	found := false
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-ext-id action when resolution fails")
+	}
+}
+
+// TestSyncProjects_AppDest_ExternalID_NoTokenNoCaptured_Manual verifies that
+// when neither a token nor a captured id is available, a "manual" action is
+// emitted and CreatePipelineDefinition is not called.
+func TestSyncProjects_AppDest_ExternalID_NoTokenNoCaptured_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		PipelineDefinitions: []manifest.PipelineDefinition{
+			{
+				Name: "default",
+				ConfigSource: manifest.PipelineSource{
+					Provider: "github_app",
+					// No RepoExternalID and no RepoFullName.
+				},
+				CheckoutSource: manifest.PipelineSource{
+					Provider: "github_app",
+				},
+			},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called when no external_id available")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-ext-id action when no external_id available")
+	}
+}
+
+// TestSyncProjects_AppDest_CreateAppProject_Error verifies that a CreateAppProject
+// failure is recorded as an "error" action and configuration helpers are skipped.
+func TestSyncProjects_AppDest_CreateAppProject_Error(t *testing.T) {
+	fp := &fakeProjectWriter{
+		createAppProject: func(orgID, name string) (*project.Project, error) {
+			return nil, errors.New("create App project API down")
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+		return
+	}
+	if a.Status != "error" {
+		t.Errorf("project action.Status: got %q, want error", a.Status)
+	}
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called when CreateAppProject fails")
+	}
+}
+
+// containsStr is a test helper to check substring containment.
+func containsStr(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
