@@ -12,7 +12,9 @@ description: |
 
   Run one extract job PER CONTEXT (each referencing exactly that context, so its
   variables are injected without colliding with other contexts), then a merge
-  job to combine them.
+  job to combine them. With many contexts, use a matrix to fan out a single job
+  stanza over a list of context names (see the matrix example) instead of
+  writing one stanza each.
 
 display:
   home_url: https://circleci.com/docs/
@@ -186,3 +188,32 @@ examples:
                 requires:
                   - extract-deploy-prod
                   - extract-shared
+
+  capture-context-secrets-matrix:
+    description: |
+      The same capture, but fanned out with a matrix: one job stanza expands to
+      one job per context name. Each expansion sets its own `context:` key (via
+      << matrix.context-name >>), so variables never collide, and `merge` waits
+      on the whole matrix using its alias (the invoked job name,
+      `extract-context`). This scales cleanly to dozens of contexts — just add
+      names to the list. Commit your exported manifest.json to the repo first.
+    usage:
+      version: "2.1"
+      orbs:
+        migrate: circleci-public/circleci-org-migration@1.0.0
+      workflows:
+        capture-secrets:
+          jobs:
+            - migrate/extract-context:
+                name: extract-<< matrix.context-name >>
+                context:
+                  - << matrix.context-name >>
+                matrix:
+                  parameters:
+                    context-name:
+                      - deploy-prod
+                      - shared
+                      - build
+            - migrate/merge:
+                requires:
+                  - extract-context
