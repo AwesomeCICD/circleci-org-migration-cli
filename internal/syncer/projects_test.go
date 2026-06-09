@@ -2313,6 +2313,272 @@ func TestSyncProjects_AppDest_CreateAppProject_Error(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// FIX 1: App-dest advanced settings — OAuth-only fields stripped
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_AppDest_Settings_OAuthOnlyFieldsStripped verifies that when
+// the destination project is a GitHub App (circleci/ provider), the four
+// OAuth-only advanced-settings fields are NOT forwarded to UpdateSettings.
+// Background: the live PATCH /settings endpoint for App projects returns
+// "Unexpected field 'advanced.oss'" if any of these fields are sent.
+func TestSyncProjects_AppDest_Settings_OAuthOnlyFieldsStripped(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-app-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	falseVal := false
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			// OAuth-only fields — must be stripped for App dest.
+			OSS:                       &trueVal,
+			BuildForkPRs:              &falseVal,
+			ForksReceiveSecretEnvVars: &trueVal,
+			PROnlyBranchOverrides:     []string{"main"},
+			// Valid App fields — must be preserved.
+			AutocancelBuilds: &trueVal,
+			SetGitHubStatus:  &trueVal,
+			SetupWorkflows:   &falseVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	// Route via a mapping with a circleci/ destination slug so that the
+	// OAuth path is taken (GetProject succeeds) with a circleci/ provider.
+	appDstSlug := "circleci/org-id-abc/proj-id-def"
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/acme", To: "circleci/org-id-abc"},
+		Projects: map[string]string{"gh/acme/web": appDstSlug},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = rep
+
+	if !fp.hasCalled("UpdateSettings") {
+		t.Fatal("UpdateSettings must be called when Apply=true and settings are present")
+	}
+	if len(fp.settingsUpdates) == 0 {
+		t.Fatal("no settings updates recorded")
+	}
+	got := fp.settingsUpdates[0]
+
+	// OAuth-only fields must be nil.
+	if got.OSS != nil {
+		t.Error("OSS must be nil (stripped) for a circleci/ destination")
+	}
+	if got.BuildForkPRs != nil {
+		t.Error("BuildForkPRs must be nil (stripped) for a circleci/ destination")
+	}
+	if got.ForksReceiveSecretEnvVars != nil {
+		t.Error("ForksReceiveSecretEnvVars must be nil (stripped) for a circleci/ destination")
+	}
+	if len(got.PROnlyBranchOverrides) != 0 {
+		t.Errorf("PROnlyBranchOverrides must be empty (stripped) for a circleci/ destination, got %v", got.PROnlyBranchOverrides)
+	}
+
+	// Valid App fields must be preserved.
+	if got.AutocancelBuilds == nil || !*got.AutocancelBuilds {
+		t.Error("AutocancelBuilds must be preserved for a circleci/ destination")
+	}
+	if got.SetGithubStatus == nil || !*got.SetGithubStatus {
+		t.Error("SetGithubStatus must be preserved for a circleci/ destination")
+	}
+	if got.SetupWorkflows == nil || *got.SetupWorkflows {
+		t.Error("SetupWorkflows must be preserved (false) for a circleci/ destination")
+	}
+}
+
+// TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved verifies that for a
+// non-App (OAuth) destination, all advanced settings including OAuth-only fields
+// are forwarded unmodified.
+func TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	overrides := []string{"main", "develop"}
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			OSS:                       &trueVal,
+			BuildForkPRs:              &trueVal,
+			ForksReceiveSecretEnvVars: &trueVal,
+			PROnlyBranchOverrides:     overrides,
+			AutocancelBuilds:          &trueVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	// gh/ destination — OAuth path.
+	_, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("UpdateSettings") {
+		t.Fatal("UpdateSettings must be called")
+	}
+	got := fp.settingsUpdates[0]
+
+	// OAuth fields must be preserved for non-App destinations.
+	if got.OSS == nil || !*got.OSS {
+		t.Error("OSS must be preserved for OAuth destination")
+	}
+	if got.BuildForkPRs == nil || !*got.BuildForkPRs {
+		t.Error("BuildForkPRs must be preserved for OAuth destination")
+	}
+	if got.ForksReceiveSecretEnvVars == nil || !*got.ForksReceiveSecretEnvVars {
+		t.Error("ForksReceiveSecretEnvVars must be preserved for OAuth destination")
+	}
+	if len(got.PROnlyBranchOverrides) != 2 {
+		t.Errorf("PROnlyBranchOverrides must be preserved for OAuth destination, got %v", got.PROnlyBranchOverrides)
+	}
+}
+
+// TestStripOAuthOnlySettings_MutationSafety verifies that stripOAuthOnlySettings
+// returns a new struct and does not mutate the original.
+func TestStripOAuthOnlySettings_MutationSafety(t *testing.T) {
+	trueVal := true
+	orig := &project.AdvancedSettings{
+		OSS:                       &trueVal,
+		BuildForkPRs:              &trueVal,
+		ForksReceiveSecretEnvVars: &trueVal,
+		PROnlyBranchOverrides:     []string{"main"},
+		AutocancelBuilds:          &trueVal,
+	}
+
+	stripped := stripOAuthOnlySettings(orig)
+
+	// Stripped copy must have nil OAuth fields.
+	if stripped.OSS != nil {
+		t.Error("stripped.OSS must be nil")
+	}
+	if stripped.BuildForkPRs != nil {
+		t.Error("stripped.BuildForkPRs must be nil")
+	}
+	if stripped.ForksReceiveSecretEnvVars != nil {
+		t.Error("stripped.ForksReceiveSecretEnvVars must be nil")
+	}
+	if len(stripped.PROnlyBranchOverrides) != 0 {
+		t.Errorf("stripped.PROnlyBranchOverrides must be empty, got %v", stripped.PROnlyBranchOverrides)
+	}
+	// Non-OAuth field preserved.
+	if stripped.AutocancelBuilds == nil || !*stripped.AutocancelBuilds {
+		t.Error("AutocancelBuilds must be preserved in stripped copy")
+	}
+
+	// Original must not be mutated.
+	if orig.OSS == nil {
+		t.Error("original.OSS must not be mutated (should still be non-nil)")
+	}
+	if orig.BuildForkPRs == nil {
+		t.Error("original.BuildForkPRs must not be mutated")
+	}
+	if len(orig.PROnlyBranchOverrides) != 1 {
+		t.Errorf("original.PROnlyBranchOverrides must not be mutated, got %v", orig.PROnlyBranchOverrides)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX 3: CreatePipelineDefinition repo-access error → "manual" status
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_AppDest_PipelineDef_RepoAccessError_Manual verifies that
+// when CreatePipelineDefinition returns an error containing
+// "does not have access to repository", the action status is "manual" (not
+// "error") and the detail includes remediation guidance.
+func TestSyncProjects_AppDest_PipelineDef_RepoAccessError_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "", errors.New("Installation does not have access to repository.")
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project-pipeline-def")
+	if a == nil {
+		t.Fatal("expected a project-pipeline-def action, got none")
+		return
+	}
+	if a.Status != "manual" {
+		t.Errorf("status: got %q want %q (repo-access errors must be manual, not error)", a.Status, "manual")
+	}
+	if !containsStr(a.Detail, "GitHub App") {
+		t.Errorf("detail should mention GitHub App remediation, got: %q", a.Detail)
+	}
+}
+
+// TestSyncProjects_AppDest_PipelineDef_OtherError_IsErrorAction verifies that
+// a non-access CreatePipelineDefinition error is still recorded as "error".
+func TestSyncProjects_AppDest_PipelineDef_OtherError_IsErrorAction(t *testing.T) {
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "", errors.New("internal server error")
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project-pipeline-def")
+	if a == nil {
+		t.Fatal("expected a project-pipeline-def action, got none")
+		return
+	}
+	if a.Status != "error" {
+		t.Errorf("status: got %q want %q (non-access errors must be error)", a.Status, "error")
+	}
+}
+
+// TestIsRepoAccessError verifies the substring-based access-error detector.
+func TestIsRepoAccessError(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"Installation does not have access to repository.", true},
+		{"installation does not have access to repository", true}, // case-insensitive
+		{"does not have access to repository foo/bar", true},
+		{"internal server error", false},
+		{"project not found", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		var err error
+		if tc.msg != "" {
+			err = errors.New(tc.msg)
+		}
+		got := isRepoAccessError(err)
+		if got != tc.want {
+			t.Errorf("isRepoAccessError(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
 // containsStr is a test helper to check substring containment.
 func containsStr(s, sub string) bool {
 	if len(sub) == 0 {

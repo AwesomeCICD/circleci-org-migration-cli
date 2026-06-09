@@ -677,8 +677,20 @@ func (s *Syncer) syncAppPipelineDefinition(
 
 	defID, err := s.Projects.CreatePipelineDefinition(projectID, spec)
 	if err != nil {
-		report.add("project-pipeline-def", projectName+"/def:"+def.Name, "error",
-			fmt.Sprintf("create pipeline definition: %v", err))
+		// "Installation does not have access to repository" (and similar
+		// access/installation errors) mean the dest GitHub App installation
+		// cannot see the repo — this is an operator action, not a code bug.
+		// Record as "manual" with a clear remediation note so the run continues.
+		if isRepoAccessError(err) {
+			report.add("project-pipeline-def", projectName+"/def:"+def.Name, "manual",
+				fmt.Sprintf("create pipeline definition: %v — "+
+					"the destination GitHub org must have the repository connected to the CircleCI GitHub App; "+
+					"verify the App installation has access to the repo, and that the external_id resolves to a "+
+					"repository the dest installation can access (use --github-token to resolve a moved repo's id)", err))
+		} else {
+			report.add("project-pipeline-def", projectName+"/def:"+def.Name, "error",
+				fmt.Sprintf("create pipeline definition: %v", err))
+		}
 		return
 	}
 	report.add("project-pipeline-def", projectName+"/def:"+def.Name, "created",
@@ -852,7 +864,18 @@ func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst str
 		report.add("project-settings", dst, "set", "would update advanced settings")
 		return
 	}
-	if err := s.Projects.UpdateSettings(provider, org, proj, toProjectSettings(p.Settings)); err != nil {
+
+	settings := toProjectSettings(p.Settings)
+
+	// GitHub App (circleci/ provider) projects reject OAuth-only fork/PR fields
+	// with "Unexpected field 'advanced.oss'" (observed in live App→App migration).
+	// App projects never build fork PRs, so these fields are not applicable.
+	// Strip them from the PATCH so the write succeeds; do not mutate the manifest.
+	if strings.ToLower(provider) == "circleci" {
+		settings = stripOAuthOnlySettings(settings)
+	}
+
+	if err := s.Projects.UpdateSettings(provider, org, proj, settings); err != nil {
 		report.add("project-settings", dst, "error", err.Error())
 		return
 	}
@@ -921,6 +944,22 @@ func toProjectSettings(s *manifest.AdvancedSettings) *project.AdvancedSettings {
 	}
 }
 
+// stripOAuthOnlySettings returns a copy of s with the four OAuth-only / fork-PR
+// fields zeroed out.  GitHub App projects reject these fields with
+// "Unexpected field 'advanced.oss'" because App never builds fork PRs.
+//
+// Stripped fields: OSS, BuildForkPRs, ForksReceiveSecretEnvVars, PROnlyBranchOverrides.
+// All other fields (autocancel_builds, set_github_status, setup_workflows, etc.)
+// are valid for App and are preserved.
+func stripOAuthOnlySettings(s *project.AdvancedSettings) *project.AdvancedSettings {
+	cp := *s // shallow copy — all pointer fields stay independent
+	cp.OSS = nil
+	cp.BuildForkPRs = nil
+	cp.ForksReceiveSecretEnvVars = nil
+	cp.PROnlyBranchOverrides = nil
+	return &cp
+}
+
 func hasExpressionRestriction(existing []cctx.Restriction, value string) bool {
 	for _, e := range existing {
 		if e.Type == "expression" && e.Value == value {
@@ -944,6 +983,19 @@ func restrictionLabel(r manifest.Restriction) string {
 		return r.Name
 	}
 	return r.Value
+}
+
+// isRepoAccessError returns true when err indicates that the GitHub App
+// installation does not have access to the target repository.  These errors
+// require the operator to connect the repo to the CircleCI App; they are not
+// transient or code bugs, so callers record them as "manual" rather than "error".
+func isRepoAccessError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "does not have access to repository") ||
+		strings.Contains(msg, "installation does not have access")
 }
 
 func dryRunSuffix(apply bool) string {

@@ -87,8 +87,13 @@ func (c *Client) SetV11ProjectFeatureFlags(slug string, flags map[string]bool) e
 		return fmt.Errorf("SetV11ProjectFeatureFlags: build request: %w", err)
 	}
 
-	var ignored map[string]any
-	if _, err := c.v11.DoRequest(req, &ignored); err != nil {
+	// Pass nil so the response body is discarded without decoding.
+	// The live v1.1 PUT /settings endpoint may return a plain string or a
+	// non-map JSON value — any attempt to unmarshal it into map[string]any
+	// would fail with "cannot unmarshal string into Go value of type
+	// map[string]interface {}".  A 2xx status is sufficient for success;
+	// the caller never needs the response body.
+	if _, err := c.v11.DoRequest(req, nil); err != nil {
 		return fmt.Errorf("SetV11ProjectFeatureFlags %q: %w", slug, err)
 	}
 	return nil
