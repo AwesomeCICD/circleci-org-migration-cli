@@ -45,14 +45,23 @@ CI runs three account-free scanners; reproduce them locally with `make security`
   Blocking on high severity.
 - **gitleaks** — committed-secret detection across git history. Blocking.
 
-Trivy is intentionally not wired in yet: a compromised release (v0.69.4) means
-it needs pinning + checksum verification before we add it.
+- **trivy** — filesystem scan (vuln + secret + misconfig) via the
+  `cci-labs/trivy@1.0.0` orb in CI, pinned to trivy `v0.56.2`. Warn-only for
+  now (flip the scan's `exit-code` to `1` to make it blocking). Run locally
+  with `make trivy` (install a pinned trivy first).
 
 ## Fast inner-loop validation with chunk
 
 [`chunk`](https://github.com/CircleCI-Public/chunk-cli) runs the same checks in
 the inner loop (and can wire them into agent/editor hooks). This repo ships a
-`.chunk/config.json` mapping `chunk validate` to the `make` targets above.
+`.chunk/config.json` mapping `chunk validate` to the `make` targets above,
+split by role so the inner loop stays fast:
+
+- **precheck** (fast, every change): `vet`, `build`, `test-changed` (only the
+  changed packages), plus `format` as an autofix.
+- **gate** (before push): `lint`, full `test`, `security`, `config-validate`.
+
+Each command has a `timeout`; tune them in `.chunk/config.json`.
 
 ```bash
 brew install CircleCI-Public/circleci/chunk
