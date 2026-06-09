@@ -28,8 +28,6 @@ type ContextAPI interface {
 	ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error)
 	ListEnvVars(contextID string) ([]cctx.EnvVar, error)
 	ListRestrictions(contextID string) ([]cctx.Restriction, error)
-	ListOrgGroups(orgID string) ([]cctx.Group, error)
-	ListContextGroups(contextID string) ([]cctx.Group, error)
 }
 
 // ProjectAPI is the subset of the project client the exporter needs.
@@ -125,18 +123,6 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 	}
 	e.logf("  → %d context(s)", len(contexts))
 
-	// Build the group UUID -> name table once so we can resolve group-type
-	// restrictions (REST returns opaque UUIDs there).
-	groupNames := map[string]string{}
-	if groups, gerr := e.Contexts.ListOrgGroups(o.ID); gerr != nil {
-		m.AddWarning("org", "group_names_unresolved",
-			fmt.Sprintf("could not resolve security-group names via GraphQL: %v", gerr))
-	} else {
-		for _, g := range groups {
-			groupNames[g.ID] = g.Name
-		}
-	}
-
 	for _, c := range contexts {
 		mc := manifest.Context{Name: c.Name, SourceID: c.ID, CreatedAt: c.CreatedAt}
 
@@ -152,27 +138,18 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 			}
 		}
 
+		// Restrictions (v2) now return the group name directly, so security
+		// groups are derived from the group-type restrictions — no GraphQL.
 		if rs, rerr := e.Contexts.ListRestrictions(c.ID); rerr != nil {
 			m.AddWarning("context:"+c.Name, "restrictions_unreadable", fmt.Sprintf("could not list restrictions: %v", rerr))
 		} else {
 			for _, r := range rs {
-				name := r.Name
+				mc.Restrictions = append(mc.Restrictions, manifest.Restriction{Type: r.Type, Value: r.Value, Name: r.Name})
 				if r.Type == "group" {
-					if resolved, ok := groupNames[r.Value]; ok {
-						name = resolved
-					}
+					mc.SecurityGroups = append(mc.SecurityGroups, manifest.Group{ID: r.Value, Name: r.Name})
 					m.AddWarning("context:"+c.Name, "group_restriction_manual",
-						fmt.Sprintf("group restriction %q must be recreated manually (group-restriction writes are not yet GA)", name))
+						fmt.Sprintf("group restriction %q must be recreated manually (group-restriction writes are not yet GA)", restrictionName(r)))
 				}
-				mc.Restrictions = append(mc.Restrictions, manifest.Restriction{Type: r.Type, Value: r.Value, Name: name})
-			}
-		}
-
-		if gs, gerr := e.Contexts.ListContextGroups(c.ID); gerr != nil {
-			m.AddWarning("context:"+c.Name, "security_groups_unreadable", fmt.Sprintf("could not list security groups: %v", gerr))
-		} else {
-			for _, g := range gs {
-				mc.SecurityGroups = append(mc.SecurityGroups, manifest.Group{ID: g.ID, Name: g.Name, GroupType: g.GroupType})
 			}
 		}
 
@@ -180,6 +157,13 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 		e.logf("  • context %q: %d var(s), %d restriction(s), %d group(s)", mc.Name, len(mc.EnvVars), len(mc.Restrictions), len(mc.SecurityGroups))
 	}
 	return nil
+}
+
+func restrictionName(r cctx.Restriction) string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Value
 }
 
 func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Organization) {
