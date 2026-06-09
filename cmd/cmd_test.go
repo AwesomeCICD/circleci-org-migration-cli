@@ -128,13 +128,17 @@ func TestSyncCommand_RequiresManifest(t *testing.T) {
 // migrate subcommand
 // ---------------------------------------------------------------------------
 
-func TestMigrateCommand_NotImplementedMessage(t *testing.T) {
-	out, _, err := runCmd(t, "migrate")
-	if err != nil {
-		t.Fatalf("migrate command error: %v", err)
+func TestMigrateCommand_NoSourceOrg_ReturnsError(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	_, _, err := runCmd(t, "migrate")
+	if err == nil {
+		t.Fatal("migrate without --source-org should return an error")
 	}
-	if !strings.Contains(out, "not implemented") {
-		t.Errorf("migrate output %q does not contain 'not implemented'", out)
+	if !strings.Contains(err.Error(), "source-org") {
+		t.Errorf("error %q does not mention 'source-org'", err.Error())
 	}
 }
 
