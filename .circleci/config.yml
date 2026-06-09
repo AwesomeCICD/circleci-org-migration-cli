@@ -179,8 +179,17 @@ jobs:
     executor: base
     steps:
       - checkout
-      - trivy/install:
-          version: v0.56.2
+      # Install trivy via a direct, pinned release download. The orb's installer
+      # (and trivy's contrib install.sh) resolve the version through the GitHub
+      # API, which is rate-limited on shared CI IPs and was failing here. A
+      # direct release download (same pattern as the gitleaks job) is reliable.
+      - run:
+          name: Install Trivy (pinned v0.56.2)
+          command: |
+            ver=0.56.2
+            curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${ver}/trivy_${ver}_Linux-64bit.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin trivy
+            trivy --version
       - trivy/scan:
           skip-setup-trivy: true
           scan-type: fs
