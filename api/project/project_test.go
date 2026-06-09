@@ -2,7 +2,6 @@ package project
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,16 +32,6 @@ func respondJSON(w http.ResponseWriter, status int, body interface{}) {
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }
-
-func mustParseURL(raw string) *url.URL {
-	u, err := url.Parse(raw)
-	if err != nil {
-		panic(fmt.Sprintf("mustParseURL(%q): %v", raw, err))
-	}
-	return u
-}
-
-func boolPtr(b bool) *bool { return &b }
 
 // ---- SplitSlug --------------------------------------------------------------
 

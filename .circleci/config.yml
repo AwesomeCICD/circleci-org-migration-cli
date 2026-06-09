@@ -77,7 +77,9 @@ jobs:
           name: Run tests (JUnit + coverage)
           command: |
             mkdir -p test-results
-            gotestsum --junitfile test-results/unit-tests.xml --format testname \
+            # -race requires cgo; the executor defaults CGO_ENABLED=0 for static
+            # builds, so enable it just for the race-enabled test run.
+            CGO_ENABLED=1 gotestsum --junitfile test-results/unit-tests.xml --format testname \
               -- -race -covermode=atomic -coverprofile=coverage.out ./...
       - run:
           name: Coverage report + threshold gate
