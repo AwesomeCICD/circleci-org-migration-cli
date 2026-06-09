@@ -51,6 +51,14 @@ type ProjectAPI interface {
 	FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error)
 	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
+	// ListOrgProjects returns all projects in an org by org UUID, covering both
+	// GitHub OAuth and GitHub App org types.
+	ListOrgProjects(orgID string) ([]project.OrgProject, error)
+	// ListPipelineDefinitions returns all App-pipeline definitions for a project
+	// identified by its UUID.
+	ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error)
+	// ListTriggers returns all triggers for the given pipeline definition.
+	ListTriggers(projectID, defID string) ([]project.Trigger, error)
 }
 
 // Options configures an export run.
@@ -174,7 +182,7 @@ func restrictionName(r cctx.Restriction) string {
 }
 
 func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Organization) {
-	slugs, discoveredOnly := e.resolveProjectSlugs(m, opts, o)
+	slugs, followedSlugs, discoveredOnly := e.resolveProjectSlugs(m, opts, o)
 	e.logf("Exporting %d project(s)...", len(slugs))
 	if discoveredOnly {
 		m.AddWarning("projects", "project_discovery_followed_only",
@@ -183,6 +191,12 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 
 	for _, slug := range slugs {
 		mp := manifest.Project{Slug: slug}
+
+		// Set the Followed flag from the cross-reference set built during discovery.
+		if followedSlugs != nil {
+			followed := followedSlugs[slug]
+			mp.Followed = &followed
+		}
 
 		p, perr := e.Projects.GetProject(slug)
 		if perr != nil {
@@ -280,11 +294,99 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 			})
 		}
 	}
+
+	if p.ID != "" {
+		e.exportPipelineDefinitions(m, mp, p.ID)
+	}
 }
 
-// resolveProjectSlugs returns the set of project slugs to export and whether
-// the set came purely from discovery (no explicit slugs supplied).
-func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, discoveredOnly bool) {
+// exportPipelineDefinitions fetches App-pipeline definitions and their triggers
+// for the given project (identified by UUID) and appends them to mp. Each
+// sub-read is best-effort: on error a project-scoped warning is added and the
+// loop continues so a partial capture still completes.
+func (e *Exporter) exportPipelineDefinitions(m *manifest.Manifest, mp *manifest.Project, projectID string) {
+	defs, derr := e.Projects.ListPipelineDefinitions(projectID)
+	if derr != nil {
+		m.AddWarning("project:"+mp.Slug, "pipeline_definitions_unreadable",
+			fmt.Sprintf("could not list pipeline definitions: %v", derr))
+		return
+	}
+
+	for _, d := range defs {
+		md := manifest.PipelineDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			ConfigSource: manifest.PipelineSource{
+				Provider:       d.ConfigSource.Provider,
+				RepoFullName:   d.ConfigSource.Repo.FullName,
+				RepoExternalID: d.ConfigSource.Repo.ExternalID,
+				FilePath:       d.ConfigSource.FilePath,
+			},
+			CheckoutSource: manifest.PipelineSource{
+				Provider:       d.CheckoutSource.Provider,
+				RepoFullName:   d.CheckoutSource.Repo.FullName,
+				RepoExternalID: d.CheckoutSource.Repo.ExternalID,
+			},
+		}
+
+		triggers, terr := e.Projects.ListTriggers(projectID, d.ID)
+		if terr != nil {
+			m.AddWarning("project:"+mp.Slug, "triggers_unreadable",
+				fmt.Sprintf("could not list triggers for definition %q: %v", d.Name, terr))
+		} else {
+			for _, t := range triggers {
+				md.Triggers = append(md.Triggers, mapTrigger(t))
+			}
+		}
+
+		mp.PipelineDefinitions = append(mp.PipelineDefinitions, md)
+	}
+}
+
+// mapTrigger converts a project-API trigger into the manifest representation,
+// flattening the discriminated-union event_source into named fields.
+func mapTrigger(t project.Trigger) manifest.Trigger {
+	es := manifest.TriggerEventSource{
+		Provider: t.EventSource.Provider,
+	}
+	switch t.EventSource.Provider {
+	case "github_app", "github_server", "github_oauth":
+		es.RepoFullName = t.EventSource.Repo.FullName
+		es.RepoExternalID = t.EventSource.Repo.ExternalID
+	case "webhook":
+		es.WebhookSender = t.EventSource.Webhook.Sender
+	case "schedule":
+		es.ScheduleCron = t.EventSource.Schedule.CronExpression
+		es.ScheduleActor = t.EventSource.Schedule.AttributionActor
+	}
+	return manifest.Trigger{
+		Name:        t.Name,
+		EventName:   t.EventName,
+		Description: t.Description,
+		EventPreset: t.EventPreset,
+		Disabled:    t.Disabled,
+		CheckoutRef: t.CheckoutRef,
+		ConfigRef:   t.ConfigRef,
+		EventSource: es,
+	}
+}
+
+// resolveProjectSlugs returns the set of project slugs to export, a set of
+// followed-project slugs (used to populate the Followed flag on each project),
+// and whether the set came purely from discovery (no explicit slugs supplied).
+//
+// Discovery priority:
+//  1. ListOrgProjects (private API, org UUID) — covers both GitHub OAuth and
+//     GitHub App orgs.  On error, fall back to FollowedProjectsForOrg and emit
+//     a "discovery_fallback" warning.
+//  2. When discovery succeeds via ListOrgProjects, FollowedProjectsForOrg is
+//     called separately to populate the followedSlugs cross-reference (for the
+//     Followed flag).  If the org has no v1.1 slug form (circleci/ prefix) the
+//     followed list is not fetched and followedSlugs is nil.
+//
+// followedSlugs is nil when it could not be determined (no v1.1 form for the
+// org, or ListOrgProjects fell back to FollowedProjectsForOrg as discovery).
+func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, followedSlugs map[string]bool, discoveredOnly bool) {
 	set := map[string]struct{}{}
 	for _, s := range opts.ProjectSlugs {
 		if s = strings.TrimSpace(s); s != "" {
@@ -293,6 +395,40 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 	}
 	explicit := len(set)
 
+	if o.ID != "" {
+		e.logf("Discovering projects for org %q via private API...", o.ID)
+		orgProjects, oerr := e.Projects.ListOrgProjects(o.ID)
+		if oerr != nil {
+			// Fall back to followed-projects list (preserves old behavior).
+			m.AddWarning("projects", "discovery_fallback",
+				fmt.Sprintf("private project list unavailable (%v); falling back to followed-projects list (v1.1)", oerr))
+			e.discoverViaFollowed(m, opts, o, set)
+		} else {
+			e.logf("  → %d project(s) found via private API", len(orgProjects))
+			for _, op := range orgProjects {
+				set[op.Slug] = struct{}{}
+			}
+			// Build followed-project cross-reference (best-effort; only for orgs
+			// that have a v1.1 slug form).
+			followedSlugs = e.buildFollowedSet(m, opts, o)
+		}
+	} else {
+		// No org ID available — fall back to followed-projects list.
+		e.discoverViaFollowed(m, opts, o, set)
+	}
+
+	slugs = make([]string, 0, len(set))
+	for s := range set {
+		slugs = append(slugs, s)
+	}
+	sort.Strings(slugs)
+	return slugs, followedSlugs, explicit == 0
+}
+
+// discoverViaFollowed adds followed-project slugs to set from FollowedProjectsForOrg.
+// It is the fallback discovery path for orgs without a UUID or when the private
+// project-list API is unavailable.
+func (e *Exporter) discoverViaFollowed(m *manifest.Manifest, opts Options, o *org.Organization, set map[string]struct{}) {
 	if vcs, name, ok := splitOrgSlug(opts.OrgSlug, o.VCSType); ok {
 		_ = vcs
 		e.logf("Discovering followed projects for %q...", name)
@@ -304,13 +440,30 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 			}
 		}
 	}
+}
 
-	slugs = make([]string, 0, len(set))
-	for s := range set {
-		slugs = append(slugs, s)
+// buildFollowedSet calls FollowedProjectsForOrg and returns a map of slug →
+// followed (true) for use as a cross-reference when stamping the Followed flag
+// on each project.  Returns nil when the org has no v1.1 name form (i.e.
+// circleci/ prefix orgs) or when the call fails (in which case a warning is
+// added).
+func (e *Exporter) buildFollowedSet(m *manifest.Manifest, opts Options, o *org.Organization) map[string]bool {
+	_, name, ok := splitOrgSlug(opts.OrgSlug, o.VCSType)
+	if !ok {
+		return nil
 	}
-	sort.Strings(slugs)
-	return slugs, explicit == 0
+	followed, ferr := e.Projects.FollowedProjectsForOrg(name)
+	if ferr != nil {
+		m.AddWarning("projects", "followed_list_unreadable",
+			fmt.Sprintf("could not fetch followed-projects list to set Followed flag: %v", ferr))
+		return nil
+	}
+	result := make(map[string]bool, len(followed))
+	for _, fp := range followed {
+		slug := opts.OrgSlug + "/" + fp.Reponame
+		result[slug] = true
+	}
+	return result
 }
 
 // mapAdvancedSettings converts the project client's settings into the manifest

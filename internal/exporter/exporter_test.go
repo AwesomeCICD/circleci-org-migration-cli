@@ -152,6 +152,9 @@ type fakeProjectAPI struct {
 	followedProjectsForOrg    func(orgName string) ([]project.FollowedProject, error)
 	getProjectOIDCClaims      func(orgID, projID string) ([]string, string, error)
 	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
+	listOrgProjects           func(orgID string) ([]project.OrgProject, error)
+	listPipelineDefinitions   func(projectID string) ([]project.PipelineDefinition, error)
+	listTriggers              func(projectID, defID string) ([]project.Trigger, error)
 }
 
 func (f *fakeProjectAPI) GetProject(slug string) (*project.Project, error) {
@@ -213,6 +216,28 @@ func (f *fakeProjectAPI) GetProjectOIDCClaims(orgID, projID string) ([]string, s
 func (f *fakeProjectAPI) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
 	if f.getV11ProjectFeatureFlags != nil {
 		return f.getV11ProjectFeatureFlags(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) ListOrgProjects(orgID string) ([]project.OrgProject, error) {
+	if f.listOrgProjects != nil {
+		return f.listOrgProjects(orgID)
+	}
+	// Default: return an empty list (no projects discovered via private API).
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error) {
+	if f.listPipelineDefinitions != nil {
+		return f.listPipelineDefinitions(projectID)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) ListTriggers(projectID, defID string) ([]project.Trigger, error) {
+	if f.listTriggers != nil {
+		return f.listTriggers(projectID, defID)
 	}
 	return nil, nil
 }
@@ -720,17 +745,22 @@ func TestExport_IncludeContextsFalse_SkipsContexts(t *testing.T) {
 // Projects
 // ---------------------------------------------------------------------------
 
-func TestExport_Projects_DiscoveryFromFollowed(t *testing.T) {
+func TestExport_Projects_DiscoveryFromOrgProjectsList(t *testing.T) {
+	// Primary discovery path: ListOrgProjects returns both GitHub OAuth and App
+	// org slugs; they are all added to the export set.
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
 		},
 		Contexts: &fakeContextAPI{},
 		Projects: &fakeProjectAPI{
-			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
-				return []project.FollowedProject{
-					{Reponame: "web", VCSType: "github", Username: "myorg"},
-					{Reponame: "api", VCSType: "github", Username: "myorg"},
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("ListOrgProjects orgID: got %q want org-uuid-123", orgID)
+				}
+				return []project.OrgProject{
+					{ID: "pid-1", Slug: "gh/myorg/web", Name: "web"},
+					{ID: "pid-2", Slug: "gh/myorg/api", Name: "api"},
 				}, nil
 			},
 			getProject: func(slug string) (*project.Project, error) {
@@ -755,15 +785,59 @@ func TestExport_Projects_DiscoveryFromFollowed(t *testing.T) {
 	}
 }
 
-func TestExport_Projects_DiscoveryFollowedOnly_Warning(t *testing.T) {
+func TestExport_Projects_DiscoveryFallbackToFollowed(t *testing.T) {
+	// When ListOrgProjects fails, discovery falls back to FollowedProjectsForOrg
+	// and a fallback warning is emitted.
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
 		},
 		Contexts: &fakeContextAPI{},
 		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return nil, errors.New("private API unavailable")
+			},
 			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
-				return []project.FollowedProject{{Reponame: "web", VCSType: "github", Username: "myorg"}}, nil
+				return []project.FollowedProject{
+					{Reponame: "web", VCSType: "github", Username: "myorg"},
+					{Reponame: "api", VCSType: "github", Username: "myorg"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: slug}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(m.Projects))
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "discovery_fallback" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected discovery_fallback warning when ListOrgProjects fails")
+	}
+}
+
+func TestExport_Projects_DiscoveryFollowedOnly_Warning(t *testing.T) {
+	// project_discovery_followed_only is emitted when there are no explicit slugs
+	// and discovery runs (via ListOrgProjects or fallback).
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{{ID: "pid", Slug: "gh/myorg/web", Name: "web"}}, nil
 			},
 		},
 	}
@@ -808,15 +882,17 @@ func TestExport_Projects_ExplicitSlugs_NoDiscoveryOnlyWarning(t *testing.T) {
 }
 
 func TestExport_Projects_ExplicitAndDiscovered_Deduplicated(t *testing.T) {
+	// "gh/myorg/web" appears in both explicit slugs and ListOrgProjects result;
+	// it must appear only once in the manifest.
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
 		},
 		Contexts: &fakeContextAPI{},
 		Projects: &fakeProjectAPI{
-			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
-				return []project.FollowedProject{
-					{Reponame: "web", VCSType: "github", Username: "myorg"},
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{ID: "pid-1", Slug: "gh/myorg/web", Name: "web"},
 				}, nil
 			},
 		},
@@ -2042,5 +2118,655 @@ func TestExport_OrgSettings_ContactsError_IsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected contacts_unreadable warning, not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListOrgProjects discovery
+// ---------------------------------------------------------------------------
+
+func TestExport_Projects_ListOrgProjectsCalled_WithOrgID(t *testing.T) {
+	// ListOrgProjects must be called with the org UUID (not the slug).
+	calledWith := ""
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				calledWith = orgID
+				return nil, nil
+			},
+		},
+	}
+
+	_, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calledWith != "org-uuid-123" {
+		t.Errorf("ListOrgProjects called with %q, want org-uuid-123", calledWith)
+	}
+}
+
+func TestExport_Projects_ListOrgProjects_AppOrgSlug(t *testing.T) {
+	// GitHub App org (circleci/<uuid>) — ListOrgProjects returns App slugs.
+	appOrg := &org.Organization{
+		ID:      "app-org-uuid",
+		Name:    "myorg",
+		Slug:    "circleci/app-org-uuid",
+		VCSType: "circleci",
+	}
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return appOrg, nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				if orgID != "app-org-uuid" {
+					t.Errorf("ListOrgProjects orgID: got %q want app-org-uuid", orgID)
+				}
+				return []project.OrgProject{
+					{ID: "proj-app-1", Slug: "circleci/app-org-uuid/proj-uuid-1", Name: "myapp"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-app-1", Name: "myapp"}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	if m.Projects[0].Slug != "circleci/app-org-uuid/proj-uuid-1" {
+		t.Errorf("unexpected slug: %q", m.Projects[0].Slug)
+	}
+}
+
+func TestExport_Projects_FollowedFlag_SetForFollowedProject(t *testing.T) {
+	// Projects in the followed list have Followed=true; others have Followed=false.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{ID: "pid-web", Slug: "gh/myorg/web", Name: "web"},
+					{ID: "pid-api", Slug: "gh/myorg/api", Name: "api"},
+				}, nil
+			},
+			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
+				// Only "web" is followed.
+				return []project.FollowedProject{
+					{Reponame: "web", VCSType: "github", Username: "myorg"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: slug}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(m.Projects))
+	}
+	bySlug := map[string]manifest.Project{}
+	for _, p := range m.Projects {
+		bySlug[p.Slug] = p
+	}
+	web := bySlug["gh/myorg/web"]
+	if web.Followed == nil || !*web.Followed {
+		t.Errorf("gh/myorg/web: Followed should be true, got %v", web.Followed)
+	}
+	api := bySlug["gh/myorg/api"]
+	if api.Followed == nil || *api.Followed {
+		t.Errorf("gh/myorg/api: Followed should be false, got %v", api.Followed)
+	}
+}
+
+func TestExport_Projects_FollowedFlag_NilForAppOrg(t *testing.T) {
+	// GitHub App orgs have no v1.1 slug form; Followed must be nil.
+	appOrg := &org.Organization{
+		ID:      "app-org-uuid",
+		Name:    "myorg",
+		Slug:    "circleci/app-org-uuid",
+		VCSType: "circleci",
+	}
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return appOrg, nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{ID: "pid-app", Slug: "circleci/app-org-uuid/proj-1", Name: "proj"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid-app", Name: "proj"}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	if m.Projects[0].Followed != nil {
+		t.Errorf("Followed should be nil for App org, got %v", m.Projects[0].Followed)
+	}
+}
+
+func TestExport_Projects_FollowedListError_IsWarning(t *testing.T) {
+	// If FollowedProjectsForOrg fails when building the cross-reference, a
+	// warning is emitted and projects are still exported (Followed stays nil).
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{ID: "pid", Slug: "gh/myorg/web", Name: "web"},
+				}, nil
+			},
+			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
+				return nil, errors.New("followed API down")
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: slug}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "followed_list_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected followed_list_unreadable warning, not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline definitions and triggers capture
+// ---------------------------------------------------------------------------
+
+func TestExport_Projects_PipelineDefinitions_Captured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-uuid-extras", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				if projectID != "proj-uuid-extras" {
+					t.Errorf("ListPipelineDefinitions projectID: got %q want proj-uuid-extras", projectID)
+				}
+				return []project.PipelineDefinition{
+					{
+						ID:          "def-1",
+						Name:        "main",
+						Description: "main pipeline",
+						ConfigSource: project.PipelineSource{
+							Provider: "github_app",
+							Repo:     project.PipelineSourceRepo{FullName: "acme/web", ExternalID: "ext-1"},
+							FilePath: ".circleci/config.yml",
+						},
+						CheckoutSource: project.PipelineSource{
+							Provider: "github_app",
+							Repo:     project.PipelineSourceRepo{FullName: "acme/web", ExternalID: "ext-1"},
+						},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	defs := m.Projects[0].PipelineDefinitions
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 pipeline definition, got %d", len(defs))
+	}
+	d := defs[0]
+	if d.Name != "main" {
+		t.Errorf("definition Name: got %q want main", d.Name)
+	}
+	if d.Description != "main pipeline" {
+		t.Errorf("definition Description: got %q want main pipeline", d.Description)
+	}
+	if d.ConfigSource.Provider != "github_app" {
+		t.Errorf("ConfigSource.Provider: got %q want github_app", d.ConfigSource.Provider)
+	}
+	if d.ConfigSource.RepoFullName != "acme/web" {
+		t.Errorf("ConfigSource.RepoFullName: got %q want acme/web", d.ConfigSource.RepoFullName)
+	}
+	if d.ConfigSource.RepoExternalID != "ext-1" {
+		t.Errorf("ConfigSource.RepoExternalID: got %q want ext-1", d.ConfigSource.RepoExternalID)
+	}
+	if d.ConfigSource.FilePath != ".circleci/config.yml" {
+		t.Errorf("ConfigSource.FilePath: got %q", d.ConfigSource.FilePath)
+	}
+	if d.CheckoutSource.Provider != "github_app" {
+		t.Errorf("CheckoutSource.Provider: got %q want github_app", d.CheckoutSource.Provider)
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_Triggers_GithubApp(t *testing.T) {
+	// Triggers with github_app event_source are mapped to the manifest's
+	// flattened TriggerEventSource.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-trig-test", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return []project.PipelineDefinition{
+					{ID: "def-a", Name: "main",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return []project.Trigger{
+					{
+						ID: "t1", Name: "push", EventName: "push", Disabled: false,
+						EventSource: project.TriggerEventSource{
+							Provider: "github_app",
+							Repo:     project.TriggerEventSourceRepo{FullName: "acme/web", ExternalID: "ext-42"},
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 || len(m.Projects[0].PipelineDefinitions) != 1 {
+		t.Fatalf("expected 1 def, got %+v", m.Projects)
+	}
+	trigs := m.Projects[0].PipelineDefinitions[0].Triggers
+	if len(trigs) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(trigs))
+	}
+	trig := trigs[0]
+	if trig.Name != "push" {
+		t.Errorf("trigger Name: got %q want push", trig.Name)
+	}
+	if trig.EventSource.Provider != "github_app" {
+		t.Errorf("EventSource.Provider: got %q want github_app", trig.EventSource.Provider)
+	}
+	if trig.EventSource.RepoFullName != "acme/web" {
+		t.Errorf("EventSource.RepoFullName: got %q want acme/web", trig.EventSource.RepoFullName)
+	}
+	if trig.EventSource.RepoExternalID != "ext-42" {
+		t.Errorf("EventSource.RepoExternalID: got %q want ext-42", trig.EventSource.RepoExternalID)
+	}
+	// Webhook and schedule fields must be empty for github_app.
+	if trig.EventSource.WebhookSender != "" {
+		t.Errorf("WebhookSender should be empty for github_app, got %q", trig.EventSource.WebhookSender)
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_Triggers_Webhook(t *testing.T) {
+	// Webhook triggers: WebhookSender captured; URL must NOT be stored.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-wh-test", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return []project.PipelineDefinition{
+					{ID: "def-b", Name: "main",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return []project.Trigger{
+					{
+						ID: "t-wh", Name: "ext-hook", Disabled: false,
+						EventSource: project.TriggerEventSource{
+							Provider: "webhook",
+							Webhook: project.TriggerEventSourceWebhook{
+								URL:    "https://circleci.com/hooks/123?secret=**REDACTED**",
+								Sender: "deploy-bot",
+							},
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects[0].PipelineDefinitions[0].Triggers) != 1 {
+		t.Fatalf("expected 1 trigger")
+	}
+	trig := m.Projects[0].PipelineDefinitions[0].Triggers[0]
+	if trig.EventSource.Provider != "webhook" {
+		t.Errorf("Provider: got %q want webhook", trig.EventSource.Provider)
+	}
+	if trig.EventSource.WebhookSender != "deploy-bot" {
+		t.Errorf("WebhookSender: got %q want deploy-bot", trig.EventSource.WebhookSender)
+	}
+	// RepoFullName must NOT be populated for webhook provider.
+	if trig.EventSource.RepoFullName != "" {
+		t.Errorf("RepoFullName should be empty for webhook, got %q", trig.EventSource.RepoFullName)
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_Triggers_Schedule(t *testing.T) {
+	// Schedule triggers: ScheduleCron and ScheduleActor captured.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-sched-test", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return []project.PipelineDefinition{
+					{ID: "def-c", Name: "main",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return []project.Trigger{
+					{
+						ID: "t-sched", Name: "nightly", Disabled: false,
+						EventSource: project.TriggerEventSource{
+							Provider: "schedule",
+							Schedule: project.TriggerEventSourceSchedule{
+								CronExpression:   "0 3 * * *",
+								AttributionActor: "system",
+							},
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	trig := m.Projects[0].PipelineDefinitions[0].Triggers[0]
+	if trig.EventSource.Provider != "schedule" {
+		t.Errorf("Provider: got %q want schedule", trig.EventSource.Provider)
+	}
+	if trig.EventSource.ScheduleCron != "0 3 * * *" {
+		t.Errorf("ScheduleCron: got %q want '0 3 * * *'", trig.EventSource.ScheduleCron)
+	}
+	if trig.EventSource.ScheduleActor != "system" {
+		t.Errorf("ScheduleActor: got %q want system", trig.EventSource.ScheduleActor)
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_Unreadable_IsWarning(t *testing.T) {
+	// ListPipelineDefinitions error → warning, export continues.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-err-test", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return nil, errors.New("pipeline definitions API unavailable")
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	if len(m.Projects[0].PipelineDefinitions) != 0 {
+		t.Errorf("expected 0 defs when unreadable, got %d", len(m.Projects[0].PipelineDefinitions))
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "pipeline_definitions_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected pipeline_definitions_unreadable warning, not found")
+	}
+}
+
+func TestExport_Projects_Triggers_Unreadable_IsWarning(t *testing.T) {
+	// ListTriggers error → warning per definition; other defs still captured.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "proj-trig-err", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return []project.PipelineDefinition{
+					{ID: "def-fail", Name: "main",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return nil, errors.New("triggers API unavailable")
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	// Definition is still captured, triggers are empty.
+	if len(m.Projects[0].PipelineDefinitions) != 1 {
+		t.Fatalf("expected 1 definition even on trigger error, got %d", len(m.Projects[0].PipelineDefinitions))
+	}
+	if len(m.Projects[0].PipelineDefinitions[0].Triggers) != 0 {
+		t.Errorf("expected 0 triggers on error, got %d", len(m.Projects[0].PipelineDefinitions[0].Triggers))
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "triggers_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected triggers_unreadable warning, not found")
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_SkippedWhenNoExtras(t *testing.T) {
+	// Pipeline definitions must NOT be captured when IncludeExtras=false.
+	defsCalled := false
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				defsCalled = true
+				return nil, nil
+			},
+		},
+	}
+
+	_, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   false,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if defsCalled {
+		t.Error("ListPipelineDefinitions should NOT be called when IncludeExtras=false")
+	}
+}
+
+func TestExport_Projects_PipelineDefinitions_SortStable(t *testing.T) {
+	// Pipeline definitions and triggers are sorted by name.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid-sort", Name: "web"}, nil
+			},
+			listPipelineDefinitions: func(projectID string) ([]project.PipelineDefinition, error) {
+				return []project.PipelineDefinition{
+					{ID: "d-z", Name: "zebra",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+					{ID: "d-a", Name: "alpha",
+						ConfigSource:   project.PipelineSource{Provider: "github_app"},
+						CheckoutSource: project.PipelineSource{Provider: "github_app"},
+					},
+				}, nil
+			},
+			listTriggers: func(projectID, defID string) ([]project.Trigger, error) {
+				return []project.Trigger{
+					{ID: "t-z", Name: "zzz", Disabled: false, EventSource: project.TriggerEventSource{Provider: "github_app"}},
+					{ID: "t-a", Name: "aaa", Disabled: false, EventSource: project.TriggerEventSource{Provider: "github_app"}},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defs := m.Projects[0].PipelineDefinitions
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 defs, got %d", len(defs))
+	}
+	if defs[0].Name != "alpha" || defs[1].Name != "zebra" {
+		t.Errorf("definitions not sorted: %v %v", defs[0].Name, defs[1].Name)
+	}
+	trigs := defs[0].Triggers
+	if len(trigs) != 2 {
+		t.Fatalf("expected 2 triggers, got %d", len(trigs))
+	}
+	if trigs[0].Name != "aaa" || trigs[1].Name != "zzz" {
+		t.Errorf("triggers not sorted: %v %v", trigs[0].Name, trigs[1].Name)
 	}
 }
