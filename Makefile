@@ -72,9 +72,27 @@ security:
 		echo "gitleaks not found — run 'make tools' to install it"; exit 1; \
 	fi
 
+.PHONY: config-validate
+config-validate:
+	@if command -v circleci >/dev/null 2>&1; then \
+		circleci config validate .circleci/config.yml; \
+	else \
+		echo "circleci CLI not found — install from https://circleci.com/docs/local-cli/"; exit 1; \
+	fi
+
+# trivy runs the same filesystem scan as the CI security-trivy job (cci-labs
+# Trivy orb pins trivy v0.56.2). Install a pinned trivy locally to match.
+.PHONY: trivy
+trivy:
+	@if command -v trivy >/dev/null 2>&1; then \
+		trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL .; \
+	else \
+		echo "trivy not found — install a pinned version (CI uses trivy v0.56.2)"; exit 1; \
+	fi
+
 # ci-local runs the full local equivalent of the CircleCI pipeline.
 .PHONY: ci-local
-ci-local: verify cover security
+ci-local: verify cover security config-validate
 
 # tools installs the developer tooling used by lint/security locally.
 .PHONY: tools

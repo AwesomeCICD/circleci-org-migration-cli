@@ -11,6 +11,7 @@ version: 2.1
 
 orbs:
   go: circleci/go@3.0.4
+  trivy: cci-labs/trivy@1.0.0
 
 parameters:
   go-image-tag:
@@ -171,6 +172,24 @@ jobs:
           path: gitleaks.sarif
           destination: gitleaks.sarif
 
+  # Filesystem vuln/secret/misconfig scan via the cci-labs Trivy orb.
+  # Warn-only for now (no exit-code); flip exit-code to "1" to make it blocking
+  # once a clean baseline is established.
+  security-trivy:
+    executor: base
+    steps:
+      - checkout
+      - trivy/install:
+          version: v0.56.2
+      - trivy/scan:
+          skip-setup-trivy: true
+          scan-type: fs
+          scan-ref: "."
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: table
+          hide-progress: true
+
 workflows:
   ci:
     jobs:
@@ -179,6 +198,7 @@ workflows:
       - security-vuln
       - security-sast
       - security-secrets
+      - security-trivy
       - build:
           name: build-<< matrix.goos >>-<< matrix.goarch >>
           requires:
