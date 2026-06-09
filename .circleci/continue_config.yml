@@ -375,11 +375,15 @@ jobs:
   # ===========================================================================
   #
   # Two flavours of publish, defined as a single parametrised job:
-  #   dev   — branches: publishes orb/orb.yml as a dev label (SHA-prefixed).
-  #   prod  — tags:     publishes orb/orb.yml as a semver release.
+  #   dev   — branches: publishes packed orb as a dev label (SHA-prefixed).
+  #   prod  — tags:     publishes packed orb as a semver release.
   #
   # The CircleCI CLI must be available on the executor. cimg/base:current does
   # not ship the CLI, so we install it via the official install script.
+  #
+  # The orb source lives in orb/src/ (Orb Development Kit layout). Before any
+  # publish or validate step we pack the source into a single YAML file:
+  #   circleci orb pack orb/src > /tmp/orb.yml
   #
   # Context "orb-publishing" must contain:
   #   CIRCLE_TOKEN — personal API token for an org owner of awesomecicd
@@ -404,8 +408,11 @@ jobs:
               | sudo bash
             circleci version
       - run:
+          name: Pack orb source
+          command: circleci orb pack orb/src > /tmp/orb.yml
+      - run:
           name: Validate orb
-          command: circleci orb validate orb/orb.yml
+          command: circleci orb validate --org-id efc130dc-284f-4533-964e-844f5c173860 /tmp/orb.yml
       - when:
           condition:
             equal: [dev, << parameters.pub_type >>]
@@ -413,7 +420,7 @@ jobs:
             - run:
                 name: Publish dev orb (SHA label)
                 command: |
-                  circleci orb publish orb/orb.yml \
+                  circleci orb publish /tmp/orb.yml \
                     awesomecicd/circleci-org-migration@dev:${CIRCLE_SHA1:0:7} \
                     --token "$CIRCLE_TOKEN"
       - when:
@@ -425,7 +432,7 @@ jobs:
                 command: |
                   # Strip leading 'v' from the tag (e.g. v1.2.3 → 1.2.3).
                   semver="${CIRCLE_TAG#v}"
-                  circleci orb publish orb/orb.yml \
+                  circleci orb publish /tmp/orb.yml \
                     awesomecicd/circleci-org-migration@${semver} \
                     --token "$CIRCLE_TOKEN"
 

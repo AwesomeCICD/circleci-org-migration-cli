@@ -1,0 +1,47 @@
+description: |
+  Install the circleci-migrate CLI from GitHub Releases, with optional binary
+  caching (act-orb pattern). When cache-cli is true, restore-cli is called
+  first to attempt a cache hit, then cache-cli saves the binary after a fresh
+  download. Set cache-cli to false to always download.
+parameters:
+  version:
+    type: string
+    default: latest
+    description: Release tag to install (e.g. v1.0.0), or "latest".
+  install-dir:
+    type: string
+    default: /usr/local/bin
+    description: Directory where circleci-migrate will be installed.
+  cache-cli:
+    type: boolean
+    default: true
+    description: Cache the installed binary to speed up subsequent runs.
+  cache-key-prefix:
+    type: string
+    default: v1
+    description: Bump to invalidate all existing caches (e.g. v1 → v2).
+  force-install:
+    type: boolean
+    default: false
+    description: Reinstall even if circleci-migrate is already on PATH (e.g. after a cache hit).
+steps:
+  - when:
+      condition: <<parameters.cache-cli>>
+      steps:
+        - restore-cli:
+            version: <<parameters.version>>
+            install-dir: <<parameters.install-dir>>
+            cache-key-prefix: <<parameters.cache-key-prefix>>
+  - run:
+      name: Install circleci-migrate
+      environment:
+        ORB_PARAM_VERSION: <<parameters.version>>
+        ORB_PARAM_INSTALL_DIR: <<parameters.install-dir>>
+        ORB_PARAM_FORCE_INSTALL: <<parameters.force-install>>
+      command: <<include(scripts/install.sh)>>
+  - when:
+      condition: <<parameters.cache-cli>>
+      steps:
+        - cache-cli:
+            install-dir: <<parameters.install-dir>>
+            cache-key-prefix: <<parameters.cache-key-prefix>>

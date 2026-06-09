@@ -123,22 +123,35 @@ release-snapshot:
 release-check:
 	goreleaser check
 
-# orb-validate runs the CircleCI CLI orb linter against the single-file orb.
-# Mirrors the validate step in the CI orb-publish job.
-.PHONY: orb-validate
-orb-validate:
+# orb-pack packs the orb/src/ source tree into orb/orb.yml (generated file).
+# The generated file is .gitignored; orb/src/ is the source of truth.
+.PHONY: orb-pack
+orb-pack:
 	@if command -v circleci >/dev/null 2>&1; then \
-		circleci orb validate orb/orb.yml; \
+		circleci orb pack orb/src > orb/orb.yml; \
+		echo "Packed orb written to orb/orb.yml"; \
 	else \
 		echo "circleci CLI not found — install from https://circleci.com/docs/local-cli/"; exit 1; \
 	fi
 
-# orb-publish-dev validates then publishes a dev-labelled version of the orb
-# for manual / local testing. Requires CIRCLE_TOKEN to be set in your shell.
+# orb-validate packs the orb source and runs the CircleCI CLI orb linter.
+# --org-id is required because awesomecicd/circleci-org-migration is a private orb.
+# Mirrors the pack + validate steps in the CI orb-publish job.
+.PHONY: orb-validate
+orb-validate:
+	@if command -v circleci >/dev/null 2>&1; then \
+		circleci orb pack orb/src > /tmp/orb.yml && \
+		circleci orb validate --org-id efc130dc-284f-4533-964e-844f5c173860 /tmp/orb.yml; \
+	else \
+		echo "circleci CLI not found — install from https://circleci.com/docs/local-cli/"; exit 1; \
+	fi
+
+# orb-publish-dev packs, validates, then publishes a dev-labelled version of
+# the orb for manual / local testing. Requires CIRCLE_TOKEN to be set.
 # The label includes a Unix timestamp so successive publishes don't collide.
 .PHONY: orb-publish-dev
 orb-publish-dev: orb-validate
-	circleci orb publish orb/orb.yml \
+	circleci orb publish /tmp/orb.yml \
 		awesomecicd/circleci-org-migration@dev:manual-$$(date +%s) \
 		--token "$$CIRCLE_TOKEN"
 

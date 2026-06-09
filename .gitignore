@@ -17,3 +17,7 @@ coverage.html
 /secrets.json
 *.manifest.json
 /bin/circleci-migrate
+
+# Packed orb — generated from orb/src/ by `circleci orb pack orb/src`
+# orb/src/ is the source of truth; this file is regenerated on demand.
+/orb/orb.yml
