@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/extract"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +22,14 @@ import (
 type flagReaderWriter interface {
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+}
+
+// orgFlagManager reads and writes org-level feature flags via the v1.1
+// organization settings endpoint.  Injected by tests; production uses a real
+// *org.Client.
+type orgFlagManager interface {
+	GetFeatureFlags(vcsType, orgName string) (map[string]bool, error)
+	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
 }
 
 // pipelineDefLister lists pipeline definitions for a project so the command
@@ -38,6 +49,50 @@ type captureClient interface {
 	pipelineDefLister
 	projectGetter
 	extract.Deps
+}
+
+const orgApiTriggerKey = "allow_api_trigger_with_config"
+
+// parseOrgSlug converts a manifest org slug into the (vcsType, orgName) pair
+// expected by the v1.1 org-settings endpoint.
+//
+//   - "gh/<org>"        → ("github", "<org>")
+//   - "bb/<org>"        → ("bitbucket", "<org>")
+//   - "circleci/<uuid>" → ("circleci", "<uuid>")
+//
+// ok is false when the slug is empty or malformed.
+func parseOrgSlug(slug string) (vcsType, orgName string, ok bool) {
+	parts := strings.SplitN(slug, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	switch parts[0] {
+	case "gh", "github":
+		return "github", parts[1], true
+	case "bb", "bitbucket":
+		return "bitbucket", parts[1], true
+	case "circleci":
+		return "circleci", parts[1], true
+	default:
+		return parts[0], parts[1], true
+	}
+}
+
+// realRestrictions filters out the default "All members" group restriction
+// (type=="group" with value==orgID) from the supplied list.  Every App-org
+// context has this restriction by default; it is NOT a real access restriction
+// — it simply means "all org members".  A context is considered genuinely
+// restricted only when at least one non-All-members restriction remains.
+func realRestrictions(restrictions []manifest.Restriction, orgID string) []manifest.Restriction {
+	out := make([]manifest.Restriction, 0, len(restrictions))
+	for _, r := range restrictions {
+		if r.Type == "group" && r.Value == orgID {
+			// Default "All members" restriction — skip it.
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 const apiTriggerKey = "api-trigger-with-config"
@@ -117,6 +172,24 @@ Examples:
 			selectedCtxNames := make(map[string]bool, len(contextNames))
 			for _, n := range contextNames {
 				selectedCtxNames[n] = true
+			}
+
+			// ── Org-level allow_api_trigger_with_config ───────────────────────
+			// The pipeline/run endpoint also requires the ORG-level flag to be on.
+			// We read-and-restore it ONCE before iterating projects (not per-project).
+			// On any error we warn and continue — the per-project flag is the primary
+			// gate and callers can fix the org flag manually.
+			if enableTrigger {
+				if vcsType, orgName, ok := parseOrgSlug(m.Source.Org.Slug); ok {
+					orgClient, oerr := newOrgClientForCapture(rootOptions, token)
+					if oerr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(),
+							"WARNING: could not create org client to check org-level flag: %v\n", oerr)
+					} else {
+						restoreOrgFlag := maybeEnableOrgTriggerFlag(cmd, orgClient, vcsType, orgName)
+						defer restoreOrgFlag()
+					}
+				}
 			}
 
 			var captureErr error
@@ -223,7 +296,9 @@ func captureProject(
 		if !enableTrigger {
 			return fmt.Errorf(
 				"project %s has api-trigger-with-config disabled; "+
-					"set --enable-trigger to enable it automatically",
+					"set --enable-trigger to enable it automatically "+
+					"(both the org-level allow_api_trigger_with_config AND the project-level "+
+					"api-trigger-with-config flags must be on for unversioned-config pipelines)",
 				p.Slug,
 			)
 		}
@@ -278,13 +353,16 @@ func captureProject(
 			continue
 		}
 
-		// Warn about and optionally skip restricted contexts.
-		if len(mc.Restrictions) > 0 {
+		// Warn about and optionally skip genuinely restricted contexts.
+		// The default "All members" group restriction (type==group, value==orgID)
+		// is not a real restriction — every App-org context has it automatically.
+		real := realRestrictions(mc.Restrictions, m.Source.Org.ID)
+		if len(real) > 0 {
 			fmt.Fprintf(stderr,
 				"WARNING: context %q has restrictions (%d). The extraction job may not "+
 					"have access to it. Auto-toggling restrictions is not supported; handle "+
 					"manually if needed.\n",
-				mc.Name, len(mc.Restrictions),
+				mc.Name, len(real),
 			)
 			if skipRestricted {
 				fmt.Fprintf(stderr, "Skipping restricted context %q (--skip-restricted-contexts=true).\n", mc.Name)
@@ -368,4 +446,55 @@ func dedupe(s []string) []string {
 		}
 	}
 	return out
+}
+
+// newOrgClientForCapture creates an *org.Client for reading and writing org
+// feature flags during the capture flow.
+func newOrgClientForCapture(cfg *settings.Config, token string) (*org.Client, error) {
+	c, err := org.NewClient(cfg, token)
+	if err != nil {
+		return nil, fmt.Errorf("creating org client: %w", err)
+	}
+	return c, nil
+}
+
+// maybeEnableOrgTriggerFlag reads the org-level allow_api_trigger_with_config
+// flag.  If it is off, it enables it and returns a restore func that must be
+// called (typically via defer) to set it back to false.  If it was already on,
+// the restore func is a no-op.  On read failure the error is treated as
+// best-effort: a WARNING is printed and a no-op restore func is returned so
+// the caller can proceed; the per-project flag is the primary gate.
+func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, orgName string) func() {
+	stderr := cmd.ErrOrStderr()
+
+	flags, err := mgr.GetFeatureFlags(vcsType, orgName)
+	if err != nil {
+		fmt.Fprintf(stderr,
+			"WARNING: could not read org-level feature flags (%s/%s): %v — proceeding\n",
+			vcsType, orgName, err)
+		return func() {} // no-op restore
+	}
+
+	wasEnabled := flags[orgApiTriggerKey]
+	if wasEnabled {
+		return func() {} // already on, nothing to restore
+	}
+
+	fmt.Fprintf(stderr, "Enabling org-level allow_api_trigger_with_config for %s/%s…\n", vcsType, orgName)
+	if uerr := mgr.UpdateFeatureFlags(vcsType, orgName, map[string]bool{orgApiTriggerKey: true}); uerr != nil {
+		fmt.Fprintf(stderr,
+			"WARNING: could not enable org-level allow_api_trigger_with_config for %s/%s: %v — proceeding\n",
+			vcsType, orgName, uerr)
+		return func() {} // failed to enable, nothing to restore
+	}
+
+	// Return a restore func that the caller must defer.
+	return func() {
+		fmt.Fprintf(stderr, "Restoring org-level allow_api_trigger_with_config=false for %s/%s…\n", vcsType, orgName)
+		if rerr := mgr.UpdateFeatureFlags(vcsType, orgName, map[string]bool{orgApiTriggerKey: false}); rerr != nil {
+			fmt.Fprintf(stderr,
+				"WARNING: failed to restore org-level allow_api_trigger_with_config for %s/%s: %v\n",
+				vcsType, orgName, rerr)
+		}
+	}
 }

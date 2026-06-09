@@ -162,8 +162,14 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 				mc.Restrictions = append(mc.Restrictions, manifest.Restriction{Type: r.Type, Value: r.Value, Name: r.Name})
 				if r.Type == "group" {
 					mc.SecurityGroups = append(mc.SecurityGroups, manifest.Group{ID: r.Value, Name: r.Name})
-					m.AddWarning("context:"+c.Name, "group_restriction_manual",
-						fmt.Sprintf("group restriction %q must be recreated manually (group-restriction writes are not yet GA)", restrictionName(r)))
+					// The default "All members" group restriction (value == org ID)
+					// is auto-created on every context and is synced via CIAM — no
+					// manual action is required.  Only emit the warning for real
+					// (non-All-members) group restrictions.
+					if r.Value != o.ID {
+						m.AddWarning("context:"+c.Name, "group_restriction_manual",
+							fmt.Sprintf("group restriction %q must be recreated manually (group-restriction writes are not yet GA)", restrictionName(r)))
+					}
 				}
 			}
 		}
@@ -182,9 +188,13 @@ func restrictionName(r cctx.Restriction) string {
 }
 
 func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Organization) {
-	slugs, followedSlugs, discoveredOnly := e.resolveProjectSlugs(m, opts, o)
+	slugs, followedSlugs, followedFallback := e.resolveProjectSlugs(m, opts, o)
 	e.logf("Exporting %d project(s)...", len(slugs))
-	if discoveredOnly {
+	// Emit the followed-only warning only when discovery actually fell back to
+	// the v1.1 followed-projects list (ListOrgProjects failed or was unavailable).
+	// When the private project-list API succeeded we have a complete project set
+	// and the warning is misleading.
+	if followedFallback {
 		m.AddWarning("projects", "project_discovery_followed_only",
 			"projects were discovered from the followed-projects list (v1.1); repositories not followed by the source token's user may be missing — pass an explicit project list to be exhaustive")
 	}
@@ -373,7 +383,16 @@ func mapTrigger(t project.Trigger) manifest.Trigger {
 
 // resolveProjectSlugs returns the set of project slugs to export, a set of
 // followed-project slugs (used to populate the Followed flag on each project),
-// and whether the set came purely from discovery (no explicit slugs supplied).
+// and whether discovery fell back to the v1.1 followed-projects list (without
+// any explicit slugs supplied by the caller).
+//
+// The third return value (followedFallback) is true only when:
+//   - no explicit project slugs were provided, AND
+//   - the primary ListOrgProjects discovery path failed or was unavailable,
+//     causing the exporter to fall back to FollowedProjectsForOrg.
+//
+// When the private ListOrgProjects API succeeded, followedFallback is false
+// even if no explicit slugs were given — the project set is complete.
 //
 // Discovery priority:
 //  1. ListOrgProjects (private API, org UUID) — covers both GitHub OAuth and
@@ -386,7 +405,7 @@ func mapTrigger(t project.Trigger) manifest.Trigger {
 //
 // followedSlugs is nil when it could not be determined (no v1.1 form for the
 // org, or ListOrgProjects fell back to FollowedProjectsForOrg as discovery).
-func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, followedSlugs map[string]bool, discoveredOnly bool) {
+func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, followedSlugs map[string]bool, followedFallback bool) {
 	set := map[string]struct{}{}
 	for _, s := range opts.ProjectSlugs {
 		if s = strings.TrimSpace(s); s != "" {
@@ -394,6 +413,7 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 		}
 	}
 	explicit := len(set)
+	usedFollowedFallback := false
 
 	if o.ID != "" {
 		e.logf("Discovering projects for org %q via private API...", o.ID)
@@ -403,6 +423,7 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 			m.AddWarning("projects", "discovery_fallback",
 				fmt.Sprintf("private project list unavailable (%v); falling back to followed-projects list (v1.1)", oerr))
 			e.discoverViaFollowed(m, opts, o, set)
+			usedFollowedFallback = true
 		} else {
 			e.logf("  → %d project(s) found via private API", len(orgProjects))
 			for _, op := range orgProjects {
@@ -415,6 +436,7 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 	} else {
 		// No org ID available — fall back to followed-projects list.
 		e.discoverViaFollowed(m, opts, o, set)
+		usedFollowedFallback = true
 	}
 
 	slugs = make([]string, 0, len(set))
@@ -422,7 +444,9 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 		slugs = append(slugs, s)
 	}
 	sort.Strings(slugs)
-	return slugs, followedSlugs, explicit == 0
+	// followedFallback is true only when discovery used the followed list AND the
+	// caller did not supply any explicit slugs.
+	return slugs, followedSlugs, explicit == 0 && usedFollowedFallback
 }
 
 // discoverViaFollowed adds followed-project slugs to set from FollowedProjectsForOrg.

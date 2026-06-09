@@ -592,6 +592,78 @@ func TestExport_Contexts_GroupRestriction_ManualWarning(t *testing.T) {
 	}
 }
 
+func TestExport_Contexts_GroupRestriction_AllMembersNoWarning(t *testing.T) {
+	// When the group restriction value == org ID (the default "All members"
+	// restriction), group_restriction_manual must NOT be emitted.
+	orgID := "org-uuid-123" // matches defaultOrg().ID
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{
+			listContexts: func(ownerID, ownerSlug string) ([]cctx.Context, error) {
+				return []cctx.Context{{ID: "ctx-1", Name: "prod"}}, nil
+			},
+			listRestrictions: func(contextID string) ([]cctx.Restriction, error) {
+				return []cctx.Restriction{
+					// All-members default restriction: value == org ID.
+					{ID: "r1", Type: "group", Value: orgID, Name: "All members"},
+				}, nil
+			},
+		},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range m.Warnings {
+		if w.Code == "group_restriction_manual" {
+			t.Errorf("group_restriction_manual must NOT be emitted for the All-members default restriction")
+		}
+	}
+	// The restriction must still be recorded in the manifest.
+	if len(m.Contexts) != 1 || len(m.Contexts[0].Restrictions) != 1 {
+		t.Fatalf("expected context with 1 restriction recorded, got: %+v", m.Contexts)
+	}
+}
+
+func TestExport_Contexts_GroupRestriction_NonAllMembersWarning(t *testing.T) {
+	// For a non-All-members group restriction, group_restriction_manual IS emitted.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{
+			listContexts: func(ownerID, ownerSlug string) ([]cctx.Context, error) {
+				return []cctx.Context{{ID: "ctx-1", Name: "prod"}}, nil
+			},
+			listRestrictions: func(contextID string) ([]cctx.Restriction, error) {
+				return []cctx.Restriction{
+					// Real team restriction — different from org ID.
+					{ID: "r2", Type: "group", Value: "team-uuid-456", Name: "engineering"},
+				}, nil
+			},
+		},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "group_restriction_manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected group_restriction_manual warning for non-All-members group restriction")
+	}
+}
+
 func TestExport_Contexts_SecurityGroups(t *testing.T) {
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
@@ -827,9 +899,9 @@ func TestExport_Projects_DiscoveryFallbackToFollowed(t *testing.T) {
 	}
 }
 
-func TestExport_Projects_DiscoveryFollowedOnly_Warning(t *testing.T) {
-	// project_discovery_followed_only is emitted when there are no explicit slugs
-	// and discovery runs (via ListOrgProjects or fallback).
+func TestExport_Projects_DiscoveryFollowedOnly_Warning_NotOnPrivateAPISuccess(t *testing.T) {
+	// project_discovery_followed_only must NOT fire when ListOrgProjects succeeds —
+	// the private API returns a complete project set so the warning is misleading.
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
@@ -846,6 +918,37 @@ func TestExport_Projects_DiscoveryFollowedOnly_Warning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	for _, w := range m.Warnings {
+		if w.Code == "project_discovery_followed_only" {
+			t.Error("project_discovery_followed_only must NOT be emitted when ListOrgProjects succeeded")
+		}
+	}
+}
+
+func TestExport_Projects_DiscoveryFollowedOnly_Warning_OnFallback(t *testing.T) {
+	// project_discovery_followed_only IS emitted when no explicit slugs are given
+	// AND discovery fell back to the v1.1 followed-projects list.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return nil, errors.New("private API unavailable")
+			},
+			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
+				return []project.FollowedProject{
+					{Reponame: "web", VCSType: "github", Username: "myorg"},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	found := false
 	for _, w := range m.Warnings {
 		if w.Code == "project_discovery_followed_only" {
@@ -853,7 +956,40 @@ func TestExport_Projects_DiscoveryFollowedOnly_Warning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected project_discovery_followed_only warning when no explicit slugs given")
+		t.Error("expected project_discovery_followed_only warning when discovery fell back to followed list")
+	}
+}
+
+func TestExport_Projects_DiscoveryFollowedOnly_Warning_NotWhenExplicitSlugs(t *testing.T) {
+	// project_discovery_followed_only must NOT fire when the caller provided
+	// explicit slugs, even if discovery fell back.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return nil, errors.New("private API unavailable")
+			},
+			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range m.Warnings {
+		if w.Code == "project_discovery_followed_only" {
+			t.Error("project_discovery_followed_only must NOT fire when explicit slugs were given")
+		}
 	}
 }
 

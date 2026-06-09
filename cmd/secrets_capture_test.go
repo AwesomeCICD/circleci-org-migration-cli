@@ -418,6 +418,230 @@ func TestSecretsCapture_FlagRestoredOnError(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// All-members default group restriction must not cause a skip
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSecretsCapture_AllMembersRestrictionNotSkipped(t *testing.T) {
+	// A context whose only restriction is the All-members default (type=="group",
+	// value==orgID) must NOT be warned about or skipped.
+	const orgID = "acme-org-uuid"
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{
+				Slug: "gh/acme",
+				ID:   orgID,
+			},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:    "all-members-ctx",
+				EnvVars: []manifest.ContextEnvVar{{Name: "CTX_VAR"}},
+				Restrictions: []manifest.Restriction{
+					// Default "All members" restriction — value == org ID.
+					{Type: "group", Value: orgID, Name: "All members"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv := newCaptureFakeServer(t, map[string]string{
+		"PROJECT_VAR": "proj-val",
+		"CTX_VAR":     "ctx-val",
+	})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--skip-restricted-contexts=true",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+
+	// No restriction warning should appear for the All-members default.
+	if strings.Contains(stderr, "Skipping restricted context") {
+		t.Errorf("All-members context should NOT be skipped; stderr: %s", stderr)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Org-level flag enable+restore (end-to-end with fake server)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// newCaptureFakeServerWithOrgFlags extends newCaptureFakeServer to also serve
+// the v1.1 org-settings endpoint so the org-level flag enable/restore can be
+// tested end-to-end.
+func newCaptureFakeServerWithOrgFlags(t *testing.T, secretPayload map[string]string, orgInitiallyEnabled bool) (*fakeCaptureServer, *[]bool) {
+	t.Helper()
+
+	inner := newCaptureFakeServer(t, secretPayload)
+	// Replace the underlying mux by wrapping the existing server handler.
+	// Since httptest.Server exposes the handler via Config.Handler, we can
+	// reach it through inner.Server.Config.Handler.  Instead, use a new mux
+	// that proxies known org paths and falls back to the original handler.
+
+	orgPutCalls := &[]bool{}
+
+	// Patch the org v1.1 settings endpoint into the same server by replacing
+	// the handler.  We read the existing mux from the server's Config.
+	origHandler := inner.Server.Config.Handler
+	newMux := http.NewServeMux()
+
+	// Org settings endpoint.
+	newMux.HandleFunc("/api/v1.1/organization/github/acme/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"feature_flags": map[string]any{
+					"allow_api_trigger_with_config": orgInitiallyEnabled,
+				},
+			})
+			return
+		}
+		if r.Method == http.MethodPut {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			ff, _ := body["feature_flags"].(map[string]any)
+			val, _ := ff["allow-api-trigger-with-config"].(bool)
+			*orgPutCalls = append(*orgPutCalls, val)
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	// Fall back to the original handler for everything else.
+	newMux.HandleFunc("/", origHandler.ServeHTTP)
+
+	inner.Server.Config.Handler = newMux
+
+	return inner, orgPutCalls
+}
+
+func TestSecretsCapture_OrgLevelFlagEnabled_AndRestored(t *testing.T) {
+	// With org-level flag initially off, --enable-trigger must enable it once
+	// BEFORE iterating projects, then restore it after.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{
+				Slug: "gh/acme",
+				ID:   "acme-org-uuid",
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv, orgPutCalls := newCaptureFakeServerWithOrgFlags(t, map[string]string{"PROJECT_VAR": "val"}, false)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	// Org flag must have been enabled then restored.
+	if len(*orgPutCalls) < 2 {
+		t.Errorf("expected >=2 org PUT calls (enable + restore), got %d: %v", len(*orgPutCalls), *orgPutCalls)
+	}
+	if !(*orgPutCalls)[0] {
+		t.Errorf("first org PUT should enable (true), got false")
+	}
+	if (*orgPutCalls)[len(*orgPutCalls)-1] {
+		t.Errorf("last org PUT should restore (false), got true")
+	}
+
+	if !strings.Contains(stderr, "org-level allow_api_trigger_with_config") {
+		t.Errorf("stderr should mention org-level flag; got: %s", stderr)
+	}
+}
+
+func TestSecretsCapture_OrgLevelFlagAlreadyOn_NoExtraCall(t *testing.T) {
+	// When the org-level flag is already on, we must NOT call UpdateFeatureFlags.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{
+				Slug: "gh/acme",
+				ID:   "acme-org-uuid",
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	// org flag initially ON
+	srv, orgPutCalls := newCaptureFakeServerWithOrgFlags(t, map[string]string{"PROJECT_VAR": "val"}, true)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, _, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No org PUT calls because the flag was already on.
+	if len(*orgPutCalls) != 0 {
+		t.Errorf("expected 0 org PUT calls when flag was already on, got %d: %v", len(*orgPutCalls), *orgPutCalls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
