@@ -14,7 +14,9 @@ version: 2.1
 setup: true
 
 orbs:
-  path-filtering: circleci/path-filtering@1
+  # @3.x defaults to cimg/python:current; @1 used Python 3.9, whose get-pip.py
+  # bootstrap now fails ("minimum supported Python version is 3.10").
+  path-filtering: circleci/path-filtering@3.0.0
 
 workflows:
   setup:
