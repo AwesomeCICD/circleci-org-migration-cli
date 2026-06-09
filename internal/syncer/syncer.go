@@ -56,6 +56,14 @@ type ProjectWriter interface {
 	ListEnvVars(slug string) ([]project.EnvVar, error)
 	CreateEnvVar(slug, name, value string) error
 	UpdateSettings(provider, org, proj string, s *project.AdvancedSettings) error
+	ListWebhooks(projectID string) ([]project.Webhook, error)
+	CreateWebhook(destProjectID string, w project.Webhook) error
+	ListSchedules(slug string) ([]project.Schedule, error)
+	CreateSchedule(destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error
+	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
+	SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error
+	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
+	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
 }
 
 // Options configures a sync run.
@@ -327,6 +335,14 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 		destSlug = m.Source.Org.Slug
 	}
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
+
+	// Resolve the destination org ID once — needed for OIDC PATCH calls.
+	destOrgID, err := s.Org.ResolveOrgID(destSlug)
+	if err != nil {
+		return nil, fmt.Errorf("resolving destination org %q: %w", destSlug, err)
+	}
+	report.DestOrgID = destOrgID
+
 	s.logf("Syncing %d project(s)%s", len(m.Projects), dryRunSuffix(opts.Apply))
 
 	for _, p := range m.Projects {
@@ -335,12 +351,17 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			report.add("project", p.Slug, "manual", "no destination mapping (a GitHub App destination needs an explicit project mapping)")
 			continue
 		}
-		if _, err := s.Projects.GetProject(dst); err != nil {
+		destProj, err := s.Projects.GetProject(dst)
+		if err != nil {
 			report.add("project", dst, "manual", "project not found in destination — create/follow it, then re-run (auto-create is opt-in)")
 			continue
 		}
 		s.syncProjectSettings(report, p, dst, opts)
 		s.syncProjectVars(report, p, bundle, dst, opts)
+		s.syncProjectWebhooks(report, p, dst, destProj.ID, opts)
+		s.syncProjectSchedules(report, p, dst, opts)
+		s.syncProjectOIDCClaims(report, p, dst, destOrgID, destProj.ID, opts)
+		s.syncProjectV11Flags(report, p, dst, opts)
 	}
 	return report, nil
 }

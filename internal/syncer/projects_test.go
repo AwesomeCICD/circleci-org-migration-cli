@@ -20,10 +20,18 @@ type projectCall struct {
 
 // fakeProjectWriter records all calls for later assertion.
 type fakeProjectWriter struct {
-	getProject     func(slug string) (*project.Project, error)
-	listEnvVars    func(slug string) ([]project.EnvVar, error)
-	createEnvVar   func(slug, name, value string) error
-	updateSettings func(provider, org, proj string, s *project.AdvancedSettings) error
+	getProject                func(slug string) (*project.Project, error)
+	listEnvVars               func(slug string) ([]project.EnvVar, error)
+	createEnvVar              func(slug, name, value string) error
+	updateSettings            func(provider, org, proj string, s *project.AdvancedSettings) error
+	listWebhooks              func(projectID string) ([]project.Webhook, error)
+	createWebhook             func(destProjectID string, w project.Webhook) error
+	listSchedules             func(slug string) ([]project.Schedule, error)
+	createSchedule            func(destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error
+	getProjectOIDCClaims      func(orgID, projID string) ([]string, string, error)
+	setProjectOIDCClaims      func(orgID, projID string, audience []string, ttl string) error
+	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
+	setV11ProjectFeatureFlags func(slug string, flags map[string]bool) error
 
 	calls           []projectCall
 	settingsUpdates []*project.AdvancedSettings // captures the settings arg each time UpdateSettings is called
@@ -34,7 +42,7 @@ func (f *fakeProjectWriter) GetProject(slug string) (*project.Project, error) {
 	if f.getProject != nil {
 		return f.getProject(slug)
 	}
-	return &project.Project{Slug: slug, Name: slug}, nil
+	return &project.Project{Slug: slug, ID: "proj-id-" + slug, Name: slug}, nil
 }
 
 func (f *fakeProjectWriter) ListEnvVars(slug string) ([]project.EnvVar, error) {
@@ -58,6 +66,74 @@ func (f *fakeProjectWriter) UpdateSettings(provider, org, proj string, s *projec
 	f.settingsUpdates = append(f.settingsUpdates, s)
 	if f.updateSettings != nil {
 		return f.updateSettings(provider, org, proj, s)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) ListWebhooks(projectID string) ([]project.Webhook, error) {
+	f.calls = append(f.calls, projectCall{"ListWebhooks", []string{projectID}})
+	if f.listWebhooks != nil {
+		return f.listWebhooks(projectID)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) CreateWebhook(destProjectID string, w project.Webhook) error {
+	f.calls = append(f.calls, projectCall{"CreateWebhook", []string{destProjectID, w.Name, w.URL}})
+	if f.createWebhook != nil {
+		return f.createWebhook(destProjectID, w)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) ListSchedules(slug string) ([]project.Schedule, error) {
+	f.calls = append(f.calls, projectCall{"ListSchedules", []string{slug}})
+	if f.listSchedules != nil {
+		return f.listSchedules(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) CreateSchedule(destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error {
+	f.calls = append(f.calls, projectCall{"CreateSchedule", []string{destSlug, name, description, attributionActor}})
+	if f.createSchedule != nil {
+		return f.createSchedule(destSlug, name, description, attributionActor, timetable, parameters)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) GetProjectOIDCClaims(orgID, projID string) ([]string, string, error) {
+	f.calls = append(f.calls, projectCall{"GetProjectOIDCClaims", []string{orgID, projID}})
+	if f.getProjectOIDCClaims != nil {
+		return f.getProjectOIDCClaims(orgID, projID)
+	}
+	return nil, "", nil
+}
+
+func (f *fakeProjectWriter) SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error {
+	f.calls = append(f.calls, projectCall{"SetProjectOIDCClaims", []string{orgID, projID, ttl}})
+	if f.setProjectOIDCClaims != nil {
+		return f.setProjectOIDCClaims(orgID, projID, audience, ttl)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
+	f.calls = append(f.calls, projectCall{"GetV11ProjectFeatureFlags", []string{slug}})
+	if f.getV11ProjectFeatureFlags != nil {
+		return f.getV11ProjectFeatureFlags(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error {
+	keys := make([]string, 0, len(flags))
+	for k := range flags {
+		keys = append(keys, k)
+	}
+	f.calls = append(f.calls, projectCall{"SetV11ProjectFeatureFlags", append([]string{slug}, keys...)})
+	if f.setV11ProjectFeatureFlags != nil {
+		return f.setV11ProjectFeatureFlags(slug, flags)
 	}
 	return nil
 }
@@ -972,5 +1048,464 @@ func TestSyncProjects_InvalidDestSlug_ErrorAction(t *testing.T) {
 	}
 	if !hasError {
 		t.Error("expected an 'error' action for invalid dest slug, got none")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: webhook sync
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_Webhook_Created verifies that a webhook not present in the
+// destination is created (Apply=true) and a signing-secret manual note is emitted.
+func TestSyncProjects_Webhook_Created(t *testing.T) {
+	verifyTLS := true
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Webhooks: []manifest.Webhook{
+			{Name: "ci-notify", URL: "https://hooks.example.com", Events: []string{"workflow-completed"}, VerifyTLS: &verifyTLS},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreateWebhook") {
+		t.Error("CreateWebhook must be called when webhook is not present and Apply=true")
+	}
+
+	// Expect a "set" action for creation and a "manual" action for signing-secret.
+	setFound, manualFound := false, false
+	for _, a := range actionsOfKind(rep, "project-webhook") {
+		if a.Status == "set" {
+			setFound = true
+		}
+		if a.Status == "manual" {
+			manualFound = true
+		}
+	}
+	if !setFound {
+		t.Error("expected a 'set' project-webhook action")
+	}
+	if !manualFound {
+		t.Error("expected a 'manual' project-webhook action (signing-secret note)")
+	}
+}
+
+// TestSyncProjects_Webhook_Exists verifies that a webhook already present with
+// the same name+url is not created and gets an "exists" status.
+func TestSyncProjects_Webhook_Exists(t *testing.T) {
+	fp := &fakeProjectWriter{
+		listWebhooks: func(projectID string) ([]project.Webhook, error) {
+			return []project.Webhook{
+				{ID: "existing-wh", Name: "ci-notify", URL: "https://hooks.example.com"},
+			}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Webhooks: []manifest.Webhook{
+			{Name: "ci-notify", URL: "https://hooks.example.com", Events: []string{"workflow-completed"}},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateWebhook") {
+		t.Error("CreateWebhook must NOT be called when webhook already exists")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-webhook") {
+		if a.Status == "exists" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an 'exists' project-webhook action")
+	}
+}
+
+// TestSyncProjects_Webhook_DryRun verifies that in dry-run mode CreateWebhook
+// is not called but a "set" action is recorded.
+func TestSyncProjects_Webhook_DryRun(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Webhooks: []manifest.Webhook{
+			{Name: "ci-notify", URL: "https://hooks.example.com", Events: []string{"workflow-completed"}},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateWebhook") {
+		t.Error("CreateWebhook must NOT be called in dry-run mode")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-webhook") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' (would create) project-webhook action in dry-run")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: schedule sync
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_Schedule_OAuth_Created verifies that a schedule is created
+// on an OAuth (gh/) destination slug.
+func TestSyncProjects_Schedule_OAuth_Created(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Schedules: []manifest.Schedule{
+			{Name: "nightly", Description: "Nightly build",
+				Timetable: map[string]any{"per-hour": 1}, Parameters: map[string]any{"branch": "main"}},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreateSchedule") {
+		t.Error("CreateSchedule must be called for an OAuth destination when Apply=true")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-schedule") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' project-schedule action")
+	}
+}
+
+// TestSyncProjects_Schedule_OAuth_Exists verifies that a schedule already
+// present by name is not re-created.
+func TestSyncProjects_Schedule_OAuth_Exists(t *testing.T) {
+	fp := &fakeProjectWriter{
+		listSchedules: func(slug string) ([]project.Schedule, error) {
+			return []project.Schedule{{ID: "s1", Name: "nightly"}}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug:      "gh/acme/web",
+		Name:      "web",
+		Schedules: []manifest.Schedule{{Name: "nightly"}},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateSchedule") {
+		t.Error("CreateSchedule must NOT be called when schedule already exists")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-schedule") {
+		if a.Status == "exists" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an 'exists' project-schedule action")
+	}
+}
+
+// TestSyncProjects_Schedule_AppSlug_Manual verifies that when the destination
+// is a GitHub App ("circleci/") slug, schedules are NOT created and a "manual"
+// action is recorded instead.
+func TestSyncProjects_Schedule_AppSlug_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-app-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	srcSlug := "gh/acme/web"
+	appDstSlug := "circleci/org-id-abc/proj-id-def"
+	p := manifest.Project{
+		Slug:      srcSlug,
+		Name:      "web",
+		Schedules: []manifest.Schedule{{Name: "nightly"}},
+	}
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/acme", To: "circleci/org-id-abc"},
+		Projects: map[string]string{srcSlug: appDstSlug},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreateSchedule") {
+		t.Error("CreateSchedule must NOT be called for a GitHub App destination slug")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-schedule") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-schedule action for App slug")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: project OIDC sync
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_OIDCClaims_Set verifies that project OIDC claims are applied
+// when present in the manifest and Apply=true.
+func TestSyncProjects_OIDCClaims_Set(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "dest-proj-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug:         "gh/acme/web",
+		Name:         "web",
+		OIDCAudience: []string{"https://oidc.example.com"},
+		OIDCTTL:      "4h",
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("SetProjectOIDCClaims") {
+		t.Error("SetProjectOIDCClaims must be called when OIDCAudience/OIDCTTL are set and Apply=true")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-oidc") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' project-oidc action")
+	}
+}
+
+// TestSyncProjects_OIDCClaims_DryRun verifies that in dry-run mode
+// SetProjectOIDCClaims is not called.
+func TestSyncProjects_OIDCClaims_DryRun(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "dest-proj-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := manifest.Project{
+		Slug:         "gh/acme/web",
+		Name:         "web",
+		OIDCAudience: []string{"https://oidc.example.com"},
+		OIDCTTL:      "4h",
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetProjectOIDCClaims") {
+		t.Error("SetProjectOIDCClaims must NOT be called in dry-run mode")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-oidc") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' (would set) project-oidc action in dry-run")
+	}
+}
+
+// TestSyncProjects_OIDCClaims_Empty_NoAction verifies that when the manifest
+// project has no OIDC fields, no OIDC action is emitted.
+func TestSyncProjects_OIDCClaims_Empty_NoAction(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	p := simpleProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetProjectOIDCClaims") {
+		t.Error("SetProjectOIDCClaims must NOT be called when OIDCAudience and OIDCTTL are empty")
+	}
+	if len(actionsOfKind(rep, "project-oidc")) != 0 {
+		t.Error("expected no project-oidc actions when OIDC fields are empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: per-project v1.1 feature flags
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_APITriggerFlag_Set verifies that api_trigger_with_config is
+// applied when present and Apply=true.
+func TestSyncProjects_APITriggerFlag_Set(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			APITriggerWithConfig: &trueVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("SetV11ProjectFeatureFlags") {
+		t.Error("SetV11ProjectFeatureFlags must be called when api_trigger_with_config is set and Apply=true")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-flag") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' project-flag action for api_trigger_with_config")
+	}
+}
+
+// TestSyncProjects_DropAllBuildRequests_Skipped verifies that drop_all_build_requests
+// is NEVER applied and always produces a "manual" warning action.
+func TestSyncProjects_DropAllBuildRequests_Skipped(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			DropAllBuildRequests: &trueVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetV11ProjectFeatureFlags") {
+		t.Error("SetV11ProjectFeatureFlags must NOT be called for drop_all_build_requests (danger flag)")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-flag") {
+		if a.Status == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-flag action for drop_all_build_requests")
+	}
+}
+
+// TestSyncProjects_APITriggerFlag_DryRun verifies that in dry-run mode
+// SetV11ProjectFeatureFlags is not called.
+func TestSyncProjects_APITriggerFlag_DryRun(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			APITriggerWithConfig: &trueVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetV11ProjectFeatureFlags") {
+		t.Error("SetV11ProjectFeatureFlags must NOT be called in dry-run mode")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-flag") {
+		if a.Status == "set" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'set' (would set) project-flag action in dry-run")
 	}
 }
