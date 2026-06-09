@@ -184,9 +184,9 @@ jobs:
       # API, which is rate-limited on shared CI IPs and was failing here. A
       # direct release download (same pattern as the gitleaks job) is reliable.
       - run:
-          name: Install Trivy (pinned v0.56.2)
+          name: Install Trivy (pinned v0.71.0)
           command: |
-            ver=0.56.2
+            ver=0.71.0
             curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${ver}/trivy_${ver}_Linux-64bit.tar.gz" \
               | sudo tar -xz -C /usr/local/bin trivy
             trivy --version

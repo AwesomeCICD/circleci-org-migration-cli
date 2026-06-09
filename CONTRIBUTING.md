@@ -46,7 +46,7 @@ CI runs three account-free scanners; reproduce them locally with `make security`
 - **gitleaks** — committed-secret detection across git history. Blocking.
 
 - **trivy** — filesystem scan (vuln + secret + misconfig) via the
-  `cci-labs/trivy@1.0.0` orb in CI, pinned to trivy `v0.56.2`. Warn-only for
+  `cci-labs/trivy@1.0.0` orb in CI, pinned to trivy `v0.71.0`. Warn-only for
   now (flip the scan's `exit-code` to `1` to make it blocking). Run locally
   with `make trivy` (install a pinned trivy first).
 
