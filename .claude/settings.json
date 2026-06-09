@@ -8,6 +8,7 @@
       "mcp__circleci-mcp-server__download_usage_api_data",
       "mcp__circleci-mcp-server__list_followed_projects",
       "mcp__circleci-mcp-server__get_job_test_results",
+      "mcp__github__get_latest_release",
       "mcp__sourcegraph__read_file",
       "mcp__sourcegraph__list_files",
       "mcp__sg__keyword_search",
