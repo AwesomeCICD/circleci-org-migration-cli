@@ -48,7 +48,7 @@
   "environment": {
     "stack": "go",
     "image": "cimg/go",
-    "image_version": "1.26.2",
+    "image_version": "1.26.4",
     "setup": [
       {
         "name": "install",

@@ -2,6 +2,9 @@ module github.com/CircleCI-Public/circleci-org-migration-cli
 
 go 1.26
 
+// Pin a vuln-free patch toolchain (latest stdlib security fixes; see govulncheck).
+toolchain go1.26.4
+
 require github.com/spf13/cobra v1.10.2
 
 require (
