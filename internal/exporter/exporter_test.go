@@ -36,11 +36,9 @@ func (f *fakeOrgAPI) GetOrgSettings(vcsType, orgName string) (*org.OrgSettings, 
 }
 
 type fakeContextAPI struct {
-	listContexts      func(ownerID, ownerSlug string) ([]cctx.Context, error)
-	listEnvVars       func(contextID string) ([]cctx.EnvVar, error)
-	listRestrictions  func(contextID string) ([]cctx.Restriction, error)
-	listOrgGroups     func(orgID string) ([]cctx.Group, error)
-	listContextGroups func(contextID string) ([]cctx.Group, error)
+	listContexts     func(ownerID, ownerSlug string) ([]cctx.Context, error)
+	listEnvVars      func(contextID string) ([]cctx.EnvVar, error)
+	listRestrictions func(contextID string) ([]cctx.Restriction, error)
 }
 
 func (f *fakeContextAPI) ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error) {
@@ -60,20 +58,6 @@ func (f *fakeContextAPI) ListEnvVars(contextID string) ([]cctx.EnvVar, error) {
 func (f *fakeContextAPI) ListRestrictions(contextID string) ([]cctx.Restriction, error) {
 	if f.listRestrictions != nil {
 		return f.listRestrictions(contextID)
-	}
-	return nil, nil
-}
-
-func (f *fakeContextAPI) ListOrgGroups(orgID string) ([]cctx.Group, error) {
-	if f.listOrgGroups != nil {
-		return f.listOrgGroups(orgID)
-	}
-	return nil, nil
-}
-
-func (f *fakeContextAPI) ListContextGroups(contextID string) ([]cctx.Group, error) {
-	if f.listContextGroups != nil {
-		return f.listContextGroups(contextID)
 	}
 	return nil, nil
 }
@@ -422,14 +406,10 @@ func TestExport_Contexts_GroupRestriction_ResolvedName(t *testing.T) {
 			listContexts: func(ownerID, ownerSlug string) ([]cctx.Context, error) {
 				return []cctx.Context{{ID: "ctx-1", Name: "prod"}}, nil
 			},
-			listOrgGroups: func(orgID string) ([]cctx.Group, error) {
-				return []cctx.Group{
-					{ID: "group-uuid-1", Name: "security-team", GroupType: "TEAM"},
-				}, nil
-			},
 			listRestrictions: func(contextID string) ([]cctx.Restriction, error) {
+				// v2 returns the group name directly in the restriction.
 				return []cctx.Restriction{
-					{ID: "r1", Type: "group", Value: "group-uuid-1", Name: ""},
+					{ID: "r1", Type: "group", Value: "group-uuid-1", Name: "security-team"},
 				}, nil
 			},
 		},
@@ -444,11 +424,12 @@ func TestExport_Contexts_GroupRestriction_ResolvedName(t *testing.T) {
 		t.Fatalf("unexpected contexts/restrictions: %+v", m.Contexts)
 	}
 	r := m.Contexts[0].Restrictions[0]
-	if r.Type != "group" {
-		t.Errorf("restriction type: got %q want %q", r.Type, "group")
+	if r.Type != "group" || r.Name != "security-team" {
+		t.Errorf("restriction: got %+v, want type=group name=security-team", r)
 	}
-	if r.Name != "security-team" {
-		t.Errorf("restriction name: got %q want %q (should resolve group UUID)", r.Name, "security-team")
+	// Security groups are derived from the group-type restriction.
+	if len(m.Contexts[0].SecurityGroups) != 1 || m.Contexts[0].SecurityGroups[0].Name != "security-team" {
+		t.Errorf("security groups: %+v", m.Contexts[0].SecurityGroups)
 	}
 }
 
@@ -494,9 +475,9 @@ func TestExport_Contexts_SecurityGroups(t *testing.T) {
 			listContexts: func(ownerID, ownerSlug string) ([]cctx.Context, error) {
 				return []cctx.Context{{ID: "ctx-1", Name: "prod"}}, nil
 			},
-			listContextGroups: func(contextID string) ([]cctx.Group, error) {
-				return []cctx.Group{
-					{ID: "sg-1", Name: "eng-team", GroupType: "TEAM"},
+			listRestrictions: func(contextID string) ([]cctx.Restriction, error) {
+				return []cctx.Restriction{
+					{ID: "r1", Type: "group", Value: "sg-1", Name: "eng-team"},
 				}, nil
 			},
 		},
@@ -514,7 +495,7 @@ func TestExport_Contexts_SecurityGroups(t *testing.T) {
 		t.Fatalf("expected 1 security group, got %d", len(m.Contexts[0].SecurityGroups))
 	}
 	sg := m.Contexts[0].SecurityGroups[0]
-	if sg.ID != "sg-1" || sg.Name != "eng-team" || sg.GroupType != "TEAM" {
+	if sg.ID != "sg-1" || sg.Name != "eng-team" {
 		t.Errorf("security group: %+v", sg)
 	}
 }

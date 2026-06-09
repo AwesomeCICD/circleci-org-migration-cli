@@ -80,8 +80,9 @@ type Context struct {
 	EnvVars []ContextEnvVar `json:"environment_variables"`
 	// Restrictions are project/expression/group restrictions from the REST API.
 	Restrictions []Restriction `json:"restrictions,omitempty"`
-	// SecurityGroups are the named groups allowed to use this context, resolved
-	// via GraphQL (REST only exposes opaque group UUIDs).
+	// SecurityGroups are the named groups allowed to use this context, derived
+	// from the group-type restrictions (the v2 restrictions endpoint returns
+	// group names).
 	SecurityGroups []Group `json:"security_groups,omitempty"`
 }
 
