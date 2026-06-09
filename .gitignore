@@ -10,3 +10,10 @@ coverage.html
 
 # Personal Claude Code settings (shared settings.json is committed)
 /.claude/settings.local.json
+
+# Generated CLI output (manifests, reports, secret bundles) — never commit
+/manifest.json
+/migration-report.md
+/secrets.json
+*.manifest.json
+/bin/circleci-migrate

@@ -17,8 +17,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeOrgAPI struct {
-	getOrganization func(slugOrID string) (*org.Organization, error)
-	getOrgSettings  func(vcsType, orgName string) (*org.OrgSettings, error)
+	getOrganization    func(slugOrID string) (*org.Organization, error)
+	getOrgSettings     func(vcsType, orgName string) (*org.OrgSettings, error)
+	getFeatureFlags    func(vcsType, orgName string) (map[string]bool, error)
+	getOIDCClaims      func(orgID string) ([]string, string, error)
+	getURLOrbAllowList func(slugOrID string) ([]org.URLOrbAllowEntry, error)
+	getPolicyBundle    func(ownerID string) (map[string]string, error)
+	getPolicyEnf       func(ownerID string) (bool, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -33,6 +38,41 @@ func (f *fakeOrgAPI) GetOrgSettings(vcsType, orgName string) (*org.OrgSettings, 
 		return f.getOrgSettings(vcsType, orgName)
 	}
 	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetFeatureFlags(vcsType, orgName string) (map[string]bool, error) {
+	if f.getFeatureFlags != nil {
+		return f.getFeatureFlags(vcsType, orgName)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetOIDCClaims(orgID string) ([]string, string, error) {
+	if f.getOIDCClaims != nil {
+		return f.getOIDCClaims(orgID)
+	}
+	return nil, "", nil
+}
+
+func (f *fakeOrgAPI) GetURLOrbAllowList(slugOrID string) ([]org.URLOrbAllowEntry, error) {
+	if f.getURLOrbAllowList != nil {
+		return f.getURLOrbAllowList(slugOrID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetPolicyBundle(ownerID string) (map[string]string, error) {
+	if f.getPolicyBundle != nil {
+		return f.getPolicyBundle(ownerID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetPolicyEnforcement(ownerID string) (bool, error) {
+	if f.getPolicyEnf != nil {
+		return f.getPolicyEnf(ownerID)
+	}
+	return false, nil
 }
 
 type fakeContextAPI struct {
@@ -196,20 +236,22 @@ func TestExport_SourceHost(t *testing.T) {
 }
 
 func TestExport_OrgSettingsCaptured_GHSlug(t *testing.T) {
-	settingsCalled := false
-	trueVal := true
+	flagsCalled := false
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
-			getOrgSettings: func(vcsType, orgName string) (*org.OrgSettings, error) {
-				settingsCalled = true
+			getFeatureFlags: func(vcsType, orgName string) (map[string]bool, error) {
+				flagsCalled = true
 				if vcsType != "github" {
-					t.Errorf("GetOrgSettings vcsType: got %q want %q", vcsType, "github")
+					t.Errorf("GetFeatureFlags vcsType: got %q want %q", vcsType, "github")
 				}
 				if orgName != "myorg" {
-					t.Errorf("GetOrgSettings orgName: got %q want %q", orgName, "myorg")
+					t.Errorf("GetFeatureFlags orgName: got %q want %q", orgName, "myorg")
 				}
-				return &org.OrgSettings{RequireContextGroupRestriction: &trueVal}, nil
+				return map[string]bool{
+					"require_context_group_restriction": true,
+					"allow_certified_public_orbs":       true,
+				}, nil
 			},
 		},
 		Contexts: &fakeContextAPI{},
@@ -220,8 +262,8 @@ func TestExport_OrgSettingsCaptured_GHSlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !settingsCalled {
-		t.Error("GetOrgSettings was not called for gh/ slug")
+	if !flagsCalled {
+		t.Error("GetFeatureFlags was not called for gh/ slug")
 	}
 	if m.Source.Org.Settings == nil {
 		t.Fatal("Settings is nil")
@@ -232,10 +274,13 @@ func TestExport_OrgSettingsCaptured_GHSlug(t *testing.T) {
 	if !*m.Source.Org.Settings.RequireContextGroupRestriction {
 		t.Error("RequireContextGroupRestriction should be true")
 	}
+	if m.Source.Org.Settings.FeatureFlags["allow_certified_public_orbs"] != true {
+		t.Error("FeatureFlags should contain allow_certified_public_orbs=true")
+	}
 }
 
 func TestExport_OrgSettingsSkipped_CircleCISlug(t *testing.T) {
-	settingsCalled := false
+	featureFlagsCalled := false
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) {
@@ -246,8 +291,8 @@ func TestExport_OrgSettingsSkipped_CircleCISlug(t *testing.T) {
 					VCSType: "circleci",
 				}, nil
 			},
-			getOrgSettings: func(vcsType, orgName string) (*org.OrgSettings, error) {
-				settingsCalled = true
+			getFeatureFlags: func(vcsType, orgName string) (map[string]bool, error) {
+				featureFlagsCalled = true
 				return nil, nil
 			},
 		},
@@ -259,8 +304,8 @@ func TestExport_OrgSettingsSkipped_CircleCISlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if settingsCalled {
-		t.Error("GetOrgSettings should NOT be called for circleci/ slug")
+	if featureFlagsCalled {
+		t.Error("GetFeatureFlags should NOT be called for circleci/ slug (no vcs/name form)")
 	}
 }
 
@@ -1180,12 +1225,12 @@ func TestExport_Projects_VCSFieldsMapped(t *testing.T) {
 	}
 }
 
-func TestExport_Projects_OrgSettingsError_IsWarning(t *testing.T) {
+func TestExport_OrgSettings_FeatureFlagsError_IsWarning(t *testing.T) {
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
-			getOrgSettings: func(vcsType, orgName string) (*org.OrgSettings, error) {
-				return nil, errors.New("settings unavailable")
+			getFeatureFlags: func(vcsType, orgName string) (map[string]bool, error) {
+				return nil, errors.New("feature flags unavailable")
 			},
 		},
 		Contexts: &fakeContextAPI{},
@@ -1194,15 +1239,103 @@ func TestExport_Projects_OrgSettingsError_IsWarning(t *testing.T) {
 
 	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
-		t.Fatalf("settings error should not fail Export, got: %v", err)
+		t.Fatalf("feature flags error should not fail Export, got: %v", err)
 	}
 	found := false
 	for _, w := range m.Warnings {
-		if w.Code == "org_settings_unreadable" {
+		if w.Code == "feature_flags_unreadable" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected org_settings_unreadable warning, not found")
+		t.Error("expected feature_flags_unreadable warning, not found")
 	}
+}
+
+func TestExport_OrgSettings_OIDCError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getOIDCClaims: func(orgID string) ([]string, string, error) {
+				return nil, "", errors.New("oidc API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("OIDC error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "oidc_claims_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected oidc_claims_unreadable warning, not found")
+	}
+}
+
+func TestExport_OrgSettings_FullCapture(t *testing.T) {
+	// Verifies that all org settings sub-reads are called and populated.
+	trueVal := true
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getFeatureFlags: func(vcsType, orgName string) (map[string]bool, error) {
+				return map[string]bool{
+					"allow_certified_public_orbs": true,
+					"drop_all_build_requests":     false,
+				}, nil
+			},
+			getOIDCClaims: func(orgID string) ([]string, string, error) {
+				return []string{"https://example.com"}, "1h", nil
+			},
+			getURLOrbAllowList: func(slugOrID string) ([]org.URLOrbAllowEntry, error) {
+				return []org.URLOrbAllowEntry{
+					{ID: "e1", Name: "github-raw", Prefix: "https://raw.githubusercontent.com/", Auth: "none"},
+				}, nil
+			},
+			getPolicyBundle: func(ownerID string) (map[string]string, error) {
+				return map[string]string{"my_policy": "package org\ndefault allow = false"}, nil
+			},
+			getPolicyEnf: func(ownerID string) (bool, error) {
+				return true, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := m.Source.Org.Settings
+	if s == nil {
+		t.Fatal("Settings is nil")
+		return
+	}
+	if s.FeatureFlags["allow_certified_public_orbs"] != true {
+		t.Error("FeatureFlags not populated")
+	}
+	if len(s.OIDCAudience) != 1 || s.OIDCAudience[0] != "https://example.com" {
+		t.Errorf("OIDCAudience: got %v", s.OIDCAudience)
+	}
+	if s.OIDCTTL != "1h" {
+		t.Errorf("OIDCTTL: got %q want %q", s.OIDCTTL, "1h")
+	}
+	if len(s.URLOrbAllowList) != 1 || s.URLOrbAllowList[0].Name != "github-raw" {
+		t.Errorf("URLOrbAllowList: got %v", s.URLOrbAllowList)
+	}
+	if s.ConfigPolicies["my_policy"] == "" {
+		t.Error("ConfigPolicies not populated")
+	}
+	if s.PolicyEnforcementEnabled == nil || !*s.PolicyEnforcementEnabled {
+		t.Error("PolicyEnforcementEnabled should be true")
+	}
+	_ = trueVal
 }
