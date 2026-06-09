@@ -1,0 +1,102 @@
+# e2e-fixtures.yaml
+#
+# Test topology for the circleci-migrate CLI: the CircleCI orgs, GitHub orgs, and
+# repos used for live/manual testing today, plus the dedicated dummy orgs we want
+# to stand up for repeatable end-to-end (e2e) tests.
+#
+# RULES
+#   - NO SECRETS in this file. API tokens come from the environment only:
+#       CIRCLECI_SOURCE_TOKEN / CIRCLECI_DEST_TOKEN (fallback: CIRCLECI_CLI_TOKEN)
+#       GITHUB_TOKEN (for GitHub App external_id resolution)
+#   - Prefer the dedicated `fixtures` below for anything automated; the
+#     `known_dev_resources` are real-ish accounts used for ad-hoc dev testing.
+#
+# Slug forms: GitHub OAuth orgs are "gh/<name>"; GitHub App / standalone orgs are
+# "circleci/<org-uuid>" and their projects are "circleci/<org-uuid>/<proj-uuid>".
+
+schema_version: 1
+
+auth:
+  # Names of the env vars to read; never the values.
+  source_token_env: CIRCLECI_SOURCE_TOKEN
+  dest_token_env: CIRCLECI_DEST_TOKEN
+  github_token_env: GITHUB_TOKEN
+
+# ---------------------------------------------------------------------------
+# Dedicated dummy orgs for repeatable testing / future e2e. Two per scenario:
+# a SOURCE (populated with test data) and a DEST (empty, receives the migration).
+# Fill in slugs/org_ids as these are provisioned. Keep test data synthetic — no
+# real secrets; use throwaway repos with a trivial .circleci/config.yml.
+# ---------------------------------------------------------------------------
+fixtures:
+  oauth_to_oauth:
+    description: GitHub OAuth org -> GitHub OAuth org (same-type).
+    source:
+      circleci_slug: TBD   # e.g. gh/<dummy-src-oauth>
+      github_org: TBD
+      org_id: TBD
+    dest:
+      circleci_slug: TBD   # e.g. gh/<dummy-dst-oauth>
+      github_org: TBD
+      org_id: TBD
+    repos: []              # throwaway repos present in BOTH GitHub orgs
+    seed:                  # synthetic data to create in source before a test
+      contexts: ["e2e-shared", "e2e-deploy"]
+      project_env_vars: ["E2E_FAKE_TOKEN", "E2E_REGION"]
+
+  app_to_app:
+    description: GitHub App / standalone org -> GitHub App org (same-type). Needs
+      the CircleCI GitHub App installed on the throwaway repos in both GitHub orgs
+      so pipeline-definitions/triggers have a real external_id.
+    source:
+      circleci_slug: TBD   # circleci/<src-org-uuid>
+      github_org: TBD
+      org_id: TBD
+    dest:
+      circleci_slug: TBD   # circleci/<dst-org-uuid>
+      github_org: TBD
+      org_id: TBD
+    repos: []
+    seed:
+      contexts: ["e2e-shared"]
+      pipeline_definitions: true   # at least one repo with .circleci/config.yml
+
+# ---------------------------------------------------------------------------
+# Orgs used for ad-hoc live testing during development. These are real accounts
+# (may hold real config) — do NOT run destructive operations except where noted.
+# ---------------------------------------------------------------------------
+known_dev_resources:
+  - name: Dummy-Test
+    circleci_slug: circleci/8G3atTsVAntm74tjLjbpaG
+    org_id: 3ac9b843-7095-443e-bfb3-bd7037999ef5
+    vcs_type: circleci
+    role: dest-writable-dummy
+    notes: >-
+      Safe for write tests (sync --apply, project create/delete). Validated:
+      context/env-var/restriction writes, App project shell create + delete.
+      Has the GitHub App but NO connected repo yet, so pipeline-definition /
+      trigger creation cannot be live-tested here until a repo is connected.
+
+  - name: james-crowley
+    circleci_slug: gh/james-crowley
+    org_id: 7115df1c-31e7-4681-be16-0a1eeb316b60
+    vcs_type: github
+    role: oauth-source-readonly
+    notes: Real OAuth org; used for export/read tests only. ~105 projects.
+
+  - name: CircleCI-Labs-Standalone
+    circleci_slug: circleci/98KhFjn8YyZY9qoBGmzCBs
+    org_id: 41ced616-61aa-47b8-9bf9-b8ed52d0468a
+    vcs_type: circleci
+    role: app-source-readonly
+    notes: >-
+      Real GitHub App org with connected repos + real pipeline-definitions/
+      triggers (used to validate capture: 50 projects). Read/export only — not
+      designated for create/delete tests.
+
+  - name: AwesomeCICD
+    circleci_slug: gh/AwesomeCICD
+    org_id: efc130dc-284f-4533-964e-844f5c173860
+    vcs_type: github
+    role: ci-host
+    notes: Hosts this repo's CI and the awesomecicd orb namespace.
