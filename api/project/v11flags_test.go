@@ -159,3 +159,66 @@ func TestSetV11ProjectFeatureFlags_Error(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// TestSetV11ProjectFeatureFlags_StringBody verifies that a 2xx response whose
+// body is a plain JSON string (not a map) is handled without error.
+// The live v1.1 PUT /settings endpoint may return a non-map body such as
+// `"ok"`, which would previously fail with
+// "cannot unmarshal string into Go value of type map[string]interface {}".
+func TestSetV11ProjectFeatureFlags_StringBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		// Respond with a raw string — not an object — to exercise the
+		// discard-body path introduced by the fix.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`"ok"`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.SetV11ProjectFeatureFlags("gh/acme/web", map[string]bool{"api_trigger_with_config": true})
+	if err != nil {
+		t.Fatalf("unexpected error for string body: %v", err)
+	}
+}
+
+// TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored verifies that a feature_flags
+// map containing array-valued or non-bool entries does not cause an error and
+// that only the bool-valued known keys are returned.
+// The live v1.1 project settings feature_flags can contain non-bool entries such
+// as pr-only-branch-overrides:["main"] which must not crash the decode.
+func TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"feature_flags": map[string]any{
+				"api-trigger-with-config":  true,
+				"pr-only-branch-overrides": []string{"main", "develop"},
+				"some-numeric-flag":        42,
+				"some-object-flag":         map[string]any{"k": "v"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	flags, err := c.GetV11ProjectFeatureFlags("gh/acme/web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := flags["api-trigger-with-config"]; !ok || !v {
+		t.Errorf("api-trigger-with-config: got %v (ok=%v), want true", v, ok)
+	}
+	// Non-bool keys must not appear in the result.
+	for _, k := range []string{"pr-only-branch-overrides", "some-numeric-flag", "some-object-flag"} {
+		if _, ok := flags[k]; ok {
+			t.Errorf("key %q should be ignored (non-bool value), but was present", k)
+		}
+	}
+	// drop-all-build-requests was absent, so it should not be in the result.
+	if _, ok := flags["drop-all-build-requests"]; ok {
+		t.Error("drop-all-build-requests should be absent when not in the response")
+	}
+}
