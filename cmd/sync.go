@@ -15,13 +15,14 @@ import (
 
 func newSyncCommand() *cobra.Command {
 	var (
-		manifestPath string
-		secretsPath  string
-		mappingPath  string
-		apply        bool
-		missing      string
-		skipContexts bool
-		skipProjects bool
+		manifestPath    string
+		secretsPath     string
+		mappingPath     string
+		apply           bool
+		missing         string
+		skipContexts    bool
+		skipProjects    bool
+		skipOrgSettings bool
 	)
 
 	cmd := &cobra.Command{
@@ -86,9 +87,16 @@ Examples:
 				return fmt.Errorf("creating project client: %w", err)
 			}
 
-			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, Out: cmd.ErrOrStderr()}
+			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, OrgSettings: orgClient, Out: cmd.ErrOrStderr()}
 			opts := syncer.Options{Apply: apply, MissingSecrets: missing}
 
+			if !skipOrgSettings {
+				rep, err := sy.SyncOrgSettings(m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				printSyncReport(cmd, "Org Settings", rep)
+			}
 			if !skipContexts {
 				rep, err := sy.SyncContexts(m, bundle, mapping, opts)
 				if err != nil {
@@ -115,6 +123,7 @@ Examples:
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
+	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 
 	return cmd
 }

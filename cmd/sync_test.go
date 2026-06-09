@@ -186,10 +186,34 @@ func TestSyncCmd_FlagsRegistered(t *testing.T) {
 		return
 	}
 
-	wantFlags := []string{"manifest", "secrets", "mapping", "apply", "missing-secrets"}
+	wantFlags := []string{
+		"manifest", "secrets", "mapping", "apply", "missing-secrets",
+		"skip-contexts", "skip-projects", "skip-org-settings",
+	}
 	for _, name := range wantFlags {
 		if syncSub.Flags().Lookup(name) == nil {
 			t.Errorf("sync flag --%s not registered", name)
 		}
+	}
+}
+
+// TestSyncCmd_SkipOrgSettings_FlagAccepted verifies that --skip-org-settings
+// is accepted as a valid flag and does not cause an error in validation.
+func TestSyncCmd_SkipOrgSettings_FlagAccepted(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	// With --skip-org-settings we should still fail on token (not flag parsing).
+	_, _, err := runSyncCmd(t, "--manifest", mPath, "--skip-org-settings")
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("--skip-org-settings should be a known flag; got: %v", err)
+	}
+	// It should fail on the token check, not on the flag.
+	if err != nil && !strings.Contains(err.Error(), "token") {
+		t.Logf("error (expected token error): %v", err)
 	}
 }

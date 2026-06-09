@@ -60,13 +60,36 @@ type Org struct {
 	Settings *OrgSettings `json:"settings,omitempty"`
 }
 
-// OrgSettings holds org-level settings that are readable via API. Most
-// org-level settings are not exposed by any API; only the ones below can be
-// captured today.
+// OrgSettings holds org-level settings captured from the API.
 type OrgSettings struct {
-	// RequireContextGroupRestriction mirrors the org "require a security group
-	// on contexts" toggle (v1.1 feature flag). Nil when not captured.
+	// FeatureFlags is the full org feature-flag map from the v1.1 settings
+	// endpoint (orb security, drop_all_build_requests, disable_user_checkout_keys,
+	// require_context_group_restriction, AI/brownout toggles, …). Captured whole
+	// so nothing is lost; sync writes back the safe/relevant ones.
+	FeatureFlags map[string]bool `json:"feature_flags,omitempty"`
+
+	// OIDC custom claims (v2 /org/{id}/oidc-custom-claims).
+	OIDCAudience []string `json:"oidc_audience,omitempty"`
+	OIDCTTL      string   `json:"oidc_ttl,omitempty"`
+
+	// URLOrbAllowList entries (v2; GitHub App / circleci-type orgs only).
+	URLOrbAllowList []URLOrbAllowEntry `json:"url_orb_allow_list,omitempty"`
+
+	// ConfigPolicies maps policy name -> Rego content (v2, Scale plan), with the
+	// enforcement toggle. Empty/nil when none or not on Scale.
+	ConfigPolicies           map[string]string `json:"config_policies,omitempty"`
+	PolicyEnforcementEnabled *bool             `json:"policy_enforcement_enabled,omitempty"`
+
+	// RequireContextGroupRestriction mirrors the same-named feature flag, kept as
+	// a convenience pointer (also present in FeatureFlags). Nil when not captured.
 	RequireContextGroupRestriction *bool `json:"require_context_group_restriction,omitempty"`
+}
+
+// URLOrbAllowEntry is one entry of a circleci-type org's URL-orb allow list.
+type URLOrbAllowEntry struct {
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
+	Auth   string `json:"auth,omitempty"`
 }
 
 // Context is a CircleCI context and everything about it we can read.

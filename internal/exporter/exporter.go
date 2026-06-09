@@ -21,6 +21,11 @@ import (
 type OrgAPI interface {
 	GetOrganization(slugOrID string) (*org.Organization, error)
 	GetOrgSettings(vcsType, orgName string) (*org.OrgSettings, error)
+	GetFeatureFlags(vcsType, orgName string) (map[string]bool, error)
+	GetOIDCClaims(orgID string) (audience []string, ttl string, err error)
+	GetURLOrbAllowList(slugOrID string) ([]org.URLOrbAllowEntry, error)
+	GetPolicyBundle(ownerID string) (map[string]string, error)
+	GetPolicyEnforcement(ownerID string) (bool, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -91,15 +96,10 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 	m.Source.Org = manifest.Org{Slug: o.Slug, ID: o.ID, Name: o.Name, VCSType: o.VCSType}
 	e.logf("  → %s (id %s, %s)", o.Name, o.ID, o.VCSType)
 
-	// Org settings (best-effort; only the context-group-restriction flag is
-	// readable, and only via v1.1 with a vcs/name slug).
-	if vcs, name, ok := splitOrgSlug(opts.OrgSlug, o.VCSType); ok {
-		if s, serr := e.Org.GetOrgSettings(vcs, name); serr != nil {
-			m.AddWarning("org", "org_settings_unreadable", fmt.Sprintf("could not read org settings: %v", serr))
-		} else if s != nil {
-			m.Source.Org.Settings = &manifest.OrgSettings{RequireContextGroupRestriction: s.RequireContextGroupRestriction}
-		}
-	}
+	// Org settings: best-effort capture. Each sub-read is independent so a
+	// failure in one (e.g. App org 404s on feature flags) does not prevent the
+	// others from being captured.
+	e.exportOrgSettings(m, o, opts.OrgSlug)
 
 	if opts.IncludeContexts {
 		if err := e.exportContexts(m, o); err != nil {
@@ -293,6 +293,85 @@ func mapAdvancedSettings(s *project.AdvancedSettings) *manifest.AdvancedSettings
 		SetupWorkflows:             s.SetupWorkflows,
 		WriteSettingsRequiresAdmin: s.WriteSettingsRequiresAdmin,
 		PROnlyBranchOverrides:      s.PROnlyBranchOverrides,
+	}
+}
+
+// exportOrgSettings fills m.Source.Org.Settings with all readable org-level
+// settings. Every sub-read is best-effort: on error a manifest warning is
+// added and the field is left empty. App orgs (circleci/<uuid>) will 404 on
+// the v1.1 feature-flags endpoint — that is normal and treated as empty.
+func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, orgSlug string) {
+	s := &manifest.OrgSettings{}
+	hasAny := false
+
+	// Feature flags (v1.1; only available for VCS-type orgs with a name slug).
+	if vcs, name, ok := splitOrgSlug(orgSlug, o.VCSType); ok {
+		if flags, ferr := e.Org.GetFeatureFlags(vcs, name); ferr != nil {
+			m.AddWarning("org", "feature_flags_unreadable", fmt.Sprintf("could not read feature flags: %v", ferr))
+		} else if len(flags) > 0 {
+			s.FeatureFlags = flags
+			// Convenience copy of the context-group-restriction flag.
+			if v, present := flags["require_context_group_restriction"]; present {
+				v := v
+				s.RequireContextGroupRestriction = &v
+			}
+			hasAny = true
+		}
+
+		// Legacy RequireContextGroupRestriction via the old GetOrgSettings path
+		// (belt-and-suspenders; covers orgs where GetFeatureFlags returned empty).
+		if s.RequireContextGroupRestriction == nil {
+			if os, serr := e.Org.GetOrgSettings(vcs, name); serr == nil && os != nil && os.RequireContextGroupRestriction != nil {
+				s.RequireContextGroupRestriction = os.RequireContextGroupRestriction
+				hasAny = true
+			}
+		}
+	}
+
+	// OIDC custom claims (v2; keyed by org UUID).
+	if o.ID != "" {
+		if audience, ttl, oerr := e.Org.GetOIDCClaims(o.ID); oerr != nil {
+			m.AddWarning("org", "oidc_claims_unreadable", fmt.Sprintf("could not read OIDC claims: %v", oerr))
+		} else if len(audience) > 0 || ttl != "" {
+			s.OIDCAudience = audience
+			s.OIDCTTL = ttl
+			hasAny = true
+		}
+	}
+
+	// URL-orb allow list (v2; keyed by slug-or-id).
+	if urlList, uerr := e.Org.GetURLOrbAllowList(orgSlug); uerr != nil {
+		m.AddWarning("org", "url_orb_allow_list_unreadable", fmt.Sprintf("could not read URL-orb allow list: %v", uerr))
+	} else if len(urlList) > 0 {
+		for _, entry := range urlList {
+			s.URLOrbAllowList = append(s.URLOrbAllowList, manifest.URLOrbAllowEntry{
+				Name:   entry.Name,
+				Prefix: entry.Prefix,
+				Auth:   entry.Auth,
+			})
+		}
+		hasAny = true
+	}
+
+	// Config policies (v2; Scale plan only — 404 / 403 treated as empty).
+	if o.ID != "" {
+		if bundle, perr := e.Org.GetPolicyBundle(o.ID); perr != nil {
+			m.AddWarning("org", "policy_bundle_unreadable", fmt.Sprintf("could not read config policies (Scale plan required): %v", perr))
+		} else if len(bundle) > 0 {
+			s.ConfigPolicies = bundle
+			hasAny = true
+		}
+
+		if enabled, eerr := e.Org.GetPolicyEnforcement(o.ID); eerr != nil {
+			m.AddWarning("org", "policy_enforcement_unreadable", fmt.Sprintf("could not read policy enforcement setting: %v", eerr))
+		} else {
+			s.PolicyEnforcementEnabled = &enabled
+			hasAny = true
+		}
+	}
+
+	if hasAny {
+		m.Source.Org.Settings = s
 	}
 }
 

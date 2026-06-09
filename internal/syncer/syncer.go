@@ -64,10 +64,11 @@ func (o Options) placeholder() string {
 
 // Syncer writes into a destination org via the injected clients.
 type Syncer struct {
-	Org      OrgResolver
-	Contexts ContextWriter
-	Projects ProjectWriter
-	Out      io.Writer
+	Org         OrgResolver
+	Contexts    ContextWriter
+	Projects    ProjectWriter
+	OrgSettings OrgSettingsWriter
+	Out         io.Writer
 }
 
 func (s *Syncer) logf(format string, args ...any) {
