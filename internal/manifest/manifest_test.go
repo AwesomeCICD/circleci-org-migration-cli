@@ -99,6 +99,13 @@ func TestResolveProjectSlug(t *testing.T) {
 			wantOK:  false,
 		},
 		{
+			name:     "github app identity mapping resolves to itself",
+			mapping:  &Mapping{Org: OrgMapping{From: "circleci/o", To: "circleci/o"}},
+			source:   "circleci/o/p",
+			wantSlug: "circleci/o/p",
+			wantOK:   true,
+		},
+		{
 			name:    "non-matching prefix fails",
 			mapping: &Mapping{Org: OrgMapping{From: "gh/acme", To: "gh/acme-new"}},
 			source:  "gh/other/web",

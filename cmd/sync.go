@@ -7,6 +7,7 @@ import (
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/syncer"
 	"github.com/spf13/cobra"
@@ -19,6 +20,8 @@ func newSyncCommand() *cobra.Command {
 		mappingPath  string
 		apply        bool
 		missing      string
+		skipContexts bool
+		skipProjects bool
 	)
 
 	cmd := &cobra.Command{
@@ -78,14 +81,28 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("creating context client: %w", err)
 			}
-
-			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Out: cmd.ErrOrStderr()}
-			rep, err := sy.SyncContexts(m, bundle, mapping, syncer.Options{Apply: apply, MissingSecrets: missing})
+			projClient, err := project.NewClient(rootOptions, token)
 			if err != nil {
-				return err
+				return fmt.Errorf("creating project client: %w", err)
 			}
 
-			printSyncReport(cmd, rep)
+			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, Out: cmd.ErrOrStderr()}
+			opts := syncer.Options{Apply: apply, MissingSecrets: missing}
+
+			if !skipContexts {
+				rep, err := sy.SyncContexts(m, bundle, mapping, opts)
+				if err != nil {
+					return err
+				}
+				printSyncReport(cmd, "Contexts", rep)
+			}
+			if !skipProjects {
+				rep, err := sy.SyncProjects(m, bundle, mapping, opts)
+				if err != nil {
+					return err
+				}
+				printSyncReport(cmd, "Projects", rep)
+			}
 			return nil
 		},
 	}
@@ -96,6 +113,8 @@ Examples:
 	f.StringVar(&mappingPath, "mapping", "", "Path to a source->destination mapping file (optional)")
 	f.BoolVar(&apply, "apply", false, "Write changes to the destination (default: dry run)")
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
+	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
+	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 
 	return cmd
 }
@@ -115,14 +134,14 @@ func loadBundleIfPresent(path string) (*manifest.SecretBundle, error) {
 	return manifest.LoadSecretBundle(path)
 }
 
-func printSyncReport(cmd *cobra.Command, rep *syncer.Report) {
+func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report) {
 	out := cmd.OutOrStdout()
 	mode := "DRY RUN (no changes written; re-run with --apply to apply)"
 	if rep.Applied {
 		mode = "APPLIED"
 	}
-	fmt.Fprintf(out, "Sync %s\n", mode)
-	fmt.Fprintf(out, "  Destination: %s (id %s)\n\n", rep.DestOrgSlug, rep.DestOrgID)
+	fmt.Fprintf(out, "== %s sync — %s ==\n", section, mode)
+	fmt.Fprintf(out, "  Destination: %s\n\n", rep.DestOrgSlug)
 
 	counts := rep.Counts()
 	for _, status := range []string{"created", "exists", "set", "manual", "skipped", "error"} {
