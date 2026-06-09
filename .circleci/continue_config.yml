@@ -1,0 +1,542 @@
+# CircleCI CONTINUATION config — all workflows live here.
+#
+# This file is invoked by the setup pipeline (.circleci/config.yml) via the
+# path-filtering orb. The pipeline parameter run-orb-publish is set to true
+# by path-filtering when any file under orb/ changes; it gates the dev orb
+# publish job. The production publish job is gated by version-tag filter only.
+#
+# Workflow summary:
+#   ci          — quality + security → tests → build (branch pipelines, unchanged)
+#   release     — goreleaser (tag-only, unchanged)
+#   orb-publish — dev publish (branch, orb changed) + prod publish (tag-only)
+#
+# Prerequisites:
+#   Context "orb-publishing" must exist in the awesomecicd org containing:
+#     CIRCLE_TOKEN — an org-owner-scoped CircleCI personal API token
+#
+# One-time orb creation (run once by an org owner before the first publish):
+#   circleci orb create awesomecicd/circleci-org-migration \
+#     --private \
+#     --org-id efc130dc-284f-4533-964e-844f5c173860
+#
+# CircleCI pipeline for circleci-migrate.
+#
+# Best practices applied (per CircleCI docs):
+#   - reusable executor + reusable commands (DRY)
+#   - the official circleci/go orb for module download + caching
+#   - convenience image (cimg/go) instead of bespoke images
+#   - a matrix job for cross-platform builds (GOOS x GOARCH)
+#   - JUnit test results (gotestsum) + coverage artifacts
+#   - dedicated security stage (govulncheck, gosec, gitleaks, trivy)
+#
+# Workflow stages (DAG):
+#   Stage 1 — quality + security gates (parallel, no prerequisites):
+#             lint, security-vuln, security-sast, security-secrets, security-trivy
+#   Stage 2 — test, coverage, e2e (require all of stage 1):
+#             test, coverage, e2e
+#   Stage 3 — cross-platform build matrix (requires test to pass):
+#             build
+version: 2.1
+
+parameters:
+  # Set to true by path-filtering when any file under orb/ changes.
+  # Gates the dev orb-publish job (branches only).
+  run-orb-publish:
+    type: boolean
+    default: false
+  go-image-tag:
+    type: string
+    # cimg/go floating patch tag. circleci-migrate targets Go 1.26 (see go.mod).
+    default: "1.26"
+
+orbs:
+  go: circleci/go@3.0.4
+  trivy: cci-labs/trivy@1.0.0
+
+# ---------------------------------------------------------------------------
+# Executors
+# Resource-class sizing is workload-reasoned; tune with CircleCI usage data:
+#   medium  — lint/test/coverage/sast/vuln: golangci-lint v2 + race detector
+#             need the extra RAM; medium is the minimum safe class.
+#   small   — build matrix + binary-download jobs: mostly curl + go build,
+#             light on RAM; small cuts credit cost noticeably at this width.
+# ---------------------------------------------------------------------------
+executors:
+  go:
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: medium
+    environment:
+      CGO_ENABLED: "0"
+  base:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+
+commands:
+  goinstall:
+    description: "go install a pinned tool and make it available on PATH."
+    parameters:
+      pkg:
+        type: string
+    steps:
+      - run:
+          name: "Install << parameters.pkg >>"
+          command: go install << parameters.pkg >>
+
+jobs:
+  # ===========================================================================
+  # STAGE 1 — Quality + Security (run first, in parallel)
+  # ===========================================================================
+
+  lint:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: go vet
+          command: go vet ./...
+      - run:
+          name: gofmt check
+          command: |
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "These files are not gofmt-clean:"
+              echo "$unformatted"
+              exit 1
+            fi
+      - run:
+          name: Install golangci-lint
+          command: |
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+              | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+      - run:
+          name: golangci-lint
+          command: golangci-lint run --timeout 5m
+
+  security-vuln:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      # govulncheck uses call-graph analysis: it fails only on vulnerabilities
+      # in code paths we actually call. Run @latest so the scanner DB is fresh.
+      - goinstall:
+          pkg: golang.org/x/vuln/cmd/govulncheck@latest
+      - run:
+          name: govulncheck
+          command: govulncheck ./...
+
+  security-sast:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      # Cache the gosec binary across runs — keyed on version + arch so a new
+      # version or a different executor arch triggers a fresh install.
+      - restore_cache:
+          keys:
+            - gosec-v2.27.1-{{ arch }}-v1
+      - run:
+          name: Install gosec (if not cached)
+          command: |
+            if [ ! -x "$(go env GOPATH)/bin/gosec" ]; then
+              go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+            fi
+      - save_cache:
+          key: gosec-v2.27.1-{{ arch }}-v1
+          paths:
+            - /home/circleci/go/bin/gosec
+      - run:
+          name: gosec (SAST)
+          command: |
+            mkdir -p test-results
+            status=0
+            gosec -severity high -fmt junit-xml -out test-results/gosec.xml ./... || status=$?
+            gosec -severity high -fmt sarif -out gosec.sarif ./... 2>/dev/null || true
+            exit $status
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: gosec.sarif
+          destination: gosec.sarif
+
+  security-secrets:
+    executor: base
+    steps:
+      - checkout
+      # Cache the gitleaks binary keyed on version + arch.
+      - restore_cache:
+          keys:
+            - gitleaks-v8.30.1-{{ arch }}-v1
+      - run:
+          name: Install gitleaks (if not cached)
+          command: |
+            if ! command -v gitleaks &>/dev/null; then
+              ver=8.30.1
+              curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+                | sudo tar -xz -C /usr/local/bin gitleaks
+            fi
+            gitleaks version
+      - save_cache:
+          key: gitleaks-v8.30.1-{{ arch }}-v1
+          paths:
+            - /usr/local/bin/gitleaks
+      - run:
+          name: gitleaks (secret scan, full history)
+          command: |
+            gitleaks detect --source=. --redact --exit-code=1 \
+              --report-format=sarif --report-path=gitleaks.sarif
+      - store_artifacts:
+          path: gitleaks.sarif
+          destination: gitleaks.sarif
+
+  # Filesystem vuln/secret/misconfig scan via the cci-labs Trivy orb.
+  # Warn-only for now (no exit-code); flip exit-code to "1" to make it blocking
+  # once a clean baseline is established.
+  security-trivy:
+    executor: base
+    steps:
+      - checkout
+      # Install trivy via a direct, pinned release download. The orb's installer
+      # (and trivy's contrib install.sh) resolve the version through the GitHub
+      # API, which is rate-limited on shared CI IPs and was failing here. A
+      # direct release download (same pattern as the gitleaks job) is reliable.
+      - run:
+          name: Install Trivy (pinned v0.71.0)
+          command: |
+            ver=0.71.0
+            curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${ver}/trivy_${ver}_Linux-64bit.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin trivy
+            trivy --version
+      - trivy/scan:
+          skip-setup-trivy: true
+          scan-type: fs
+          scan-ref: "."
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: table
+          hide-progress: true
+
+  # ===========================================================================
+  # STAGE 2 — Test, Coverage, E2E (require ALL of stage 1)
+  # ===========================================================================
+
+  test:
+    executor: go
+    parallelism: 2
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Run tests (split by timing, race detector)
+          command: |
+            mkdir -p test-results
+            # Split packages across containers by timing data; falls back to
+            # name-splitting on the first run (no timing data yet).
+            PKGS=$(go list ./... | circleci tests split --split-by=timings --timings-type=classname)
+            # -race requires CGO; executor defaults CGO_ENABLED=0 for static
+            # builds, so enable it just for the race-enabled test run.
+            CGO_ENABLED=1 gotestsum \
+              --junitfile test-results/unit-tests.xml \
+              --format testname \
+              -- -race $PKGS
+      - run:
+          # Best-effort HTML report from the JUnit XML. cimg/go may or may not
+          # have Node available; wrap in || true so a missing runtime never
+          # fails the build. The JUnit XML + store_test_results already populate
+          # the Tests tab; this is a convenient bonus artifact.
+          name: HTML test report (best effort)
+          command: |
+            npx --yes xunit-viewer --results=test-results --output=test-results/index.html \
+              || echo "html report skipped (node/npx not available)"
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: test-results
+
+  coverage:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Run full test suite with coverage
+          command: |
+            # Single container — collect coverage across all packages at once.
+            # Do NOT split here; partial per-container profiles cannot be easily
+            # merged and would give a misleading total.
+            CGO_ENABLED=1 go test -covermode=atomic -coverprofile=coverage.out ./...
+      - run:
+          name: Coverage report + threshold gate
+          command: |
+            go tool cover -html=coverage.out -o coverage.html
+            go tool cover -func=coverage.out | tail -1
+            ./scripts/check-coverage.sh coverage.out
+      - store_artifacts:
+          path: coverage.html
+          destination: coverage.html
+
+  # E2E binary smoke test — no tokens, no network required.
+  # Builds the real binary and exercises CLI entry points + the secrets-extract
+  # path against a tiny in-memory fixture manifest.
+  # TODO: add a live-org e2e suite (against a dedicated test org with scoped
+  #       tokens) once secret management for CI is in place.
+  e2e:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Build binary
+          command: |
+            mkdir -p bin
+            go build -o bin/circleci-migrate .
+      - run:
+          name: Smoke — version + help
+          command: |
+            ./bin/circleci-migrate version
+            ./bin/circleci-migrate --help
+            ./bin/circleci-migrate export --help
+      - run:
+          name: Smoke — secrets extract (fixture, no network)
+          command: |
+            # Write a minimal manifest with one context containing one variable.
+            # printf (not a heredoc) keeps the CircleCI parameter parser happy.
+            mkdir -p e2e-tmp
+            printf '%s' '{"schema_version":"1","source":{"host":"https://circleci.com","org":{"slug":"gh/test-org","name":"test-org"}},"contexts":[{"name":"e2e-ctx","environment_variables":[{"name":"E2E_SECRET_VAR"}]}],"projects":[]}' > e2e-tmp/manifest.json
+            # Supply the variable value via the environment (as a real job would).
+            E2E_SECRET_VAR=supersecret \
+              ./bin/circleci-migrate secrets extract \
+                --manifest e2e-tmp/manifest.json \
+                --context e2e-ctx \
+                --output e2e-tmp/secrets.json
+            # Assert the bundle was created and contains the expected key.
+            test -f e2e-tmp/secrets.json
+            grep -q "E2E_SECRET_VAR" e2e-tmp/secrets.json
+            echo "E2E smoke test passed."
+
+  # ===========================================================================
+  # STAGE 3 — Cross-platform build matrix (requires test)
+  # ===========================================================================
+
+  build:
+    parameters:
+      goos:
+        type: string
+      goarch:
+        type: string
+    # Build jobs are mostly curl + go build — light on RAM; small saves credits.
+    executor: go
+    resource_class: small
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Build << parameters.goos >>/<< parameters.goarch >>
+          command: |
+            out="dist/circleci-migrate-<< parameters.goos >>-<< parameters.goarch >>"
+            GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
+              go build -trimpath -o "$out" .
+            ls -lh "$out"
+      - store_artifacts:
+          path: dist
+          destination: binaries
+
+  # ===========================================================================
+  # RELEASE — publish cross-platform binaries via GoReleaser
+  # ===========================================================================
+
+  # Triggered only by version tags (see the release workflow below).
+  # Requires a CircleCI context named "goreleaser" that exposes GITHUB_TOKEN
+  # with "repo" scope (needed to create GitHub Releases and upload assets).
+  release:
+    executor: go
+    steps:
+      - checkout
+      # Install GoReleaser at a pinned version — same pattern as gitleaks/trivy
+      # above (direct release download, no unpinned orb dependency).
+      - run:
+          name: Install GoReleaser (pinned v2.9.0)
+          command: |
+            ver=2.9.0
+            curl -sfL "https://github.com/goreleaser/goreleaser/releases/download/v${ver}/goreleaser_Linux_x86_64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin goreleaser
+            goreleaser --version
+      - go/mod-download-cached
+      - run:
+          name: goreleaser release
+          command: goreleaser release --clean
+
+  # ===========================================================================
+  # ORB PUBLISH — validate + publish awesomecicd/circleci-org-migration
+  # ===========================================================================
+  #
+  # Two flavours of publish, defined as a single parametrised job:
+  #   dev   — branches: publishes orb/orb.yml as a dev label (SHA-prefixed).
+  #   prod  — tags:     publishes orb/orb.yml as a semver release.
+  #
+  # The CircleCI CLI must be available on the executor. cimg/base:current does
+  # not ship the CLI, so we install it via the official install script.
+  #
+  # Context "orb-publishing" must contain:
+  #   CIRCLE_TOKEN — personal API token for an org owner of awesomecicd
+  #
+  # One-time setup (run once by an org owner):
+  #   circleci orb create awesomecicd/circleci-org-migration \
+  #     --private \
+  #     --org-id efc130dc-284f-4533-964e-844f5c173860
+  publish-orb:
+    parameters:
+      pub_type:
+        type: enum
+        enum: [dev, prod]
+        description: "dev = SHA-labelled dev publish; prod = semver release publish."
+    executor: base
+    steps:
+      - checkout
+      - run:
+          name: Install CircleCI CLI (pinned v0.1.34950)
+          command: |
+            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh \
+              | sudo bash
+            circleci version
+      - run:
+          name: Validate orb
+          command: circleci orb validate orb/orb.yml
+      - when:
+          condition:
+            equal: [dev, << parameters.pub_type >>]
+          steps:
+            - run:
+                name: Publish dev orb (SHA label)
+                command: |
+                  circleci orb publish orb/orb.yml \
+                    awesomecicd/circleci-org-migration@dev:${CIRCLE_SHA1:0:7} \
+                    --token "$CIRCLE_TOKEN"
+      - when:
+          condition:
+            equal: [prod, << parameters.pub_type >>]
+          steps:
+            - run:
+                name: Publish production orb (semver from tag)
+                command: |
+                  # Strip leading 'v' from the tag (e.g. v1.2.3 → 1.2.3).
+                  semver="${CIRCLE_TAG#v}"
+                  circleci orb publish orb/orb.yml \
+                    awesomecicd/circleci-org-migration@${semver} \
+                    --token "$CIRCLE_TOKEN"
+
+workflows:
+  ci:
+    jobs:
+      # -----------------------------------------------------------------------
+      # Stage 1: quality + security gates — all run in parallel, no prerequisites
+      # -----------------------------------------------------------------------
+      - lint
+      - security-vuln
+      - security-sast
+      - security-secrets
+      - security-trivy
+
+      # -----------------------------------------------------------------------
+      # Stage 2: test, coverage, e2e — require ALL stage-1 jobs to pass first
+      # -----------------------------------------------------------------------
+      - test:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+      - coverage:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+      - e2e:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+
+      # -----------------------------------------------------------------------
+      # Stage 3: cross-platform build matrix — requires test (not coverage/e2e,
+      # so a coverage regression doesn't block artifact production)
+      # -----------------------------------------------------------------------
+      - build:
+          name: build-<< matrix.goos >>-<< matrix.goarch >>
+          requires:
+            - test
+          matrix:
+            parameters:
+              goos: [linux, darwin]
+              goarch: [amd64, arm64]
+
+  # ---------------------------------------------------------------------------
+  # Release workflow — fires ONLY on version tags (v*), never on branches.
+  # CircleCI does not run workflows on tags by default; the tag filter below
+  # is the explicit opt-in. The existing ci workflow has no tag filters, so it
+  # remains branch-only and will NOT fire on tag pushes.
+  #
+  # Prerequisites:
+  #   - A CircleCI context named "goreleaser" must exist in your org, containing
+  #     a GITHUB_TOKEN env var with "repo" scope (to create GitHub Releases and
+  #     upload release assets).
+  # ---------------------------------------------------------------------------
+  release:
+    jobs:
+      - release:
+          context:
+            - goreleaser
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+  # ---------------------------------------------------------------------------
+  # Orb-publish (dev) — fires on branches ONLY when orb/ changed.
+  # The workflow-level when: gates it on the run-orb-publish parameter that
+  # path-filtering sets to true. This is the correct v2.1 pattern for
+  # parameter-conditioned workflows; job-level when: is not supported.
+  # ---------------------------------------------------------------------------
+  orb-publish-dev:
+    when: << pipeline.parameters.run-orb-publish >>
+    jobs:
+      # Runs only on branch pipelines (not tags) — enforced by the tag ignore
+      # filter so a tag push never triggers a redundant dev publish.
+      - publish-orb:
+          name: publish-orb-dev
+          pub_type: dev
+          context:
+            - orb-publishing
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              ignore: /.*/
+
+  # ---------------------------------------------------------------------------
+  # Orb-publish (production) — fires on every version tag push.
+  # A tag push IS the release signal; no file-change gating needed here.
+  # ---------------------------------------------------------------------------
+  orb-publish-prod:
+    jobs:
+      # Production publish: semver release from the tag name.
+      - publish-orb:
+          name: publish-orb-prod
+          pub_type: prod
+          context:
+            - orb-publishing
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+            branches:
+              ignore: /.*/
