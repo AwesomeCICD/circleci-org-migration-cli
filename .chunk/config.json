@@ -1,0 +1,59 @@
+{
+  "commands": [
+    {
+      "name": "test",
+      "run": "make test",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 300,
+      "limit": 3
+    },
+    {
+      "name": "vet",
+      "run": "go vet ./...",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 120,
+      "limit": 3
+    },
+    {
+      "name": "lint",
+      "run": "make lint",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 180,
+      "limit": 3
+    },
+    {
+      "name": "security",
+      "run": "make security",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 300,
+      "limit": 2
+    },
+    {
+      "name": "format",
+      "run": "make fmt",
+      "role": "autofix",
+      "timeout": 30,
+      "limit": 3,
+      "always": true
+    }
+  ],
+  "vcs": {
+    "org": "CircleCI-Public",
+    "repo": "circleci-org-migration-cli"
+  },
+  "environment": {
+    "stack": "go",
+    "image": "cimg/go",
+    "image_version": "1.26.2",
+    "setup": [
+      {
+        "name": "install",
+        "command": "go mod download"
+      }
+    ]
+  }
+}

@@ -1,9 +1,12 @@
 /bin/
 /dist/
 
-# Test coverage
+# Test coverage & scan reports
 *.out
 coverage.txt
+coverage.html
+/test-results/
+*.sarif
 
 # Personal Claude Code settings (shared settings.json is committed)
 /.claude/settings.local.json
