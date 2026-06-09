@@ -123,6 +123,25 @@ release-snapshot:
 release-check:
 	goreleaser check
 
+# orb-validate runs the CircleCI CLI orb linter against the single-file orb.
+# Mirrors the validate step in the CI orb-publish job.
+.PHONY: orb-validate
+orb-validate:
+	@if command -v circleci >/dev/null 2>&1; then \
+		circleci orb validate orb/orb.yml; \
+	else \
+		echo "circleci CLI not found — install from https://circleci.com/docs/local-cli/"; exit 1; \
+	fi
+
+# orb-publish-dev validates then publishes a dev-labelled version of the orb
+# for manual / local testing. Requires CIRCLE_TOKEN to be set in your shell.
+# The label includes a Unix timestamp so successive publishes don't collide.
+.PHONY: orb-publish-dev
+orb-publish-dev: orb-validate
+	circleci orb publish orb/orb.yml \
+		awesomecicd/circleci-org-migration@dev:manual-$$(date +%s) \
+		--token "$$CIRCLE_TOKEN"
+
 .PHONY: clean
 clean:
 	rm -rf bin/ dist/ coverage.out coverage.html test-results/ *.sarif
