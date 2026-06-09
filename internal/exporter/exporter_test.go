@@ -27,6 +27,8 @@ type fakeOrgAPI struct {
 	getAuditLogConfigs func(orgID string) ([]org.AuditLogConfig, error)
 	getSSOEnforced     func(orgID string) (bool, error)
 	getSSOConnection   func(orgID string) (map[string]any, bool, error)
+	getOTelExporters   func(orgID string) ([]org.OTelExporter, error)
+	getContacts        func(orgID string) ([]string, []string, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -97,6 +99,20 @@ func (f *fakeOrgAPI) GetSSOConnection(orgID string) (map[string]any, bool, error
 		return f.getSSOConnection(orgID)
 	}
 	return nil, false, nil
+}
+
+func (f *fakeOrgAPI) GetOTelExporters(orgID string) ([]org.OTelExporter, error) {
+	if f.getOTelExporters != nil {
+		return f.getOTelExporters(orgID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetContacts(orgID string) ([]string, []string, error) {
+	if f.getContacts != nil {
+		return f.getContacts(orgID)
+	}
+	return nil, nil, nil
 }
 
 type fakeContextAPI struct {
@@ -1828,5 +1844,203 @@ func TestExport_Projects_V11Flags_DoNotClobberV2Settings(t *testing.T) {
 	// v1.1 flag also set.
 	if s.APITriggerWithConfig == nil || !*s.APITriggerWithConfig {
 		t.Error("APITriggerWithConfig should be true (from v1.1)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OTel exporters capture
+// ---------------------------------------------------------------------------
+
+func TestExport_OrgSettings_OTelExportersCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getOTelExporters: func(orgID string) ([]org.OTelExporter, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("GetOTelExporters orgID: got %q want org-uuid-123", orgID)
+				}
+				return []org.OTelExporter{
+					{
+						ID:       "exp-1",
+						Endpoint: "https://otel.example.com:4318",
+						Protocol: "http/protobuf",
+						Insecure: false,
+						Headers:  map[string]string{"Authorization": "xxxx"},
+					},
+					{
+						ID:       "exp-2",
+						Endpoint: "grpc.example.com:4317",
+						Protocol: "grpc",
+						Insecure: true,
+					},
+				}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil")
+	}
+	exporters := m.Source.Org.Settings.OTelExporters
+	if len(exporters) != 2 {
+		t.Fatalf("expected 2 OTel exporters, got %d", len(exporters))
+	}
+	if exporters[0].Endpoint != "https://otel.example.com:4318" {
+		t.Errorf("exporters[0].Endpoint: got %q", exporters[0].Endpoint)
+	}
+	if exporters[0].Protocol != "http/protobuf" {
+		t.Errorf("exporters[0].Protocol: got %q", exporters[0].Protocol)
+	}
+	if exporters[0].Insecure {
+		t.Error("exporters[0].Insecure should be false")
+	}
+	if exporters[0].Headers["Authorization"] != "xxxx" {
+		t.Errorf("exporters[0].Headers[Authorization]: got %q want xxxx", exporters[0].Headers["Authorization"])
+	}
+	if exporters[1].Insecure != true {
+		t.Error("exporters[1].Insecure should be true")
+	}
+}
+
+func TestExport_OrgSettings_OTelExportersEmpty_NotSet(t *testing.T) {
+	// When GetOTelExporters returns an empty slice, OTelExporters must be nil in the manifest.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getOTelExporters: func(orgID string) ([]org.OTelExporter, error) {
+				return []org.OTelExporter{}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings != nil && len(m.Source.Org.Settings.OTelExporters) != 0 {
+		t.Errorf("OTelExporters should be empty when API returns [], got %v", m.Source.Org.Settings.OTelExporters)
+	}
+}
+
+func TestExport_OrgSettings_OTelExportersError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getOTelExporters: func(orgID string) ([]org.OTelExporter, error) {
+				return nil, errors.New("otel API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("OTel error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "otel_exporters_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected otel_exporters_unreadable warning, not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Contacts capture
+// ---------------------------------------------------------------------------
+
+func TestExport_OrgSettings_ContactsCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getContacts: func(orgID string) ([]string, []string, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("GetContacts orgID: got %q want org-uuid-123", orgID)
+				}
+				return []string{"alice@example.com"}, []string{"sec@example.com"}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil")
+	}
+	c := m.Source.Org.Settings.Contacts
+	if c == nil {
+		t.Fatal("Contacts is nil")
+		return
+	}
+	if len(c.Primary) != 1 || c.Primary[0] != "alice@example.com" {
+		t.Errorf("Contacts.Primary: got %v", c.Primary)
+	}
+	if len(c.Security) != 1 || c.Security[0] != "sec@example.com" {
+		t.Errorf("Contacts.Security: got %v", c.Security)
+	}
+}
+
+func TestExport_OrgSettings_ContactsEmpty_NilWhenBothEmpty(t *testing.T) {
+	// Both primary and security empty → Contacts must be nil.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getContacts: func(orgID string) ([]string, []string, error) {
+				return []string{}, []string{}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings != nil && m.Source.Org.Settings.Contacts != nil {
+		t.Errorf("Contacts should be nil when both lists are empty, got %+v", m.Source.Org.Settings.Contacts)
+	}
+}
+
+func TestExport_OrgSettings_ContactsError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getContacts: func(orgID string) ([]string, []string, error) {
+				return nil, nil, errors.New("contacts API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("contacts error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "contacts_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected contacts_unreadable warning, not found")
 	}
 }

@@ -52,6 +52,8 @@ type fakeOrgSettingsWriter struct {
 	createURLOrbAllowEntry func(slugOrID, name, prefix, auth string) error
 	putPolicyBundle        func(ownerID string, policies map[string]string) error
 	setPolicyEnforcement   func(ownerID string, enabled bool) error
+	createOTelExporter     func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
+	setContacts            func(orgID string, primary, security []string) error
 
 	calls           []orgSettingsCall
 	flagsWritten    []map[string]bool // each call to UpdateFeatureFlags
@@ -59,6 +61,8 @@ type fakeOrgSettingsWriter struct {
 	urlOrbCalls     int
 	policyPuts      int
 	enforcementSets int
+	otelCalls       int
+	contactsCalls   int
 }
 
 func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
@@ -106,6 +110,28 @@ func (f *fakeOrgSettingsWriter) SetPolicyEnforcement(ownerID string, enabled boo
 	f.enforcementSets++
 	if f.setPolicyEnforcement != nil {
 		return f.setPolicyEnforcement(ownerID, enabled)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+	ins := "false"
+	if insecure {
+		ins = "true"
+	}
+	f.calls = append(f.calls, orgSettingsCall{"CreateOTelExporter", []string{orgID, endpoint, protocol, ins}})
+	f.otelCalls++
+	if f.createOTelExporter != nil {
+		return f.createOTelExporter(orgID, endpoint, protocol, insecure, headers)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) SetContacts(orgID string, primary, security []string) error {
+	f.calls = append(f.calls, orgSettingsCall{"SetContacts", []string{orgID}})
+	f.contactsCalls++
+	if f.setContacts != nil {
+		return f.setContacts(orgID, primary, security)
 	}
 	return nil
 }
@@ -831,5 +857,295 @@ func TestSyncOrgSettings_AppliedField(t *testing.T) {
 	repApply, _ := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
 	if !repApply.Applied {
 		t.Error("Applied should be true when Apply=true")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OTel exporters
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_OTel_DryRunNoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf", Insecure: false},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("CreateOTelExporter") {
+		t.Error("CreateOTelExporter must NOT be called in dry-run mode")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action for OTel exporter in dry-run")
+	}
+}
+
+func TestSyncOrgSettings_OTel_ApplyTrue_Created(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf", Insecure: false},
+			{Endpoint: "grpc.example.com:4317", Protocol: "grpc", Insecure: true},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.otelCalls != 2 {
+		t.Errorf("expected 2 CreateOTelExporter calls, got %d", fw.otelCalls)
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected set actions for OTel exporters")
+	}
+}
+
+func TestSyncOrgSettings_OTel_HeaderKeys_ManualAction(t *testing.T) {
+	// When an exporter had headers, a manual action listing the key names must be emitted.
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{
+				Endpoint: "https://otel.example.com:4318",
+				Protocol: "http/protobuf",
+				Insecure: false,
+				Headers:  map[string]string{"Authorization": "xxxx", "X-Trace-Id": "xxxx"},
+			},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manual := actionsOfStatus(rep, "manual")
+	if len(manual) == 0 {
+		t.Fatal("expected a manual action for redacted header keys, got none")
+	}
+
+	found := false
+	for _, a := range manual {
+		if strings.Contains(a.Detail, "Authorization") && strings.Contains(a.Detail, "X-Trace-Id") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("manual action should mention header keys Authorization and X-Trace-Id; got %+v", manual)
+	}
+}
+
+func TestSyncOrgSettings_OTel_NoHeaders_NoManualAction(t *testing.T) {
+	// When an exporter had no headers, no manual action should be emitted for headers.
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf", Insecure: false},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Status == "manual" && strings.Contains(a.Target, "otel") {
+			t.Errorf("unexpected manual action for OTel exporter without headers: %+v", a)
+		}
+	}
+}
+
+func TestSyncOrgSettings_OTel_WriteError_IsErrorAction(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		createOTelExporter: func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+			return errors.New("otel create failed")
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf", Insecure: false},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("OTel write error must not propagate, got: %v", err)
+	}
+
+	errActions := actionsOfStatus(rep, "error")
+	if len(errActions) == 0 {
+		t.Error("expected an error action when CreateOTelExporter fails")
+	}
+}
+
+func TestSyncOrgSettings_OTel_Empty_NoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{}, // empty
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("CreateOTelExporter") {
+		t.Error("CreateOTelExporter must NOT be called when OTelExporters is empty")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contacts
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_Contacts_DryRunNoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Contacts: &manifest.OrgContacts{
+			Primary:  []string{"alice@example.com"},
+			Security: []string{"sec@example.com"},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetContacts") {
+		t.Error("SetContacts must NOT be called in dry-run mode")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action for contacts in dry-run")
+	}
+}
+
+func TestSyncOrgSettings_Contacts_ApplyTrue(t *testing.T) {
+	var gotPrimary, gotSecurity []string
+	fw := &fakeOrgSettingsWriter{
+		setContacts: func(orgID string, primary, security []string) error {
+			gotPrimary = primary
+			gotSecurity = security
+			return nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Contacts: &manifest.OrgContacts{
+			Primary:  []string{"alice@example.com", "bob@example.com"},
+			Security: []string{"sec@example.com"},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.contactsCalls != 1 {
+		t.Errorf("expected 1 SetContacts call, got %d", fw.contactsCalls)
+	}
+
+	if len(gotPrimary) != 2 || gotPrimary[0] != "alice@example.com" {
+		t.Errorf("SetContacts primary: got %v", gotPrimary)
+	}
+	if len(gotSecurity) != 1 || gotSecurity[0] != "sec@example.com" {
+		t.Errorf("SetContacts security: got %v", gotSecurity)
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action for contacts")
+	}
+}
+
+func TestSyncOrgSettings_Contacts_NilContacts_Skip(t *testing.T) {
+	// Nil Contacts → SetContacts must never be called.
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{},
+		Contacts:     nil,
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetContacts") {
+		t.Error("SetContacts must NOT be called when Contacts is nil")
+	}
+}
+
+func TestSyncOrgSettings_Contacts_BothEmpty_Skip(t *testing.T) {
+	// Contacts present but both lists empty → SetContacts must not be called.
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Contacts: &manifest.OrgContacts{Primary: []string{}, Security: []string{}},
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetContacts") {
+		t.Error("SetContacts must NOT be called when both lists are empty")
+	}
+}
+
+func TestSyncOrgSettings_Contacts_WriteError_IsErrorAction(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		setContacts: func(orgID string, primary, security []string) error {
+			return errors.New("contacts write failed")
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Contacts: &manifest.OrgContacts{Primary: []string{"alice@example.com"}},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("contacts write error must not propagate, got: %v", err)
+	}
+
+	errActions := actionsOfStatus(rep, "error")
+	if len(errActions) == 0 {
+		t.Error("expected an error action when SetContacts fails")
 	}
 }
