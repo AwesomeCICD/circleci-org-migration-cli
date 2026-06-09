@@ -27,6 +27,8 @@ type OrgAPI interface {
 	GetPolicyBundle(ownerID string) (map[string]string, error)
 	GetPolicyEnforcement(ownerID string) (bool, error)
 	GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error)
+	GetSSOEnforced(orgID string) (bool, error)
+	GetSSOConnection(orgID string) (connection map[string]any, found bool, err error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -393,11 +395,50 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			}
 			hasAny = true
 		}
+
+		// SSO (SAML): best-effort, reference-only capture. SSO cannot be
+		// auto-synced (recreation needs DNS domain verification + IdP setup), so
+		// it is recorded for the operator and surfaced as a manual sync action.
+		if e.exportSSO(m, o.ID, s) {
+			hasAny = true
+		}
 	}
 
 	if hasAny {
 		m.Source.Org.Settings = s
 	}
+}
+
+// exportSSO reads the org's SSO enforcement and connection (best-effort) into s.
+// It returns true when SSO state worth recording was found (enforcement on or a
+// connection present); the all-empty case (enforcement off + no connection) is
+// skipped so it does not appear in the manifest. Read failures add an "org"
+// warning and never fail the export.
+func (e *Exporter) exportSSO(m *manifest.Manifest, orgID string, s *manifest.OrgSettings) bool {
+	enforced, eerr := e.Org.GetSSOEnforced(orgID)
+	if eerr != nil {
+		m.AddWarning("org", "sso_unreadable", fmt.Sprintf("could not read SSO enforcement: %v", eerr))
+	}
+
+	connection, found, cerr := e.Org.GetSSOConnection(orgID)
+	if cerr != nil {
+		m.AddWarning("org", "sso_unreadable", fmt.Sprintf("could not read SSO connection: %v", cerr))
+	}
+
+	if !enforced && !found {
+		// No SSO configured and not enforced — nothing to record.
+		return false
+	}
+
+	sso := &manifest.SSOSettings{Enforced: enforced}
+	if found {
+		sso.Connection = connection
+		if realm, ok := connection["realm"].(string); ok {
+			sso.Realm = realm
+		}
+	}
+	s.SSO = sso
+	return true
 }
 
 // splitOrgSlug returns the (vcs, orgName) pair for a "vcs/org" slug. For

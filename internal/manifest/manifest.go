@@ -89,6 +89,25 @@ type OrgSettings struct {
 	// endpoint are environment-specific and point at the SOURCE org's AWS account,
 	// so sync surfaces them as manual actions to recreate in the destination.
 	AuditLogConfigs []AuditLogConfig `json:"audit_log_configs,omitempty"`
+
+	// SSO captures the org's SSO (SAML) state. It is recorded for reference only:
+	// recreating SSO on a destination org is NOT automatable (it requires DNS TXT
+	// domain verification plus IdP-side SAML app / iframe-origin setup), so sync
+	// surfaces it as a manual action and never writes it. Nil when the org has no
+	// SSO configured and enforcement is off.
+	SSO *SSOSettings `json:"sso,omitempty"`
+}
+
+// SSOSettings is a reference snapshot of an org's SSO (SAML) configuration.
+type SSOSettings struct {
+	// Enforced reports whether SSO login is enforced for the org.
+	Enforced bool `json:"enforced"`
+	// Realm is the SSO realm/identifier from the connection, when configured.
+	Realm string `json:"realm,omitempty"`
+	// Connection is the raw SSO connection body (IdP fields per the web-ui
+	// SSOConnection shape), captured whole for reference. Nil when no connection
+	// is configured. It is never written back to the destination.
+	Connection map[string]any `json:"connection,omitempty"`
 }
 
 // AuditLogConfig is one audit-log streaming configuration on an org.

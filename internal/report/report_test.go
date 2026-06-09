@@ -215,6 +215,27 @@ func TestMarkdown_ContainsSectionHeaders(t *testing.T) {
 	}
 }
 
+func TestMarkdown_SSOSurfaced(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{
+				Slug: "gh/acme",
+				Name: "acme",
+				Settings: &manifest.OrgSettings{
+					SSO: &manifest.SSOSettings{Enforced: true, Realm: "acme-saml"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{"SSO (SAML)", "acme-saml", "recreated manually"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing %q", want)
+		}
+	}
+}
+
 func TestMarkdown_ContainsSummaryTable(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
