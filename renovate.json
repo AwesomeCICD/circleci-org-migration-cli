@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "labels": ["dependencies"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 5,
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "go modules",
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "matchManagers": ["circleci"],
+      "groupName": "circleci orbs"
+    },
+    {
+      "description": "Group the Go toolchain bumps separately so they are easy to review.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "groupName": "go toolchain"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Keep pinned tool versions in CI config / Makefile up to date (goreleaser, trivy, gitleaks, golangci-lint).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.circleci/config\\.yml$/", "/^\\.circleci/continue_config\\.yml$/", "/^Makefile$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>.+?)\\s*\\n.*?(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
+      ],
+      "versioningTemplate": "semver"
+    }
+  ]
+}
