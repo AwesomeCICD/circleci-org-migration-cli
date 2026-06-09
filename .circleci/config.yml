@@ -6,7 +6,15 @@
 #   - convenience image (cimg/go) instead of bespoke images
 #   - a matrix job for cross-platform builds (GOOS x GOARCH)
 #   - JUnit test results (gotestsum) + coverage artifacts
-#   - dedicated security stage (govulncheck, gosec, gitleaks)
+#   - dedicated security stage (govulncheck, gosec, gitleaks, trivy)
+#
+# Workflow stages (DAG):
+#   Stage 1 — quality + security gates (parallel, no prerequisites):
+#             lint, security-vuln, security-sast, security-secrets, security-trivy
+#   Stage 2 — test, coverage, e2e (require all of stage 1):
+#             test, coverage, e2e
+#   Stage 3 — cross-platform build matrix (requires test to pass):
+#             build
 version: 2.1
 
 orbs:
@@ -19,6 +27,14 @@ parameters:
     # cimg/go floating patch tag. circleci-migrate targets Go 1.26 (see go.mod).
     default: "1.26"
 
+# ---------------------------------------------------------------------------
+# Executors
+# Resource-class sizing is workload-reasoned; tune with CircleCI usage data:
+#   medium  — lint/test/coverage/sast/vuln: golangci-lint v2 + race detector
+#             need the extra RAM; medium is the minimum safe class.
+#   small   — build matrix + binary-download jobs: mostly curl + go build,
+#             light on RAM; small cuts credit cost noticeably at this width.
+# ---------------------------------------------------------------------------
 executors:
   go:
     docker:
@@ -43,6 +59,10 @@ commands:
           command: go install << parameters.pkg >>
 
 jobs:
+  # ===========================================================================
+  # STAGE 1 — Quality + Security (run first, in parallel)
+  # ===========================================================================
+
   lint:
     executor: go
     steps:
@@ -69,56 +89,6 @@ jobs:
           name: golangci-lint
           command: golangci-lint run --timeout 5m
 
-  test:
-    executor: go
-    steps:
-      - checkout
-      - go/mod-download-cached
-      - run:
-          name: Run tests (JUnit + coverage)
-          command: |
-            mkdir -p test-results
-            # -race requires cgo; the executor defaults CGO_ENABLED=0 for static
-            # builds, so enable it just for the race-enabled test run.
-            CGO_ENABLED=1 gotestsum --junitfile test-results/unit-tests.xml --format testname \
-              -- -race -covermode=atomic -coverprofile=coverage.out ./...
-      - run:
-          name: Coverage report + threshold gate
-          command: |
-            go tool cover -html=coverage.out -o coverage.html
-            go tool cover -func=coverage.out | tail -1
-            ./scripts/check-coverage.sh coverage.out
-      - store_test_results:
-          path: test-results
-      - store_artifacts:
-          path: test-results
-          destination: test-results
-      - store_artifacts:
-          path: coverage.html
-          destination: coverage.html
-
-  build:
-    parameters:
-      goos:
-        type: string
-      goarch:
-        type: string
-    executor: go
-    steps:
-      - checkout
-      - go/mod-download-cached
-      - run:
-          name: Build << parameters.goos >>/<< parameters.goarch >>
-          command: |
-            out="dist/circleci-migrate-<< parameters.goos >>-<< parameters.goarch >>"
-            GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
-              go build -trimpath -o "$out" .
-            ls -lh "$out"
-      - store_artifacts:
-          path: dist
-          destination: binaries
-
-  # --- Security stage -------------------------------------------------------
   security-vuln:
     executor: go
     steps:
@@ -136,8 +106,22 @@ jobs:
     executor: go
     steps:
       - checkout
-      - goinstall:
-          pkg: github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+      - go/mod-download-cached
+      # Cache the gosec binary across runs — keyed on version + arch so a new
+      # version or a different executor arch triggers a fresh install.
+      - restore_cache:
+          keys:
+            - gosec-v2.27.1-{{ arch }}-v1
+      - run:
+          name: Install gosec (if not cached)
+          command: |
+            if [ ! -x "$(go env GOPATH)/bin/gosec" ]; then
+              go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+            fi
+      - save_cache:
+          key: gosec-v2.27.1-{{ arch }}-v1
+          paths:
+            - /home/circleci/go/bin/gosec
       - run:
           name: gosec (SAST)
           command: |
@@ -156,13 +140,23 @@ jobs:
     executor: base
     steps:
       - checkout
+      # Cache the gitleaks binary keyed on version + arch.
+      - restore_cache:
+          keys:
+            - gitleaks-v8.30.1-{{ arch }}-v1
       - run:
-          name: Install gitleaks
+          name: Install gitleaks (if not cached)
           command: |
-            ver=8.30.1
-            curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
-              | sudo tar -xz -C /usr/local/bin gitleaks
+            if ! command -v gitleaks &>/dev/null; then
+              ver=8.30.1
+              curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+                | sudo tar -xz -C /usr/local/bin gitleaks
+            fi
             gitleaks version
+      - save_cache:
+          key: gitleaks-v8.30.1-{{ arch }}-v1
+          paths:
+            - /usr/local/bin/gitleaks
       - run:
           name: gitleaks (secret scan, full history)
           command: |
@@ -199,19 +193,176 @@ jobs:
           format: table
           hide-progress: true
 
+  # ===========================================================================
+  # STAGE 2 — Test, Coverage, E2E (require ALL of stage 1)
+  # ===========================================================================
+
+  test:
+    executor: go
+    parallelism: 2
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Run tests (split by timing, race detector)
+          command: |
+            mkdir -p test-results
+            # Split packages across containers by timing data; falls back to
+            # name-splitting on the first run (no timing data yet).
+            PKGS=$(go list ./... | circleci tests split --split-by=timings --timings-type=classname)
+            # -race requires CGO; executor defaults CGO_ENABLED=0 for static
+            # builds, so enable it just for the race-enabled test run.
+            CGO_ENABLED=1 gotestsum \
+              --junitfile test-results/unit-tests.xml \
+              --format testname \
+              -- -race $PKGS
+      - run:
+          # Best-effort HTML report from the JUnit XML. cimg/go may or may not
+          # have Node available; wrap in || true so a missing runtime never
+          # fails the build. The JUnit XML + store_test_results already populate
+          # the Tests tab; this is a convenient bonus artifact.
+          name: HTML test report (best effort)
+          command: |
+            npx --yes xunit-viewer --results=test-results --output=test-results/index.html \
+              || echo "html report skipped (node/npx not available)"
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: test-results
+
+  coverage:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Run full test suite with coverage
+          command: |
+            # Single container — collect coverage across all packages at once.
+            # Do NOT split here; partial per-container profiles cannot be easily
+            # merged and would give a misleading total.
+            CGO_ENABLED=1 go test -covermode=atomic -coverprofile=coverage.out ./...
+      - run:
+          name: Coverage report + threshold gate
+          command: |
+            go tool cover -html=coverage.out -o coverage.html
+            go tool cover -func=coverage.out | tail -1
+            ./scripts/check-coverage.sh coverage.out
+      - store_artifacts:
+          path: coverage.html
+          destination: coverage.html
+
+  # E2E binary smoke test — no tokens, no network required.
+  # Builds the real binary and exercises CLI entry points + the secrets-extract
+  # path against a tiny in-memory fixture manifest.
+  # TODO: add a live-org e2e suite (against a dedicated test org with scoped
+  #       tokens) once secret management for CI is in place.
+  e2e:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Build binary
+          command: |
+            mkdir -p bin
+            go build -o bin/circleci-migrate .
+      - run:
+          name: Smoke — version + help
+          command: |
+            ./bin/circleci-migrate version
+            ./bin/circleci-migrate --help
+            ./bin/circleci-migrate export --help
+      - run:
+          name: Smoke — secrets extract (fixture, no network)
+          command: |
+            # Write a minimal manifest with one context containing one variable.
+            # printf (not a heredoc) keeps the CircleCI parameter parser happy.
+            mkdir -p e2e-tmp
+            printf '%s' '{"schema_version":"1","source":{"host":"https://circleci.com","org":{"slug":"gh/test-org","name":"test-org"}},"contexts":[{"name":"e2e-ctx","environment_variables":[{"name":"E2E_SECRET_VAR"}]}],"projects":[]}' > e2e-tmp/manifest.json
+            # Supply the variable value via the environment (as a real job would).
+            E2E_SECRET_VAR=supersecret \
+              ./bin/circleci-migrate secrets extract \
+                --manifest e2e-tmp/manifest.json \
+                --context e2e-ctx \
+                --output e2e-tmp/secrets.json
+            # Assert the bundle was created and contains the expected key.
+            test -f e2e-tmp/secrets.json
+            grep -q "E2E_SECRET_VAR" e2e-tmp/secrets.json
+            echo "E2E smoke test passed."
+
+  # ===========================================================================
+  # STAGE 3 — Cross-platform build matrix (requires test)
+  # ===========================================================================
+
+  build:
+    parameters:
+      goos:
+        type: string
+      goarch:
+        type: string
+    # Build jobs are mostly curl + go build — light on RAM; small saves credits.
+    executor: go
+    resource_class: small
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Build << parameters.goos >>/<< parameters.goarch >>
+          command: |
+            out="dist/circleci-migrate-<< parameters.goos >>-<< parameters.goarch >>"
+            GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
+              go build -trimpath -o "$out" .
+            ls -lh "$out"
+      - store_artifacts:
+          path: dist
+          destination: binaries
+
 workflows:
   ci:
     jobs:
+      # -----------------------------------------------------------------------
+      # Stage 1: quality + security gates — all run in parallel, no prerequisites
+      # -----------------------------------------------------------------------
       - lint
-      - test
       - security-vuln
       - security-sast
       - security-secrets
       - security-trivy
+
+      # -----------------------------------------------------------------------
+      # Stage 2: test, coverage, e2e — require ALL stage-1 jobs to pass first
+      # -----------------------------------------------------------------------
+      - test:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+      - coverage:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+      - e2e:
+          requires:
+            - lint
+            - security-vuln
+            - security-sast
+            - security-secrets
+            - security-trivy
+
+      # -----------------------------------------------------------------------
+      # Stage 3: cross-platform build matrix — requires test (not coverage/e2e,
+      # so a coverage regression doesn't block artifact production)
+      # -----------------------------------------------------------------------
       - build:
           name: build-<< matrix.goos >>-<< matrix.goarch >>
           requires:
-            - lint
             - test
           matrix:
             parameters:
