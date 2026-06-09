@@ -106,7 +106,9 @@ func (c *Client) enrichRequestHeaders(req *http.Request, payload interface{}) {
 // DoRequest executes req and JSON-decodes a successful response into resp.
 // It returns the HTTP status code and any error.
 func (c *Client) DoRequest(req *http.Request, resp interface{}) (int, error) {
-	httpResp, err := c.client.Do(req)
+	// The request URL is built from the operator-provided CircleCI host and
+	// fixed API paths; issuing it is the entire purpose of this client.
+	httpResp, err := c.client.Do(req) // #nosec G704 -- request target is operator-configured, not attacker-controlled
 	if err != nil {
 		return 0, fmt.Errorf("HTTP request failed: %w", err)
 	}
