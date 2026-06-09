@@ -1,33 +1,52 @@
+# CircleCI pipeline for circleci-migrate.
+#
+# Best practices applied (per CircleCI docs):
+#   - reusable executor + reusable commands (DRY)
+#   - the official circleci/go orb for module download + caching
+#   - convenience image (cimg/go) instead of bespoke images
+#   - a matrix job for cross-platform builds (GOOS x GOARCH)
+#   - JUnit test results (gotestsum) + coverage artifacts
+#   - dedicated security stage (govulncheck, gosec, gitleaks)
 version: 2.1
+
+orbs:
+  go: circleci/go@3.0.4
+
+parameters:
+  go-image-tag:
+    type: string
+    # cimg/go floating patch tag. circleci-migrate targets Go 1.26 (see go.mod).
+    default: "1.26"
 
 executors:
   go:
     docker:
-      - image: cimg/go:1.26
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: medium
     environment:
       CGO_ENABLED: "0"
+  base:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
 
 commands:
-  gomod:
+  goinstall:
+    description: "go install a pinned tool and make it available on PATH."
+    parameters:
+      pkg:
+        type: string
     steps:
-      - restore_cache:
-          keys:
-            - v1-gomod-{{ arch }}-{{ checksum "go.sum" }}
-            - v1-gomod-{{ arch }}-
       - run:
-          name: Download Go module dependencies
-          command: go mod download
-      - save_cache:
-          key: v1-gomod-{{ arch }}-{{ checksum "go.sum" }}
-          paths:
-            - /home/circleci/go/pkg/mod
+          name: "Install << parameters.pkg >>"
+          command: go install << parameters.pkg >>
 
 jobs:
   lint:
     executor: go
     steps:
       - checkout
-      - gomod
+      - go/mod-download-cached
       - run:
           name: go vet
           command: go vet ./...
@@ -36,39 +55,134 @@ jobs:
           command: |
             unformatted=$(gofmt -l .)
             if [ -n "$unformatted" ]; then
-              echo "The following files are not gofmt-clean:"
+              echo "These files are not gofmt-clean:"
               echo "$unformatted"
               exit 1
             fi
+      - run:
+          name: Install golangci-lint
+          command: |
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+              | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+      - run:
+          name: golangci-lint
+          command: golangci-lint run --timeout 5m
 
   test:
     executor: go
     steps:
       - checkout
-      - gomod
+      - go/mod-download-cached
       - run:
-          name: Run tests
+          name: Run tests (JUnit + coverage)
           command: |
-            mkdir -p /tmp/test-results
-            go test -v -coverprofile=/tmp/test-results/coverage.out ./... \
-              | tee /tmp/test-results/go-test.out
+            mkdir -p test-results
+            gotestsum --junitfile test-results/unit-tests.xml --format testname \
+              -- -race -covermode=atomic -coverprofile=coverage.out ./...
+      - run:
+          name: Coverage report + threshold gate
+          command: |
+            go tool cover -html=coverage.out -o coverage.html
+            go tool cover -func=coverage.out | tail -1
+            ./scripts/check-coverage.sh coverage.out
       - store_test_results:
-          path: /tmp/test-results
+          path: test-results
       - store_artifacts:
-          path: /tmp/test-results
+          path: test-results
+          destination: test-results
+      - store_artifacts:
+          path: coverage.html
+          destination: coverage.html
 
   build:
+    parameters:
+      goos:
+        type: string
+      goarch:
+        type: string
     executor: go
     steps:
       - checkout
-      - gomod
+      - go/mod-download-cached
       - run:
-          name: Build binary
-          command: go build ./...
+          name: Build << parameters.goos >>/<< parameters.goarch >>
+          command: |
+            out="dist/circleci-migrate-<< parameters.goos >>-<< parameters.goarch >>"
+            GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
+              go build -trimpath -o "$out" .
+            ls -lh "$out"
+      - store_artifacts:
+          path: dist
+          destination: binaries
+
+  # --- Security stage -------------------------------------------------------
+  security-vuln:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      # govulncheck uses call-graph analysis: it fails only on vulnerabilities
+      # in code paths we actually call. Run @latest so the scanner DB is fresh.
+      - goinstall:
+          pkg: golang.org/x/vuln/cmd/govulncheck@latest
+      - run:
+          name: govulncheck
+          command: govulncheck ./...
+
+  security-sast:
+    executor: go
+    steps:
+      - checkout
+      - goinstall:
+          pkg: github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+      - run:
+          name: gosec (SAST)
+          command: |
+            mkdir -p test-results
+            status=0
+            gosec -severity high -fmt junit-xml -out test-results/gosec.xml ./... || status=$?
+            gosec -severity high -fmt sarif -out gosec.sarif ./... 2>/dev/null || true
+            exit $status
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: gosec.sarif
+          destination: gosec.sarif
+
+  security-secrets:
+    executor: base
+    steps:
+      - checkout
+      - run:
+          name: Install gitleaks
+          command: |
+            ver=8.30.1
+            curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin gitleaks
+            gitleaks version
+      - run:
+          name: gitleaks (secret scan, full history)
+          command: |
+            gitleaks detect --source=. --redact --exit-code=1 \
+              --report-format=sarif --report-path=gitleaks.sarif
+      - store_artifacts:
+          path: gitleaks.sarif
+          destination: gitleaks.sarif
 
 workflows:
-  build-test-lint:
+  ci:
     jobs:
       - lint
       - test
-      - build
+      - security-vuln
+      - security-sast
+      - security-secrets
+      - build:
+          name: build-<< matrix.goos >>-<< matrix.goarch >>
+          requires:
+            - lint
+            - test
+          matrix:
+            parameters:
+              goos: [linux, darwin]
+              goarch: [amd64, arm64]
