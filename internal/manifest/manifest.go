@@ -225,6 +225,10 @@ type Project struct {
 	Webhooks     []Webhook     `json:"webhooks,omitempty"`
 	Schedules    []Schedule    `json:"schedules,omitempty"`
 
+	// PipelineDefinitions captures the App-pipeline definitions for this project,
+	// including their config/checkout sources and all attached triggers.
+	PipelineDefinitions []PipelineDefinition `json:"pipeline_definitions,omitempty"`
+
 	// OIDCAudience and OIDCTTL are per-project OIDC custom claims captured from
 	// GET /api/v2/org/{orgID}/project/{projID}/oidc-custom-claims.
 	// They mirror the org-level OIDCAudience/OIDCTTL fields in OrgSettings.
@@ -298,6 +302,53 @@ type Schedule struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
+// PipelineSource describes the code-source (config or checkout) for a pipeline
+// definition. Provider is the VCS or config provider; RepoFullName and
+// RepoExternalID identify the repository when applicable; FilePath is the
+// config-file path within that repository.
+type PipelineSource struct {
+	Provider       string `json:"provider,omitempty"`
+	RepoFullName   string `json:"repo_full_name,omitempty"`
+	RepoExternalID string `json:"repo_external_id,omitempty"`
+	FilePath       string `json:"file_path,omitempty"`
+}
+
+// PipelineDefinition is an App-pipeline definition captured from
+// GET /api/v2/projects/{projectID}/pipeline-definitions.
+type PipelineDefinition struct {
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	ConfigSource   PipelineSource `json:"config_source"`
+	CheckoutSource PipelineSource `json:"checkout_source"`
+	Triggers       []Trigger      `json:"triggers,omitempty"`
+}
+
+// TriggerEventSource is the flattened event-source of a pipeline trigger.
+// Provider is one of github_app | github_server | github_oauth | webhook |
+// schedule; the remaining fields are populated depending on provider type.
+// The webhook URL is intentionally NOT stored (it contains a
+// ?secret=**REDACTED** query parameter); only the sender identity is captured.
+type TriggerEventSource struct {
+	Provider       string `json:"provider"`
+	RepoFullName   string `json:"repo_full_name,omitempty"`
+	RepoExternalID string `json:"repo_external_id,omitempty"`
+	WebhookSender  string `json:"webhook_sender,omitempty"`
+	ScheduleCron   string `json:"schedule_cron,omitempty"`
+	ScheduleActor  string `json:"schedule_actor,omitempty"`
+}
+
+// Trigger is one pipeline trigger attached to a pipeline definition.
+type Trigger struct {
+	Name        string             `json:"name"`
+	EventName   string             `json:"event_name,omitempty"`
+	Description string             `json:"description,omitempty"`
+	EventPreset string             `json:"event_preset,omitempty"`
+	Disabled    bool               `json:"disabled"`
+	CheckoutRef string             `json:"checkout_ref,omitempty"`
+	ConfigRef   string             `json:"config_ref,omitempty"`
+	EventSource TriggerEventSource `json:"event_source"`
+}
+
 // Warning records something that could not be fully captured or migrated.
 type Warning struct {
 	// Scope identifies what the warning is about, e.g. "org",
@@ -314,9 +365,10 @@ func (m *Manifest) AddWarning(scope, code, message string) {
 	m.Warnings = append(m.Warnings, Warning{Scope: scope, Code: code, Message: message})
 }
 
-// SortStable orders contexts, projects, and their environment variables by
-// name so repeated exports of unchanged data produce identical files (clean
-// diffs). It does not touch the warnings order (kept in discovery order).
+// SortStable orders contexts, projects, their environment variables, pipeline
+// definitions, and triggers by name so repeated exports of unchanged data
+// produce identical files (clean diffs). It does not touch the warnings order
+// (kept in discovery order).
 func (m *Manifest) SortStable() {
 	sort.SliceStable(m.Contexts, func(i, j int) bool { return m.Contexts[i].Name < m.Contexts[j].Name })
 	sort.SliceStable(m.Projects, func(i, j int) bool { return m.Projects[i].Slug < m.Projects[j].Slug })
@@ -327,6 +379,12 @@ func (m *Manifest) SortStable() {
 	for i := range m.Projects {
 		ev := m.Projects[i].EnvVars
 		sort.SliceStable(ev, func(a, b int) bool { return ev[a].Name < ev[b].Name })
+		defs := m.Projects[i].PipelineDefinitions
+		sort.SliceStable(defs, func(a, b int) bool { return defs[a].Name < defs[b].Name })
+		for d := range defs {
+			trigs := defs[d].Triggers
+			sort.SliceStable(trigs, func(a, b int) bool { return trigs[a].Name < trigs[b].Name })
+		}
 	}
 }
 
