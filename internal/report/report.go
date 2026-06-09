@@ -63,6 +63,10 @@ func Markdown(m *manifest.Manifest) string {
 	if s := m.Source.Org.Settings; s != nil && s.RequireContextGroupRestriction != nil {
 		fmt.Fprintf(&b, "- Require context group restriction: `%t`\n", *s.RequireContextGroupRestriction)
 	}
+	if s := m.Source.Org.Settings; s != nil && s.SSO != nil {
+		realm := orDash(s.SSO.Realm)
+		fmt.Fprintf(&b, "- SSO (SAML): enforced=`%t`, realm=`%s` — must be recreated manually on the destination (DNS domain verification + IdP setup)\n", s.SSO.Enforced, realm)
+	}
 
 	fmt.Fprintf(&b, "\n## Summary\n\n")
 	fmt.Fprintf(&b, "| Resource | Count | Variable names |\n|---|---:|---:|\n")

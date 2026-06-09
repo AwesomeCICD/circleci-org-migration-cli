@@ -73,8 +73,24 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.syncURLOrbAllowList(report, src, destSlug, opts)
 	s.syncPolicies(report, src, destOrgID, opts)
 	s.reportAuditLogConfigs(report, src)
+	s.reportSSO(report, src)
 
 	return report, nil
+}
+
+// reportSSO records the captured SSO (SAML) state as a single "manual" action.
+// SSO is never auto-applied: recreating it on the destination requires DNS TXT
+// domain verification and IdP-side SAML app / iframe-origin setup, none of which
+// is automatable, so we surface it for the operator and never write.
+func (s *Syncer) reportSSO(report *Report, src *manifest.OrgSettings) {
+	if src.SSO == nil {
+		return
+	}
+	detail := fmt.Sprintf(
+		"SSO is configured on the source org (enforced=%v, realm=%q) and must be recreated manually on the destination — it requires DNS TXT domain verification plus IdP-side SAML app / iframe-origin setup and cannot be auto-synced",
+		src.SSO.Enforced, src.SSO.Realm,
+	)
+	report.add("org-settings", "sso", "manual", detail)
 }
 
 // reportAuditLogConfigs records each captured audit-log config as a "manual"

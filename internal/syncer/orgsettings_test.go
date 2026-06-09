@@ -214,6 +214,72 @@ func TestSyncOrgSettings_AuditLogConfigs_ManualNoWrite(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SyncOrgSettings: SSO (manual report, never auto-applied)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_SSO_ManualNoWrite(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		SSO: &manifest.SSOSettings{
+			Enforced:   true,
+			Realm:      "acme-saml",
+			Connection: map[string]any{"realm": "acme-saml"},
+		},
+	})
+
+	// Even with Apply=true, SSO must never trigger a write.
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manual := actionsOfStatus(rep, "manual")
+	var found *Action
+	for i := range manual {
+		if manual[i].Target == "sso" {
+			found = &manual[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a manual action for sso, got %+v", rep.Actions)
+		return
+	}
+	for _, want := range []string{"acme-saml", "DNS TXT", "IdP", "cannot be auto-synced"} {
+		if !strings.Contains(found.Detail, want) {
+			t.Errorf("detail %q missing %q", found.Detail, want)
+		}
+	}
+	if len(fw.calls) != 0 {
+		t.Errorf("expected no writer calls for SSO, got %v", fw.calls)
+	}
+}
+
+func TestSyncOrgSettings_SSO_NoneWhenNil(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	// Settings present but SSO nil → no SSO action.
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, a := range rep.Actions {
+		if a.Target == "sso" {
+			t.Errorf("did not expect an sso action when SSO is nil, got %+v", a)
+		}
+	}
+	if len(fw.calls) != 0 {
+		t.Errorf("expected no writer calls, got %v", fw.calls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SyncOrgSettings: basic
 // ─────────────────────────────────────────────────────────────────────────────
 

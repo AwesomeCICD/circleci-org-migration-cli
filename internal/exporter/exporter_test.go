@@ -25,6 +25,8 @@ type fakeOrgAPI struct {
 	getPolicyBundle    func(ownerID string) (map[string]string, error)
 	getPolicyEnf       func(ownerID string) (bool, error)
 	getAuditLogConfigs func(orgID string) ([]org.AuditLogConfig, error)
+	getSSOEnforced     func(orgID string) (bool, error)
+	getSSOConnection   func(orgID string) (map[string]any, bool, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -81,6 +83,20 @@ func (f *fakeOrgAPI) GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, err
 		return f.getAuditLogConfigs(orgID)
 	}
 	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetSSOEnforced(orgID string) (bool, error) {
+	if f.getSSOEnforced != nil {
+		return f.getSSOEnforced(orgID)
+	}
+	return false, nil
+}
+
+func (f *fakeOrgAPI) GetSSOConnection(orgID string) (map[string]any, bool, error) {
+	if f.getSSOConnection != nil {
+		return f.getSSOConnection(orgID)
+	}
+	return nil, false, nil
 }
 
 type fakeContextAPI struct {
@@ -1363,6 +1379,130 @@ func TestExport_OrgSettings_OIDCError_IsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected oidc_claims_unreadable warning, not found")
+	}
+}
+
+func TestExport_OrgSettings_SSOCaptured(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getSSOEnforced: func(orgID string) (bool, error) {
+				if orgID != "org-uuid-123" {
+					t.Errorf("GetSSOEnforced orgID: got %q want %q", orgID, "org-uuid-123")
+				}
+				return true, nil
+			},
+			getSSOConnection: func(orgID string) (map[string]any, bool, error) {
+				return map[string]any{
+					"realm":         "acme-saml",
+					"idp_entity_id": "https://idp.example.com/entity",
+				}, true, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil")
+		return
+	}
+	sso := m.Source.Org.Settings.SSO
+	if sso == nil {
+		t.Fatal("SSO is nil")
+		return
+	}
+	if !sso.Enforced {
+		t.Error("SSO.Enforced should be true")
+	}
+	if sso.Realm != "acme-saml" {
+		t.Errorf("SSO.Realm: got %q want %q", sso.Realm, "acme-saml")
+	}
+	if sso.Connection["idp_entity_id"] != "https://idp.example.com/entity" {
+		t.Errorf("SSO.Connection not captured: %v", sso.Connection)
+	}
+}
+
+func TestExport_OrgSettings_SSOEnforcedOnlyCaptured(t *testing.T) {
+	// Enforced=true but no connection (404) → SSO still recorded, no realm.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization:  func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getSSOEnforced:   func(orgID string) (bool, error) { return true, nil },
+			getSSOConnection: func(orgID string) (map[string]any, bool, error) { return nil, false, nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil || m.Source.Org.Settings.SSO == nil {
+		t.Fatal("expected SSO to be captured when enforced=true")
+		return
+	}
+	if !m.Source.Org.Settings.SSO.Enforced {
+		t.Error("SSO.Enforced should be true")
+	}
+	if m.Source.Org.Settings.SSO.Connection != nil {
+		t.Errorf("SSO.Connection should be nil when no connection found, got %v", m.Source.Org.Settings.SSO.Connection)
+	}
+}
+
+func TestExport_OrgSettings_NoSSO_NilWhenOffAndNoConnection(t *testing.T) {
+	// Enforced=false + 404 connection → OrgSettings.SSO must be nil.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization:  func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getSSOEnforced:   func(orgID string) (bool, error) { return false, nil },
+			getSSOConnection: func(orgID string) (map[string]any, bool, error) { return nil, false, nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings != nil && m.Source.Org.Settings.SSO != nil {
+		t.Errorf("SSO should be nil when not enforced and no connection, got %+v", m.Source.Org.Settings.SSO)
+	}
+}
+
+func TestExport_OrgSettings_SSOError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			getSSOEnforced: func(orgID string) (bool, error) {
+				return false, errors.New("sso enforced API down")
+			},
+			getSSOConnection: func(orgID string) (map[string]any, bool, error) {
+				return nil, false, errors.New("sso connection API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("SSO error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "sso_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sso_unreadable warning, not found")
 	}
 }
 
