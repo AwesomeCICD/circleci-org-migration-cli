@@ -72,8 +72,11 @@ func (m *Mapping) ResolveProjectSlug(sourceSlug string) (slug string, ok bool) {
 	if !strings.HasPrefix(sourceSlug, prefix) {
 		return "", false
 	}
-	// GitHub App destination slugs need a project ID we don't have here.
-	if strings.HasPrefix(to, "circleci/") {
+	// A GitHub App destination slug ("circleci/<org-id>/<project-id>") needs a
+	// project ID we cannot derive from a repo name — but only when crossing to
+	// a *different* org. For an identity mapping (to == from) the slug is
+	// already correct, so the prefix swap is a no-op and is safe.
+	if strings.HasPrefix(to, "circleci/") && to != from {
 		return "", false
 	}
 	return to + "/" + strings.TrimPrefix(sourceSlug, prefix), true

@@ -9,6 +9,7 @@ import (
 	"io"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -36,6 +37,14 @@ type ContextWriter interface {
 	CreateRestriction(contextID, restrictionType, restrictionValue string) error
 }
 
+// ProjectWriter is the destination project API the syncer needs.
+type ProjectWriter interface {
+	GetProject(slug string) (*project.Project, error)
+	ListEnvVars(slug string) ([]project.EnvVar, error)
+	CreateEnvVar(slug, name, value string) error
+	UpdateSettings(provider, org, proj string, s *project.AdvancedSettings) error
+}
+
 // Options configures a sync run.
 type Options struct {
 	// Apply performs writes. When false (the default), the run is a dry run.
@@ -57,6 +66,7 @@ func (o Options) placeholder() string {
 type Syncer struct {
 	Org      OrgResolver
 	Contexts ContextWriter
+	Projects ProjectWriter
 	Out      io.Writer
 }
 
@@ -219,6 +229,118 @@ func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctx
 			continue
 		}
 		report.add("restriction", target, "set", "added expression restriction")
+	}
+}
+
+// SyncProjects applies project advanced settings and environment-variable
+// values to EXISTING destination projects. Projects missing in the destination
+// are reported for manual handling — creation/follow is a separate opt-in step.
+func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
+	if mapping == nil {
+		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
+	}
+	destSlug := mapping.Org.To
+	if destSlug == "" {
+		destSlug = m.Source.Org.Slug
+	}
+	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
+	s.logf("Syncing %d project(s)%s", len(m.Projects), dryRunSuffix(opts.Apply))
+
+	for _, p := range m.Projects {
+		dst, ok := mapping.ResolveProjectSlug(p.Slug)
+		if !ok {
+			report.add("project", p.Slug, "manual", "no destination mapping (a GitHub App destination needs an explicit project mapping)")
+			continue
+		}
+		if _, err := s.Projects.GetProject(dst); err != nil {
+			report.add("project", dst, "manual", "project not found in destination — create/follow it, then re-run (auto-create is opt-in)")
+			continue
+		}
+		s.syncProjectSettings(report, p, dst, opts)
+		s.syncProjectVars(report, p, bundle, dst, opts)
+	}
+	return report, nil
+}
+
+func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst string, opts Options) {
+	if p.Settings == nil {
+		return
+	}
+	provider, org, proj, err := project.SplitSlug(dst)
+	if err != nil {
+		report.add("project-settings", dst, "error", err.Error())
+		return
+	}
+	if !opts.Apply {
+		report.add("project-settings", dst, "set", "would update advanced settings")
+		return
+	}
+	if err := s.Projects.UpdateSettings(provider, org, proj, toProjectSettings(p.Settings)); err != nil {
+		report.add("project-settings", dst, "error", err.Error())
+		return
+	}
+	report.add("project-settings", dst, "set", "updated advanced settings")
+}
+
+func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
+	values := map[string]string{}
+	if bundle != nil {
+		values = bundle.ProjectSecrets[p.Slug] // keyed by the SOURCE slug
+	}
+	// Project env vars are not idempotent (no upsert), so skip names that
+	// already exist in the destination.
+	existing := map[string]bool{}
+	if vars, err := s.Projects.ListEnvVars(dst); err == nil {
+		for _, v := range vars {
+			existing[v.Name] = true
+		}
+	}
+	for _, v := range p.EnvVars {
+		target := dst + "/" + v.Name
+		if existing[v.Name] {
+			report.add("project-var", target, "exists", "variable already present")
+			continue
+		}
+		val, ok := values[v.Name]
+		if !ok {
+			if opts.MissingSecrets == MissingPlaceholder {
+				if err := s.createVar(dst, v.Name, opts.placeholder(), opts.Apply); err != nil {
+					report.add("project-var", target, "error", err.Error())
+					continue
+				}
+				report.add("project-var", target, "set", "placeholder — value not captured; replace manually")
+			} else {
+				report.add("project-var", target, "manual", "value not captured; set manually")
+			}
+			continue
+		}
+		if err := s.createVar(dst, v.Name, val, opts.Apply); err != nil {
+			report.add("project-var", target, "error", err.Error())
+			continue
+		}
+		report.add("project-var", target, "set", "value set from bundle")
+	}
+}
+
+func (s *Syncer) createVar(slug, name, value string, apply bool) error {
+	if !apply {
+		return nil
+	}
+	return s.Projects.CreateEnvVar(slug, name, value)
+}
+
+func toProjectSettings(s *manifest.AdvancedSettings) *project.AdvancedSettings {
+	return &project.AdvancedSettings{
+		AutocancelBuilds:           s.AutocancelBuilds,
+		BuildForkPRs:               s.BuildForkPRs,
+		BuildPRsOnly:               s.BuildPRsOnly,
+		DisableSSH:                 s.DisableSSH,
+		ForksReceiveSecretEnvVars:  s.ForksReceiveSecretEnvVars,
+		OSS:                        s.OSS,
+		SetGithubStatus:            s.SetGitHubStatus,
+		SetupWorkflows:             s.SetupWorkflows,
+		WriteSettingsRequiresAdmin: s.WriteSettingsRequiresAdmin,
+		PROnlyBranchOverrides:      s.PROnlyBranchOverrides,
 	}
 }
 
