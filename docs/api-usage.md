@@ -2,7 +2,8 @@
 
 `circleci-migrate` is v2-first. The vast majority of operations use the
 CircleCI API v2 (`/api/v2/`). A small number of capabilities are only
-available in the legacy v1.1 API, and two org-level resources require the
+available in the legacy v1.1 API, a project-discovery capability uses the
+private `/api/private/` endpoint, and two org-level resources require the
 private CIAM endpoints served by `app.circleci.com`; those are called out
 explicitly below.
 
@@ -74,6 +75,20 @@ values that are specific to the source org's AWS account. `sync` surfaces them
 as manual actions in the report; they are never automatically written to the
 destination. Recreate them in the destination org's settings UI.
 
+### v2 OpenTelemetry exporters
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v2/org/{orgID}/otel-exporter` | Read the org's OTel exporter configurations (up to 5 per org). Header values are redacted as `"xxxx"` by the server. |
+| `POST` | `/api/v2/org/{orgID}/otel-exporter` | Create an OTel exporter on the destination org. Header values must be set manually after creation. |
+
+### v2 org contacts
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v2/org/{orgID}/contacts` | Read the org's primary and security contact email lists. |
+| `PUT` | `/api/v2/org/{orgID}/contacts` | Overwrite the destination org's contact lists. |
+
 ### Private CIAM endpoints (groups and SSO)
 
 These endpoints are served by `app.circleci.com` (not `circleci.com`). The
@@ -110,14 +125,13 @@ for recreation steps.
 |---|---|---|
 | `POST` | `/api/v2/context` | Create a context in the destination org. Body: `{"name": "<name>", "owner": {"id": "<org-id>", "type": "organization"}}`. |
 | `PUT` | `/api/v2/context/{id}/environment-variable/{name}` | Create or update an environment variable in a context. Body: `{"value": "<value>"}`. Idempotent upsert. |
-| `POST` | `/api/v2/context/{id}/restrictions` | Create an expression restriction on a context. Body: `{"restriction_type": "<type>", "restriction_value": "<value>"}`. |
+| `POST` | `/api/v2/context/{id}/restrictions` | Create an expression or group restriction on a context. Body: `{"restriction_type": "<type>", "restriction_value": "<value>"}`. |
 
-**Note on restriction writes:** expression-type restriction writes are
-generally available. Project-type restriction writes are attempted but the
-source-org project UUID does not transfer to the destination, so these are
-flagged as manual. Group-type restriction writes (`restriction_type: "group"`)
-are **not yet GA** — `sync` marks them as `manual` and never attempts to
-write them.
+**Note on restriction writes:** expression-type and group-type restriction
+writes are generally available. Group restrictions are resolved by name from
+the destination org's CIAM group list; the "All members" group resolves to the
+destination org UUID. Project-type restrictions are flagged as manual because
+source-org project UUIDs do not transfer to the destination.
 
 ---
 
@@ -133,27 +147,78 @@ write them.
 | `GET` | `/api/v2/project/{project-slug}/checkout-key` | List checkout/deploy key metadata (type, fingerprint, public key). Private key material is never returned. Paginated. |
 | `GET` | `/api/v2/webhook?scope-id={project-id}&scope-type=project` | List outbound webhooks scoped to a project. Requires the project UUID, not the slug. Paginated. |
 | `GET` | `/api/v2/project/{project-slug}/schedule` | List pipeline schedules. Paginated. |
+| `GET` | `/api/v2/projects/{projectID}/pipeline-definitions` | List App-pipeline definitions for a project. Each definition includes its config source, checkout source, and file path. Paginated. |
+| `GET` | `/api/v2/projects/{projectID}/pipeline-definitions/{defID}/triggers` | List the triggers attached to a pipeline definition. Returns `event_source`, `event_preset`, and `disabled` fields. Paginated. |
+| `GET` | `/api/v2/org/{orgID}/project/{projectID}/oidc-custom-claims` | Read per-project OIDC audience and TTL. |
 
-### Non-v2 calls: project discovery
+### Project discovery
 
 | Method | Endpoint | Used for |
 |---|---|---|
-| `GET` | `/api/v1.1/projects` | List all projects the authenticated user follows. Used during export to discover projects in the source org. The response is a flat JSON array (not paginated). |
-| `POST` | `/api/v1.1/project/{vcsType}/{org}/{repo}/follow` | Follow a project. Write operation — installs a deploy key and webhook on the VCS repository. Reserved for a future milestone; not called by current sync. |
+| `GET` | `/api/v1.1/projects` | List all projects the authenticated user follows. Used for OAuth org export; returns a flat JSON array (not paginated). |
+| `GET` | `/api/private/project?organization-id={orgID}&page-size=50` | List all projects belonging to an org by UUID. Used for GitHub App org export. Covers both `gh/` and `circleci/` slugs. Paginated via `next_page_token`. Page size capped at 50 (server returns HTTP 500 for larger values). |
 
-**Why v1.1 for project discovery?** The v2 API does not provide a
-"list all projects in an org" endpoint that works without already knowing
-each project's slug or UUID. The v1.1 `GET /projects` returns all projects
-the authenticated user follows, filtered to the target org name. For orgs
-where the source token's user does not follow every repository, pass an
-explicit `--projects` list to `export`.
+**Why two endpoints?** The v1.1 `GET /projects` endpoint covers OAuth orgs
+but returns only followed projects, and does not work for GitHub App orgs
+whose slugs use UUIDs. The private `/api/private/project` endpoint covers all
+org types by UUID and is used for App org export. For OAuth orgs where the
+source token's user does not follow every repository, pass an explicit
+`--projects` list to `export`.
 
 ### Write (sync phase)
+
+#### Common project operations
 
 | Method | Endpoint | Used for |
 |---|---|---|
 | `POST` | `/api/v2/project/{project-slug}/envvar` | Create or replace a project environment variable. Body: `{"name": "<name>", "value": "<value>"}`. |
 | `PATCH` | `/api/v2/project/{provider}/{org}/{project}/settings` | Apply a partial update to project advanced settings. Body: `{"advanced": { <non-nil fields only> }}`. |
+| `POST` | `/api/v2/webhook` | Create a webhook on a project. Body includes `name`, `url`, `events`, `verify-tls`, and `scope` (project UUID). The HMAC signing secret cannot be migrated — it must be set manually. |
+| `POST` | `/api/v2/project/{project-slug}/schedule` | Create a pipeline schedule on an OAuth project. Body includes `name`, `description`, `timetable`, `parameters`, and `attribution-actor`. |
+| `PATCH` | `/api/v2/org/{orgID}/project/{projectID}/oidc-custom-claims` | Write per-project OIDC audience and TTL. |
+
+#### v1.1 per-project feature flags
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v1.1/project/{slug}/settings` | Read the `feature_flags` blob for a project (e.g. `api_trigger_with_config`, `drop_all_build_requests`). |
+| `PUT` | `/api/v1.1/project/{slug}/settings` | Write project feature flags. `drop_all_build_requests` is a danger flag that is skipped by default. |
+
+#### OAuth project creation and enable-builds
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `POST` | `/api/v2/organization/{provider}/{org}/project` | Create a project shell in an OAuth org. Body: `{"name": "<repo>"}`. The project is created without a webhook; no builds fire until the project is followed. |
+| `POST` | `/api/v1.1/project/{vcsType}/{org}/{repo}/follow` | Follow a project. Installs a deploy key and webhook on the VCS repository. This is the "enable builds" action for OAuth projects — it may trigger an initial build. |
+
+#### GitHub App project creation and enable-builds
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `POST` | `/api/v2/organization/{orgID}/project` | Create a GitHub App project by org UUID and name. Body: `{"name": "<name>"}`. The `orgID` is the bare UUID (not a slug) for App-type orgs. Returns the new project's UUID. |
+| `POST` | `/api/v2/projects/{projUUID}/pipeline-definitions` | Create a pipeline definition on an App project. Body includes `name`, `description`, `config_source` (provider, repo external_id, file_path), and `checkout_source`. |
+| `POST` | `/api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers` | Create a trigger on a pipeline definition. Created with `disabled: true` so no builds fire until explicitly enabled. Body includes `event_source` (provider, repo external_id) and `event_preset`. |
+| `PATCH` | `/api/v2/projects/{projUUID}/triggers/{triggerUUID}` | Enable a trigger by setting `disabled: false`. This is the "enable builds" action for App projects — after this call, the trigger may fire on matching events. |
+| `DELETE` | `/api/v2/project/{slug}` | Delete a project. Used for rollback and test cleanup only. |
+
+**GitHub repository external_id:** App pipeline definitions and triggers
+require a numeric GitHub repository ID (`external_id`). By default the ID
+captured from the source manifest is reused directly, which is correct for
+same-GitHub-org migrations. When `--github-token` is provided, the tool calls
+the GitHub API to resolve the ID for the destination repository (useful when
+the destination org is connected to a different GitHub organization).
+
+---
+
+## GitHub API
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://api.github.com/repos/{owner}/{repo}` | Resolve a GitHub repository's numeric ID (`id` field). Used when `--github-token` is set and a pipeline definition needs a fresh `external_id` for the destination repo. |
+
+The request carries an `Authorization: Bearer {token}` header when a token is
+supplied. A 404 response is treated as an error; the tool falls back to the
+captured `external_id` if resolution fails.
 
 ---
 
@@ -171,6 +236,10 @@ All paginated v2 endpoints follow the same pattern: the response includes a
 `next_page_token` field. When non-empty, the next request includes
 `?page-token=<token>`. `circleci-migrate` fetches all pages automatically.
 
+The private `/api/private/project` endpoint uses the same `next_page_token`
+pattern but requires a `page-size` query parameter. The page size is capped at
+50 to avoid server errors.
+
 ---
 
 ## Error handling
@@ -178,6 +247,6 @@ All paginated v2 endpoints follow the same pattern: the response includes a
 The HTTP client (`api/rest`) returns an `HTTPError` for any `4xx` or `5xx`
 response. The tool extracts the `message` field from JSON error bodies when
 present. Per-resource errors during export are recorded as warnings in the
-manifest rather than aborting the entire export. During sync, per-context
-errors are recorded in the report under `error` status and the remaining
-contexts continue to be processed.
+manifest rather than aborting the entire export. During sync, per-context and
+per-project errors are recorded in the report under `error` status and the
+remaining resources continue to be processed.
