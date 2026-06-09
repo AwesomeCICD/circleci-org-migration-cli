@@ -319,6 +319,31 @@ jobs:
           path: dist
           destination: binaries
 
+  # ===========================================================================
+  # RELEASE — publish cross-platform binaries via GoReleaser
+  # ===========================================================================
+
+  # Triggered only by version tags (see the release workflow below).
+  # Requires a CircleCI context named "goreleaser" that exposes GITHUB_TOKEN
+  # with "repo" scope (needed to create GitHub Releases and upload assets).
+  release:
+    executor: go
+    steps:
+      - checkout
+      # Install GoReleaser at a pinned version — same pattern as gitleaks/trivy
+      # above (direct release download, no unpinned orb dependency).
+      - run:
+          name: Install GoReleaser (pinned v2.9.0)
+          command: |
+            ver=2.9.0
+            curl -sfL "https://github.com/goreleaser/goreleaser/releases/download/v${ver}/goreleaser_Linux_x86_64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin goreleaser
+            goreleaser --version
+      - go/mod-download-cached
+      - run:
+          name: goreleaser release
+          command: goreleaser release --clean
+
 workflows:
   ci:
     jobs:
@@ -368,3 +393,25 @@ workflows:
             parameters:
               goos: [linux, darwin]
               goarch: [amd64, arm64]
+
+  # ---------------------------------------------------------------------------
+  # Release workflow — fires ONLY on version tags (v*), never on branches.
+  # CircleCI does not run workflows on tags by default; the tag filter below
+  # is the explicit opt-in. The existing ci workflow has no tag filters, so it
+  # remains branch-only and will NOT fire on tag pushes.
+  #
+  # Prerequisites:
+  #   - A CircleCI context named "goreleaser" must exist in your org, containing
+  #     a GITHUB_TOKEN env var with "repo" scope (to create GitHub Releases and
+  #     upload release assets).
+  # ---------------------------------------------------------------------------
+  release:
+    jobs:
+      - release:
+          context:
+            - goreleaser
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
