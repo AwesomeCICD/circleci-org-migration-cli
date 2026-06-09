@@ -126,12 +126,13 @@ jobs:
           manifest: << parameters.manifest >>
           context-name: << parameters.context-name >>
           output: secrets-context-<< parameters.context-name >>.json
+      # Persist to the workspace only — the merge job produces the single
+      # artifact. Per-context bundles are NOT stored as artifacts to minimize
+      # the number of places plaintext secrets are retained.
       - persist_to_workspace:
           root: .
           paths:
             - secrets-context-<< parameters.context-name >>.json
-      - store_artifacts:
-          path: secrets-context-<< parameters.context-name >>.json
 
   merge:
     description: |
@@ -150,6 +151,11 @@ jobs:
       - run:
           name: Merge secret bundles
           command: circleci-migrate secrets merge -o secrets.json secrets-*.json
+      # CAUTION: secrets.json contains PLAINTEXT secret values. This is the only
+      # job that stores it as an artifact. Use a private project, set a SHORT
+      # artifact retention, download it over a secure channel, and DELETE the
+      # artifact as soon as the destination sync is complete. Never expose it on
+      # a public project or echo its contents.
       - store_artifacts:
           path: secrets.json
 
