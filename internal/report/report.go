@@ -108,7 +108,15 @@ func Markdown(m *manifest.Manifest) string {
 		fmt.Fprintf(&b, "_None._\n")
 	}
 	for _, p := range m.Projects {
-		fmt.Fprintf(&b, "### `%s`\n\n", p.Slug)
+		// Show the human-readable Name primarily; fall back to Slug when Name is
+		// empty (older manifests or synthesised project entries).
+		projectHeader := p.Name
+		if projectHeader == "" {
+			projectHeader = p.Slug
+		} else {
+			projectHeader = fmt.Sprintf("%s (`%s`)", p.Name, p.Slug)
+		}
+		fmt.Fprintf(&b, "### %s\n\n", projectHeader)
 		if p.VCS.DefaultBranch != "" {
 			fmt.Fprintf(&b, "- Default branch: `%s`\n", p.VCS.DefaultBranch)
 		}

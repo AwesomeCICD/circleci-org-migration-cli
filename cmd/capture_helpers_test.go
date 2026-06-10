@@ -244,6 +244,77 @@ func TestMaybeEnableOrgTriggerFlag_UpdateError_WarnsAndNoOp(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Bug 6 — orgTriggerAlreadyEnabled handles both key shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestOrgTriggerAlreadyEnabled_OAuthKeyTrue(t *testing.T) {
+	// Standard OAuth key shape.
+	flags := map[string]bool{"allow_api_trigger_with_config": true}
+	if !orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected true for standard OAuth key")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_OAuthKeyFalse(t *testing.T) {
+	flags := map[string]bool{"allow_api_trigger_with_config": false}
+	if orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected false when OAuth key is false")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_StandaloneKeyTrue(t *testing.T) {
+	// Standalone / GitHub-App org key shape.
+	flags := map[string]bool{"allow_api_trigger_with_config_enabled": true}
+	if !orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected true for standalone key shape")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_TrailingQuestionMark(t *testing.T) {
+	// Some API responses append a "?" — must be stripped and still match.
+	flags := map[string]bool{"allow_api_trigger_with_config?": true}
+	if !orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected true for key with trailing '?'")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_StandaloneKeyWithQuestionMark(t *testing.T) {
+	flags := map[string]bool{"allow_api_trigger_with_config_enabled?": true}
+	if !orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected true for standalone key with trailing '?'")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_EmptyFlags(t *testing.T) {
+	if orgTriggerAlreadyEnabled(map[string]bool{}) {
+		t.Error("expected false for empty flags map")
+	}
+}
+
+func TestOrgTriggerAlreadyEnabled_UnrelatedKeys(t *testing.T) {
+	flags := map[string]bool{"some_other_flag": true}
+	if orgTriggerAlreadyEnabled(flags) {
+		t.Error("expected false for unrelated keys")
+	}
+}
+
+func TestMaybeEnableOrgTriggerFlag_StandaloneKeyAlreadyOn_NoUpdate(t *testing.T) {
+	// When the standalone key shape is present and true, no update should happen.
+	mgr := &fakeOrgFlagManager{
+		flags: map[string]bool{"allow_api_trigger_with_config_enabled": true},
+	}
+	cmd, _ := newTestCobraCmd()
+
+	restore := maybeEnableOrgTriggerFlag(cmd, mgr, "circleci", "some-uuid")
+	restore()
+
+	if len(mgr.updateCalls) != 0 {
+		t.Errorf("expected 0 update calls when standalone key is already enabled, got %d: %v",
+			len(mgr.updateCalls), mgr.updateCalls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // fakeRestrictionManager — test double for contextRestrictionManager
 // ─────────────────────────────────────────────────────────────────────────────
 

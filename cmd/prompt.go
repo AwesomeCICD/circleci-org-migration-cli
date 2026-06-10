@@ -190,20 +190,48 @@ func (p *Prompter) askChoice(label string, options []string) (string, error) {
 // "all" / empty to select all, or "none" to select none.
 // It returns the subset of options that were selected.
 func (p *Prompter) askMultiSelect(label string, options []string) ([]string, error) {
+	return p.askMultiSelectWithDefault(label, options, options)
+}
+
+// askMultiSelectWithDefault is like askMultiSelect but lets the caller specify
+// which items are pre-selected as the default (empty input selects
+// defaultSelected rather than all options).  Pass options itself to get the
+// same behaviour as askMultiSelect.
+func (p *Prompter) askMultiSelectWithDefault(label string, options []string, defaultSelected []string) ([]string, error) {
 	if len(options) == 0 {
 		return nil, nil
 	}
 	fmt.Fprintf(p.out, "%s\n", label)
+	// Build a set of default-selected indices for display.
+	defaultSet := make(map[string]bool, len(defaultSelected))
+	for _, d := range defaultSelected {
+		defaultSet[d] = true
+	}
 	for i, opt := range options {
-		fmt.Fprintf(p.out, "  %d) %s\n", i+1, opt)
+		if defaultSet[opt] {
+			fmt.Fprintf(p.out, "  %d) %s [default]\n", i+1, opt)
+		} else {
+			fmt.Fprintf(p.out, "  %d) %s\n", i+1, opt)
+		}
+	}
+	defaultHint := "default"
+	if len(defaultSelected) == len(options) {
+		defaultHint = "all"
+	} else if len(defaultSelected) == 0 {
+		defaultHint = "none"
 	}
 	for {
-		ans, err := p.ask("Select (comma-separated numbers, or all/none) [all]: ")
+		ans, err := p.ask(fmt.Sprintf("Select (comma-separated numbers, 'all', or 'none') [%s]: ", defaultHint))
 		if err != nil {
 			return nil, err
 		}
 		ans = strings.TrimSpace(ans)
-		if ans == "" || strings.EqualFold(ans, "all") {
+		if ans == "" {
+			out := make([]string, len(defaultSelected))
+			copy(out, defaultSelected)
+			return out, nil
+		}
+		if strings.EqualFold(ans, "all") {
 			out := make([]string, len(options))
 			copy(out, options)
 			return out, nil

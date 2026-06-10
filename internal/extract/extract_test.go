@@ -121,6 +121,64 @@ func TestBuildExtractConfig_EncryptRecipient_EmbeddedInConfig(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bug 1 — install step always present in generated config
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildExtractConfig_InstallStepAlwaysPresent(t *testing.T) {
+	cfg := buildExtractConfigWithVersion([]string{"FOO"}, nil, nil, "v0.4.0")
+
+	// Must have an install step before the dump step.
+	if !strings.Contains(cfg, "Install circleci-migrate") {
+		t.Errorf("config missing Install circleci-migrate step:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "circleci-migrate version") {
+		t.Errorf("config missing 'circleci-migrate version' verification:\n%s", cfg)
+	}
+	// The install step must appear BEFORE the dump step.
+	installIdx := strings.Index(cfg, "Install circleci-migrate")
+	dumpIdx := strings.Index(cfg, "Dump env vars to artifact")
+	if installIdx < 0 || dumpIdx < 0 || installIdx > dumpIdx {
+		t.Errorf("install step must appear before dump step; installIdx=%d dumpIdx=%d", installIdx, dumpIdx)
+	}
+}
+
+func TestBuildExtractConfig_InstallStep_PinnedVersion(t *testing.T) {
+	cfg := buildExtractConfigWithVersion([]string{"FOO"}, nil, nil, "v0.4.0")
+
+	// Must pin the exact version from the binary.
+	if !strings.Contains(cfg, "ver=v0.4.0") {
+		t.Errorf("config should pin version v0.4.0; config:\n%s", cfg)
+	}
+	// Must not fall back to latest when a version is given.
+	if strings.Contains(cfg, "releases/latest") {
+		t.Errorf("config should not use 'latest' when a version is given:\n%s", cfg)
+	}
+}
+
+func TestBuildExtractConfig_InstallStep_FallsBackToLatest_ForDevVersion(t *testing.T) {
+	for _, devVer := range []string{"dev", "", "unknown"} {
+		cfg := buildExtractConfigWithVersion([]string{"FOO"}, nil, nil, devVer)
+		if !strings.Contains(cfg, "releases/latest") {
+			t.Errorf("version=%q: expected 'latest' fallback in install step:\n%s", devVer, cfg)
+		}
+	}
+}
+
+func TestBuildExtractConfig_InstallStep_WithEncrypt(t *testing.T) {
+	// Encryption requires circleci-migrate (for bundle-encrypt); the install
+	// step must be present when encryption is requested.
+	opts := &Options{EncryptRecipient: "age1fake"}
+	cfg := buildExtractConfigWithVersion([]string{"FOO"}, nil, opts, "v0.4.0")
+
+	if !strings.Contains(cfg, "Install circleci-migrate") {
+		t.Errorf("install step missing when encryption is requested:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "bundle-encrypt") {
+		t.Errorf("bundle-encrypt step missing when encryption is requested:\n%s", cfg)
+	}
+}
+
 func TestBuildExtractConfig_S3Storage_HasS3UploadStep(t *testing.T) {
 	opts := &Options{
 		Storage:  StorageS3,

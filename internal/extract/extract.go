@@ -16,6 +16,7 @@ import (
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	bundlepkg "github.com/AwesomeCICD/circleci-org-migration-cli/internal/bundle"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +143,58 @@ const artifactPath = "/tmp/circleci-migrate-secrets.json"
 // artifactPathAge is the encrypted variant of the artifact path.
 const artifactPathAge = "/tmp/circleci-migrate-secrets.json.age"
 
+// buildInstallStep returns the YAML for a CircleCI run step that downloads and
+// installs the circleci-migrate binary from GitHub Releases.  It mirrors the
+// logic in orb/src/scripts/install.sh: OS/arch detection, tarball download,
+// extract to /usr/local/bin.
+//
+// When ver is empty, "dev", or "unknown" the step falls back to the latest
+// release tag via the GitHub API.  Otherwise it downloads exactly ver (must
+// include the "v" prefix, e.g. "v0.4.0").
+func buildInstallStep(ver string) string {
+	repo := "AwesomeCICD/circleci-org-migration-cli"
+	// Normalise: strip leading "v" for the tarball filename, keep it for the
+	// tag/download URL.  Fall back to "latest" for dev/unknown builds.
+	tag := ver
+	if tag == "" || tag == "dev" || tag == "unknown" {
+		tag = "latest"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("      - run:\n")
+	sb.WriteString("          name: Install circleci-migrate\n")
+	sb.WriteString("          command: |\n")
+	sb.WriteString("            set -euo pipefail\n")
+	sb.WriteString("            repo=" + repo + "\n")
+	if tag == "latest" {
+		sb.WriteString(`            ver=$(curl -sfL "https://api.github.com/repos/${repo}/releases/latest" \` + "\n")
+		sb.WriteString(`              | grep -o '"tag_name": *"[^"]*"' | head -1 \` + "\n")
+		sb.WriteString(`              | sed 's/.*"\(v[^"]*\)".*/\1/')` + "\n")
+		sb.WriteString("            if [ -z \"$ver\" ]; then\n")
+		sb.WriteString("              echo 'ERROR: could not resolve latest release tag' >&2; exit 1\n")
+		sb.WriteString("            fi\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("            ver=%s\n", tag))
+	}
+	sb.WriteString(`            v="${ver#v}"` + "\n")
+	sb.WriteString(`            os=$(uname -s | tr '[:upper:]' '[:lower:]')` + "\n")
+	sb.WriteString(`            arch=$(uname -m)` + "\n")
+	sb.WriteString(`            case "$arch" in` + "\n")
+	sb.WriteString(`              x86_64)        arch="amd64" ;;` + "\n")
+	sb.WriteString(`              aarch64|arm64) arch="arm64" ;;` + "\n")
+	sb.WriteString(`              *) echo "ERROR: unsupported arch: $arch" >&2; exit 1 ;;` + "\n")
+	sb.WriteString(`            esac` + "\n")
+	sb.WriteString(`            url="https://github.com/${repo}/releases/download/${ver}/circleci-migrate_${v}_${os}_${arch}.tar.gz"` + "\n")
+	sb.WriteString(`            echo "Downloading ${url}"` + "\n")
+	sb.WriteString(`            tmp=$(mktemp -d)` + "\n")
+	sb.WriteString(`            curl -sfL "$url" | tar -xz -C "$tmp"` + "\n")
+	sb.WriteString(`            bin=$(find "$tmp" -type f -name circleci-migrate | head -1)` + "\n")
+	sb.WriteString(`            sudo install -m 0755 "$bin" /usr/local/bin/circleci-migrate` + "\n")
+	sb.WriteString(`            rm -rf "$tmp"` + "\n")
+	sb.WriteString(`            circleci-migrate version` + "\n")
+	return sb.String()
+}
+
 // buildExtractConfig constructs the minimal CircleCI YAML config that:
 //   - attaches each context in contextNames
 //   - runs a single job on cimg/base:current (resource_class: small)
@@ -161,6 +214,13 @@ const artifactPathAge = "/tmp/circleci-migrate-secrets.json.age"
 // %s quoting inside a jq-assembled object, avoiding eval or subshell exposure
 // of the values in process-list metadata.
 func buildExtractConfig(envNames []string, contextNames []string, opts *Options) string {
+	return buildExtractConfigWithVersion(envNames, contextNames, opts, version.Version)
+}
+
+// buildExtractConfigWithVersion is the internal implementation that accepts a
+// version string for testability (so tests can inject a concrete version string
+// without linking against the real version package variable).
+func buildExtractConfigWithVersion(envNames []string, contextNames []string, opts *Options, ver string) string {
 	encrypt := opts != nil && opts.EncryptRecipient != ""
 	storage := StorageArtifact
 	if opts != nil {
@@ -192,6 +252,10 @@ func buildExtractConfig(envNames []string, contextNames []string, opts *Options)
 	}
 
 	sb.WriteString("    steps:\n")
+	// Always install circleci-migrate first so the bundle-encrypt step (and any
+	// future in-job circleci-migrate invocations) can find the binary.  Without
+	// this step the job exits 127 ("command not found") on the encrypt step.
+	sb.WriteString(buildInstallStep(ver))
 	sb.WriteString("      - run:\n")
 	sb.WriteString("          name: Dump env vars to artifact\n")
 	sb.WriteString("          command: |\n")

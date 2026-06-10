@@ -310,11 +310,14 @@ func TestMarkdown_ContainsProjectEntry(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
 
-	if !strings.Contains(md, "### `gh/acme/web`") {
-		t.Errorf("Markdown missing project entry for gh/acme/web")
+	// The header now shows: "Name (`slug`)" when a human name is available,
+	// or "`slug`" when no name is set.  Both projects in buildManifest() have
+	// names ("web" and "api"), so expect the friendly-name format.
+	if !strings.Contains(md, "web (`gh/acme/web`)") {
+		t.Errorf("Markdown missing project entry for gh/acme/web; got:\n%s", md)
 	}
-	if !strings.Contains(md, "### `gh/acme/api`") {
-		t.Errorf("Markdown missing project entry for gh/acme/api")
+	if !strings.Contains(md, "api (`gh/acme/api`)") {
+		t.Errorf("Markdown missing project entry for gh/acme/api; got:\n%s", md)
 	}
 }
 
