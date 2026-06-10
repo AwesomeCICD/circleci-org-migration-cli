@@ -7,6 +7,55 @@
 
 ---
 
+## ⭐ SESSION UPDATE — v0.4.0 SHIPPED (2026-06-10)
+
+**v0.4.0 released** (binaries + orb `awesomecicd/circleci-org-migration@0.4.0` + Homebrew
+`0.4.0`), cut by the **now-CircleCI release-please** (GitHub Actions removed). PRs #49–#58.
+
+**Infra/process moves:**
+- **Go module path → `github.com/AwesomeCICD/circleci-org-migration-cli`** (so `go install`
+  works today; the CircleCI-Labs move will rename once more). Mirror-comments to the
+  OFFICIAL `CircleCI-Public/circleci-cli` kept.
+- **release-please runs on CircleCI now** (`.github/` removed; `release-please` job, `goreleaser`
+  context). Tag→GoReleaser+orb-publish-prod unchanged.
+- **Man pages + markdown CLI reference**: hidden `gen-docs` cmd + `make docs`/`make man`;
+  committed `man/` + `docs/cli/`; CI `docs-check` fails on stale docs (regenerate after any
+  flag change). Coverage gate raised **85%**.
+
+**New captured/transferred settings** (see the `org-settings-api-extended` memory):
+storage retention (+ `secrets capture --artifact-retention-days 1`), spend budgets,
+block-unregistered-users, release-tracker `inconclusive_release_ttl`, environment hierarchy
+(reference/manual — per-org integration_ids), org orb list (manual republish), runner resource
+classes. (Already had: url-orb-allow-list, contacts, full v1.1 feature_flags, all 10 project
+advanced settings.) API surface cross-checked on Sourcegraph (`circleci/release-tracker`).
+
+**Secrets encryption + S3:** `internal/bundle` (filippo.io/age + agessh, no external binary).
+`secrets extract/merge --encrypt --recipient[-file]`, `secrets decrypt`, `secrets capture
+--encrypt --ssh-public-key|--generate-key --storage artifact|s3|both --s3-bucket/--s3-prefix`.
+Encrypted artifact ⇒ plaintext NEVER persists in CircleCI; capture decrypts locally. Orb gained
+`encrypt_recipient`/`s3_bucket`/`s3_prefix`. (Bumped x/crypto→v0.52.0 for GO-2026-5018;
+`#nosec G703` on operator-path I/O — CI runs `gosec -severity high`.)
+
+**Interactive-first (the recommended UX):** both `migrate` AND `secrets capture` are guided
+walkthroughs; host-project selection for context extraction (contexts run on ANY project;
+project env-vars run under their project); flags fully bypass for CI.
+
+**Docs:** README overhauled — mermaid migration flow, `docs/demo.gif` (vhs), interactive-first
+best-practices + security guidance; removed 2 broken badges (CircleCI build = Status Badges not
+enabled → 404; orb = private → 404; HTML comments say how to restore); fixed Go Report Card path;
+refreshed `docs/cutover-runbook.md` + `docs/examples.md`.
+
+**Token-leak investigation (no exposure):** the v0.3.0 `--help` token-default leak was never
+realized publicly — CI project has 0 env vars; the only `--help`-running job (e2e) carries no
+token context; token contexts attach only to release/orb-publish jobs. The real value only ever
+appeared in the local Claude transcript.
+
+**Still deferred:** the **CircleCI-Labs / `cci-labs`** move (repo, public orb namespace, module
+path, brew tap, goreleaser owner). Dummy test artifacts remain in cci-cli-test-1/-2 (see the
+`live-test-resources` memory) for the user to clear if desired.
+
+---
+
 ## ⭐ SESSION UPDATE — v0.3.0 SHIPPED (2026-06-10)
 
 **v0.3.0 released** end-to-end (tag pipeline all green: setup ✓, GoReleaser ✓,
