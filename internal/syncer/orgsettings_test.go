@@ -57,6 +57,7 @@ type fakeOrgSettingsWriter struct {
 	setStorageRetention       func(orgUUID string, controls StorageRetentionArgs) error
 	setBudget                 func(orgUUID string, projectID *string, credits int) error
 	setBlockUnregisteredUsers func(orgUUID string, enabled bool) error
+	setReleaseTrackerSettings func(orgUUID string, ttl string) error
 
 	calls                      []orgSettingsCall
 	flagsWritten               []map[string]bool // each call to UpdateFeatureFlags
@@ -69,6 +70,7 @@ type fakeOrgSettingsWriter struct {
 	storageRetentionSets       int
 	budgetSets                 int
 	blockUnregisteredUsersSets int
+	releaseTrackerSets         int
 }
 
 func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
@@ -173,6 +175,15 @@ func (f *fakeOrgSettingsWriter) SetBlockUnregisteredUsers(orgUUID string, enable
 	f.blockUnregisteredUsersSets++
 	if f.setBlockUnregisteredUsers != nil {
 		return f.setBlockUnregisteredUsers(orgUUID, enabled)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) SetReleaseTrackerSettings(orgUUID string, ttl string) error {
+	f.calls = append(f.calls, orgSettingsCall{"SetReleaseTrackerSettings", []string{orgUUID, ttl}})
+	f.releaseTrackerSets++
+	if f.setReleaseTrackerSettings != nil {
+		return f.setReleaseTrackerSettings(orgUUID, ttl)
 	}
 	return nil
 }
@@ -1339,4 +1350,273 @@ func TestSyncOrgSettings_StorageRetention_ReportMentionsClamping(t *testing.T) {
 		}
 	}
 	t.Error("storage_retention action not found")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Org orbs — report as manual
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_Orbs_ReportedAsManual(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Orbs: []manifest.OrgOrb{
+			{OrbName: "acme/my-orb", LatestVersionNumber: "0.3.0", IsPrivate: true},
+			{OrbName: "acme/public-orb", LatestVersionNumber: "1.0.0", IsPrivate: false},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manualActions := actionsOfStatus(rep, "manual")
+	if len(manualActions) < 2 {
+		t.Fatalf("expected at least 2 manual actions for orbs, got %d: %+v", len(manualActions), manualActions)
+	}
+
+	// Each orb should be in a manual action.
+	var orbTargets []string
+	for _, a := range manualActions {
+		if strings.HasPrefix(a.Target, "orb:") {
+			orbTargets = append(orbTargets, a.Target)
+		}
+	}
+	if len(orbTargets) != 2 {
+		t.Errorf("expected 2 orb manual targets, got %d: %+v", len(orbTargets), orbTargets)
+	}
+}
+
+func TestSyncOrgSettings_Orbs_DetailMentionsRepublish(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Orbs: []manifest.OrgOrb{
+			{OrbName: "acme/my-orb", LatestVersionNumber: "0.3.0", IsPrivate: true},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Target == "orb:acme/my-orb" {
+			if !strings.Contains(a.Detail, "republish") {
+				t.Errorf("orb action detail should mention republish, got: %q", a.Detail)
+			}
+			return
+		}
+	}
+	t.Error("orb:acme/my-orb action not found")
+}
+
+func TestSyncOrgSettings_Orbs_Empty_NoActions(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Orbs: []manifest.OrgOrb{},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if strings.HasPrefix(a.Target, "orb:") {
+			t.Errorf("unexpected orb action when Orbs is empty: %+v", a)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Release-tracker settings — sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_ReleaseTracker_DryRunNoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetReleaseTrackerSettings") {
+		t.Error("SetReleaseTrackerSettings must NOT be called in dry-run mode")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a dry-run set action for release-tracker settings")
+	}
+}
+
+func TestSyncOrgSettings_ReleaseTracker_ApplyTrue_Written(t *testing.T) {
+	var capturedTTL string
+	fw := &fakeOrgSettingsWriter{
+		setReleaseTrackerSettings: func(orgUUID, ttl string) error {
+			capturedTTL = ttl
+			return nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "2h"},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedTTL != "2h" {
+		t.Errorf("SetReleaseTrackerSettings: ttl got %q want %q", capturedTTL, "2h")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action after applying release-tracker settings")
+	}
+}
+
+func TestSyncOrgSettings_ReleaseTracker_Nil_NoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		ReleaseTracker: nil,
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetReleaseTrackerSettings") {
+		t.Error("SetReleaseTrackerSettings must NOT be called when ReleaseTracker is nil")
+	}
+}
+
+func TestSyncOrgSettings_ReleaseTracker_WriteError_IsErrorAction(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		setReleaseTrackerSettings: func(orgUUID, ttl string) error {
+			return errors.New("release-tracker write failed")
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("release-tracker write error must not propagate, got: %v", err)
+	}
+
+	errActions := actionsOfStatus(rep, "error")
+	if len(errActions) == 0 {
+		t.Error("expected an error action when SetReleaseTrackerSettings fails")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Environment hierarchy — report as manual
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_EnvironmentHierarchy_ReportedAsManual(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		EnvironmentHierarchy: &manifest.EnvironmentHierarchy{
+			Name:        "prod-hierarchy",
+			Description: "desc",
+			Levels: []manifest.EnvHierarchyLevel{
+				{Position: 1, IntegrationName: "orbs-dev"},
+				{Position: 2, IntegrationName: "prod-integration"},
+			},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manualActions := actionsOfStatus(rep, "manual")
+	var found bool
+	for _, a := range manualActions {
+		if a.Target == "environment_hierarchy" {
+			found = true
+			if !strings.Contains(a.Detail, "prod-hierarchy") {
+				t.Errorf("detail should mention hierarchy name, got: %q", a.Detail)
+			}
+			if !strings.Contains(a.Detail, "orbs-dev") {
+				t.Errorf("detail should mention level integration names, got: %q", a.Detail)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected manual action for environment_hierarchy, got actions: %+v", rep.Actions)
+	}
+}
+
+func TestSyncOrgSettings_EnvironmentHierarchy_DetailMentionsRecreate(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		EnvironmentHierarchy: &manifest.EnvironmentHierarchy{
+			Name: "my-hierarchy",
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Target == "environment_hierarchy" {
+			if !strings.Contains(a.Detail, "recreate") {
+				t.Errorf("env-hierarchy detail should mention recreate, got: %q", a.Detail)
+			}
+			return
+		}
+	}
+	t.Error("environment_hierarchy action not found")
+}
+
+func TestSyncOrgSettings_EnvironmentHierarchy_Nil_NoActions(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		EnvironmentHierarchy: nil,
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Target == "environment_hierarchy" {
+			t.Errorf("unexpected environment_hierarchy action when nil: %+v", a)
+		}
+	}
 }

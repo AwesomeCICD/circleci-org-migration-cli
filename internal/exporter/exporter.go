@@ -37,6 +37,9 @@ type OrgAPI interface {
 	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
 	GetBudgets(orgUUID string) ([]org.Budget, error)
 	GetBlockUnregisteredUsers(orgUUID string) (bool, error)
+	GetOrgOrbs(orgUUID string) ([]org.OrgOrb, error)
+	GetReleaseTrackerSettings(orgUUID string) (*org.ReleaseTrackerSettings, error)
+	GetEnvironmentHierarchy(orgUUID string) (*org.EnvHierarchyConfig, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -783,6 +786,67 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			s.BlockUnregisteredUsers = &blockEnabled
 			hasAny = true
 			clog.Debugf("block_unregistered_users: enabled=%v", blockEnabled)
+		}
+
+		// Org orb list (best-effort; on error warn and continue). Orbs cannot be
+		// auto-migrated — the destination org has a different namespace and orb
+		// source is only available via GraphQL/republish — so they are surfaced as
+		// manual actions in sync.
+		clog.Debugf("GetOrgOrbs org_id=%s", o.ID)
+		if orbs, oerr := e.Org.GetOrgOrbs(o.ID); oerr != nil {
+			m.AddWarning("org", "orbs_unreadable",
+				fmt.Sprintf("could not read org orb list: %v", oerr))
+		} else if len(orbs) > 0 {
+			for _, orb := range orbs {
+				s.Orbs = append(s.Orbs, manifest.OrgOrb{
+					OrbName:             orb.OrbName,
+					LatestVersionNumber: orb.LatestVersionNumber,
+					OrbID:               orb.OrbID,
+					IsPrivate:           orb.IsPrivate,
+					Hidden:              orb.Hidden,
+					Description:         orb.Description,
+				})
+			}
+			hasAny = true
+			clog.Debugf("org orbs: captured %d orb(s)", len(orbs))
+		}
+
+		// Release-tracker org settings (best-effort; on error warn and continue).
+		// When configured, sync transfers the TTL to the destination via PATCH.
+		clog.Debugf("GetReleaseTrackerSettings org_id=%s", o.ID)
+		if rtSettings, rterr := e.Org.GetReleaseTrackerSettings(o.ID); rterr != nil {
+			m.AddWarning("org", "release_tracker_unreadable",
+				fmt.Sprintf("could not read release-tracker settings: %v", rterr))
+		} else if rtSettings != nil {
+			s.ReleaseTracker = &manifest.ReleaseTrackerSettings{
+				InconclusiveReleaseTTL: rtSettings.InconclusiveReleaseTTL,
+			}
+			hasAny = true
+			clog.Debugf("release_tracker: inconclusive_release_ttl=%s", rtSettings.InconclusiveReleaseTTL)
+		}
+
+		// Environment hierarchy (best-effort; on error warn and continue). The
+		// hierarchy cannot be auto-migrated (the POST endpoint needs destination
+		// deploy-integration IDs), so it is recorded for reference and surfaced as
+		// a manual action in sync.
+		clog.Debugf("GetEnvironmentHierarchy org_id=%s", o.ID)
+		if envH, hierr := e.Org.GetEnvironmentHierarchy(o.ID); hierr != nil {
+			m.AddWarning("org", "environment_hierarchy_unreadable",
+				fmt.Sprintf("could not read environment hierarchy: %v", hierr))
+		} else if envH != nil {
+			mh := &manifest.EnvironmentHierarchy{
+				Name:        envH.Name,
+				Description: envH.Description,
+			}
+			for _, l := range envH.Levels {
+				mh.Levels = append(mh.Levels, manifest.EnvHierarchyLevel{
+					Position:        l.Position,
+					IntegrationName: l.IntegrationName,
+				})
+			}
+			s.EnvironmentHierarchy = mh
+			hasAny = true
+			clog.Debugf("environment_hierarchy: name=%s levels=%d", envH.Name, len(envH.Levels))
 		}
 	}
 

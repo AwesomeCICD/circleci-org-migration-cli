@@ -154,6 +154,23 @@ type OrgSettings struct {
 	// "block unregistered user spend" feature. When non-nil, sync applies the
 	// captured value to the destination org via PUT. Nil when not captured.
 	BlockUnregisteredUsers *bool `json:"block_unregistered_users,omitempty"`
+
+	// Orbs captures the orbs published in the source org (read from the private
+	// orb-list API). Orbs CANNOT be auto-migrated (the destination org has a
+	// different namespace, and orb source is only available via GraphQL/republish),
+	// so sync surfaces each as a manual action. Nil/empty when not captured.
+	Orbs []OrgOrb `json:"orbs,omitempty"`
+
+	// ReleaseTracker captures the org's release-tracker settings. When non-nil,
+	// sync transfers these to the destination via PATCH. Nil when not configured
+	// or when the export lacked permission to read them.
+	ReleaseTracker *ReleaseTrackerSettings `json:"release_tracker,omitempty"`
+
+	// EnvironmentHierarchy captures the org's environment-hierarchy configuration
+	// for reference. This CANNOT be auto-migrated (the POST endpoint needs
+	// destination deploy-integration IDs that cannot be mapped automatically), so
+	// sync surfaces it as a manual action. Nil when no hierarchy is configured.
+	EnvironmentHierarchy *EnvironmentHierarchy `json:"environment_hierarchy,omitempty"`
 }
 
 // OrgGroup is a CircleCI group DEFINITION (name/ID) captured for the migration
@@ -190,6 +207,52 @@ type BudgetEntry struct {
 	// ProjectID is the source org project UUID for per-project budgets. Nil for the
 	// org-level budget.
 	ProjectID *string `json:"project_id,omitempty"`
+}
+
+// OrgOrb is one orb captured from the private orb-list API.
+// Only configuration fields are stored; runtime statistics are omitted.
+// Orbs cannot be auto-migrated (the destination org has a different namespace),
+// so they are surfaced as manual actions in sync.
+type OrgOrb struct {
+	// OrbName is the fully-qualified orb name (e.g. "acme/my-orb").
+	OrbName string `json:"orb_name"`
+	// LatestVersionNumber is the newest published version (e.g. "0.3.0").
+	LatestVersionNumber string `json:"latest_version_number"`
+	// OrbID is the server-assigned UUID for this orb.
+	OrbID string `json:"orb_id,omitempty"`
+	// IsPrivate reports whether the orb is private.
+	IsPrivate bool `json:"is_private"`
+	// Hidden reports whether the orb is hidden from search results.
+	Hidden bool `json:"hidden"`
+	// Description is the human-readable orb description.
+	Description string `json:"description,omitempty"`
+}
+
+// ReleaseTrackerSettings holds org-level release-tracker configuration.
+// Sync transfers these to the destination via PATCH when non-nil.
+type ReleaseTrackerSettings struct {
+	// InconclusiveReleaseTTL is a duration string (e.g. "1h") controlling how
+	// long an inconclusive release is retained before being expired.
+	InconclusiveReleaseTTL string `json:"inconclusive_release_ttl,omitempty"`
+}
+
+// EnvironmentHierarchy captures the org's environment-hierarchy configuration.
+// It is recorded for reference only — sync surfaces it as a manual action
+// because recreating it requires destination deploy-integration IDs that cannot
+// be mapped automatically from the source.
+type EnvironmentHierarchy struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Levels      []EnvHierarchyLevel `json:"levels,omitempty"`
+}
+
+// EnvHierarchyLevel is one level in an environment hierarchy.
+// IntegrationID is intentionally NOT captured here — it is source-org-specific.
+type EnvHierarchyLevel struct {
+	// Position is the 1-based ordering of this level in the hierarchy.
+	Position int `json:"position"`
+	// IntegrationName is the human-readable name of the deploy integration.
+	IntegrationName string `json:"integration_name"`
 }
 
 // StorageRetentionControls mirrors the storage_retention_controls payload for

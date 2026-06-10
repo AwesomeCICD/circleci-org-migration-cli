@@ -307,6 +307,11 @@ func (a orgSettingsAdapter) SetBudget(orgUUID string, projectID *string, credits
 func (a orgSettingsAdapter) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
 	return a.c.SetBlockUnregisteredUsers(orgUUID, enabled)
 }
+func (a orgSettingsAdapter) SetReleaseTrackerSettings(orgUUID string, ttl string) error {
+	return a.c.SetReleaseTrackerSettings(orgUUID, org.ReleaseTrackerSettings{
+		InconclusiveReleaseTTL: ttl,
+	})
+}
 
 // orgGroupLister adapts the org client's ListGroups (returning []org.Group) to
 // the syncer.GroupLister interface (returning []syncer.Group).
