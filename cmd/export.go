@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"time"
 
-	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/exporter"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/report"
+	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/spf13/cobra"
 )
 

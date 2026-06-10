@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/rest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 )
 
 // ssoEnforcedResponse mirrors GET /private/ciam/orgs/{orgID}/sso/enforced.

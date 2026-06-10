@@ -10,13 +10,13 @@ import (
 	"io"
 	"strings"
 
-	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
-	apirunner "github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/github"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/github"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // resolveRepoID is a package-level variable so tests can inject a stub.

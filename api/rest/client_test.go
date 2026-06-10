@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/rest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
 // ---------------------------------------------------------------------------

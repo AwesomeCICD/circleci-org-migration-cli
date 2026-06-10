@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/cmd"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/spf13/cobra"
 )
 

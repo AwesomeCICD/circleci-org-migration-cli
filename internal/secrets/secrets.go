@@ -8,7 +8,7 @@ package secrets
 import (
 	"fmt"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // Result reports which variables were captured and which were absent from the

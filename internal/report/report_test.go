@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/report"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 )
 
 // ---------------------------------------------------------------------------

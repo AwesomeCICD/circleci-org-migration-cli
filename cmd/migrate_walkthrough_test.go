@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/cmd"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
 )
 
 // ---------------------------------------------------------------------------

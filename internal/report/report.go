@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // Summary returns a concise, human-readable overview of an export for printing

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/orbsource"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/orbsource"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )

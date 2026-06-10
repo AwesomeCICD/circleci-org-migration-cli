@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

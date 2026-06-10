@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/rest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // uuidLen is the length of a canonical UUID (8-4-4-4-12 hex groups). We detect
