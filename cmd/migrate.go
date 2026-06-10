@@ -25,6 +25,7 @@ func newMigrateCommand() *cobra.Command {
 		yes             bool
 		missing         string
 		githubToken     string
+		destGitHubOrg   string
 		skipContexts    bool
 		skipProjects    bool
 		skipOrgSettings bool
@@ -179,6 +180,7 @@ Examples:
 				Apply:          apply,
 				MissingSecrets: missing,
 				GitHubToken:    githubToken,
+				DestGitHubOrg:  destGitHubOrg,
 			}
 
 			if !skipOrgSettings {
@@ -218,7 +220,9 @@ Examples:
 	f.BoolVarP(&yes, "yes", "y", false, "Auto-confirm enabling builds after project creation (skip the interactive prompt)")
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
 	f.StringVar(&githubToken, "github-token", os.Getenv("GITHUB_TOKEN"),
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN.")
+		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).")
+	f.StringVar(&destGitHubOrg, "dest-github-org", "",
+		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting and syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip exporting and syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")

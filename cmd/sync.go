@@ -27,6 +27,7 @@ func newSyncCommand() *cobra.Command {
 		skipProjects    bool
 		skipOrgSettings bool
 		githubToken     string
+		destGitHubOrg   string
 	)
 
 	cmd := &cobra.Command{
@@ -96,7 +97,7 @@ Examples:
 			}
 
 			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, OrgSettings: orgClient, Groups: orgGroupLister{orgClient}, Out: cmd.ErrOrStderr()}
-			opts := syncer.Options{Apply: apply, MissingSecrets: missing, GitHubToken: githubToken}
+			opts := syncer.Options{Apply: apply, MissingSecrets: missing, GitHubToken: githubToken, DestGitHubOrg: destGitHubOrg}
 
 			if !skipOrgSettings {
 				rep, err := sy.SyncOrgSettings(m, mapping, opts)
@@ -139,7 +140,9 @@ Examples:
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 	f.StringVar(&githubToken, "github-token", os.Getenv("GITHUB_TOKEN"),
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN. When omitted, the captured repository external_id from the source manifest is reused directly (correct for same-org migrations).")
+		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
+	f.StringVar(&destGitHubOrg, "dest-github-org", "",
+		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
 
 	return cmd
 }

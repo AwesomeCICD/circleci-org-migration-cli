@@ -5,10 +5,16 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+// ErrRepoNotFound is returned by ResolveRepoID when the repository does not
+// exist or is not accessible (HTTP 404).  Callers that need to distinguish a
+// missing repo from other errors should use errors.Is(err, ErrRepoNotFound).
+var ErrRepoNotFound = errors.New("repository not found")
 
 // DefaultBaseURL is the public GitHub API base URL.
 const DefaultBaseURL = "https://api.github.com"
@@ -59,7 +65,7 @@ func ResolveRepoID(fullName, token, baseURL string) (string, error) {
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("github: ResolveRepoID %q: repository not found (HTTP 404)", fullName)
+		return "", fmt.Errorf("github: ResolveRepoID %q: %w (HTTP 404)", fullName, ErrRepoNotFound)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("github: ResolveRepoID %q: unexpected status %d", fullName, resp.StatusCode)
