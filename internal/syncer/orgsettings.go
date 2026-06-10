@@ -9,7 +9,7 @@ import (
 
 // OrgSettingsWriter is the destination org-settings API the syncer needs.
 // It is a narrow interface over the methods defined in api/org/orgsettings.go,
-// api/org/otel.go, and api/org/contacts.go.
+// api/org/otel.go, api/org/contacts.go, and api/org/storage_retention.go.
 type OrgSettingsWriter interface {
 	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
 	SetOIDCClaims(orgID string, audience []string, ttl string) error
@@ -18,6 +18,20 @@ type OrgSettingsWriter interface {
 	SetPolicyEnforcement(ownerID string, enabled bool) error
 	CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
 	SetContacts(orgID string, primary, security []string) error
+	// SetStorageRetention writes artifact/cache/workspace retention controls to
+	// the destination org. The server clamps values to the plan's limits.
+	// controls is passed as a manifest.StorageRetentionControls value; callers
+	// may need a thin adapter if using api/org.Client (see storage_retention_adapter.go).
+	SetStorageRetention(orgUUID string, controls StorageRetentionArgs) error
+}
+
+// StorageRetentionArgs carries the storage-retention values to write. It is a
+// locally-defined struct so neither the syncer nor the OrgSettingsWriter
+// interface needs to depend on api/org directly.
+type StorageRetentionArgs struct {
+	CacheDays     int
+	WorkspaceDays int
+	ArtifactDays  int
 }
 
 // dangerFlags are flags that are skipped by default during sync because
@@ -79,6 +93,7 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.reportSSO(report, src)
 	s.syncOTelExporters(report, src, destOrgID, opts)
 	s.syncContacts(report, src, destOrgID, opts)
+	s.syncStorageRetention(report, src, destOrgID, opts)
 
 	return report, nil
 }
@@ -323,6 +338,40 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// syncStorageRetention transfers the manifest's storage-retention controls to
+// the destination org when the manifest carries them. Dry-run aware; reports
+// created/updated like other sync sections. A note is included that the server
+// clamps values to the destination plan's limits.
+func (s *Syncer) syncStorageRetention(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+	if src.StorageRetention == nil {
+		return
+	}
+	sr := src.StorageRetention
+	target := "storage_retention"
+	detail := fmt.Sprintf(
+		"cache=%dd workspace=%dd artifact=%dd (values may be clamped to the destination plan's limits)",
+		sr.CacheDays, sr.WorkspaceDays, sr.ArtifactDays,
+	)
+
+	if !opts.Apply {
+		report.add("org-settings", target, "set",
+			"would set storage-retention controls: "+detail)
+		return
+	}
+
+	args := StorageRetentionArgs{
+		CacheDays:     sr.CacheDays,
+		WorkspaceDays: sr.WorkspaceDays,
+		ArtifactDays:  sr.ArtifactDays,
+	}
+	if err := s.OrgSettings.SetStorageRetention(destOrgID, args); err != nil {
+		report.add("org-settings", target, "error",
+			fmt.Sprintf("could not set storage-retention controls: %v", err))
+		return
+	}
+	report.add("org-settings", target, "set", "set storage-retention controls: "+detail)
 }
 
 // splitDestSlug extracts the (vcs, orgName) pair from a destination slug

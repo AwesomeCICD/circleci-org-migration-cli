@@ -10,6 +10,7 @@ import (
 	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/extract"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
@@ -23,6 +24,14 @@ import (
 type flagReaderWriter interface {
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+}
+
+// storageRetentionManager reads and writes org-level storage-retention controls
+// before the extraction pipeline runs. Injected by tests; production uses a
+// real *org.Client which satisfies this interface directly.
+type storageRetentionManager interface {
+	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
+	SetStorageRetention(orgUUID string, controls org.StorageRetentionControls) error
 }
 
 // orgFlagManager reads and writes org-level feature flags via the v1.1
@@ -112,15 +121,16 @@ const apiTriggerKey = "api-trigger-with-config"
 // newSecretsCaptureCommand builds the "secrets capture" subcommand.
 func newSecretsCaptureCommand() *cobra.Command {
 	var (
-		manifestPath       string
-		output             string
-		projectSlugs       []string
-		contextNames       []string
-		branch             string
-		enableTrigger      bool
-		skipRestrictedCtxs bool
-		removeRestrictions bool
-		pollTimeout        time.Duration
+		manifestPath          string
+		output                string
+		projectSlugs          []string
+		contextNames          []string
+		branch                string
+		enableTrigger         bool
+		skipRestrictedCtxs    bool
+		removeRestrictions    bool
+		pollTimeout           time.Duration
+		artifactRetentionDays int
 	)
 
 	cmd := &cobra.Command{
@@ -218,6 +228,22 @@ Examples:
 				}
 			}
 
+			// ── Artifact-retention safety control ─────────────────────────────
+			// When --artifact-retention-days is set, lower the artifact-retention
+			// BEFORE triggering the extraction pipeline so that any secrets that
+			// land in the build artifact expire quickly.  We deliberately do NOT
+			// auto-restore: keeping artifact retention low is the safe default
+			// when secrets may be present in artifacts.
+			if artifactRetentionDays > 0 && m.Source.Org.ID != "" {
+				orgRetentionClient, oerr := newOrgClientForCapture(rootOptions, token)
+				if oerr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"WARNING: could not create org client for artifact-retention control: %v\n", oerr)
+				} else {
+					applyArtifactRetentionControl(cmd, orgRetentionClient, m.Source.Org.ID, artifactRetentionDays)
+				}
+			}
+
 			var captureErr error
 			for i := range projects {
 				p := &projects[i]
@@ -272,6 +298,12 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 		"Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)")
 	f.DurationVar(&pollTimeout, "poll-timeout", 10*time.Minute,
 		"Maximum time to wait for each pipeline to complete (0 = no timeout)")
+	f.IntVar(&artifactRetentionDays, "artifact-retention-days", 0,
+		"Set the org's artifact-retention to this many days BEFORE triggering the extraction pipeline. "+
+			"Recommended value: 1 (the minimum). Default 0 = leave unchanged. "+
+			"The prior value is logged so you can restore it manually. "+
+			"This control is NOT auto-restored after capture — keeping retention low is the safe default "+
+			"when secrets may land in artifacts.")
 
 	return cmd
 }
@@ -613,4 +645,54 @@ func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, 
 				vcsType, orgName, rerr)
 		}
 	}
+}
+
+// applyArtifactRetentionControl reads the current org storage-retention controls,
+// then sets artifact retention to targetDays (keeping cache/workspace unchanged).
+//
+// The prior artifact-retention value is logged via clog so the operator knows
+// what value to restore if needed. This function deliberately does NOT
+// auto-restore: keeping artifact retention low is the safe default when
+// secrets may be present in pipeline artifacts (there is no delete-artifact API).
+//
+// A clear note is printed to stderr with the prior value and restore instructions.
+func applyArtifactRetentionControl(cmd *cobra.Command, mgr storageRetentionManager, orgUUID string, targetDays int) {
+	stderr := cmd.ErrOrStderr()
+
+	current, err := mgr.GetStorageRetention(orgUUID)
+	if err != nil {
+		fmt.Fprintf(stderr,
+			"WARNING: could not read current artifact-retention for org %s: %v — skipping retention control\n",
+			orgUUID, err)
+		clog.Warnf("applyArtifactRetentionControl: GetStorageRetention(%s): %v", orgUUID, err)
+		return
+	}
+
+	priorDays := current.Controls.ArtifactDays
+	clog.Infof("artifact-retention safety: current artifact_days=%d, setting to %d for org %s",
+		priorDays, targetDays, orgUUID)
+
+	newControls := org.StorageRetentionControls{
+		CacheDays:     current.Controls.CacheDays,
+		WorkspaceDays: current.Controls.WorkspaceDays,
+		ArtifactDays:  targetDays,
+	}
+	if err := mgr.SetStorageRetention(orgUUID, newControls); err != nil {
+		fmt.Fprintf(stderr,
+			"WARNING: could not set artifact-retention to %d days for org %s: %v — skipping retention control\n",
+			targetDays, orgUUID, err)
+		clog.Warnf("applyArtifactRetentionControl: SetStorageRetention(%s): %v", orgUUID, err)
+		return
+	}
+
+	clog.Infof("artifact-retention set to %d day(s) for org %s (was %d)", targetDays, orgUUID, priorDays)
+	fmt.Fprintf(stderr,
+		"NOTICE: artifact-retention set to %d day(s) for org %s (was %d day(s)).\n"+
+			"  Secrets landing in build artifacts will expire sooner.\n"+
+			"  This value is NOT auto-restored. To restore, run:\n"+
+			"    POST https://app.circleci.com/private/orgs/%s/storage-retention-controls\n"+
+			"    body: {\"retention_days_artifact\":%d,\"retention_days_cache\":%d,\"retention_days_workspace\":%d}\n",
+		targetDays, orgUUID, priorDays,
+		orgUUID, priorDays, current.Controls.CacheDays, current.Controls.WorkspaceDays,
+	)
 }

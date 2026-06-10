@@ -34,6 +34,7 @@ type OrgAPI interface {
 	GetOTelExporters(orgID string) ([]org.OTelExporter, error)
 	GetContacts(orgID string) (primary, security []string, err error)
 	ListGroups(orgID string) ([]org.Group, error)
+	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -725,6 +726,23 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 				s.Groups = captured
 				hasAny = true
 			}
+		}
+
+		// Storage-retention controls (best-effort; on error warn and continue).
+		clog.Debugf("GetStorageRetention org_id=%s", o.ID)
+		if sr, serr := e.Org.GetStorageRetention(o.ID); serr != nil {
+			m.AddWarning("org", "retention_unreadable",
+				fmt.Sprintf("could not read storage-retention controls: %v", serr))
+		} else if sr != nil {
+			c := sr.Controls
+			s.StorageRetention = &manifest.StorageRetentionControls{
+				CacheDays:     c.CacheDays,
+				WorkspaceDays: c.WorkspaceDays,
+				ArtifactDays:  c.ArtifactDays,
+			}
+			hasAny = true
+			clog.Debugf("storage retention: cache=%d workspace=%d artifact=%d",
+				c.CacheDays, c.WorkspaceDays, c.ArtifactDays)
 		}
 	}
 

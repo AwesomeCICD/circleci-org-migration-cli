@@ -17,19 +17,20 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeOrgAPI struct {
-	getOrganization    func(slugOrID string) (*org.Organization, error)
-	getOrgSettings     func(vcsType, orgName string) (*org.OrgSettings, error)
-	getFeatureFlags    func(vcsType, orgName string) (map[string]bool, error)
-	getOIDCClaims      func(orgID string) ([]string, string, error)
-	getURLOrbAllowList func(slugOrID string) ([]org.URLOrbAllowEntry, error)
-	getPolicyBundle    func(ownerID string) (map[string]string, error)
-	getPolicyEnf       func(ownerID string) (bool, error)
-	getAuditLogConfigs func(orgID string) ([]org.AuditLogConfig, error)
-	getSSOEnforced     func(orgID string) (bool, error)
-	getSSOConnection   func(orgID string) (map[string]any, bool, error)
-	getOTelExporters   func(orgID string) ([]org.OTelExporter, error)
-	getContacts        func(orgID string) ([]string, []string, error)
-	listGroups         func(orgID string) ([]org.Group, error)
+	getOrganization     func(slugOrID string) (*org.Organization, error)
+	getOrgSettings      func(vcsType, orgName string) (*org.OrgSettings, error)
+	getFeatureFlags     func(vcsType, orgName string) (map[string]bool, error)
+	getOIDCClaims       func(orgID string) ([]string, string, error)
+	getURLOrbAllowList  func(slugOrID string) ([]org.URLOrbAllowEntry, error)
+	getPolicyBundle     func(ownerID string) (map[string]string, error)
+	getPolicyEnf        func(ownerID string) (bool, error)
+	getAuditLogConfigs  func(orgID string) ([]org.AuditLogConfig, error)
+	getSSOEnforced      func(orgID string) (bool, error)
+	getSSOConnection    func(orgID string) (map[string]any, bool, error)
+	getOTelExporters    func(orgID string) ([]org.OTelExporter, error)
+	getContacts         func(orgID string) ([]string, []string, error)
+	listGroups          func(orgID string) ([]org.Group, error)
+	getStorageRetention func(orgUUID string) (*org.StorageRetention, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -119,6 +120,13 @@ func (f *fakeOrgAPI) GetContacts(orgID string) ([]string, []string, error) {
 func (f *fakeOrgAPI) ListGroups(orgID string) ([]org.Group, error) {
 	if f.listGroups != nil {
 		return f.listGroups(orgID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetStorageRetention(orgUUID string) (*org.StorageRetention, error) {
+	if f.getStorageRetention != nil {
+		return f.getStorageRetention(orgUUID)
 	}
 	return nil, nil
 }

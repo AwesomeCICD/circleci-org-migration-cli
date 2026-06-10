@@ -54,15 +54,17 @@ type fakeOrgSettingsWriter struct {
 	setPolicyEnforcement   func(ownerID string, enabled bool) error
 	createOTelExporter     func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
 	setContacts            func(orgID string, primary, security []string) error
+	setStorageRetention    func(orgUUID string, controls StorageRetentionArgs) error
 
-	calls           []orgSettingsCall
-	flagsWritten    []map[string]bool // each call to UpdateFeatureFlags
-	oidcCalls       int
-	urlOrbCalls     int
-	policyPuts      int
-	enforcementSets int
-	otelCalls       int
-	contactsCalls   int
+	calls                []orgSettingsCall
+	flagsWritten         []map[string]bool // each call to UpdateFeatureFlags
+	oidcCalls            int
+	urlOrbCalls          int
+	policyPuts           int
+	enforcementSets      int
+	otelCalls            int
+	contactsCalls        int
+	storageRetentionSets int
 }
 
 func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
@@ -132,6 +134,15 @@ func (f *fakeOrgSettingsWriter) SetContacts(orgID string, primary, security []st
 	f.contactsCalls++
 	if f.setContacts != nil {
 		return f.setContacts(orgID, primary, security)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) SetStorageRetention(orgUUID string, controls StorageRetentionArgs) error {
+	f.calls = append(f.calls, orgSettingsCall{"SetStorageRetention", []string{orgUUID}})
+	f.storageRetentionSets++
+	if f.setStorageRetention != nil {
+		return f.setStorageRetention(orgUUID, controls)
 	}
 	return nil
 }
@@ -1148,4 +1159,154 @@ func TestSyncOrgSettings_Contacts_WriteError_IsErrorAction(t *testing.T) {
 	if len(errActions) == 0 {
 		t.Error("expected an error action when SetContacts fails")
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Storage retention
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncOrgSettings_StorageRetention_DryRunNoWrites(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		StorageRetention: &manifest.StorageRetentionControls{
+			CacheDays:     10,
+			WorkspaceDays: 7,
+			ArtifactDays:  1,
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetStorageRetention") {
+		t.Error("SetStorageRetention must NOT be called in dry-run mode")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action for storage retention in dry-run")
+	}
+}
+
+func TestSyncOrgSettings_StorageRetention_ApplyTrue(t *testing.T) {
+	var gotOrgUUID string
+	var gotControls StorageRetentionArgs
+
+	fw := &fakeOrgSettingsWriter{
+		setStorageRetention: func(orgUUID string, controls StorageRetentionArgs) error {
+			gotOrgUUID = orgUUID
+			gotControls = controls
+			return nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		StorageRetention: &manifest.StorageRetentionControls{
+			CacheDays:     15,
+			WorkspaceDays: 10,
+			ArtifactDays:  1,
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.storageRetentionSets != 1 {
+		t.Errorf("expected 1 SetStorageRetention call, got %d", fw.storageRetentionSets)
+	}
+	if gotOrgUUID == "" {
+		t.Error("orgUUID must be non-empty")
+	}
+	if gotControls.ArtifactDays != 1 {
+		t.Errorf("ArtifactDays: got %d want 1", gotControls.ArtifactDays)
+	}
+	if gotControls.CacheDays != 15 {
+		t.Errorf("CacheDays: got %d want 15", gotControls.CacheDays)
+	}
+	if gotControls.WorkspaceDays != 10 {
+		t.Errorf("WorkspaceDays: got %d want 10", gotControls.WorkspaceDays)
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	if len(setActions) == 0 {
+		t.Error("expected a set action for storage retention")
+	}
+}
+
+func TestSyncOrgSettings_StorageRetention_Nil_NoWrite(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{},
+		// No StorageRetention.
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetStorageRetention") {
+		t.Error("SetStorageRetention must NOT be called when StorageRetention is nil")
+	}
+}
+
+func TestSyncOrgSettings_StorageRetention_WriteError_IsErrorAction(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		setStorageRetention: func(orgUUID string, controls StorageRetentionArgs) error {
+			return errors.New("retention write failed")
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		StorageRetention: &manifest.StorageRetentionControls{
+			CacheDays: 5, WorkspaceDays: 5, ArtifactDays: 1,
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("retention write error must not propagate, got: %v", err)
+	}
+
+	errActions := actionsOfStatus(rep, "error")
+	if len(errActions) == 0 {
+		t.Error("expected an error action when SetStorageRetention fails")
+	}
+}
+
+func TestSyncOrgSettings_StorageRetention_ReportMentionsClamping(t *testing.T) {
+	// The report detail must mention that values may be clamped.
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		StorageRetention: &manifest.StorageRetentionControls{
+			CacheDays: 10, WorkspaceDays: 5, ArtifactDays: 1,
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Target == "storage_retention" {
+			if !strings.Contains(a.Detail, "clamp") {
+				t.Errorf("storage_retention action detail should mention clamping, got: %q", a.Detail)
+			}
+			return
+		}
+	}
+	t.Error("storage_retention action not found")
 }
