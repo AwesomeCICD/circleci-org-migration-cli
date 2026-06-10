@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.2.0...v0.3.0) (2026-06-10)
+
+
+### Features
+
+* capture and sync self-hosted runner resource classes ([#44](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/44)) ([dc59141](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/dc59141eb0a490d26fb25655aaba2e5e62937ee6))
+* **cli:** leveled debug logging and actionable API errors ([a87c09c](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/a87c09c02a84a548203dee6ed8b776e1af4c21a9))
+* **migrate:** interactive guided migration (flags bypass for automation) ([#40](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/40)) ([325412a](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/325412af12291e3521ad0c42c2ed43987fdfaa62))
+
+
+### Bug Fixes
+
+* **exporter:** redact SSO IdP secrets from the manifest ([#46](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/46)) ([52beb38](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/52beb38d816c8e45e3fa723f5db13cb43241c3c6))
+* **orb:** capture bundles into captured/ dir with sanitized names (extract-project slug bug) ([#41](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/41)) ([72f5c55](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/72f5c55e5b7fc14b2fcabd48db1919b1a1877415))
+* **orb:** import extract commands via &lt;&lt;include&gt;&gt; (RC009) ([e8cbc29](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/e8cbc29345d9220d101cc60dbade992d2760c032))
+* **orb:** matrix example requires explicit matrix.alias; nicer merge job names ([feaad04](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/feaad0479e416b89eacc2797b37026831b30e368))
+* **orb:** snake_case component/param names (RC010), fix example versions (RC011), re-enable orb-review ([88dbb7b](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/88dbb7b1b6082d0a1664fc0554181eebaf9685fb))
+* **security:** never print token env values in --help output ([#42](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/42)) ([fe80500](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/fe805006d6f4e00dcb4a45b049f5f97628f7ebb6))
+
 ## [0.2.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.1.0...v0.2.0) (2026-06-10)
 
 
