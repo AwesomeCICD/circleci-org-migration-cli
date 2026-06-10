@@ -142,7 +142,7 @@ func TestSSO_ConnectionSubFields_StoredAsIs(t *testing.T) {
 		"idp":                "okta",
 		"sign_in_endpoint":   "https://idp.example.com/sso/saml",
 		"idp_entity_id":      "https://idp.example.com/entity",
-		"x509_signing_cert":  "-----BEGIN CERTIFICATE-----\nMIIDXTCCAk...base64cert\n-----END CERTIFICATE-----",
+		"x509_signing_cert":  "-----BEGIN CERTIFICATE-----\nFAKE-TEST-CERT-NOT-A-REAL-KEY\n-----END CERTIFICATE-----",
 		"idp_metadata_xml":   "<EntityDescriptor entityID=\"https://idp.example.com/entity\">...</EntityDescriptor>",
 		"client_secret":      "super-secret-oauth-client-secret",
 		"sign_authn_request": true,
@@ -509,7 +509,7 @@ func TestSSO_FullSAMLConnectionBody(t *testing.T) {
 		"sign_out_endpoint":  "https://adfs.bigcorp.example/adfs/ls/?wa=wsignout1.0",
 		"sign_authn_request": true,
 		// Certificate material — potentially sensitive.
-		"x509_signing_cert": "MIIC6DCCAdCgAwIBAgIQW2...truncated==",
+		"x509_signing_cert": "FAKE-SIGNING-CERT-FOR-TEST-not-real",
 		// Metadata blob — may contain multiple certs and endpoints.
 		"idp_metadata_xml": `<?xml version="1.0"?><md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://adfs.bigcorp.example/adfs/services/trust">...</md:EntityDescriptor>`,
 		// Attribute mappings.
