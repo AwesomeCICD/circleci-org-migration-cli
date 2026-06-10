@@ -86,6 +86,7 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	rootCmd.AddCommand(newSecretsCommand())
 	rootCmd.AddCommand(newSyncCommand())
 	rootCmd.AddCommand(newMigrateCommand())
+	rootCmd.AddCommand(newOrbCommand())
 
 	return rootCmd
 }
