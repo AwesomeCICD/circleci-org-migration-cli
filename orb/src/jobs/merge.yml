@@ -1,10 +1,22 @@
 description: |
   Combine all per-context/project bundles persisted to the workspace into a
   single secrets.json artifact. Run after all extract jobs (add them to
-  `requires:`). CAUTION: secrets.json contains PLAINTEXT secret values. Use a
-  private project, set a SHORT artifact retention period, download it over a
-  secure channel, and DELETE the artifact as soon as the destination sync is
-  complete. Never expose it on a public project or echo its contents.
+  `requires:`). CAUTION: secrets.json contains PLAINTEXT secret values unless
+  --encrypt is used. Use a private project, set a SHORT artifact retention
+  period, download it over a secure channel, and DELETE the artifact as soon
+  as the destination sync is complete. Never expose it on a public project or
+  echo its contents.
+
+  When encrypt_recipient is set the merged bundle is age-encrypted before it
+  is stored. The artifact stored in CircleCI will be secrets.json.age (binary
+  age ciphertext). Use 'circleci-migrate secrets decrypt' locally to recover
+  the plaintext. Plaintext secrets NEVER persist in CircleCI artifact storage
+  when this parameter is used.
+
+  When s3_bucket is set the bundle (encrypted if encrypt_recipient is set) is
+  also uploaded to S3 via 'aws s3 cp'. The job must have AWS credentials
+  available via a context or project environment variables:
+    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, (optionally) AWS_DEFAULT_REGION.
 parameters:
   version:
     type: string
@@ -18,6 +30,28 @@ parameters:
     type: string
     default: v1
     description: Bump to bust the CLI binary cache.
+  encrypt_recipient:
+    type: string
+    default: ""
+    description: |
+      age or SSH public-key recipient string (ssh-ed25519 / ssh-rsa / age1...).
+      When non-empty the merged bundle is age-encrypted and stored as
+      secrets.json.age instead of plaintext. The public key is safe to embed
+      here. Decrypt locally with 'circleci-migrate secrets decrypt
+      --identity-file <private-key> secrets.json.age'.
+  s3_bucket:
+    type: string
+    default: ""
+    description: |
+      S3 bucket name. When set the bundle (encrypted if encrypt_recipient is
+      set) is uploaded to s3://<s3_bucket>/<s3_prefix><filename> via
+      'aws s3 cp'. Requires AWS credentials in the job environment.
+  s3_prefix:
+    type: string
+    default: ""
+    description: |
+      S3 key prefix (e.g. "migration/"). Applied to the object key when
+      s3_bucket is set.
 executor: default
 steps:
   - install:
@@ -28,6 +62,22 @@ steps:
       at: .
   - run:
       name: Merge secret bundles
-      command: circleci-migrate secrets merge -o secrets.json captured/*.json
-  - store_artifacts:
-      path: secrets.json
+      environment:
+        ORB_PARAM_ENCRYPT_RECIPIENT: <<parameters.encrypt_recipient>>
+        ORB_PARAM_S3_BUCKET: <<parameters.s3_bucket>>
+        ORB_PARAM_S3_PREFIX: <<parameters.s3_prefix>>
+      command: orb/src/scripts/merge.sh
+  - when:
+      condition:
+        or:
+          - equal: ["", "<<parameters.encrypt_recipient>>"]
+      steps:
+        - store_artifacts:
+            path: secrets.json
+  - when:
+      condition:
+        not:
+          equal: ["", "<<parameters.encrypt_recipient>>"]
+      steps:
+        - store_artifacts:
+            path: secrets.json.age

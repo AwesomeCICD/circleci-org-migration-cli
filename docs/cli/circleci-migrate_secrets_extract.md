@@ -12,9 +12,16 @@ Run this inside a CircleCI job that injects the target's variables:
   - For a context, the job must reference exactly that context.
   - For project variables, the job must run within that project.
 
+When --encrypt is set, the bundle is written as an age-encrypted file
+(<output>.age) and the plaintext file is NOT written. Provide the recipient's
+public key via --recipient (inline string) or --recipient-file (path to a .pub
+or age recipients file).
+
 Examples:
   circleci-migrate secrets extract --manifest manifest.json --context deploy-prod
   circleci-migrate secrets extract --manifest manifest.json --project gh/acme/web -o secrets.json
+  circleci-migrate secrets extract --manifest manifest.json --context deploy-prod \
+    --encrypt --recipient-file /tmp/migration.pub
 
 ```
 circleci-migrate secrets extract --manifest <file> (--context <name> | --project <slug>) [flags]
@@ -23,12 +30,15 @@ circleci-migrate secrets extract --manifest <file> (--context <name> | --project
 ### Options
 
 ```
-      --context string    Context name to capture (mutually exclusive with --project)
-  -h, --help              help for extract
-      --manifest string   Path to the export manifest (required)
-  -o, --output string     Path to the secret bundle to write/append (default "secrets.json")
-      --project string    Project slug to capture (mutually exclusive with --context)
-      --strict            Fail if any expected variable is missing from the environment
+      --context string          Context name to capture (mutually exclusive with --project)
+      --encrypt                 Encrypt the output bundle with age (writes <output>.age; requires --recipient or --recipient-file)
+  -h, --help                    help for extract
+      --manifest string         Path to the export manifest (required)
+  -o, --output string           Path to the secret bundle to write/append (default "secrets.json")
+      --project string          Project slug to capture (mutually exclusive with --context)
+      --recipient string        age or SSH public key recipient string (ssh-ed25519/ssh-rsa/age1...)
+      --recipient-file string   Path to an SSH public key (.pub) or age recipients file
+      --strict                  Fail if any expected variable is missing from the environment
 ```
 
 ### Options inherited from parent commands

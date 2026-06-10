@@ -18,15 +18,44 @@ any config to the target project. It:
   6. Restores the api-trigger-with-config flag to its original value (even on
      failure).
 
+ENCRYPTION (--encrypt):
+  When --encrypt is set the in-pipeline extraction job encrypts the artifact
+  with age using a public key you supply (--ssh-public-key or an age key via
+  the recipient field). The CircleCI artifact is then encrypted — plaintext
+  secrets NEVER persist in CircleCI storage.
+
+  After the run, capture downloads the .age artifact and decrypts it locally
+  with --ssh-private-key (or the generated key) to build the in-memory bundle.
+
+  Use --generate-key to have capture create a fresh age X25519 keypair
+  automatically, print the file paths, and use it for this run.
+
+STORAGE (--storage):
+  artifact (default) — store the bundle as a CircleCI job artifact.
+  s3                 — upload to S3 only (requires aws CLI + AWS creds in job).
+  both               — store in both artifact and S3.
+
+  For S3 storage provide --s3-bucket and (optionally) --s3-prefix.
+  The job executor must have AWS credentials via a context or project env vars.
+
 SECURITY NOTES:
-  - The secret bundle contains plaintext secrets. Protect it, do not commit it.
-  - Build artifacts are retained for at least 1 day with no delete-artifact API.
-    Rotate any captured secrets and treat the artifact as sensitive.
+  - Without --encrypt: the secret bundle contains plaintext secrets. Protect it.
+  - Build artifacts are retained for at least 1 day; there is no delete API.
+    With --encrypt the artifact is age-encrypted so plaintext never hits disk.
+  - Rotate any captured secrets after migration.
 
 Examples:
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
     --enable-trigger --branch main -o secrets.json
+  # Encrypted capture with auto-generated key:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key
+  # Encrypted capture with existing SSH key:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt \
+    --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Upload encrypted bundle to S3 instead of artifact:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
+    --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/
 
 ```
 circleci-migrate secrets capture --manifest <file> [flags]
@@ -39,13 +68,23 @@ circleci-migrate secrets capture --manifest <file> [flags]
       --branch string                 Branch to check out for the extraction run (default "main")
       --context stringArray           Context name(s) to capture for each project (default: all attached)
       --enable-trigger                Enable api-trigger-with-config if not already on, and restore after capture
+      --encrypt                       Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI. Requires --ssh-public-key or --generate-key.
+      --generate-key                  Generate a fresh age X25519 keypair for this run. Writes the identity to ./migration-identity.age and the recipient to ./migration-recipient.txt. Use --generate-key instead of --ssh-public-key when you do not have an existing key.
   -h, --help                          help for capture
       --manifest string               Path to the export manifest (required)
   -o, --output string                 Path to the secret bundle to write/append (default "secrets.json")
       --poll-timeout duration         Maximum time to wait for each pipeline to complete (0 = no timeout) (default 10m0s)
       --project stringArray           Project slug(s) to capture (default: all in manifest)
       --remove-restrictions           Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)
+      --s3-bucket string              S3 bucket name for --storage s3|both (required when --storage s3 or both)
+      --s3-prefix string              S3 key prefix for --storage s3|both (optional; e.g. 'migration/')
       --skip-restricted-contexts      Skip contexts that have project/expression/group restrictions (attach warning instead of attempting) (default true)
+      --ssh-private-key string        Path to an SSH private key or age identity file used to decrypt the artifact locally. Defaults to ~/.ssh/id_ed25519 if present and --ssh-public-key points to the matching .pub.
+      --ssh-public-key string         Path to an SSH public key (.pub) or age recipients file used as the encryption recipient. The public key is safe to embed in the pipeline config.
+      --storage string                Where to store the (optionally encrypted) bundle after extraction.
+                                      artifact (default) — store as a CircleCI job artifact.
+                                      s3                 — upload to S3 via the aws CLI (requires AWS creds in job).
+                                      both               — store in both artifact and S3. (default "artifact")
 ```
 
 ### Options inherited from parent commands

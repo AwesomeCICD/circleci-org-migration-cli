@@ -107,6 +107,8 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	rootCmd.AddCommand(newOrbCommand())
 	// gen-docs is a hidden developer command — not shown in --help.
 	rootCmd.AddCommand(newGenDocsCommand())
+	// bundle-encrypt is a hidden internal command used by inline pipeline configs.
+	rootCmd.AddCommand(newBundleEncryptCommand())
 
 	return rootCmd
 }
