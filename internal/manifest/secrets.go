@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // SecretBundle holds the plaintext environment-variable values that CircleCI
@@ -75,9 +76,17 @@ func (b *SecretBundle) Merge(other *SecretBundle) {
 }
 
 // Save writes the bundle to path as indented JSON with 0600 permissions.
+// It creates the parent directory (and any missing ancestors) if it does not
+// already exist, so callers can safely write to paths like "captured/foo.json"
+// without pre-creating the directory.
 func (b *SecretBundle) Save(path string) error {
 	if b.SchemaVersion == "" {
 		b.SchemaVersion = SchemaVersion
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating output directory %s: %w", dir, err)
+		}
 	}
 	return writeJSON(path, b, 0o600)
 }

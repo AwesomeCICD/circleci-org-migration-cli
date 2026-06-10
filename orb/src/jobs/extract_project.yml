@@ -33,8 +33,7 @@ steps:
   - extract_project:
       manifest: <<parameters.manifest>>
       project_slug: <<parameters.project_slug>>
-      output: secrets-project-<<parameters.project_slug>>.json
   - persist_to_workspace:
       root: .
       paths:
-        - secrets-project-<<parameters.project_slug>>.json
+        - captured

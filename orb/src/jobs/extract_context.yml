@@ -34,8 +34,7 @@ steps:
   - extract_context:
       manifest: <<parameters.manifest>>
       context_name: <<parameters.context_name>>
-      output: secrets-context-<<parameters.context_name>>.json
   - persist_to_workspace:
       root: .
       paths:
-        - secrets-context-<<parameters.context_name>>.json
+        - captured
