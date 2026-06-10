@@ -2,7 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
     ".": {
-      "release-type": "go"
+      "release-type": "go",
+      "release-as": "0.1.0",
+      "_release-as-note": "REMOVE release-as after 0.1.0 ships so subsequent versions bump automatically from Conventional Commits"
     }
   }
 }
