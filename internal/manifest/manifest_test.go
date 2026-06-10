@@ -59,6 +59,77 @@ func TestManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunnerResourceClassRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Host: "https://circleci.com",
+			Org:  Org{Slug: "gh/acme", Name: "acme"},
+		},
+		RunnerNamespace: "acme",
+		RunnerResourceClasses: []RunnerResourceClass{
+			{Name: "acme/fast-runner", Description: "speedy"},
+			{Name: "acme/slow-runner"},
+		},
+	}
+
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.RunnerNamespace != "acme" {
+		t.Errorf("RunnerNamespace = %q, want %q", out.RunnerNamespace, "acme")
+	}
+	if len(out.RunnerResourceClasses) != 2 {
+		t.Fatalf("RunnerResourceClasses count = %d, want 2", len(out.RunnerResourceClasses))
+	}
+	if out.RunnerResourceClasses[0].Name != "acme/fast-runner" {
+		t.Errorf("RunnerResourceClasses[0].Name = %q", out.RunnerResourceClasses[0].Name)
+	}
+	if out.RunnerResourceClasses[0].Description != "speedy" {
+		t.Errorf("RunnerResourceClasses[0].Description = %q", out.RunnerResourceClasses[0].Description)
+	}
+	if out.RunnerResourceClasses[1].Name != "acme/slow-runner" {
+		t.Errorf("RunnerResourceClasses[1].Name = %q", out.RunnerResourceClasses[1].Name)
+	}
+	if out.RunnerResourceClasses[1].Description != "" {
+		t.Errorf("RunnerResourceClasses[1].Description should be empty, got %q", out.RunnerResourceClasses[1].Description)
+	}
+}
+
+func TestManifestRoundTrip_WithoutRunner(t *testing.T) {
+	// Verify that manifests without runner fields are still valid (backward compat).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Host: "https://circleci.com",
+			Org:  Org{Slug: "gh/acme", Name: "acme"},
+		},
+		// No RunnerNamespace or RunnerResourceClasses.
+	}
+
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.RunnerNamespace != "" {
+		t.Errorf("RunnerNamespace should be empty, got %q", out.RunnerNamespace)
+	}
+	if len(out.RunnerResourceClasses) != 0 {
+		t.Errorf("RunnerResourceClasses should be empty, got %d", len(out.RunnerResourceClasses))
+	}
+}
+
 func TestLoadRejectsUnsupportedSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")

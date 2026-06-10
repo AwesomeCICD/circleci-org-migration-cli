@@ -7,6 +7,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/exporter"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/report"
 	"github.com/spf13/cobra"
@@ -14,13 +15,14 @@ import (
 
 func newExportCommand() *cobra.Command {
 	var (
-		orgSlug      string
-		output       string
-		reportPath   string
-		projectSlugs []string
-		skipContexts bool
-		skipProjects bool
-		skipExtras   bool
+		orgSlug         string
+		output          string
+		reportPath      string
+		projectSlugs    []string
+		skipContexts    bool
+		skipProjects    bool
+		skipExtras      bool
+		runnerNamespace string
 	)
 
 	cmd := &cobra.Command{
@@ -38,10 +40,15 @@ the in-pipeline secrets step.
 The org slug is "gh/<org>" for GitHub OAuth organizations or
 "circleci/<org-id>" for GitHub App / GitLab organizations.
 
+Self-hosted runner resource classes live under a namespace on runner.circleci.com.
+Pass --runner-namespace to capture them. The namespace must be supplied explicitly
+because there is no clean org→namespace lookup in the CircleCI API.
+
 Examples:
   circleci-migrate export --org gh/acme --source-token $SRC_TOKEN
   circleci-migrate export --org gh/acme -o acme.json --report acme-audit.md
-  circleci-migrate export --org gh/acme --projects gh/acme/web,gh/acme/api`,
+  circleci-migrate export --org gh/acme --projects gh/acme/web,gh/acme/api
+  circleci-migrate export --org gh/acme --runner-namespace acme`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if orgSlug == "" {
 				return fmt.Errorf("--org is required (e.g. --org gh/acme)")
@@ -71,6 +78,14 @@ Examples:
 				Out:      cmd.ErrOrStderr(),
 			}
 
+			if runnerNamespace != "" {
+				runnerClient, rerr := runner.NewClient(rootOptions, token)
+				if rerr != nil {
+					return fmt.Errorf("creating runner client: %w", rerr)
+				}
+				ex.Runner = runnerClient
+			}
+
 			m, err := ex.Export(exporter.Options{
 				Host:            rootOptions.Host,
 				OrgSlug:         orgSlug,
@@ -78,6 +93,7 @@ Examples:
 				IncludeContexts: !skipContexts,
 				IncludeProjects: !skipProjects,
 				IncludeExtras:   !skipExtras,
+				RunnerNamespace: runnerNamespace,
 			})
 			if err != nil {
 				return err
@@ -107,6 +123,9 @@ Examples:
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip exporting projects")
 	f.BoolVar(&skipExtras, "skip-extras", false, "Skip checkout keys, webhooks, and schedules")
+	f.StringVar(&runnerNamespace, "runner-namespace", "",
+		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
+			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
 
 	return cmd
 }

@@ -10,6 +10,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/syncer"
 	"github.com/spf13/cobra"
@@ -17,17 +18,18 @@ import (
 
 func newSyncCommand() *cobra.Command {
 	var (
-		manifestPath    string
-		secretsPath     string
-		mappingPath     string
-		apply           bool
-		yes             bool
-		missing         string
-		skipContexts    bool
-		skipProjects    bool
-		skipOrgSettings bool
-		githubToken     string
-		destGitHubOrg   string
+		manifestPath        string
+		secretsPath         string
+		mappingPath         string
+		apply               bool
+		yes                 bool
+		missing             string
+		skipContexts        bool
+		skipProjects        bool
+		skipOrgSettings     bool
+		githubToken         string
+		destGitHubOrg       string
+		destRunnerNamespace string
 	)
 
 	cmd := &cobra.Command{
@@ -51,11 +53,17 @@ builds (follow the project, which installs the webhook and may trigger an
 initial build). Pass --yes / -y to auto-confirm without a prompt, or run without
 a TTY and later re-run with --apply --yes to enable builds.
 
+When the manifest contains self-hosted runner resource classes, pass
+--dest-runner-namespace to recreate them in the destination namespace. If the
+flag is omitted, runner classes are flagged for manual recreation — the syncer
+never guesses the destination namespace.
+
 Examples:
   circleci-migrate sync --manifest manifest.json --secrets secrets.json
   circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
-  circleci-migrate sync --manifest manifest.json --apply --yes`,
+  circleci-migrate sync --manifest manifest.json --apply --yes
+  circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Resolve the GitHub token from the env after parsing so the flag
 			// default never leaks $GITHUB_TOKEN into --help output.
@@ -101,8 +109,31 @@ Examples:
 				return fmt.Errorf("creating project client: %w", err)
 			}
 
-			sy := &syncer.Syncer{Org: orgClient, Contexts: ctxClient, Projects: projClient, OrgSettings: orgClient, Groups: orgGroupLister{orgClient}, Out: cmd.ErrOrStderr()}
-			opts := syncer.Options{Apply: apply, MissingSecrets: missing, GitHubToken: githubToken, DestGitHubOrg: destGitHubOrg}
+			sy := &syncer.Syncer{
+				Org:         orgClient,
+				Contexts:    ctxClient,
+				Projects:    projClient,
+				OrgSettings: orgClient,
+				Groups:      orgGroupLister{orgClient},
+				Out:         cmd.ErrOrStderr(),
+			}
+			opts := syncer.Options{
+				Apply:               apply,
+				MissingSecrets:      missing,
+				GitHubToken:         githubToken,
+				DestGitHubOrg:       destGitHubOrg,
+				DestRunnerNamespace: destRunnerNamespace,
+			}
+
+			// Wire up the runner client when a destination namespace was provided
+			// or the manifest has runner classes (so dry-run preview works).
+			if destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0 {
+				runnerClient, rerr := runner.NewClient(rootOptions, token)
+				if rerr != nil {
+					return fmt.Errorf("creating runner client: %w", rerr)
+				}
+				sy.Runner = runnerClient
+			}
 
 			if !skipOrgSettings {
 				rep, err := sy.SyncOrgSettings(m, mapping, opts)
@@ -130,6 +161,16 @@ Examples:
 					return err
 				}
 			}
+
+			// Runner resource classes (always attempted when present in manifest).
+			if len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "" {
+				rep, err := sy.SyncRunnerResourceClasses(m, opts)
+				if err != nil {
+					return err
+				}
+				printSyncReport(cmd, "Runner Resource Classes", rep)
+			}
+
 			return nil
 		},
 	}
@@ -148,6 +189,10 @@ Examples:
 		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
+	f.StringVar(&destRunnerNamespace, "dest-runner-namespace", "",
+		"Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). "+
+			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
+			"When omitted and the manifest contains runner classes, each is flagged for manual recreation.")
 
 	return cmd
 }
