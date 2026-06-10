@@ -141,6 +141,19 @@ type OrgSettings struct {
 	// limits, so the resulting values may differ from the source. Nil when the org
 	// has no custom retention or when the export lacked permission to read it.
 	StorageRetention *StorageRetentionControls `json:"storage_retention,omitempty"`
+
+	// Budgets captures the org's spend-budget configuration. The org-level budget
+	// is transferred directly to the destination. Per-project budgets reference
+	// source org project UUIDs, which must be mapped to destination project UUIDs;
+	// unmapped projects are flagged for manual recreation. EnforcementType is
+	// captured for reference but may not be transferable via the PUT endpoint
+	// (credits only). Nil when not captured.
+	Budgets *OrgBudgets `json:"budgets,omitempty"`
+
+	// BlockUnregisteredUsers captures whether the org has enabled the
+	// "block unregistered user spend" feature. When non-nil, sync applies the
+	// captured value to the destination org via PUT. Nil when not captured.
+	BlockUnregisteredUsers *bool `json:"block_unregistered_users,omitempty"`
 }
 
 // OrgGroup is a CircleCI group DEFINITION (name/ID) captured for the migration
@@ -149,6 +162,34 @@ type OrgSettings struct {
 type OrgGroup struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// OrgBudgets holds the captured spend-budget configuration for an org.
+type OrgBudgets struct {
+	// OrgBudget is the org-level budget (project_id == null in the API response).
+	// Nil when no org-level budget is configured.
+	OrgBudget *BudgetEntry `json:"org_budget,omitempty"`
+	// ProjectBudgets lists per-project budget entries. Each entry's ProjectID is
+	// the SOURCE org project UUID; it must be mapped to the destination project UUID
+	// before sync can transfer it.
+	ProjectBudgets []BudgetEntry `json:"project_budgets,omitempty"`
+}
+
+// BudgetEntry is one budget entry captured from the budgets API. Only the
+// configuration fields (Credits, EnforcementType, ProjectID) are captured;
+// runtime stats (Consumption, Percentage, ThresholdExceeded) are omitted.
+type BudgetEntry struct {
+	// Credits is the configured credit limit for this budget.
+	Credits int `json:"credits"`
+	// BudgetID is the server-assigned UUID for this budget entry (used for DELETE).
+	BudgetID string `json:"budget_id,omitempty"`
+	// EnforcementType is one of "warn" or "block". Captured for reference; the PUT
+	// endpoint only accepts credits (+ project_id), so enforcement_type cannot be
+	// transferred automatically.
+	EnforcementType string `json:"enforcement_type,omitempty"`
+	// ProjectID is the source org project UUID for per-project budgets. Nil for the
+	// org-level budget.
+	ProjectID *string `json:"project_id,omitempty"`
 }
 
 // StorageRetentionControls mirrors the storage_retention_controls payload for

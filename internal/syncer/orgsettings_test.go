@@ -47,24 +47,28 @@ type orgSettingsCall struct {
 
 // fakeOrgSettingsWriter records calls for assertion in tests.
 type fakeOrgSettingsWriter struct {
-	updateFeatureFlags     func(vcsType, orgName string, flags map[string]bool) error
-	setOIDCClaims          func(orgID string, audience []string, ttl string) error
-	createURLOrbAllowEntry func(slugOrID, name, prefix, auth string) error
-	putPolicyBundle        func(ownerID string, policies map[string]string) error
-	setPolicyEnforcement   func(ownerID string, enabled bool) error
-	createOTelExporter     func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
-	setContacts            func(orgID string, primary, security []string) error
-	setStorageRetention    func(orgUUID string, controls StorageRetentionArgs) error
+	updateFeatureFlags        func(vcsType, orgName string, flags map[string]bool) error
+	setOIDCClaims             func(orgID string, audience []string, ttl string) error
+	createURLOrbAllowEntry    func(slugOrID, name, prefix, auth string) error
+	putPolicyBundle           func(ownerID string, policies map[string]string) error
+	setPolicyEnforcement      func(ownerID string, enabled bool) error
+	createOTelExporter        func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
+	setContacts               func(orgID string, primary, security []string) error
+	setStorageRetention       func(orgUUID string, controls StorageRetentionArgs) error
+	setBudget                 func(orgUUID string, projectID *string, credits int) error
+	setBlockUnregisteredUsers func(orgUUID string, enabled bool) error
 
-	calls                []orgSettingsCall
-	flagsWritten         []map[string]bool // each call to UpdateFeatureFlags
-	oidcCalls            int
-	urlOrbCalls          int
-	policyPuts           int
-	enforcementSets      int
-	otelCalls            int
-	contactsCalls        int
-	storageRetentionSets int
+	calls                      []orgSettingsCall
+	flagsWritten               []map[string]bool // each call to UpdateFeatureFlags
+	oidcCalls                  int
+	urlOrbCalls                int
+	policyPuts                 int
+	enforcementSets            int
+	otelCalls                  int
+	contactsCalls              int
+	storageRetentionSets       int
+	budgetSets                 int
+	blockUnregisteredUsersSets int
 }
 
 func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
@@ -143,6 +147,32 @@ func (f *fakeOrgSettingsWriter) SetStorageRetention(orgUUID string, controls Sto
 	f.storageRetentionSets++
 	if f.setStorageRetention != nil {
 		return f.setStorageRetention(orgUUID, controls)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) SetBudget(orgUUID string, projectID *string, credits int) error {
+	pid := "<nil>"
+	if projectID != nil {
+		pid = *projectID
+	}
+	f.calls = append(f.calls, orgSettingsCall{"SetBudget", []string{orgUUID, pid}})
+	f.budgetSets++
+	if f.setBudget != nil {
+		return f.setBudget(orgUUID, projectID, credits)
+	}
+	return nil
+}
+
+func (f *fakeOrgSettingsWriter) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
+	v := "false"
+	if enabled {
+		v = "true"
+	}
+	f.calls = append(f.calls, orgSettingsCall{"SetBlockUnregisteredUsers", []string{orgUUID, v}})
+	f.blockUnregisteredUsersSets++
+	if f.setBlockUnregisteredUsers != nil {
+		return f.setBlockUnregisteredUsers(orgUUID, enabled)
 	}
 	return nil
 }
