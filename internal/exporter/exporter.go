@@ -591,8 +591,17 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 	s := &manifest.OrgSettings{}
 	hasAny := false
 
-	// Feature flags (v1.1; only available for VCS-type orgs with a name slug).
-	if vcs, name, ok := splitOrgSlug(orgSlug, o.VCSType); ok {
+	// Feature flags (v1.1). Works for GitHub OAuth orgs (gh/<org>) AND for
+	// GitHub-App / standalone orgs, whose slug is "circleci/<uuid>" — the v1.1
+	// settings endpoint accepts vcs="circleci", name=<uuid>. (Previously
+	// circleci-type orgs were skipped entirely, capturing zero flags.)
+	vcs, name, ok := splitOrgSlug(orgSlug, o.VCSType)
+	if !ok {
+		if parts := strings.SplitN(orgSlug, "/", 2); len(parts) == 2 && parts[0] == "circleci" && parts[1] != "" {
+			vcs, name, ok = "circleci", parts[1], true
+		}
+	}
+	if ok {
 		if flags, ferr := e.Org.GetFeatureFlags(vcs, name); ferr != nil {
 			m.AddWarning("org", "feature_flags_unreadable", fmt.Sprintf("could not read feature flags: %v", ferr))
 		} else if len(flags) > 0 {

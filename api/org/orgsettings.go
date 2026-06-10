@@ -1,6 +1,7 @@
 package org
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -10,16 +11,17 @@ import (
 // Feature flags
 // ─────────────────────────────────────────────────────────────────────────────
 
-// featureFlagsResponse mirrors GET /api/v1.1/organization/{vcs}/{org}/settings.
-type featureFlagsResponse struct {
-	FeatureFlags map[string]bool `json:"feature_flags"`
-}
-
-// GetFeatureFlags returns the full feature-flag map for the org.
+// GetFeatureFlags returns the org's feature flags as a bool map, handling BOTH
+// v1.1 settings response shapes:
+//   - GitHub OAuth orgs: {"feature_flags": {"key": bool, ...}}
+//   - GitHub-App / standalone (circleci-type) orgs: a FLAT object where flags are
+//     top-level bool fields (some "?"-suffixed, e.g. "allow_api_trigger_with_config_enabled?"),
+//     interleaved with non-bool fields ("name", "users", "analytics_id", ...).
+//
+// A trailing "?" is stripped from keys; non-bool fields are ignored. (Previously
+// only the nested shape was parsed, so standalone orgs captured ZERO flags.)
 //
 // Endpoint: GET /api/v1.1/organization/{vcsType}/{orgName}/settings
-//
-// The response uses snake_case keys (e.g. "allow_certified_public_orbs").
 func (c *Client) GetFeatureFlags(vcsType, orgName string) (map[string]bool, error) {
 	path := "organization/" + url.PathEscape(vcsType) + "/" + url.PathEscape(orgName) + "/settings"
 	u := &url.URL{Path: path}
@@ -29,12 +31,30 @@ func (c *Client) GetFeatureFlags(vcsType, orgName string) (map[string]bool, erro
 		return nil, fmt.Errorf("GetFeatureFlags: build request: %w", err)
 	}
 
-	var raw featureFlagsResponse
+	var raw map[string]json.RawMessage
 	if _, err := c.v11.DoRequest(req, &raw); err != nil {
 		return nil, fmt.Errorf("GetFeatureFlags %s/%s: %w", vcsType, orgName, err)
 	}
 
-	return raw.FeatureFlags, nil
+	flags := make(map[string]bool)
+	if ff, ok := raw["feature_flags"]; ok {
+		// Nested shape (OAuth orgs).
+		nested := map[string]bool{}
+		if jsonErr := json.Unmarshal(ff, &nested); jsonErr == nil {
+			for k, v := range nested {
+				flags[strings.TrimSuffix(k, "?")] = v
+			}
+		}
+		return flags, nil
+	}
+	// Flat shape (GH-App / standalone orgs): keep only bool-valued keys.
+	for k, v := range raw {
+		var b bool
+		if json.Unmarshal(v, &b) == nil {
+			flags[strings.TrimSuffix(k, "?")] = b
+		}
+	}
+	return flags, nil
 }
 
 // UpdateFeatureFlags writes the provided flag map to the org via PUT.
@@ -60,8 +80,10 @@ func (c *Client) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bo
 		return fmt.Errorf("UpdateFeatureFlags: build request: %w", err)
 	}
 
-	var ignored map[string]any
-	if _, err := c.v11.DoRequest(req, &ignored); err != nil {
+	// Ignore the response body: the v1.1 settings PUT returns different shapes
+	// per org type (object, plain string, or empty), so decoding it into a map
+	// would spuriously fail (e.g. "cannot unmarshal string into map").
+	if _, err := c.v11.DoRequest(req, nil); err != nil {
 		return fmt.Errorf("UpdateFeatureFlags %s/%s: %w", vcsType, orgName, err)
 	}
 	return nil

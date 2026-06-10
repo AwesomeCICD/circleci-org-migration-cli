@@ -80,8 +80,8 @@ func TestSetStorageRetention_HappyPath(t *testing.T) {
 	var receivedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
 		}
 		if r.URL.Path != wantPath {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
