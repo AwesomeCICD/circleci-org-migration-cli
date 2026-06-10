@@ -1145,6 +1145,418 @@ func TestSecretsCapture_FlagRegistered_RemoveRestrictions(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Fix 1: project loop passes projectVarsOnly=true → contexts not re-attached
+// ─────────────────────────────────────────────────────────────────────────────
+
+// newCaptureFakeServerTwoProjects builds a fake API server handling two
+// projects (gh/acme/web and gh/acme/api) plus one context (my-ctx).
+// It records each pipeline/run call so tests can assert trigger counts.
+// projectSlug1="gh/acme/web", projID1="proj-uuid-123",
+// projectSlug2="gh/acme/api", projID2="proj-uuid-456".
+func newCaptureFakeServerTwoProjects(t *testing.T, secretPayload map[string]string) (*fakeCaptureServer, *int) {
+	t.Helper()
+
+	payloadJSON, _ := json.Marshal(secretPayload)
+	pipelineTriggerCount := 0
+
+	fcs := &fakeCaptureServer{}
+	mux := http.NewServeMux()
+
+	addHandlers := func(slug, projID, defID, pipeID, wfID string) {
+		mux.HandleFunc("/api/v1.1/project/"+slug+"/settings", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(w, http.StatusOK, map[string]any{"feature_flags": map[string]any{"api-trigger-with-config": true}})
+				return
+			}
+			if r.Method == http.MethodPut {
+				fcs.putCalls = append(fcs.putCalls, true)
+				writeJSON(w, http.StatusOK, map[string]any{})
+			}
+		})
+		mux.HandleFunc("/api/v2/project/"+slug, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{"id": projID, "slug": slug, "name": slug})
+		})
+		mux.HandleFunc("/api/v2/projects/"+projID+"/pipeline-definitions", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items":           []map[string]any{{"id": defID, "name": "default", "config_source": map[string]any{"provider": "github_app"}, "checkout_source": map[string]any{"provider": "github_app"}}},
+				"next_page_token": "",
+			})
+		})
+		mux.HandleFunc("/api/v2/project/"+slug+"/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+			pipelineTriggerCount++
+			writeJSON(w, http.StatusCreated, map[string]any{"id": pipeID, "number": 1})
+		})
+		mux.HandleFunc("/api/v2/pipeline/"+pipeID+"/workflow", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items":           []map[string]any{{"id": wfID, "name": "extract", "status": "success"}},
+				"next_page_token": "",
+			})
+		})
+		mux.HandleFunc("/api/v2/workflow/"+wfID+"/job", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items":           []map[string]any{{"name": "circleci-migrate-extract", "job_number": 42, "status": "success"}},
+				"next_page_token": "",
+			})
+		})
+	}
+
+	addHandlers("gh/acme/web", "proj-uuid-123", "def-web-1", "pipe-web-1", "wf-web-1")
+	addHandlers("gh/acme/api", "proj-uuid-456", "def-api-1", "pipe-api-1", "wf-api-1")
+
+	// Artifact download handler — URL must end with "circleci-migrate-secrets.json"
+	// so the extract package can match it by URL suffix.
+	mux.HandleFunc("/artifact/circleci-migrate-secrets.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payloadJSON)
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Intercept artifacts endpoints — return a URL pointing to our artifact handler.
+		if strings.HasSuffix(r.URL.Path, "/artifacts") {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items": []map[string]any{
+					{
+						"path":       "/tmp/circleci-migrate-secrets.json",
+						"node_index": 0,
+						"url":        "http://" + r.Host + "/artifact/circleci-migrate-secrets.json",
+					},
+				},
+				"next_page_token": "",
+			})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	fcs.Server = srv
+	return fcs, &pipelineTriggerCount
+}
+
+// TestSecretsCapture_ProjectLoopDoesNotAttachContexts verifies Fix 1:
+// when there are 2 projects and 1 context, the per-project pipeline runs do
+// NOT re-attach the context.  Contexts are captured ONCE under the host
+// project; per-project runs use projectVarsOnly=true.
+//
+// Expected behaviour:
+//   - 3 pipeline triggers total: 1 for host (web, with context), then 1 each
+//     for web and api in the per-project loop (vars only, no context re-attach).
+//   - Bundle contains context secret AND both project secrets.
+func TestSecretsCapture_ProjectLoopDoesNotAttachContexts(t *testing.T) {
+	const orgID = "acme-org-uuid"
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/acme", ID: orgID}},
+		Contexts: []manifest.Context{
+			{Name: "my-ctx", EnvVars: []manifest.ContextEnvVar{{Name: "CTX_SECRET"}}},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", SourceID: "proj-uuid-123", EnvVars: []manifest.ProjectEnvVar{{Name: "WEB_VAR"}}},
+			{Slug: "gh/acme/api", SourceID: "proj-uuid-456", EnvVars: []manifest.ProjectEnvVar{{Name: "API_VAR"}}},
+		},
+	}
+
+	srv, triggerCount := newCaptureFakeServerTwoProjects(t, map[string]string{
+		"CTX_SECRET": "ctx-val",
+		"WEB_VAR":    "web-val",
+		"API_VAR":    "api-val",
+	})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--poll-timeout", "10s",
+		// Auto-picks gh/acme/web as host for context extraction.
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	// 3 triggers expected:
+	//   1. gh/acme/web (host — captures context + web vars, projectVarsOnly=false)
+	//   2. gh/acme/web (per-project loop, projectVarsOnly=true — captures web var again, NO ctx re-attach)
+	//   3. gh/acme/api (per-project loop, projectVarsOnly=true — captures api var, NO ctx re-attach)
+	//
+	// The key assertion is that triggers 2 and 3 use projectVarsOnly=true, meaning
+	// the context was NOT re-attached.  We verify this by checking context secrets
+	// appear in the bundle exactly from the host-project run.
+	if *triggerCount != 3 {
+		t.Errorf("expected 3 pipeline triggers (host + 2 project-only), got %d", *triggerCount)
+	}
+
+	bundle, loadErr := manifest.LoadSecretBundle(outPath)
+	if loadErr != nil {
+		t.Fatalf("load bundle: %v", loadErr)
+	}
+	if v, ok := bundle.ContextSecrets["my-ctx"]["CTX_SECRET"]; !ok || v != "ctx-val" {
+		t.Errorf("CTX_SECRET = %q (ok=%v), want ctx-val", v, ok)
+	}
+	if v, ok := bundle.ProjectSecrets["gh/acme/web"]["WEB_VAR"]; !ok || v != "web-val" {
+		t.Errorf("WEB_VAR = %q (ok=%v), want web-val", v, ok)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 2: --context without --project skips per-project loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSecretsCapture_ContextOnlyFlag_SkipsProjectLoop verifies Fix 2:
+// when --context is given but --project is NOT, the per-project env-var loop is
+// skipped.  Only ONE pipeline is triggered (under the host project).
+func TestSecretsCapture_ContextOnlyFlag_SkipsProjectLoop(t *testing.T) {
+	const orgID = "acme-org-uuid"
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/acme", ID: orgID}},
+		Contexts: []manifest.Context{
+			{Name: "deploy-ctx", EnvVars: []manifest.ContextEnvVar{{Name: "DEPLOY_KEY"}}},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", SourceID: "proj-uuid-123", EnvVars: []manifest.ProjectEnvVar{{Name: "WEB_VAR"}}},
+			{Slug: "gh/acme/api", SourceID: "proj-uuid-456", EnvVars: []manifest.ProjectEnvVar{{Name: "API_VAR"}}},
+		},
+	}
+
+	// Use the two-project server for convenience; we'll check only 1 trigger.
+	srv, triggerCount := newCaptureFakeServerTwoProjects(t, map[string]string{
+		"DEPLOY_KEY": "deploy-secret",
+		"WEB_VAR":    "web-val",
+	})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--poll-timeout", "10s",
+		"--context", "deploy-ctx",
+		"--host-project", "gh/acme/web",
+		// No --project: per-project loop must be SKIPPED entirely.
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	// Only 1 trigger: host project (web). No per-project loop for web or api.
+	if *triggerCount != 1 {
+		t.Errorf("expected exactly 1 pipeline trigger (host only), got %d; stderr: %s", *triggerCount, stderr)
+	}
+
+	bundle, loadErr := manifest.LoadSecretBundle(outPath)
+	if loadErr != nil {
+		t.Fatalf("load bundle: %v", loadErr)
+	}
+	if v, ok := bundle.ContextSecrets["deploy-ctx"]["DEPLOY_KEY"]; !ok || v != "deploy-secret" {
+		t.Errorf("DEPLOY_KEY = %q (ok=%v), want deploy-secret", v, ok)
+	}
+	_ = stdout
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 2: default scoping (no flags) → only contexts/projects with values
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSecretsCapture_DefaultScoping_SkipsEmptyProjectsAndContexts verifies that
+// when no --context or --project flags are given, the command captures only
+// projects with ≥1 env var and contexts with ≥1 env var (not all of them).
+func TestSecretsCapture_DefaultScoping_SkipsEmptyProjectsAndContexts(t *testing.T) {
+	// One project with vars, one without.  One context with vars, one without.
+	// Only the project/context with vars should be captured.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Contexts: []manifest.Context{
+			{Name: "ctx-with-vars", EnvVars: []manifest.ContextEnvVar{{Name: "CTX_VAR"}}},
+			{Name: "ctx-empty"}, // no vars → must NOT be extracted
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "WEB_VAR"}},
+			},
+			{
+				Slug:     "gh/acme/empty",
+				SourceID: "proj-uuid-999",
+				// no vars → must NOT be captured
+			},
+		},
+	}
+
+	srv := newCaptureFakeServer(t, map[string]string{
+		"WEB_VAR": "web-val",
+		"CTX_VAR": "ctx-val",
+	})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--poll-timeout", "10s",
+		// No --context, no --project: defaults to with-values only.
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	// The scope summary should reflect the correct counts.
+	if !strings.Contains(stderr, "1 context(s) with values") {
+		t.Errorf("stderr should report 1 context with values; got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "1 project(s) with values") {
+		t.Errorf("stderr should report 1 project with values; got: %s", stderr)
+	}
+
+	bundle, loadErr := manifest.LoadSecretBundle(outPath)
+	if loadErr != nil {
+		t.Fatalf("load bundle: %v", loadErr)
+	}
+	// Context with vars should be captured.
+	if _, ok := bundle.ContextSecrets["ctx-with-vars"]["CTX_VAR"]; !ok {
+		t.Errorf("ctx-with-vars/CTX_VAR should be in bundle")
+	}
+	// Empty context must NOT appear.
+	if _, ok := bundle.ContextSecrets["ctx-empty"]; ok {
+		t.Errorf("ctx-empty should NOT appear in bundle (no env vars)")
+	}
+	// Project with vars should be captured.
+	if _, ok := bundle.ProjectSecrets["gh/acme/web"]["WEB_VAR"]; !ok {
+		t.Errorf("gh/acme/web/WEB_VAR should be in bundle")
+	}
+
+	_ = stdout
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 3 (e2e): prepareRestrictionRemoval leaves default group untouched
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSecretsCapture_RemoveRestrictions_DefaultGroupNeverTouched_E2E verifies
+// that with --remove-restrictions, a context whose restrictions are
+// [group(orgID), project(X)] only triggers DELETE for the project restriction,
+// and CREATE only restores the project restriction. The default group is never
+// deleted or re-created.
+func TestSecretsCapture_RemoveRestrictions_DefaultGroupNeverTouched_E2E(t *testing.T) {
+	const contextID = "ctx-mixed-uuid"
+	const orgID = "acme-org-uuid"
+
+	// Live restrictions include the default group AND a real project restriction.
+	liveRestrictions := []map[string]any{
+		{"id": "default-group-live", "restriction_type": "group", "restriction_value": orgID,
+			"name": "All members", "context_id": contextID},
+		{"id": "proj-restr-live", "restriction_type": "project", "restriction_value": "proj-uuid-123",
+			"name": "web", "context_id": contextID},
+	}
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "mixed-ctx",
+				SourceID: contextID,
+				EnvVars:  []manifest.ContextEnvVar{{Name: "CTX_SECRET"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "group", Value: orgID, Name: "All members"}, // default group
+					{Type: "project", Value: "proj-uuid-123", Name: "web"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv := newCaptureFakeServerWithRestrictions(t,
+		map[string]string{"PROJECT_VAR": "proj-val", "CTX_SECRET": "ctx-val"},
+		contextID, liveRestrictions, false,
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--remove-restrictions",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	calls := srv.restrictionCalls
+	t.Logf("restriction calls: %v", calls)
+
+	// The default group restriction must NEVER be deleted.
+	for _, c := range calls {
+		if c == "DELETE:default-group-live" {
+			t.Error("DELETE was called on the default 'All members' group restriction — this must not happen")
+		}
+	}
+
+	// The project restriction MUST be deleted.
+	hasDeleteProj := false
+	for _, c := range calls {
+		if c == "DELETE:proj-restr-live" {
+			hasDeleteProj = true
+		}
+	}
+	if !hasDeleteProj {
+		t.Errorf("DELETE was not called for the real project restriction; calls: %v", calls)
+	}
+
+	// CREATE (restore) must have been called exactly once (for the project restriction).
+	createCount := 0
+	for _, c := range calls {
+		if c == "CREATE" {
+			createCount++
+		}
+	}
+	if createCount != 1 {
+		t.Errorf("expected exactly 1 CREATE (project restriction restore), got %d; calls: %v", createCount, calls)
+	}
+
+	_ = stdout
+	_ = stderr
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 

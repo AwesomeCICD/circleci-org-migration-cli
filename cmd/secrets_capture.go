@@ -814,17 +814,53 @@ Examples:
 				Deps:                      projClient,
 			}
 
-			// Resolve the set of projects to process.
-			projects := selectProjects(m, projectSlugs)
-			if len(projects) == 0 && hostProjectSlug == "" {
+			// ── Scoping (Fix 2: context/project separation) ───────────────────
+			// Determine whether the caller explicitly chose contexts and/or projects.
+			// explicitContexts: --context was provided → capture exactly those.
+			// explicitProjects: --project was provided → capture exactly those.
+			//
+			// When neither flag is given both sets default to "with values":
+			//   contexts → all that have ≥1 env var
+			//   projects → all that have ≥1 env var (via selectProjects default)
+			//
+			// When --context is given but NOT --project, we ONLY run context
+			// extraction under the host project; the per-project loop is skipped
+			// entirely.  This prevents accidental full-org sweeps.
+			explicitContexts := len(contextNames) > 0
+			explicitProjects := len(projectSlugs) > 0
+
+			// Resolve the set of projects to process for project-env extraction.
+			// - Explicit: use the given slugs.
+			// - Default: projects with ≥1 env var (selectProjects no-slug path).
+			// - If --context given without --project: skip project loop entirely.
+			var projects []manifest.Project
+			runProjectLoop := true
+			if explicitContexts && !explicitProjects {
+				// Context-only request: do not run per-project env-var extraction.
+				runProjectLoop = false
+			} else {
+				projects = selectProjects(m, projectSlugs)
+			}
+
+			if len(projects) == 0 && hostProjectSlug == "" && !explicitContexts {
 				return fmt.Errorf("no projects matched the given selectors (manifest has %d projects)", len(m.Projects))
 			}
 
-			// Pre-resolve the set of context names the caller wants to include
-			// (empty slice means: include all contexts in the manifest).
+			// Pre-resolve the set of context names the caller wants to include.
+			// Empty selectedCtxNames means "include all contexts with values".
 			selectedCtxNames := make(map[string]bool, len(contextNames))
 			for _, n := range contextNames {
 				selectedCtxNames[n] = true
+			}
+
+			// When no --context flag was given, default to contexts-with-values.
+			// Build a filter from the manifest itself.
+			if !explicitContexts {
+				for i := range m.Contexts {
+					if len(m.Contexts[i].EnvVars) > 0 {
+						selectedCtxNames[m.Contexts[i].Name] = true
+					}
+				}
 			}
 
 			// ── Org-level allow_api_trigger_with_config ───────────────────────
@@ -879,12 +915,44 @@ Examples:
 				}
 			}
 
-			// ── Context extraction via host project ───────────────────────────
-			// When a host project is set, run context extraction under that specific
-			// project so the operator's choice is explicit and surfaced.  This makes
-			// the "any project works for context extraction" invariant visible rather
-			// than implicitly using the first project in the loop.
-			if hostProjectSlug != "" && len(m.Contexts) > 0 {
+			// ── Auto-pick host project when contexts need extraction ─────────────
+			// If contexts are selected (by flag or by default-with-values) and no
+			// --host-project was given, auto-pick:
+			//   1. First project that has ≥1 pipeline definition (live check later).
+			//   2. Fall back: first project in the manifest.
+			// We record the auto-picked slug here and let captureProject do the live
+			// definition check; if it returns errSkipProject we stop.
+			hasContextsToCapture := len(selectedCtxNames) > 0
+			if hasContextsToCapture && hostProjectSlug == "" {
+				if len(m.Projects) == 0 {
+					return fmt.Errorf("cannot extract contexts: no projects found in manifest (a host project is required)")
+				}
+				hostProjectSlug = m.Projects[0].Slug
+				clog.Infof("capture: auto-picked host project %s for context extraction", hostProjectSlug)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Auto-picking host project %s for context extraction (use --host-project to override).\n", hostProjectSlug)
+			}
+
+			// ── Capture scope summary ─────────────────────────────────────────────
+			// Print a one-line operator summary before starting any pipelines.
+			{
+				nCtx := len(selectedCtxNames)
+				nProj := len(projects)
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Capture scope: %d context(s) with values, %d project(s) with values, host project: %s\n",
+					nCtx, nProj, func() string {
+						if hostProjectSlug != "" {
+							return hostProjectSlug
+						}
+						return "(none)"
+					}(),
+				)
+			}
+
+			// ── Context extraction via host project ───────────────────────────────
+			// Context env vars are extracted ONCE under the host project — NOT in
+			// each per-project run.  This is the key safety invariant: a context's
+			// secrets are never dumped multiple times or under unintended projects.
+			if hasContextsToCapture && hostProjectSlug != "" {
 				hostProjManifest := findProjectBySlug(m, hostProjectSlug)
 				if hostProjManifest == nil {
 					// Host project not in manifest; synthesise a minimal entry so
@@ -893,6 +961,7 @@ Examples:
 				}
 				clog.Infof("capture: running CONTEXT extraction under host project %s", hostProjectSlug)
 				fmt.Fprintf(cmd.ErrOrStderr(), "Running CONTEXT extraction under host project %s…\n", hostProjectSlug)
+				// projectVarsOnly=false: capture contexts (and host project's own vars).
 				if err := captureProject(
 					cmd.Context(),
 					cmd,
@@ -905,6 +974,7 @@ Examples:
 					pollTimeout,
 					encOpts,
 					resDecider,
+					false, // projectVarsOnly=false: include context extraction
 				); err != nil {
 					if errors.Is(err, errSkipProject) {
 						// Not a hard error; already printed a SKIP notice.
@@ -917,41 +987,38 @@ Examples:
 				}
 			}
 
-			// ── Project env-var extraction ────────────────────────────────────
-			// Each selected project's own env vars are always captured under that
-			// project's pipeline — no host-project choice needed here.
-			// When contexts were already extracted via host project above, pass an
-			// empty context filter so each project run captures only its own vars.
-			ctxFilterForProjectRun := selectedCtxNames
-			if hostProjectSlug != "" {
-				// Contexts already captured; skip them in per-project runs.
-				ctxFilterForProjectRun = make(map[string]bool)
-			}
-
-			for i := range projects {
-				p := &projects[i]
-				// Skip the host project if it is also in the project list — its
-				// contexts were already captured above; its project vars need capture.
-				if err := captureProject(
-					cmd.Context(),
-					cmd,
-					capClient,
-					m, bndl,
-					p,
-					ctxFilterForProjectRun,
-					branch, output,
-					enableTrigger, skipRestrictedCtxs, removeRestrictions,
-					pollTimeout,
-					encOpts,
-					resDecider,
-				); err != nil {
-					if errors.Is(err, errSkipProject) {
-						// Not a hard error; SKIP notice already printed in captureProject.
-					} else {
-						// Continue processing other projects; record the first error.
-						fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing project %s: %v\n", p.Slug, err)
-						if captureErr == nil {
-							captureErr = err
+			// ── Project env-var extraction (Fix 1) ───────────────────────────────
+			// Each selected project's own env vars are captured under that project's
+			// pipeline with projectVarsOnly=true.  This means the context loop is
+			// SKIPPED entirely — contexts were already extracted under the host
+			// project above.  An empty context filter is NOT enough here: even an
+			// empty selectedCtxNames would still pass through the context loop and
+			// could trigger unwanted pipeline attaches.
+			if runProjectLoop {
+				for i := range projects {
+					p := &projects[i]
+					if err := captureProject(
+						cmd.Context(),
+						cmd,
+						capClient,
+						m, bndl,
+						p,
+						nil, // selectedCtxNames unused when projectVarsOnly=true
+						branch, output,
+						enableTrigger, skipRestrictedCtxs, removeRestrictions,
+						pollTimeout,
+						encOpts,
+						resDecider,
+						true, // projectVarsOnly=true: skip context loop entirely
+					); err != nil {
+						if errors.Is(err, errSkipProject) {
+							// Not a hard error; SKIP notice already printed in captureProject.
+						} else {
+							// Continue processing other projects; record the first error.
+							fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing project %s: %v\n", p.Slug, err)
+							if captureErr == nil {
+								captureErr = err
+							}
 						}
 					}
 				}
@@ -1150,11 +1217,21 @@ func readFirstKeyLine(path string) (string, error) {
 	return "", fmt.Errorf("no key found in %s", path)
 }
 
-// selectProjects returns the manifest projects matching slugs.  If slugs is
-// empty all manifest projects are returned.
+// selectProjects returns the manifest projects matching slugs.
+// When slugs is non-empty, exactly those projects are returned (explicit mode).
+// When slugs is empty, only projects that have at least one env var are returned
+// (safe default — avoids running pipelines for projects that have nothing to
+// capture and prevents accidental full-org sweeps when --project is omitted).
 func selectProjects(m *manifest.Manifest, slugs []string) []manifest.Project {
 	if len(slugs) == 0 {
-		return m.Projects
+		// Default: projects with values only.
+		var out []manifest.Project
+		for _, p := range m.Projects {
+			if len(p.EnvVars) > 0 {
+				out = append(out, p)
+			}
+		}
+		return out
 	}
 	want := make(map[string]bool, len(slugs))
 	for _, s := range slugs {
@@ -1189,6 +1266,14 @@ type restrictionDecider func(ctxName string, realRestrictions int) (removeAndRes
 // captureProject handles the full capture flow for a single manifest project.
 // It restores the api-trigger-with-config flag even if capture fails.
 //
+// When projectVarsOnly is true the context loop is skipped entirely — only the
+// project's own env vars are captured.  This is the correct mode for the
+// per-project env-var loop: context extraction is handled ONCE under the host
+// project, never repeated for every project in the manifest.
+//
+// When projectVarsOnly is false the function works as before: contexts matching
+// selectedCtxNames are attached to the pipeline run and their values captured.
+//
 // restrictDecider is an optional callback that is invoked when a context with
 // real restrictions is encountered.  In interactive mode the caller provides a
 // prompter-backed decider; in non-interactive mode nil falls back to the
@@ -1206,6 +1291,7 @@ func captureProject(
 	pollTimeout time.Duration,
 	encOpts captureEncryptOpts,
 	restrictDecider restrictionDecider,
+	projectVarsOnly bool, // Fix 1: when true, skip context loop entirely
 ) error {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1274,10 +1360,14 @@ func captureProject(
 	defID := defs[0].ID
 
 	// ── 3. Build var name list and context list ───────────────────────────────
-	// Project env var names.
+	// Project env var names — captured ONLY in project-vars mode. In context
+	// mode (projectVarsOnly=false) this project is just the host for context
+	// extraction, so we must NOT also dump the host project's own secret values.
 	var allVarNames []string
-	for _, ev := range p.EnvVars {
-		allVarNames = append(allVarNames, ev.Name)
+	if projectVarsOnly {
+		for _, ev := range p.EnvVars {
+			allVarNames = append(allVarNames, ev.Name)
+		}
 	}
 
 	// Contexts attached to this project (inferred by matching the manifest
@@ -1285,64 +1375,73 @@ func captureProject(
 	// project↔context links so we use the selectedCtxNames filter or all).
 	var ctxNamesForRun []string
 
-	for i := range m.Contexts {
-		mc := &m.Contexts[i]
+	// Fix 1: when projectVarsOnly=true, skip the context loop entirely.
+	// Context extraction happens ONCE under the host project (see RunE).
+	// This prevents every per-project pipeline run from re-attaching and
+	// re-dumping every context's secrets.
+	if !projectVarsOnly {
+		for i := range m.Contexts {
+			mc := &m.Contexts[i]
 
-		// Apply context filter if the caller passed --context flags.
-		if len(selectedCtxNames) > 0 && !selectedCtxNames[mc.Name] {
-			continue
-		}
+			// Apply context filter.  selectedCtxNames is always non-empty here
+			// because the caller (RunE) populates it from the manifest for the
+			// default-with-values case before reaching the host-project call.
+			if !selectedCtxNames[mc.Name] {
+				continue
+			}
 
-		// Warn about and optionally skip genuinely restricted contexts.
-		// The default "All members" group restriction (type==group, value==orgID)
-		// is not a real restriction — every App-org context has it automatically.
-		real := realRestrictions(mc.Restrictions, m.Source.Org.ID)
-		if len(real) > 0 {
-			// Bug 5: when a restrictionDecider is provided (interactive mode),
-			// ask the user what to do instead of silently skipping.
-			if restrictDecider != nil {
-				doRemove, decideErr := restrictDecider(mc.Name, len(real))
-				if decideErr != nil {
-					return decideErr
-				}
-				if doRemove {
-					restore, prepErr := prepareRestrictionRemoval(cmd, client, mc)
+			// Warn about and optionally skip genuinely restricted contexts.
+			// The default "All members" group restriction (type==group, value==orgID)
+			// is not a real restriction — every App-org context has it automatically.
+			real := realRestrictions(mc.Restrictions, m.Source.Org.ID)
+			if len(real) > 0 {
+				// Bug 5: when a restrictionDecider is provided (interactive mode),
+				// ask the user what to do instead of silently skipping.
+				if restrictDecider != nil {
+					doRemove, decideErr := restrictDecider(mc.Name, len(real))
+					if decideErr != nil {
+						return decideErr
+					}
+					if doRemove {
+						restore, prepErr := prepareRestrictionRemoval(cmd, client, mc, m.Source.Org.ID)
+						if prepErr != nil {
+							return prepErr
+						}
+						defer restore()
+					} else {
+						fmt.Fprintf(stderr, "Skipping restricted context %q (user chose not to remove restrictions).\n", mc.Name)
+						continue
+					}
+				} else if removeRestrictions {
+					// Temporarily remove real restrictions so the extraction run can access
+					// the context, then restore from the manifest (source of truth).
+					// The restore func is deferred so it runs even on error or panic.
+					// The default "All members" group restriction is never touched.
+					restore, prepErr := prepareRestrictionRemoval(cmd, client, mc, m.Source.Org.ID)
 					if prepErr != nil {
 						return prepErr
 					}
 					defer restore()
 				} else {
-					fmt.Fprintf(stderr, "Skipping restricted context %q (user chose not to remove restrictions).\n", mc.Name)
-					continue
-				}
-			} else if removeRestrictions {
-				// Temporarily remove restrictions so the extraction run can access
-				// the context, then restore from the manifest (source of truth).
-				// The restore func is deferred so it runs even on error or panic.
-				restore, prepErr := prepareRestrictionRemoval(cmd, client, mc)
-				if prepErr != nil {
-					return prepErr
-				}
-				defer restore()
-			} else {
-				fmt.Fprintf(stderr,
-					"WARNING: context %q has restrictions (%d). The extraction job may not "+
-						"have access to it. Auto-toggling restrictions is not supported; handle "+
-						"manually if needed.\n",
-					mc.Name, len(real),
-				)
-				if skipRestricted {
-					fmt.Fprintf(stderr, "Skipping restricted context %q (--skip-restricted-contexts=true).\n", mc.Name)
-					continue
+					fmt.Fprintf(stderr,
+						"WARNING: context %q has restrictions (%d). The extraction job may not "+
+							"have access to it. Auto-toggling restrictions is not supported; handle "+
+							"manually if needed.\n",
+						mc.Name, len(real),
+					)
+					if skipRestricted {
+						fmt.Fprintf(stderr, "Skipping restricted context %q (--skip-restricted-contexts=true).\n", mc.Name)
+						continue
+					}
 				}
 			}
-		}
 
-		ctxNamesForRun = append(ctxNamesForRun, mc.Name)
-		for _, ev := range mc.EnvVars {
-			allVarNames = append(allVarNames, ev.Name)
+			ctxNamesForRun = append(ctxNamesForRun, mc.Name)
+			for _, ev := range mc.EnvVars {
+				allVarNames = append(allVarNames, ev.Name)
+			}
 		}
-	}
+	} // end if !projectVarsOnly
 
 	// De-duplicate var names (a context var may shadow a project var with the
 	// same name).
@@ -1369,10 +1468,13 @@ func captureProject(
 	}
 
 	// ── 5. Store in bundle ────────────────────────────────────────────────────
-	// Project vars.
-	for _, ev := range p.EnvVars {
-		if v, ok := values[ev.Name]; ok {
-			bundle.SetProjectSecret(p.Slug, ev.Name, v)
+	// Project vars — only in project-vars mode (in context mode this project is
+	// just the host and its own vars were not requested above).
+	if projectVarsOnly {
+		for _, ev := range p.EnvVars {
+			if v, ok := values[ev.Name]; ok {
+				bundle.SetProjectSecret(p.Slug, ev.Name, v)
+			}
 		}
 	}
 	// Context vars.
@@ -1453,18 +1555,26 @@ type combinedCaptureClient struct {
 	extract.Deps
 }
 
-// prepareRestrictionRemoval fetches live restriction IDs for mc and deletes
-// every real restriction so the extraction run can access the context.  It
-// returns a restore function that the caller MUST immediately defer — calling
-// it re-creates the restrictions from mc.Restrictions (the exported manifest
-// state, the source of truth).  The restore runs even if extraction later fails
-// or panics.
+// prepareRestrictionRemoval fetches live restriction IDs for mc, deletes only
+// the REAL restrictions (skipping the default "All members" group restriction
+// whose value equals orgID), and returns a restore function that re-creates
+// exactly the same real restrictions from the manifest.
+//
+// Fix 3: the default "All members" group (type=="group", value==orgID) must
+// NEVER be deleted: on standalone orgs it cannot be recreated via the API
+// ("only supported for OAuth orgs"), which would permanently strip the context
+// of its default access restriction.  We apply the same realRestrictions
+// predicate used elsewhere to filter both the live deletions and the restore
+// set.
+//
+// The caller MUST immediately defer the returned restore function.  It runs
+// even if extraction later fails or panics.
 //
 // If any DELETE fails, the error is returned and no restore func is registered
 // (nothing was removed yet, nothing needs restoring).
 // If a RESTORE fails, a prominent WARNING is printed naming exactly which
 // restriction (context, type, value) must be manually re-added.
-func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionManager, mc *manifest.Context) (restoreFn func(), err error) {
+func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionManager, mc *manifest.Context, orgID string) (restoreFn func(), err error) {
 	stderr := cmd.ErrOrStderr()
 
 	// Fetch live restrictions to get their IDs for deletion.
@@ -1473,23 +1583,34 @@ func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionMana
 		return func() {}, fmt.Errorf("listing live restrictions for context %q: %w", mc.Name, listErr)
 	}
 
-	// The manifest's recorded restrictions are our restore source of truth.
-	// Even if the live state is unexpected we restore to the exported baseline.
-	restoreFrom := make([]manifest.Restriction, len(mc.Restrictions))
-	copy(restoreFrom, mc.Restrictions)
+	// Filter live restrictions: skip the default "All members" group so we
+	// never attempt to delete (or later re-create) it.
+	var liveReal []apicontext.Restriction
+	for _, lr := range live {
+		if lr.Type == "group" && lr.Value == orgID {
+			// Default "All members" restriction — leave it untouched.
+			continue
+		}
+		liveReal = append(liveReal, lr)
+	}
+
+	// The restore set comes from the manifest's recorded restrictions, also
+	// filtered by the same predicate (we never attempt to re-create the
+	// default group).
+	restoreFrom := realRestrictions(mc.Restrictions, orgID)
 
 	fmt.Fprintf(stderr,
-		"NOTICE: temporarily removing %d restriction(s) from context %q for extraction.\n",
-		len(live), mc.Name,
+		"NOTICE: temporarily removing %d real restriction(s) from context %q for extraction.\n",
+		len(liveReal), mc.Name,
 	)
-	for _, lr := range live {
+	for _, lr := range liveReal {
 		if delErr := client.DeleteRestriction(mc.SourceID, lr.ID); delErr != nil {
 			return func() {}, fmt.Errorf("deleting restriction %q from context %q: %w", lr.ID, mc.Name, delErr)
 		}
 	}
 
-	// Build the restore closure.  It re-creates every restriction recorded in
-	// the manifest; the manifest state is the source of truth.
+	// Build the restore closure.  Re-creates only real restrictions from the
+	// manifest; the default group is left untouched throughout.
 	restore := func() {
 		fmt.Fprintf(stderr,
 			"NOTICE: restoring %d restriction(s) on context %q.\n",

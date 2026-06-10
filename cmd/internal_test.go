@@ -212,7 +212,38 @@ func TestPrintSyncReport_NoAttentionItems(t *testing.T) {
 // selectProjects
 // ---------------------------------------------------------------------------
 
-func TestSelectProjects_EmptySlugs_ReturnsAll(t *testing.T) {
+// TestSelectProjects_EmptySlugs_ReturnsProjectsWithValues verifies that the
+// default (no --project flag) returns only projects that have ≥1 env var.
+// This is Fix 2: the old "return all" default caused accidental full-org sweeps.
+func TestSelectProjects_EmptySlugs_ReturnsProjectsWithValues(t *testing.T) {
+	m := &manifest.Manifest{
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", EnvVars: []manifest.ProjectEnvVar{{Name: "SECRET"}}},
+			{Slug: "gh/acme/empty"}, // no env vars → excluded
+			{Slug: "gh/acme/api", EnvVars: []manifest.ProjectEnvVar{{Name: "API_KEY"}}},
+		},
+	}
+	got := selectProjects(m, nil)
+	if len(got) != 2 {
+		t.Errorf("expected 2 projects with values, got %d: %v", len(got),
+			func() []string {
+				var out []string
+				for _, p := range got {
+					out = append(out, p.Slug)
+				}
+				return out
+			}())
+	}
+	for _, p := range got {
+		if p.Slug == "gh/acme/empty" {
+			t.Errorf("project with no env vars should NOT be included in default set")
+		}
+	}
+}
+
+// TestSelectProjects_EmptySlugs_AllEmpty_ReturnsNone ensures that when no
+// project has env vars the default returns an empty slice (not all projects).
+func TestSelectProjects_EmptySlugs_AllEmpty_ReturnsNone(t *testing.T) {
 	m := &manifest.Manifest{
 		Projects: []manifest.Project{
 			{Slug: "gh/acme/web"},
@@ -220,8 +251,8 @@ func TestSelectProjects_EmptySlugs_ReturnsAll(t *testing.T) {
 		},
 	}
 	got := selectProjects(m, nil)
-	if len(got) != 2 {
-		t.Errorf("expected 2 projects, got %d", len(got))
+	if len(got) != 0 {
+		t.Errorf("expected 0 projects when all have no env vars, got %d", len(got))
 	}
 }
 

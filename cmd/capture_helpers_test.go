@@ -377,7 +377,7 @@ func TestPrepareRestrictionRemoval_DeletesAndRestores(t *testing.T) {
 
 	cmd, errBuf := newTestCobraCmd()
 
-	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, "some-org-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error from prepareRestrictionRemoval: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestPrepareRestrictionRemoval_ListError_ReturnsError(t *testing.T) {
 	mc := &manifest.Context{Name: "ctx", SourceID: "ctx-uuid"}
 	cmd, _ := newTestCobraCmd()
 
-	_, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	_, err := prepareRestrictionRemoval(cmd, mgr, mc, "org-uuid")
 	if err == nil {
 		t.Fatal("expected error on ListRestrictions failure, got nil")
 	}
@@ -442,7 +442,7 @@ func TestPrepareRestrictionRemoval_DeleteError_ReturnsError(t *testing.T) {
 	}
 	cmd, _ := newTestCobraCmd()
 
-	_, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	_, err := prepareRestrictionRemoval(cmd, mgr, mc, "org-uuid")
 	if err == nil {
 		t.Fatal("expected error on DeleteRestriction failure, got nil")
 	}
@@ -463,7 +463,7 @@ func TestPrepareRestrictionRemoval_RestoreFailure_PrintsWarning(t *testing.T) {
 
 	cmd, errBuf := newTestCobraCmd()
 
-	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, "org-uuid")
 	if err != nil {
 		t.Fatalf("unexpected setup error: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestPrepareRestrictionRemoval_UsesManifestStateForRestore(t *testing.T) {
 	}
 
 	cmd, _ := newTestCobraCmd()
-	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, "some-other-org-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -512,6 +512,114 @@ func TestPrepareRestrictionRemoval_UsesManifestStateForRestore(t *testing.T) {
 	got := mgr.createdRestrictions[0]
 	if got.rType != "project" || got.rValue != "proj-X" {
 		t.Errorf("restore created wrong restriction: type=%q value=%q", got.rType, got.rValue)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 3: prepareRestrictionRemoval must not touch the default "All members"
+// group restriction (type=="group", value==orgID).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPrepareRestrictionRemoval_DefaultGroupNotDeleted verifies that when the
+// live restrictions include the default "All members" group (type=="group",
+// value==orgID), it is NOT deleted and NOT re-created in the restore.
+func TestPrepareRestrictionRemoval_DefaultGroupNotDeleted(t *testing.T) {
+	const orgID = "acme-org-uuid"
+
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{
+			// Default "All members" group — must be left untouched.
+			{ID: "default-group-id", Type: "group", Value: orgID},
+			// A real project restriction — must be deleted and restored.
+			{ID: "proj-restr-id", Type: "project", Value: "proj-uuid-X"},
+		},
+	}
+
+	mc := &manifest.Context{
+		Name:     "my-ctx",
+		SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{
+			{Type: "group", Value: orgID, Name: "All members"}, // default group in manifest
+			{Type: "project", Value: "proj-uuid-X", Name: "web"},
+		},
+	}
+
+	cmd, _ := newTestCobraCmd()
+
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, orgID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only the project restriction should have been deleted, NOT the default group.
+	if len(mgr.deletedIDs) != 1 {
+		t.Fatalf("expected exactly 1 DELETE (project restr only), got %d: %v", len(mgr.deletedIDs), mgr.deletedIDs)
+	}
+	if mgr.deletedIDs[0] != "proj-restr-id" {
+		t.Errorf("wrong restriction deleted: %q", mgr.deletedIDs[0])
+	}
+	if mgr.deletedIDs[0] == "default-group-id" {
+		t.Error("default group restriction must NEVER be deleted")
+	}
+
+	// Call restore.
+	restore()
+
+	// Only the project restriction should be re-created, NOT the default group.
+	if len(mgr.createdRestrictions) != 1 {
+		t.Fatalf("expected exactly 1 CREATE (project restr only) in restore, got %d: %v",
+			len(mgr.createdRestrictions), mgr.createdRestrictions)
+	}
+	got := mgr.createdRestrictions[0]
+	if got.rType != "project" || got.rValue != "proj-uuid-X" {
+		t.Errorf("restore created wrong restriction: type=%q value=%q", got.rType, got.rValue)
+	}
+
+	// Ensure the group restriction was never re-created.
+	for _, c := range mgr.createdRestrictions {
+		if c.rType == "group" && c.rValue == orgID {
+			t.Error("default group restriction must NEVER be re-created in restore")
+		}
+	}
+}
+
+// TestPrepareRestrictionRemoval_OnlyDefaultGroup_NoOp verifies that when the
+// ONLY live restriction is the default "All members" group, no DELETE or CREATE
+// calls are made.
+func TestPrepareRestrictionRemoval_OnlyDefaultGroup_NoOp(t *testing.T) {
+	const orgID = "acme-org-uuid"
+
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{
+			{ID: "default-group-id", Type: "group", Value: orgID},
+		},
+	}
+
+	mc := &manifest.Context{
+		Name:     "all-members-ctx",
+		SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{
+			{Type: "group", Value: orgID, Name: "All members"},
+		},
+	}
+
+	cmd, _ := newTestCobraCmd()
+
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, orgID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mgr.deletedIDs) != 0 {
+		t.Errorf("expected 0 DELETEs for default-group-only context, got %d: %v",
+			len(mgr.deletedIDs), mgr.deletedIDs)
+	}
+
+	restore()
+
+	if len(mgr.createdRestrictions) != 0 {
+		t.Errorf("expected 0 CREATEs (restore) for default-group-only context, got %d: %v",
+			len(mgr.createdRestrictions), mgr.createdRestrictions)
 	}
 }
 
