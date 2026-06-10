@@ -115,8 +115,7 @@ Examples:
 				var err error
 				sourceOrg, destOrg, secretsPath, missing, apply, yes,
 					skipContexts, skipProjects, skipOrgSettings, skipExtras,
-					err = runMigrateWalkthrough(cmd, sourceOrg, destOrg, secretsPath, missing,
-					apply, yes, skipContexts, skipProjects, skipOrgSettings, skipExtras)
+					err = runMigrateWalkthrough(cmd, sourceOrg, destOrg, yes)
 				if err != nil {
 					return err
 				}
@@ -317,8 +316,8 @@ var migrateComponents = []string{
 // synthetic I/O via NewPrompter without spawning a real TTY.
 func runMigrateWalkthrough(
 	cmd *cobra.Command,
-	sourceOrg, destOrg, secretsPath, missing string,
-	apply, yes, skipContexts, skipProjects, skipOrgSettings, skipExtras bool,
+	sourceOrg, destOrg string,
+	yes bool,
 ) (
 	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
 	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
@@ -327,8 +326,7 @@ func runMigrateWalkthrough(
 	return RunMigrateWalkthroughWith(
 		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
 		cmd,
-		sourceOrg, destOrg, secretsPath, missing,
-		apply, yes, skipContexts, skipProjects, skipOrgSettings, skipExtras,
+		sourceOrg, destOrg, yes,
 	)
 }
 
@@ -338,14 +336,22 @@ func runMigrateWalkthrough(
 func RunMigrateWalkthroughWith(
 	p *Prompter,
 	cmd *cobra.Command,
-	sourceOrg, destOrg, secretsPath, missing string,
-	apply, yes, skipContexts, skipProjects, skipOrgSettings, skipExtras bool,
+	sourceOrg, destOrg string,
+	yes bool,
 ) (
 	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
 	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
 	err error,
 ) {
 	out := p.out
+
+	// Values gathered interactively. The walkthrough only runs when the
+	// corresponding flags are absent, so these start empty and are filled by
+	// the prompts below.
+	var (
+		secretsPath, missing                                           string
+		apply, skipContexts, skipProjects, skipOrgSettings, skipExtras bool
+	)
 
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "╔══════════════════════════════════════════════════╗")

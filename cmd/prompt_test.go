@@ -45,9 +45,7 @@ func runWalkthrough(t *testing.T, input string) (skips skipResults, outApply boo
 	p := cmd.NewPrompter(r, &promptBuf)
 
 	_, _, _, _, ap, _, skipCtx, skipProj, skipOrg, skipExt, walkErr :=
-		cmd.RunMigrateWalkthroughWith(p, migCmd,
-			"", "", "secrets.json", "skip",
-			false, false, false, false, false, false)
+		cmd.RunMigrateWalkthroughWith(p, migCmd, "", "", false)
 
 	return skipResults{
 		contexts:    skipCtx,
