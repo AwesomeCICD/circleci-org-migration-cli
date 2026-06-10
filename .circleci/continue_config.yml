@@ -52,6 +52,10 @@ parameters:
 orbs:
   go: circleci/go@3.0.4
   trivy: cci-labs/trivy@1.0.0
+  # Orb authoring toolchain — used by the orb-test jobs to lint, validate, and
+  # review the orb BEFORE it is published. Pinned to majors per the task.
+  orb-tools: circleci/orb-tools@12
+  shellcheck: circleci/shellcheck@3
 
 # ---------------------------------------------------------------------------
 # Executors
@@ -392,6 +396,33 @@ jobs:
   #   circleci orb create awesomecicd/circleci-org-migration \
   #     --private \
   #     --org-id efc130dc-284f-4533-964e-844f5c173860
+  # ===========================================================================
+  # ORB TEST — pack + validate the orb (gates publish)
+  # ===========================================================================
+  #
+  # Our own pack + validate job (mirrors the pack/validate steps in publish-orb
+  # and the local `make orb-validate` target). Kept separate from publish so a
+  # validation failure prevents publishing. The orb-tools/lint and
+  # shellcheck/check jobs (see the orb-publish workflows) cover style + script
+  # linting; this job is the authoritative "does the packed orb validate against
+  # the private namespace" gate.
+  orb-validate:
+    executor: base
+    steps:
+      - checkout
+      - run:
+          name: Install CircleCI CLI (pinned v0.1.34950)
+          command: |
+            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh \
+              | sudo bash
+            circleci version
+      - run:
+          name: Pack orb source
+          command: circleci orb pack orb/src > /tmp/orb.yml
+      - run:
+          name: Validate orb
+          command: circleci orb validate --org-id efc130dc-284f-4533-964e-844f5c173860 /tmp/orb.yml
+
   publish-orb:
     parameters:
       pub_type:
@@ -517,11 +548,56 @@ workflows:
   orb-publish-dev:
     when: << pipeline.parameters.run-orb-publish >>
     jobs:
+      # --- Orb test gate (run BEFORE publish) -------------------------------
+      # lint (orb-tools), validate (our pack+validate), and shellcheck must all
+      # pass before the dev orb is published. A failure here blocks publish.
+      - orb-tools/lint:
+          name: orb-lint-dev
+          source_dir: orb/src
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              ignore: /.*/
+      - orb-validate:
+          name: orb-validate-dev
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              ignore: /.*/
+      - shellcheck/check:
+          name: orb-shellcheck-dev
+          dir: orb/src/scripts
+          exclude: SC2148,SC2086,SC2016,SC2002
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              ignore: /.*/
+      # --- Advisory review (does NOT gate publish) --------------------------
+      # orb-tools/review enforces strict RC best-practice rules that may not all
+      # apply to this orb. It runs for visibility but is intentionally NOT in
+      # any publish `requires:` list, so a review failure never blocks publish.
+      - orb-tools/review:
+          name: orb-review-dev
+          source_dir: orb/src
+          orb_name: awesomecicd/circleci-org-migration
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              ignore: /.*/
+      # --- Dev publish (requires the test gate) -----------------------------
       # Runs only on branch pipelines (not tags) — enforced by the tag ignore
       # filter so a tag push never triggers a redundant dev publish.
       - publish-orb:
           name: publish-orb-dev
           pub_type: dev
+          requires:
+            - orb-lint-dev
+            - orb-validate-dev
+            - orb-shellcheck-dev
           context:
             - orb-publishing
           filters:
@@ -536,10 +612,53 @@ workflows:
   # ---------------------------------------------------------------------------
   orb-publish-prod:
     jobs:
+      # --- Orb test gate (run BEFORE publish, tag-only) ---------------------
+      # Same lint + validate + shellcheck gate as the dev workflow. All must
+      # pass before the production (semver) orb is published. Each carries the
+      # version-tag filter so these jobs only run on a release tag push.
+      - orb-tools/lint:
+          name: orb-lint-prod
+          source_dir: orb/src
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+            branches:
+              ignore: /.*/
+      - orb-validate:
+          name: orb-validate-prod
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+            branches:
+              ignore: /.*/
+      - shellcheck/check:
+          name: orb-shellcheck-prod
+          dir: orb/src/scripts
+          exclude: SC2148,SC2086,SC2016,SC2002
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+            branches:
+              ignore: /.*/
+      # --- Advisory review (does NOT gate publish) --------------------------
+      - orb-tools/review:
+          name: orb-review-prod
+          source_dir: orb/src
+          orb_name: awesomecicd/circleci-org-migration
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+            branches:
+              ignore: /.*/
+      # --- Production publish (requires the test gate) ----------------------
       # Production publish: semver release from the tag name.
       - publish-orb:
           name: publish-orb-prod
           pub_type: prod
+          requires:
+            - orb-lint-prod
+            - orb-validate-prod
+            - orb-shellcheck-prod
           context:
             - orb-publishing
           filters:

@@ -63,6 +63,30 @@
       "fileExt": ".yml",
       "timeout": 60,
       "limit": 2
+    },
+    {
+      "name": "orb-config-validate",
+      "run": "circleci config validate .circleci/config.yml && circleci config validate --org-id efc130dc-284f-4533-964e-844f5c173860 .circleci/continue_config.yml",
+      "role": "gate",
+      "fileExt": ".yml",
+      "timeout": 60,
+      "limit": 2
+    },
+    {
+      "name": "orb-pack-validate",
+      "run": "circleci orb pack orb/src > /tmp/orb.yml && circleci orb validate --org-id efc130dc-284f-4533-964e-844f5c173860 /tmp/orb.yml",
+      "role": "gate",
+      "fileExt": ".yml",
+      "timeout": 60,
+      "limit": 2
+    },
+    {
+      "name": "orb-shellcheck",
+      "run": "shellcheck -e SC2148 -e SC2086 -e SC2016 -e SC2002 orb/src/scripts/*.sh",
+      "role": "gate",
+      "fileExt": ".sh",
+      "timeout": 60,
+      "limit": 2
     }
   ],
   "vcs": {

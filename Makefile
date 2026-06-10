@@ -149,6 +149,26 @@ orb-validate:
 		echo "circleci CLI not found — install from https://circleci.com/docs/local-cli/"; exit 1; \
 	fi
 
+# orb-shellcheck lints the orb's shell scripts. Excludes mirror the Orb
+# Development Kit (ODK) shellcheck set and the CI shellcheck/check job:
+#   SC2148 — shebang not required (orb scripts run in the orb's shell)
+#   SC2086 — intentional word-splitting / unquoted expansions
+#   SC2016 — single-quoted expressions are intentional (passed to other shells)
+#   SC2002 — useless-cat style is acceptable here
+.PHONY: orb-shellcheck
+orb-shellcheck:
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -e SC2148 -e SC2086 -e SC2016 -e SC2002 orb/src/scripts/*.sh; \
+	else \
+		echo "shellcheck not found — install via 'brew install shellcheck' (or https://www.shellcheck.net/)"; exit 1; \
+	fi
+
+# orb-test runs the full local orb regression suite: pack + validate the orb
+# and shellcheck the orb scripts. Mirrors the CI orb-test jobs that gate the
+# orb publish.
+.PHONY: orb-test
+orb-test: orb-validate orb-shellcheck
+
 # orb-publish-dev packs, validates, then publishes a dev-labelled version of
 # the orb for manual / local testing. Requires CIRCLE_TOKEN to be set.
 # The label includes a Unix timestamp so successive publishes don't collide.
