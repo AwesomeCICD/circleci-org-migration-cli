@@ -15,11 +15,13 @@ Phase 1 — export          Read-only. Exports source org to manifest.json
                           (structure + names, no secret values) and
                           migration-report.md (human-readable audit).
 
-Phase 2 — secrets         Run inside a CircleCI pipeline in the source org.
-          capture         The orb injects real secret values into the job
-                          environment; secrets extract captures them into
-                          a bundle. secrets merge combines per-context
-                          bundles into a single secrets.json artifact.
+Phase 2 — secrets         Two options: (a) secrets capture runs from your
+          capture         local machine — it submits an inline pipeline config
+                          to CircleCI, waits for it, and downloads the bundle.
+                          (b) Use the orb + committed config: each job
+                          references one context so CircleCI injects the real
+                          values; secrets extract captures them; secrets merge
+                          combines bundles into a single secrets.json artifact.
 
 Phase 3 — sync            Read manifest.json + secrets.json and recreate
                           everything in the destination org.
@@ -71,31 +73,36 @@ For more control — for example to review or edit the manifest between phases �
 ## Install
 
 <!--
-  NOTE: temp home is github.com/AwesomeCICD; it becomes CircleCI-Labs (repo +
-  homebrew-tap, orb namespace cci-labs) on the Labs move.
+  NOTE: temp home is github.com/AwesomeCICD (orb: awesomecicd/circleci-org-migration);
+  moves to CircleCI-Labs (repo + homebrew-tap, orb namespace cci-labs) on the Labs move.
 -->
 
-### Homebrew
+### Homebrew (recommended)
 
 ```bash
-brew install AwesomeCICD/tap/circleci-migrate
-# (becomes CircleCI-Labs/tap/circleci-migrate on the Labs move)
+brew tap AwesomeCICD/homebrew-tap
+brew install circleci-migrate
 ```
 
-### Prebuilt binaries
+> **Future namespace:** the tap and orb will move to `CircleCI-Labs` / `cci-labs` when
+> the tool is republished under CircleCI Labs. The `AwesomeCICD` names are the current
+> production location.
 
-Download the latest release from [GitHub Releases](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases):
+### Prebuilt binary
+
+Prebuilt binaries for Linux and macOS are attached to every release on
+[GitHub Releases](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases).
+
+Archive naming: `circleci-migrate_<version>_<os>_<arch>.tar.gz`
+Supported combinations: `linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`.
 
 ```bash
-# Example for Linux amd64 — replace version, os, and arch as needed
-VERSION=v1.0.0
+# Example — Linux amd64, v0.2.0. Replace version, os, and arch as needed.
+VERSION=v0.2.0
 curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/${VERSION}/circleci-migrate_${VERSION#v}_linux_amd64.tar.gz" \
   | tar -xz
 sudo install -m 0755 circleci-migrate /usr/local/bin/
 ```
-
-Archive naming: `circleci-migrate_{version}_{os}_{arch}.tar.gz`
-Supported OS/arch combinations: `linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`.
 
 ### Build from source
 
@@ -121,15 +128,15 @@ Conventional Commit lands on main
   → merge the release PR
   → release-please creates the git tag + GitHub release
   → CircleCI (watching this repo) runs GoReleaser on the new tag, which builds
-    and APPENDS the cross-platform binaries + checksums to that release and
-    publishes the Homebrew formula to the tap.
+    and APPENDS the cross-platform binaries + checksums to that release,
+    publishes the Homebrew formula to AwesomeCICD/homebrew-tap, and
+    publishes the orb to the CircleCI orb registry.
 ```
 
 release-please owns version bumps and the changelog; GoReleaser only builds and
 appends artifacts. The Homebrew formula is published to the
 `AwesomeCICD/homebrew-tap` repo (becomes `CircleCI-Labs/homebrew-tap` on the Labs
-move) and requires a push token for that tap repo; until that repo and token
-exist, the formula upload is skipped automatically.
+move) and requires a push token for that tap repo.
 
 ---
 
@@ -152,13 +159,40 @@ The `--org` slug format:
 
 ### Phase 2 — Capture secrets inside a pipeline
 
-Because the API never returns secret values, capturing them requires running inside a CircleCI job. Commit `manifest.json` to your source org's repository (it contains no secrets), then add a workflow using the `awesomecicd/circleci-org-migration` orb:
+Because the API never returns secret values, capturing them requires running inside a CircleCI job.
+
+#### Option A — CLI-orchestrated (`secrets capture`, no committed config)
+
+`secrets capture` orchestrates the whole extraction from your local machine. It uses the CircleCI Pipelines API to trigger a run with an inline (unversioned) config in your source org, waits for the run to complete, and downloads the resulting secret bundle — all without you committing a `.circleci/config.yml`:
+
+```bash
+circleci-migrate secrets capture \
+  --org gh/acme \
+  --source-token "$SRC_TOKEN" \
+  --manifest manifest.json \
+  --output secrets.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--org` | *(required)* | Source organization slug |
+| `--manifest` | `manifest.json` | Manifest produced by `export` |
+| `--output`, `-o` | `secrets.json` | Path to write the merged secret bundle |
+| `--branch` | `main` | Branch to run the extraction pipeline on |
+| `--enable-trigger` | `false` | Temporarily enable a pipeline trigger to allow the run |
+| `--remove-restrictions` | `false` | Temporarily remove context restrictions before extraction |
+| `--skip-restricted-contexts` | `false` | Skip contexts that have restrictions instead of removing them |
+| `--poll-timeout` | `10m` | How long to wait for the pipeline run to complete |
+
+#### Option B — Orb-based (committed config, full control)
+
+Alternatively, commit `manifest.json` to your source org's repository (it contains no secrets) and add a workflow using the `awesomecicd/circleci-org-migration` orb:
 
 ```yaml
 # .circleci/config.yml in your SOURCE org
 version: "2.1"
 orbs:
-  migrate: awesomecicd/circleci-org-migration@1.0.0
+  migrate: awesomecicd/circleci-org-migration@0.2.0
 
 workflows:
   capture-secrets:
@@ -184,7 +218,9 @@ workflows:
 
 Download `secrets.json` from the `merge` job's artifacts. This file contains plaintext values — see [Security](#security) below.
 
-The orb's `install` command fetches the prebuilt binary from GitHub Releases automatically. For large numbers of contexts, use a matrix to fan out a single job stanza instead of writing one stanza per context (see the orb's `capture-context-secrets-matrix` example).
+The orb (`awesomecicd/circleci-org-migration@0.2.0`, PRIVATE — for in-pipeline secret capture) fetches the prebuilt binary from GitHub Releases automatically. For large numbers of contexts, use a matrix to fan out a single job stanza instead of writing one stanza per context (see the orb's `capture-context-secrets-matrix` example).
+
+> **Note:** the orb is currently PRIVATE. To use it, your CircleCI organization must be granted access. It will be republished as `cci-labs/circleci-org-migration` when the tool moves to CircleCI Labs.
 
 ### Phase 3 — Sync to the destination org
 
@@ -342,6 +378,7 @@ circleci-migrate migrate \
 | `--yes`, `-y` | `false` | Auto-confirm enabling builds after project creation (skip the interactive prompt) |
 | `--missing-secrets` | `skip` | How to handle variables with no captured value: `skip` or `placeholder` |
 | `--github-token` | `$GITHUB_TOKEN` | GitHub PAT used to resolve repository IDs for App pipeline definitions |
+| `--dest-github-org` | | Destination GitHub org name (used to resolve repo `external_id` when the destination is in a different GitHub org than the source) |
 | `--skip-contexts` | `false` | Skip exporting and syncing contexts |
 | `--skip-projects` | `false` | Skip exporting and syncing projects |
 | `--skip-org-settings` | `false` | Skip syncing org-level settings |
@@ -400,6 +437,29 @@ circleci-migrate secrets merge \
   secrets-deploy-prod.json secrets-shared.json
 ```
 
+### `secrets capture`
+
+CLI-orchestrated secret extraction. Submits an inline (unversioned) pipeline config to the source org via the CircleCI Pipelines API, waits for the run to finish, and downloads the merged secret bundle — all without committing a `.circleci/config.yml`. See [Phase 2 — Option A](#option-a--cli-orchestrated-secrets-capture-no-committed-config) for full usage details.
+
+```bash
+circleci-migrate secrets capture \
+  --org gh/acme \
+  --source-token "$SRC_TOKEN" \
+  --manifest manifest.json \
+  --output secrets.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--org` | *(required)* | Source organization slug |
+| `--manifest` | `manifest.json` | Manifest produced by `export` |
+| `--output`, `-o` | `secrets.json` | Path to write the merged secret bundle |
+| `--branch` | `main` | Branch to run the extraction pipeline on |
+| `--enable-trigger` | `false` | Temporarily enable a pipeline trigger to allow the run |
+| `--remove-restrictions` | `false` | Temporarily remove context restrictions before extraction |
+| `--skip-restricted-contexts` | `false` | Skip contexts that have restrictions instead of removing them |
+| `--poll-timeout` | `10m` | How long to wait for the pipeline run to complete |
+
 ### `sync`
 
 Recreates exported data in the destination org. **Dry-run by default** — review the plan, then re-run with `--apply`.
@@ -445,6 +505,31 @@ circleci-migrate sync \
   --mapping mapping.json \
   --apply
 ```
+
+### `orb inline`
+
+Inlines private orbs referenced in a CircleCI config file, replacing orb stanza references with the orb's actual source. This is useful during the namespace-transfer overlap window: while an orb's namespace is being moved from `awesomecicd/` to `cci-labs/`, you can inline the orb's current source so the config continues to work regardless of which namespace is active.
+
+```bash
+# Inline all private orbs in a config file (writes to stdout by default)
+circleci-migrate orb inline \
+  --config .circleci/config.yml \
+  --token "$CCI_TOKEN"
+
+# Write the result back to the file in place
+circleci-migrate orb inline \
+  --config .circleci/config.yml \
+  --token "$CCI_TOKEN" \
+  --output .circleci/config.yml
+```
+
+The command fetches each referenced orb's source via the CircleCI GraphQL API (`graphql-unstable`) and substitutes the inline source into the config. Public orbs are passed through unchanged; only private orbs (not resolvable without a token) are inlined.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--config` | `.circleci/config.yml` | Path to the CircleCI config file to inline |
+| `--output`, `-o` | *(stdout)* | Path to write the inlined config (defaults to stdout) |
+| `--token` | `$CIRCLECI_CLI_TOKEN` | Personal API token with access to the private orb(s) |
 
 ### `version`
 

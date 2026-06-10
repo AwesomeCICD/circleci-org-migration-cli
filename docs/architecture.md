@@ -12,41 +12,49 @@ graph TD
     subgraph cmd ["cmd/ (Cobra commands)"]
         ROOT[root]
         EXPORT[export]
-        SECRETS_CMD["secrets extract / merge"]
+        SECRETS_CMD["secrets extract / merge / capture"]
         SYNC[sync]
         MIGRATE[migrate]
+        ORB_INLINE["orb inline"]
     end
 
     subgraph internal ["internal/"]
         EXPORTER["exporter<br/>Orchestrates API reads<br/>into a Manifest"]
         SYNCER["syncer<br/>Applies a Manifest + SecretBundle<br/>to the destination org"]
         SECRETS_PKG["secrets<br/>Reads live env vars<br/>into a SecretBundle"]
+        CAPTURE_PKG["capture<br/>Generates inline config,<br/>triggers pipeline, polls,<br/>downloads artifact"]
         REPORT["report<br/>Formats terminal summary<br/>and audit Markdown"]
-        MANIFEST["manifest<br/>Shared on-disk contract:<br/>Manifest · SecretBundle · Mapping"]
+        MANIFEST["manifest<br/>Shared on-disk contract:<br/>Manifest - SecretBundle - Mapping"]
         GITHUB_PKG["github<br/>Resolves GitHub repo numeric ID<br/>for App pipeline definitions"]
+        ORB_PKG["orb<br/>Fetches orb source via GraphQL<br/>and inlines into config YAML"]
     end
 
     subgraph api ["api/ (thin HTTP clients)"]
         ORG_API["org<br/>v2: GetOrg, ResolveOrgID<br/>v1.1: GetOrgSettings<br/>CIAM: groups, SSO"]
         CTX_API["context<br/>v2: List, Create, UpsertEnvVar<br/>ListRestrictions, CreateRestriction"]
         PROJ_API["project<br/>v2: GetProject, CreateProjectShell<br/>CreateAppProject, PipelineDefs, Triggers<br/>ListEnvVars, Settings, Follow<br/>v1.1: ListFollowedProjects<br/>private: ListOrgProjects"]
+        PIPELINE_API["pipeline<br/>v2: TriggerWithConfig, GetStatus<br/>ListWorkflows, ListJobArtifacts"]
         REST["rest<br/>Shared HTTP client<br/>Circle-Token header<br/>JSON encode / decode"]
+        GRAPHQL["graphql<br/>graphql-unstable endpoint<br/>OrbSource query"]
     end
 
-    CIRCLE_API["CircleCI API<br/>circleci.com/api/v2<br/>circleci.com/api/v1.1<br/>circleci.com/api/private<br/>app.circleci.com/private/ciam"]
+    CIRCLE_API["CircleCI API<br/>circleci.com/api/v2<br/>circleci.com/api/v1.1<br/>circleci.com/api/private<br/>circleci.com/graphql-unstable<br/>app.circleci.com/private/ciam"]
     GITHUB_API["GitHub REST API<br/>api.github.com/repos"]
 
     ROOT --> EXPORT
     ROOT --> SECRETS_CMD
     ROOT --> SYNC
     ROOT --> MIGRATE
+    ROOT --> ORB_INLINE
 
     MIGRATE --> EXPORTER
     MIGRATE --> SYNCER
     EXPORT --> EXPORTER
     EXPORT --> REPORT
     SECRETS_CMD --> SECRETS_PKG
+    SECRETS_CMD --> CAPTURE_PKG
     SYNC --> SYNCER
+    ORB_INLINE --> ORB_PKG
 
     EXPORTER --> ORG_API
     EXPORTER --> CTX_API
@@ -59,14 +67,20 @@ graph TD
     SYNCER --> MANIFEST
     SYNCER --> GITHUB_PKG
 
+    CAPTURE_PKG --> MANIFEST
+    CAPTURE_PKG --> PIPELINE_API
+
     SECRETS_PKG --> MANIFEST
     REPORT --> MANIFEST
 
     GITHUB_PKG --> GITHUB_API
+    ORB_PKG --> GRAPHQL
 
     ORG_API --> REST
     CTX_API --> REST
     PROJ_API --> REST
+    PIPELINE_API --> REST
+    GRAPHQL --> REST
 
     REST --> CIRCLE_API
 ```
@@ -269,6 +283,49 @@ bundles into a single `secrets.json` using `secrets merge`.
 
 ---
 
+## `secrets capture` — CLI-orchestrated flow
+
+`secrets capture` achieves the same result as the orb-based Phase 2 without
+requiring a committed `.circleci/config.yml`. The entire pipeline is generated
+at runtime and submitted as an inline (unversioned) config via the v2 Pipelines
+API.
+
+```mermaid
+flowchart TD
+    START(["circleci-migrate secrets capture --org gh/acme --manifest manifest.json"])
+
+    START --> LOAD["Load manifest.json<br/>Build list of contexts and projects to extract"]
+    LOAD --> GEN["Generate inline pipeline config<br/>(one extract job per context, one merge job)"]
+    GEN --> TRIGGER["POST /api/v2/project/slug/pipeline<br/>body: branch + inline config YAML<br/>Returns pipeline ID"]
+    TRIGGER --> POLL
+
+    subgraph POLL ["Poll until terminal state or --poll-timeout"]
+        direction TB
+        STATUS["GET /api/v2/pipeline/id<br/>Check state field"]
+        STATUS -->|"running / pending"| WAIT["Wait 5 s, retry"]
+        WAIT --> STATUS
+        STATUS -->|success| FETCH["Fetch artifact"]
+        STATUS -->|"failed / errored"| FAIL["Exit non-zero<br/>Print workflow/job state"]
+    end
+
+    FETCH --> JOBS["GET /api/v2/pipeline/id/workflow<br/>GET /api/v2/workflow/wf-id/job<br/>Locate merge job by name"]
+    JOBS --> ARTIFACTS["GET /api/v2/project/slug/job-number/artifacts<br/>Locate secrets.json artifact URL"]
+    ARTIFACTS --> DOWNLOAD["GET artifact URL (Circle-Token header)<br/>Write to --output path (mode 0600)"]
+    DOWNLOAD --> DONE([Done — secrets.json ready for sync])
+```
+
+Key differences from the orb-based approach:
+
+- No `.circleci/config.yml` is committed to the repository.
+- The inline config is ephemeral — it exists only for the duration of the run.
+- `--enable-trigger` and `--remove-restrictions` allow the command to temporarily
+  unlock contexts or triggers that would otherwise block the pipeline from running,
+  restoring them after the run completes.
+- `--skip-restricted-contexts` is a safer alternative: skip any context with
+  active restrictions rather than modifying them.
+
+---
+
 ## Phase 3 — Sync flow
 
 ```mermaid
@@ -402,3 +459,37 @@ Key properties of the sync phase:
 - **Transparent report.** Every action (created, exists, set, manual, error)
   is recorded and printed. Items requiring manual follow-up are surfaced
   explicitly.
+
+---
+
+## `orb inline` — GraphQL orb-source flow
+
+The `orb inline` command rewrites a CircleCI config file, replacing each private
+orb reference in the `orbs:` stanza with the orb's inlined YAML source. This is
+used during the namespace-transfer overlap window (e.g. while `awesomecicd/`
+content is being moved to `cci-labs/`) to produce a config that works regardless
+of which namespace is active.
+
+```mermaid
+flowchart TD
+    START(["circleci-migrate orb inline --config .circleci/config.yml"])
+
+    START --> PARSE["Parse config YAML<br/>Extract orbs: stanza"]
+    PARSE --> LOOP
+
+    subgraph LOOP ["For each orb reference"]
+        direction TB
+        QUERY["POST circleci.com/graphql-unstable<br/>OrbSource query with orbVersionRef"]
+        QUERY -->|"source returned"| INLINE["Replace orb reference with inline source block"]
+        QUERY -->|"null source (public or not found)"| PASS["Pass through unchanged"]
+    end
+
+    LOOP --> WRITE["Write merged config to --output (or stdout)"]
+    WRITE --> DONE([Done])
+```
+
+The GraphQL query (`OrbSource`) is sent to the `graphql-unstable` endpoint with
+a `Circle-Token` header. The `source` field in the response is the raw orb YAML
+string. Public orbs return a source but are left as references (they are
+resolvable without a token). Private orbs with a `null` source are left as-is
+with a warning — they require a token with access to that namespace.

@@ -222,6 +222,87 @@ captured `external_id` if resolution fails.
 
 ---
 
+## CircleCI GraphQL API (`orb inline`)
+
+The `orb inline` command fetches private orb source via the CircleCI GraphQL API.
+Unlike the REST endpoints above, this uses the **`graphql-unstable`** endpoint:
+
+```
+POST https://circleci.com/graphql-unstable
+```
+
+The request carries a `Circle-Token` header and a JSON body with a `query`
+field. The query used to fetch orb source is:
+
+```graphql
+query OrbSource($orbVersionRef: String!) {
+  orbVersion(orbVersionRef: $orbVersionRef) {
+    source
+  }
+}
+```
+
+`orbVersionRef` is the fully qualified orb reference from the config's `orbs:`
+stanza (e.g. `awesomecicd/circleci-org-migration@0.2.0`). Public orbs are
+fetched without a token; private orbs require a token that belongs to a user or
+machine-user with access to that orb's namespace. A `null` `source` in the
+response is treated as "orb not found or not accessible."
+
+**Why `graphql-unstable`?** Orb source is not exposed by the REST API v2. The
+`graphql-unstable` endpoint is the canonical way to introspect orb content and
+is used by the CircleCI CLI for the same purpose.
+
+---
+
+## Pipelines API (`secrets capture`)
+
+The `secrets capture` command drives a CircleCI pipeline run from the CLI
+without requiring a committed `.circleci/config.yml`. It uses the v2 Pipelines
+API to submit an **inline (unversioned) config** and then polls for completion:
+
+### Trigger a pipeline with inline config
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `POST` | `/api/v2/project/{project-slug}/pipeline` | Trigger a new pipeline run. When the body includes a `config` field, the supplied YAML is used as the pipeline config rather than the repo's committed config. |
+
+Request body:
+
+```json
+{
+  "branch": "main",
+  "config": "<inline YAML config string>"
+}
+```
+
+The inline config is generated at runtime: it contains one extraction job per
+context listed in the manifest (one context per job to guarantee variable
+isolation) and a final merge job that uploads `secrets.json` as an artifact.
+
+### Poll for pipeline status
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v2/pipeline/{pipeline-id}` | Fetch pipeline metadata including `state` (`created`, `errored`, `setup-pending`, `setup`, `pending`, `running`, `failing`, `failed`, `success`, `canceled`). |
+| `GET` | `/api/v2/pipeline/{pipeline-id}/workflow` | List the workflows in a pipeline. Used to surface workflow-level errors to the user when a run fails. |
+
+### Download the artifact
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v2/workflow/{workflow-id}/job` | List the jobs in a workflow. Used to identify the merge job by name. |
+| `GET` | `/api/v2/project/{project-slug}/{job-number}/artifacts` | List artifacts for a job. Used to locate the `secrets.json` artifact produced by the merge job. |
+
+The artifact download itself (`url` from the artifacts list) is a direct GET
+with the `Circle-Token` header; no separate API client is required.
+
+**Error handling:** if the pipeline run does not reach `success` within
+`--poll-timeout` (default 10 minutes), `secrets capture` exits with a non-zero
+status and prints the workflow and job state. The partially run pipeline is left
+in place for inspection; it is not cancelled automatically.
+
+---
+
 ## Runner (resource classes)
 
 The runner v3 API base (`/api/v3/runner/...`) is reserved for a future
