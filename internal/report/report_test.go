@@ -724,3 +724,60 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestMarkdown_OrgSettings_AllSections exercises every branch of
+// writeOrgSettings with a fully-populated OrgSettings so the rendered report
+// includes each org-level section.
+func TestMarkdown_OrgSettings_AllSections(t *testing.T) {
+	pid := "proj-uuid"
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org: manifest.Org{
+				Name: "Acme", Slug: "circleci/abc", ID: "org-uuid",
+				Settings: &manifest.OrgSettings{
+					FeatureFlags:                   map[string]bool{"allow_private_orbs": true, "drop_all_build_requests": false},
+					StorageRetention:               &manifest.StorageRetentionControls{CacheDays: 7, WorkspaceDays: 7, ArtifactDays: 15},
+					Budgets:                        &manifest.OrgBudgets{OrgBudget: &manifest.BudgetEntry{Credits: 1000000, EnforcementType: "warn"}, ProjectBudgets: []manifest.BudgetEntry{{Credits: 500, ProjectID: &pid}}},
+					BlockUnregisteredUsers:         boolPtr(true),
+					PolicyEnforcementEnabled:       boolPtr(true),
+					RequireContextGroupRestriction: boolPtr(false),
+					OIDCAudience:                   []string{"https://aud.example"},
+					OIDCTTL:                        "1h",
+					URLOrbAllowList:                []manifest.URLOrbAllowEntry{{Name: "ffdf", Prefix: "https://www.test.com/", Auth: "none"}},
+					ConfigPolicies:                 map[string]string{"policy.rego": "package org"},
+					Contacts:                       &manifest.OrgContacts{Primary: []string{"tech@example.com"}, Security: []string{"sec@example.com"}},
+					OTelExporters:                  []manifest.OTelExporter{{Endpoint: "https://otel.example", Protocol: "http/protobuf"}},
+					ReleaseTracker:                 &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"},
+					EnvironmentHierarchy:           &manifest.EnvironmentHierarchy{Name: "envs", Levels: []manifest.EnvHierarchyLevel{{Position: 1, IntegrationName: "orbs-dev"}, {Position: 2, IntegrationName: "orbs-prod"}}},
+					AuditLogConfigs:                []manifest.AuditLogConfig{{ID: "al1"}},
+					Orbs:                           []manifest.OrgOrb{{OrbName: "acme/util", LatestVersionNumber: "1.2.3", IsPrivate: true}},
+				},
+			},
+		},
+	}
+	out := report.Markdown(m)
+	for _, want := range []string{
+		"## Org settings", "Feature flags (2)", "Enabled:", "Disabled:",
+		"Storage retention", "Artifacts: 15", "Spend budgets", "1000000 credits",
+		"Per-project budgets: 1", "Prevent unregistered-user spend: `true`",
+		"OIDC custom claims", "1h", "URL-orb allow list (1)", "ffdf",
+		"Config policies (1)", "Contacts", "tech@example.com", "sec@example.com",
+		"OpenTelemetry exporters (1)", "Release tracker", "Environment hierarchy",
+		"orbs-dev", "Audit-log streaming (1)", "Namespaces & orbs", "acme/util", "private",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered report missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_OrgSettings_NoneCaptured covers the nil-settings branch.
+func TestMarkdown_OrgSettings_NoneCaptured(t *testing.T) {
+	m := &manifest.Manifest{Source: manifest.Source{Org: manifest.Org{Name: "X", Slug: "gh/x"}}}
+	out := report.Markdown(m)
+	if !strings.Contains(out, "## Org settings") || !strings.Contains(out, "_None captured._") {
+		t.Errorf("expected an Org settings section with '_None captured._'; got:\n%s", out[:min(len(out), 400)])
+	}
+}
