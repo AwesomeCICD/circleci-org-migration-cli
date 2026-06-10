@@ -445,6 +445,187 @@ func TestMarkdown_NoWarnings_ShowsNone(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Cutover runbook tests
+// ---------------------------------------------------------------------------
+
+func TestMarkdown_ContainsRunbookSectionHeaders(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	for _, header := range []string{
+		"## Cutover runbook",
+		"### 1. Recommended cutover order",
+		"### 2. Automated by `sync --apply`",
+		"### 3. Manual steps required",
+		"### 4. Does not transfer / data loss",
+		"### 5. Update external pins",
+	} {
+		if !strings.Contains(md, header) {
+			t.Errorf("Markdown missing runbook header %q", header)
+		}
+	}
+}
+
+func TestMarkdown_RunbookOrderMentionsPausedCreation(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+	for _, want := range []string{"sync --apply", "paused", "Capture secret values", "Rotate the captured secrets"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown runbook order missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_ManualStepsBaselineAlwaysPresent(t *testing.T) {
+	// Minimal manifest with no org settings: baseline manual items must still appear.
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{"secret values", "Checkout & SSH keys", "Webhook signing secrets"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown manual steps missing baseline item %q", want)
+		}
+	}
+}
+
+func TestMarkdown_ManualSteps_ContextValuesNotePullsWarning(t *testing.T) {
+	m := buildManifest() // has context_values_excluded warning
+	md := report.Markdown(m)
+	if !strings.Contains(md, "export note:") {
+		t.Errorf("Markdown manual steps should quote the recorded warning via 'export note:'")
+	}
+}
+
+func TestMarkdown_ManualSteps_SSOOnlyWhenPresent(t *testing.T) {
+	// Without SSO.
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "**SSO (SAML)**") {
+		t.Errorf("Markdown should not list an SSO manual step when no SSO is configured")
+	}
+
+	// With SSO.
+	withSSO := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{SSO: &manifest.SSOSettings{Enforced: true, Realm: "r"}},
+		}},
+	})
+	if !strings.Contains(withSSO, "**SSO (SAML)**") {
+		t.Errorf("Markdown should list an SSO manual step when SSO is configured")
+	}
+}
+
+func TestMarkdown_ManualSteps_AuditLogOnlyWhenPresent(t *testing.T) {
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "Audit-log streaming") {
+		t.Errorf("Markdown should not mention audit-log streaming when no configs present")
+	}
+
+	withAudit := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				AuditLogConfigs: []manifest.AuditLogConfig{{ID: "a1"}},
+			},
+		}},
+	})
+	if !strings.Contains(withAudit, "Audit-log streaming") {
+		t.Errorf("Markdown should mention audit-log streaming when configs present")
+	}
+}
+
+func TestMarkdown_ManualSteps_OTelAndContactsAndPipelineDefs(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "circleci/abc",
+			Settings: &manifest.OrgSettings{
+				OTelExporters: []manifest.OTelExporter{{Endpoint: "https://otel"}},
+				Contacts:      &manifest.OrgContacts{Primary: []string{"a@b.com"}},
+			},
+		}},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/abc/p1",
+				PipelineDefinitions: []manifest.PipelineDefinition{
+					{Name: "default"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{
+		"OpenTelemetry exporter headers",
+		"technical & security contacts",
+		"Repository connections (App destinations)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown manual steps missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_ManualSteps_DangerFlags(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{RequireContextGroupRestriction: boolPtr(true)},
+		}},
+		Projects: []manifest.Project{
+			{Slug: "gh/o/p", Settings: &manifest.AdvancedSettings{DropAllBuildRequests: boolPtr(true)}},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{"require_context_group_restriction", "drop_all_build_requests", "danger flag"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown manual steps missing danger flag %q", want)
+		}
+	}
+}
+
+func TestMarkdown_DataLoss_PresentAndUUIDsMentioned(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+	if !strings.Contains(md, "### 4. Does not transfer / data loss") {
+		t.Errorf("Markdown missing data-loss section")
+	}
+	for _, want := range []string{"UUID", "rotate", "pr_only_branch_overrides"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown data-loss section missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_DataLoss_OAuthSourceCallsOutCrossType(t *testing.T) {
+	// gh/ slug → OAuth source.
+	oauth := report.Markdown(buildManifest())
+	if !strings.Contains(oauth, "OAuth → App") {
+		t.Errorf("OAuth-source data-loss should call out OAuth → App explicitly")
+	}
+	// circleci/ slug → App source.
+	app := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/abc"}},
+	})
+	if !strings.Contains(app, "Cross-type moves lose settings") {
+		t.Errorf("App-source data-loss should use the generic cross-type wording")
+	}
+}
+
+func TestMarkdown_ExternalPinsSection(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+	for _, want := range []string{"### 5. Update external pins", "Backstage", "Slack", "status-check", "badges"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown external-pins section missing %q", want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SaveMarkdown tests
 // ---------------------------------------------------------------------------
 
