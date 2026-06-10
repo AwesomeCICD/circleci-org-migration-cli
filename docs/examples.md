@@ -499,9 +499,6 @@ When only some repositories moved (partial EMU), use a
 
 ## Example 7 — Runner resource-class capture and recreation
 
-> **Note:** runner resource-class migration is being added in a parallel
-> release. The flags below will be available when that release ships.
-
 **Scenario:** your source org has self-hosted runner resource classes that you
 want to recreate in the destination org. Because there is no org-to-namespace
 lookup, you must supply the runner namespace name explicitly.
