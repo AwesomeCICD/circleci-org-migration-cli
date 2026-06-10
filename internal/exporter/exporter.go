@@ -13,6 +13,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
 )
@@ -88,10 +89,14 @@ type Exporter struct {
 	Out io.Writer
 }
 
+// logf writes a human-progress line to both e.Out (for user-facing output) and
+// the package-level clog logger at Info level. Progress lines are always sent
+// to e.Out for backward compatibility; clog routing allows --debug to add detail.
 func (e *Exporter) logf(format string, args ...any) {
 	if e.Out != nil {
 		fmt.Fprintf(e.Out, format+"\n", args...)
 	}
+	clog.Infof(format, args...)
 }
 
 // Export walks the source organization and returns a populated manifest. It
@@ -133,6 +138,7 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 
 func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) error {
 	e.logf("Listing contexts...")
+	clog.Debugf("ListContexts org_id=%s slug=%s", o.ID, o.Slug)
 	contexts, err := e.Contexts.ListContexts(o.ID, o.Slug)
 	if err != nil {
 		return err
@@ -209,6 +215,7 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 			mp.Followed = &followed
 		}
 
+		clog.Debugf("GetProject slug=%s", slug)
 		p, perr := e.Projects.GetProject(slug)
 		if perr != nil {
 			m.AddWarning("project:"+slug, "project_unreadable", fmt.Sprintf("could not read project: %v", perr))

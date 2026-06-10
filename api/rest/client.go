@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
 )
@@ -105,7 +106,15 @@ func (c *Client) enrichRequestHeaders(req *http.Request, payload interface{}) {
 
 // DoRequest executes req and JSON-decodes a successful response into resp.
 // It returns the HTTP status code and any error.
+//
+// At debug level it logs the METHOD + URL (no auth headers or secrets) and the
+// response status. On non-2xx it also logs the CircleCI request-id header and
+// a snippet of the response body to aid troubleshooting.
 func (c *Client) DoRequest(req *http.Request, resp interface{}) (int, error) {
+	// Log the outgoing request at debug level. We deliberately do NOT log any
+	// headers (which would expose the Circle-Token / Authorization values).
+	clog.Debugf("→ %s %s", req.Method, req.URL.String())
+
 	// The request URL is built from the operator-provided CircleCI host and
 	// fixed API paths; issuing it is the entire purpose of this client.
 	httpResp, err := c.client.Do(req) // #nosec G704 -- request target is operator-configured, not attacker-controlled
@@ -114,18 +123,48 @@ func (c *Client) DoRequest(req *http.Request, resp interface{}) (int, error) {
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
+	clog.Debugf("← %d %s", httpResp.StatusCode, req.URL.Path)
+
 	if httpResp.StatusCode >= 400 {
 		body, err := io.ReadAll(httpResp.Body)
 		if err != nil {
 			return httpResp.StatusCode, err
 		}
+
+		reqID := httpResp.Header.Get("X-Request-Id")
+		if reqID == "" {
+			reqID = httpResp.Header.Get("X-Request-ID")
+		}
+		if reqID == "" {
+			reqID = httpResp.Header.Get("Request-Id")
+		}
+
+		snippet := bodySnippet(body, 256)
+		if reqID != "" {
+			clog.Debugf("request-id: %s  body: %s", reqID, snippet)
+		} else {
+			clog.Debugf("body: %s", snippet)
+		}
+
 		var msgErr struct {
 			Message string `json:"message"`
 		}
 		if jsonErr := json.Unmarshal(body, &msgErr); jsonErr == nil && msgErr.Message != "" {
-			return httpResp.StatusCode, &HTTPError{Code: httpResp.StatusCode, Message: msgErr.Message}
+			return httpResp.StatusCode, &HTTPError{
+				Code:      httpResp.StatusCode,
+				Message:   msgErr.Message,
+				RequestID: reqID,
+				Path:      req.URL.Path,
+				Method:    req.Method,
+			}
 		}
-		return httpResp.StatusCode, &HTTPError{Code: httpResp.StatusCode, Message: string(body)}
+		return httpResp.StatusCode, &HTTPError{
+			Code:      httpResp.StatusCode,
+			Message:   string(body),
+			RequestID: reqID,
+			Path:      req.URL.Path,
+			Method:    req.Method,
+		}
 	}
 
 	if resp != nil {
@@ -143,6 +182,22 @@ func (c *Client) DoRequest(req *http.Request, resp interface{}) (int, error) {
 	}
 
 	return httpResp.StatusCode, nil
+}
+
+// bodySnippet returns at most maxBytes bytes of body as a printable string,
+// appending "…" if truncated. It replaces newlines with spaces so the result
+// fits on a single log line.
+func bodySnippet(body []byte, maxBytes int) string {
+	truncated := len(body) > maxBytes
+	if truncated {
+		body = body[:maxBytes]
+	}
+	s := strings.ReplaceAll(string(body), "\n", " ")
+	s = strings.ReplaceAll(s, "\r", "")
+	if truncated {
+		s += "…"
+	}
+	return s
 }
 
 // EnrichDownloadRequest adds the Circle-Token authentication header (and
@@ -169,9 +224,14 @@ func (c *Client) RawDo(req *http.Request) (*http.Response, error) {
 }
 
 // HTTPError represents an HTTP-level error response from the CircleCI API.
+// It carries structured context (status code, request-id, method+path) so
+// that top-level command handlers can format actionable error messages.
 type HTTPError struct {
-	Code    int
-	Message string
+	Code      int
+	Message   string
+	RequestID string // value of X-Request-Id response header, if present
+	Method    string // HTTP method of the failed request
+	Path      string // URL path of the failed request
 }
 
 func (e *HTTPError) Error() string {
@@ -182,4 +242,68 @@ func (e *HTTPError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("response %d (%s)", e.Code, http.StatusText(e.Code))
+}
+
+// IssueURL is the canonical URL for filing a bug report for this CLI.
+const IssueURL = "https://github.com/AwesomeCICD/circleci-org-migration-cli/issues"
+
+// ActionableError wraps an error with an operation context and the standard
+// hint to re-run with --debug and file an issue if the problem persists.
+// It is called once at the outermost command-error boundary (not on every
+// nested wrap) so the hint appears exactly once.
+//
+// Example output:
+//
+//	list contexts: response 401 (Unauthorized) [GET /api/v2/context request-id: abc123]
+//	  → re-run with --debug for full request/response details
+//	  → to report this, open an issue at https://github.com/AwesomeCICD/circleci-org-migration-cli/issues with the --debug output
+func ActionableError(op string, err error) string {
+	if err == nil {
+		return ""
+	}
+	var he *HTTPError
+	base := fmt.Sprintf("%s: %v", op, err)
+
+	// Only emit the extended hint for HTTP errors (where request/debug context
+	// is meaningful). For non-HTTP errors (e.g. file not found) the plain
+	// message is more helpful.
+	if !isHTTPError(err, &he) {
+		return base
+	}
+
+	// Include structured HTTP context if available.
+	var detail string
+	if he.Method != "" && he.Path != "" {
+		detail = fmt.Sprintf(" [%s %s", he.Method, he.Path)
+		if he.RequestID != "" {
+			detail += " request-id: " + he.RequestID
+		}
+		detail += "]"
+	} else if he.RequestID != "" {
+		detail = " [request-id: " + he.RequestID + "]"
+	}
+
+	return fmt.Sprintf("%s%s\n  → re-run with --debug for full request/response details\n  → to report this, open an issue at %s with the --debug output",
+		base, detail, IssueURL)
+}
+
+// isHTTPError unwraps err to find an *HTTPError and stores it in out when found.
+func isHTTPError(err error, out **HTTPError) bool {
+	var he *HTTPError
+	// Walk the error chain manually (errors.As would need the errors package).
+	type unwrapper interface{ Unwrap() error }
+	for e := err; e != nil; {
+		if h, ok := e.(*HTTPError); ok {
+			*out = h
+			he = h
+			_ = he
+			return true
+		}
+		if u, ok := e.(unwrapper); ok {
+			e = u.Unwrap()
+		} else {
+			break
+		}
+	}
+	return false
 }

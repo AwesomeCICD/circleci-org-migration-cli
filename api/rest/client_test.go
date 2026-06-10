@@ -387,3 +387,118 @@ func TestHTTPError_CodeZero_DefaultsTo500(t *testing.T) {
 		t.Errorf("Error() = %q; expected to contain '500'", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HTTPError.RequestID / Method / Path fields
+// ---------------------------------------------------------------------------
+
+func TestHTTPError_RequestIDAndPath_CapturedFrom4xx(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "req-abc-123")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintln(w, `{"message":"Unauthorized"}`)
+	}))
+
+	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, apiErr := c.DoRequest(req, nil)
+	he, ok := apiErr.(*rest.HTTPError)
+	if !ok {
+		t.Fatalf("expected *rest.HTTPError, got %T", apiErr)
+	}
+	if he.RequestID != "req-abc-123" {
+		t.Errorf("RequestID = %q; want %q", he.RequestID, "req-abc-123")
+	}
+	if he.Method != http.MethodGet {
+		t.Errorf("Method = %q; want GET", he.Method)
+	}
+	if he.Path == "" {
+		t.Errorf("Path should not be empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ActionableError
+// ---------------------------------------------------------------------------
+
+func TestActionableError_NilErrorReturnsEmpty(t *testing.T) {
+	if got := rest.ActionableError("op", nil); got != "" {
+		t.Errorf("ActionableError(nil) = %q; want empty string", got)
+	}
+}
+
+func TestActionableError_NonHTTPError_NoHintAdded(t *testing.T) {
+	err := fmt.Errorf("file not found")
+	got := rest.ActionableError("load manifest", err)
+	// For non-HTTP errors the output is "op: msg" without the debug hint.
+	want := "load manifest: file not found"
+	if got != want {
+		t.Errorf("ActionableError = %q; want %q", got, want)
+	}
+	if strings.Contains(got, "--debug") {
+		t.Errorf("non-HTTP error should not include --debug hint, got: %q", got)
+	}
+}
+
+func TestActionableError_HTTPError_IncludesHint(t *testing.T) {
+	err := &rest.HTTPError{Code: 401, Message: "Unauthorized", Method: "GET", Path: "/api/v2/me"}
+	got := rest.ActionableError("list contexts", err)
+	if !strings.Contains(got, "--debug") {
+		t.Errorf("expected --debug hint in output, got: %q", got)
+	}
+	if !strings.Contains(got, rest.IssueURL) {
+		t.Errorf("expected issue URL in output, got: %q", got)
+	}
+	if !strings.Contains(got, "list contexts") {
+		t.Errorf("expected operation name in output, got: %q", got)
+	}
+}
+
+func TestActionableError_HTTPError_IncludesRequestID(t *testing.T) {
+	err := &rest.HTTPError{Code: 500, Message: "server error", RequestID: "rid-xyz", Method: "POST", Path: "/api/v2/context"}
+	got := rest.ActionableError("create context", err)
+	if !strings.Contains(got, "rid-xyz") {
+		t.Errorf("expected request-id in output, got: %q", got)
+	}
+}
+
+func TestActionableError_HTTPError_NoRequestID_NoIDInOutput(t *testing.T) {
+	err := &rest.HTTPError{Code: 403, Message: "Forbidden", Method: "GET", Path: "/api/v2/org"}
+	got := rest.ActionableError("resolve org", err)
+	if strings.Contains(got, "request-id:  ") {
+		t.Errorf("should not include empty request-id label, got: %q", got)
+	}
+	// Should still include the method/path context.
+	if !strings.Contains(got, "GET") {
+		t.Errorf("expected method in output, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Debug logging of request/response (behavior, not output content)
+// ---------------------------------------------------------------------------
+
+func TestDoRequest_DebugLogging_DoesNotAffectResult(t *testing.T) {
+	// Verify that enabling debug logging doesn't change the return value.
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"id":"x","name":"y"}`)
+	}))
+
+	req, err := c.NewRequest(http.MethodGet, relURL("project/x"), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	var out responseBody
+	code, err := c.DoRequest(req, &out)
+	if err != nil {
+		t.Fatalf("DoRequest error: %v", err)
+	}
+	if code != http.StatusOK {
+		t.Errorf("code = %d; want 200", code)
+	}
+}

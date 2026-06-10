@@ -13,6 +13,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/github"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
@@ -152,10 +153,13 @@ type Syncer struct {
 	Out    io.Writer
 }
 
+// logf writes a human-progress line to both s.Out (for user-facing output) and
+// the package-level clog logger at Info level.
 func (s *Syncer) logf(format string, args ...any) {
 	if s.Out != nil {
 		fmt.Fprintf(s.Out, format+"\n", args...)
 	}
+	clog.Infof(format, args...)
 }
 
 // Action records one planned or performed change.
@@ -208,10 +212,12 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 	report.DestOrgID = destOrgID
 	s.logf("Destination org: %s (id %s)%s", destSlug, destOrgID, dryRunSuffix(opts.Apply))
 
+	clog.Debugf("ListContexts dest_org_id=%s", destOrgID)
 	existing, err := s.Contexts.ListContexts(destOrgID, "")
 	if err != nil {
 		return nil, fmt.Errorf("listing destination contexts: %w", err)
 	}
+	clog.Debugf("found %d existing context(s) in destination", len(existing))
 	byName := map[string]cctx.Context{}
 	for _, c := range existing {
 		byName[c.Name] = c
@@ -624,6 +630,7 @@ func (s *Syncer) syncAppProject(
 	}
 
 	// Apply: create the project.
+	clog.Debugf("CreateAppProject dest_org_id=%s name=%s", destOrgID, name)
 	created, err := s.Projects.CreateAppProject(destOrgID, name)
 	if err != nil {
 		report.add("project", name, "error", fmt.Sprintf("create App project: %v", err))
