@@ -57,6 +57,11 @@ Examples:
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
   circleci-migrate sync --manifest manifest.json --apply --yes`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Resolve the GitHub token from the env after parsing so the flag
+			// default never leaks $GITHUB_TOKEN into --help output.
+			if githubToken == "" {
+				githubToken = os.Getenv("GITHUB_TOKEN")
+			}
 			if manifestPath == "" {
 				return fmt.Errorf("--manifest is required")
 			}
@@ -139,8 +144,8 @@ Examples:
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
-	f.StringVar(&githubToken, "github-token", os.Getenv("GITHUB_TOKEN"),
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
+	f.StringVar(&githubToken, "github-token", "",
+		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
 

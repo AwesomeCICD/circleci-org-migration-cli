@@ -29,19 +29,13 @@ func MakeCommands() *cobra.Command {
 		RestEndpoint: settings.DefaultRestEndpoint,
 	}
 
-	// Seed Host / Token from environment before flags are parsed so that env
-	// vars act as defaults that CLI flags can override.
+	// Host may be seeded from the environment here because it is NOT sensitive:
+	// seeding makes it the flag default shown in --help, which is fine for a URL.
+	// Token env fallbacks are deliberately NOT seeded here — doing so would make
+	// the secret value the flag's default and leak it into --help output. They
+	// are resolved in PersistentPreRunE instead (after flag parsing).
 	if h := os.Getenv("CIRCLECI_HOST"); h != "" {
 		rootOptions.Host = h
-	}
-	if t := os.Getenv("CIRCLECI_CLI_TOKEN"); t != "" {
-		rootOptions.Token = t
-	}
-	if st := os.Getenv("CIRCLECI_SOURCE_TOKEN"); st != "" {
-		rootOptions.SourceToken = st
-	}
-	if dt := os.Getenv("CIRCLECI_DEST_TOKEN"); dt != "" {
-		rootOptions.DestToken = dt
 	}
 
 	rootCmd := &cobra.Command{
@@ -67,6 +61,19 @@ Typical workflow:
 Use "circleci-migrate [command] --help" for more information about a command.`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			// Resolve token fallbacks from the environment AFTER flag parsing so
+			// secret values never appear as flag defaults in --help. An explicit
+			// flag always wins; otherwise fall back to the matching env var.
+			if rootOptions.Token == "" {
+				rootOptions.Token = os.Getenv("CIRCLECI_CLI_TOKEN")
+			}
+			if rootOptions.SourceToken == "" {
+				rootOptions.SourceToken = os.Getenv("CIRCLECI_SOURCE_TOKEN")
+			}
+			if rootOptions.DestToken == "" {
+				rootOptions.DestToken = os.Getenv("CIRCLECI_DEST_TOKEN")
+			}
+
 			level := clog.LevelInfo
 			if rootOptions.Debug {
 				level = clog.LevelDebug
@@ -80,11 +87,13 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	pf := rootCmd.PersistentFlags()
 	pf.StringVar(&rootOptions.Host, "host", rootOptions.Host,
 		"CircleCI host URL (env: CIRCLECI_HOST)")
-	pf.StringVar(&rootOptions.Token, "token", rootOptions.Token,
+	// Token flags default to "" (never the env value) so --help never prints a
+	// secret. The env fallback is applied in PersistentPreRunE.
+	pf.StringVar(&rootOptions.Token, "token", "",
 		"Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)")
-	pf.StringVar(&rootOptions.SourceToken, "source-token", rootOptions.SourceToken,
+	pf.StringVar(&rootOptions.SourceToken, "source-token", "",
 		"API token for the source org (env: CIRCLECI_SOURCE_TOKEN)")
-	pf.StringVar(&rootOptions.DestToken, "dest-token", rootOptions.DestToken,
+	pf.StringVar(&rootOptions.DestToken, "dest-token", "",
 		"API token for the destination org (env: CIRCLECI_DEST_TOKEN)")
 	pf.BoolVar(&rootOptions.Debug, "debug", false,
 		"Enable debug logging")
