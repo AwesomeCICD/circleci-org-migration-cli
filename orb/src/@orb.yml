@@ -17,5 +17,5 @@ description: |
   writing one stanza each.
 
 display:
-  home_url: https://circleci.com/docs/
-  source_url: https://github.com/CircleCI-Public/circleci-org-migration-cli
+  home_url: https://github.com/AwesomeCICD/circleci-org-migration-cli
+  source_url: https://github.com/AwesomeCICD/circleci-org-migration-cli
