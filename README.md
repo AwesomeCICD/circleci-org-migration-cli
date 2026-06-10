@@ -1,4 +1,10 @@
-[![CircleCI](https://dl.circleci.com/status-badge/img/gh/AwesomeCICD/circleci-org-migration-cli/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/AwesomeCICD/circleci-org-migration-cli/tree/main) ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white) [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://conventionalcommits.org)
+[![CircleCI build](https://dl.circleci.com/status-badge/img/gh/AwesomeCICD/circleci-org-migration-cli/tree/main.svg?style=shield)](https://dl.circleci.com/status-badge/redirect/gh/AwesomeCICD/circleci-org-migration-cli/tree/main)
+[![GitHub release](https://img.shields.io/github/v/release/AwesomeCICD/circleci-org-migration-cli?logo=github)](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/latest)
+[![Homebrew](https://img.shields.io/badge/homebrew-AwesomeCICD%2Ftap%2Fcircleci--migrate-orange?logo=homebrew)](https://github.com/AwesomeCICD/homebrew-tap)
+[![orb: awesomecicd/circleci-org-migration](https://badges.circleci.com/orbs/awesomecicd/circleci-org-migration.svg)](https://circleci.com/developer/orbs/orb/awesomecicd/circleci-org-migration)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go Report Card](https://goreportcard.com/badge/github.com/CircleCI-Public/circleci-org-migration-cli)](https://goreportcard.com/report/github.com/CircleCI-Public/circleci-org-migration-cli)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://conventionalcommits.org)
 
 # circleci-migrate
 
@@ -42,14 +48,14 @@ The fastest path when migrating from one org directly to another:
 # Dry run first — review the plan, nothing is written
 circleci-migrate migrate \
   --source-org gh/acme \
-  --dest-org gh/acme-new \
+  --dest-org gh/acme-cloud \
   --source-token "$SRC_TOKEN" \
   --dest-token "$DST_TOKEN"
 
 # Apply when you are satisfied with the plan
 circleci-migrate migrate \
   --source-org gh/acme \
-  --dest-org gh/acme-new \
+  --dest-org gh/acme-cloud \
   --source-token "$SRC_TOKEN" \
   --dest-token "$DST_TOKEN" \
   --apply
@@ -60,13 +66,15 @@ circleci-migrate migrate \
 ```bash
 circleci-migrate migrate \
   --source-org gh/acme \
-  --dest-org gh/acme-new \
+  --dest-org gh/acme-cloud \
   --apply \
   -o manifest.json \
   --report migration-report.md
 ```
 
 For more control — for example to review or edit the manifest between phases — use `export` and `sync` as separate commands (see below).
+
+**Interactive guided mode:** run `circleci-migrate migrate` with no flags on an interactive terminal to launch a step-by-step walkthrough that prompts for each required value. Pass `--no-input` (or pipe stdin) to force non-interactive mode and error immediately on missing required values.
 
 ---
 
@@ -80,8 +88,7 @@ For more control — for example to review or edit the manifest between phases �
 ### Homebrew (recommended)
 
 ```bash
-brew tap AwesomeCICD/homebrew-tap
-brew install circleci-migrate
+brew install AwesomeCICD/tap/circleci-migrate
 ```
 
 > **Future namespace:** the tap and orb will move to `CircleCI-Labs` / `cci-labs` when
@@ -104,6 +111,14 @@ curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/do
 sudo install -m 0755 circleci-migrate /usr/local/bin/
 ```
 
+### `go install`
+
+```bash
+go install github.com/CircleCI-Public/circleci-org-migration-cli@latest
+```
+
+Requires Go 1.26 or later. The installed binary is placed in `$GOPATH/bin` (or `$HOME/go/bin`).
+
 ### Build from source
 
 ```bash
@@ -115,6 +130,37 @@ go build -o bin/circleci-migrate .
 ```
 
 **Requirements:** Go 1.26 or later.
+
+### Using the orb in a CircleCI pipeline
+
+The `awesomecicd/circleci-org-migration` orb is used inside a CircleCI pipeline
+to capture secret values (Phase 2). Add it to a workflow in your source org's
+`.circleci/config.yml`:
+
+```yaml
+version: "2.1"
+orbs:
+  migrate: awesomecicd/circleci-org-migration@0.2.0
+
+workflows:
+  capture-secrets:
+    jobs:
+      - migrate/extract_context:
+          name: extract-my-context
+          context_name: my-context
+          context:
+            - my-context
+      - migrate/merge:
+          requires:
+            - extract-my-context
+```
+
+See [Phase 2 — Capture secrets](#phase-2--capture-secrets-inside-a-pipeline) for
+full usage, and [docs/examples.md](docs/examples.md) for copy-pasteable
+multi-context and matrix examples.
+
+> **Note:** the orb is currently PRIVATE. Your CircleCI organization must be granted access.
+> It will be republished as `cci-labs/circleci-org-migration` when the tool moves to CircleCI Labs.
 
 ### Releasing
 
@@ -218,7 +264,7 @@ workflows:
 
 Download `secrets.json` from the `merge` job's artifacts. This file contains plaintext values — see [Security](#security) below.
 
-The orb (`awesomecicd/circleci-org-migration@0.2.0`, PRIVATE — for in-pipeline secret capture) fetches the prebuilt binary from GitHub Releases automatically. For large numbers of contexts, use a matrix to fan out a single job stanza instead of writing one stanza per context (see the orb's `capture-context-secrets-matrix` example).
+The orb (`awesomecicd/circleci-org-migration@0.2.0`, PRIVATE — for in-pipeline secret capture) fetches the prebuilt binary from GitHub Releases automatically. For large numbers of contexts, use a matrix to fan out a single job stanza instead of writing one stanza per context (see [docs/examples.md](docs/examples.md#example-5--secrets-capture-in-detail)).
 
 > **Note:** the orb is currently PRIVATE. To use it, your CircleCI organization must be granted access. It will be republished as `cci-labs/circleci-org-migration` when the tool moves to CircleCI Labs.
 
@@ -262,7 +308,7 @@ To skip the prompt and enable automatically:
 ```bash
 circleci-migrate sync --manifest manifest.json --apply --yes
 # or with migrate:
-circleci-migrate migrate --source-org gh/acme --dest-org gh/acme-new --apply --yes
+circleci-migrate migrate --source-org gh/acme --dest-org gh/acme-cloud --apply --yes
 ```
 
 To skip for now and enable later, just press Enter (or run without a TTY). You can re-run with `--apply --yes` at any time — it is safe to call again.
@@ -315,7 +361,7 @@ The org slug format affects which APIs are available and how projects are manage
 
 The tool is designed primarily for **same-type** migrations:
 
-- **OAuth → OAuth** (`gh/acme` → `gh/acme-new`): fully automated with a name mapping.
+- **OAuth → OAuth** (`gh/acme` → `gh/acme-cloud`): fully automated with a name mapping.
 - **App → App** (`circleci/<src-uuid>` → `circleci/<dst-uuid>`): fully automated; the `--github-token` flag helps resolve repository external IDs when the destination is in a different GitHub org.
 
 ### Cross-type migrations
@@ -326,6 +372,8 @@ A **GitHub App** org that also has GitHub-connected repositories registers as tw
 
 - GitHub App never builds fork PRs; if your source org has `build_fork_prs` enabled the setting cannot be replicated.
 - Multiple pipeline definitions per App project cannot collapse to a single OAuth project config.
+
+See [docs/examples.md](docs/examples.md) for complete worked examples of each migration type.
 
 ---
 
@@ -349,33 +397,44 @@ These flags are available on every sub-command. Environment variables are read b
 
 All-in-one: exports the source org and syncs it into the destination in a single command. The manifest is kept in memory; use `-o` to save it to disk.
 
+When run with no `--source-org`/`--dest-org` on an interactive terminal, `migrate` launches a **guided walkthrough** that prompts for each required value. Providing both flags bypasses all prompts and runs non-interactively — suitable for CI pipelines. Pass `--no-input` to error immediately if any required value is missing instead of blocking on a prompt.
+
 ```bash
-# Dry run
+# Interactive guided walkthrough
+circleci-migrate migrate
+
+# Dry run (non-interactive)
 circleci-migrate migrate \
-  --source-org gh/acme --dest-org gh/acme-new
+  --source-org gh/acme --dest-org gh/acme-cloud
 
 # Apply with secret bundle
 circleci-migrate migrate \
-  --source-org gh/acme --dest-org gh/acme-new \
+  --source-org gh/acme --dest-org gh/acme-cloud \
   --secrets secrets.json --apply
 
 # Apply and auto-confirm enabling builds, save manifest + report
 circleci-migrate migrate \
-  --source-org gh/acme --dest-org gh/acme-new \
+  --source-org gh/acme --dest-org gh/acme-cloud \
   --apply --yes \
   -o manifest.json --report migration-report.md
+
+# CI pipeline (non-interactive, apply immediately)
+circleci-migrate migrate \
+  --source-org gh/acme --dest-org gh/acme-cloud \
+  --secrets secrets.json --apply --yes --no-input
 ```
 
 `migrate` uses the source token (`--source-token` / `CIRCLECI_SOURCE_TOKEN`) for the export step and the dest token (`--dest-token` / `CIRCLECI_DEST_TOKEN`) for the sync step.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--source-org` | *(required)* | Source organization slug (`gh/<org>` or `circleci/<org-id>`) |
-| `--dest-org` | *(required)* | Destination organization slug |
+| `--source-org` | *(required, or prompted interactively)* | Source organization slug (`gh/<org>` or `circleci/<org-id>`) |
+| `--dest-org` | *(required, or prompted interactively)* | Destination organization slug |
 | `--secrets` | `secrets.json` | Path to a captured secret bundle (optional; file is silently skipped if absent) |
 | `--mapping` | | Path to a source→destination mapping file (optional) |
 | `--apply` | `false` | Write changes to destination (default: dry run) |
 | `--yes`, `-y` | `false` | Auto-confirm enabling builds after project creation (skip the interactive prompt) |
+| `--no-input` | `false` | Disable all interactive prompts; error if a required value is missing |
 | `--missing-secrets` | `skip` | How to handle variables with no captured value: `skip` or `placeholder` |
 | `--github-token` | `$GITHUB_TOKEN` | GitHub PAT used to resolve repository IDs for App pipeline definitions |
 | `--dest-github-org` | | Destination GitHub org name (used to resolve repo `external_id` when the destination is in a different GitHub org than the source) |
@@ -388,7 +447,7 @@ circleci-migrate migrate \
 
 ### `export`
 
-Reads the source org and produces `manifest.json` and `migration-report.md`. Read-only — never writes to CircleCI.
+Reads the source org and produces `manifest.json` and `migration-report.md`. Read-only — never writes to CircleCI. Safe to run multiple times.
 
 ```bash
 circleci-migrate export --org gh/acme --source-token "$SRC_TOKEN"
@@ -481,6 +540,7 @@ circleci-migrate sync \
 | `--yes`, `-y` | `false` | Auto-confirm enabling builds after project creation |
 | `--missing-secrets` | `skip` | How to handle variables with no captured value: `skip` or `placeholder` |
 | `--github-token` | `$GITHUB_TOKEN` | GitHub PAT used to resolve repository IDs for App pipeline definitions. When omitted, the captured `external_id` from the source manifest is reused (correct for same-GitHub-org migrations). |
+| `--dest-github-org` | | Destination GitHub org name. Use when repos have moved to a new GitHub org. Requires `--github-token`. |
 | `--skip-contexts` | `false` | Skip syncing contexts |
 | `--skip-projects` | `false` | Skip syncing projects |
 | `--skip-org-settings` | `false` | Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies) |
@@ -491,9 +551,9 @@ circleci-migrate sync \
 
 ```json
 {
-  "org": { "from": "gh/acme", "to": "gh/acme-new" },
+  "org": { "from": "gh/acme", "to": "gh/acme-cloud" },
   "projects": {
-    "gh/acme/web": "gh/acme-new/web"
+    "gh/acme/web": "gh/acme-cloud/web"
   }
 }
 ```
@@ -555,6 +615,8 @@ circleci-migrate version
 
 ## Further reading
 
+- [Worked migration examples](docs/examples.md) — complete, copy-pasteable examples for every scenario
+- [Cutover runbook](docs/cutover-runbook.md) — operator checklist for production cutovers
 - [Architecture and data flow](docs/architecture.md)
 - [CircleCI API usage](docs/api-usage.md)
 - [Testing guide](docs/testing.md)
