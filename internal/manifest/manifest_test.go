@@ -196,6 +196,85 @@ func TestResolveProjectSlug(t *testing.T) {
 	}
 }
 
+func TestOrgSettingsStorageRetentionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	sr := &StorageRetentionControls{
+		CacheDays:     10,
+		WorkspaceDays: 7,
+		ArtifactDays:  1,
+	}
+	in := &Manifest{
+		Source: Source{
+			Host: "https://circleci.com",
+			Org: Org{
+				Slug:    "gh/acme",
+				ID:      "org-uuid",
+				Name:    "acme",
+				VCSType: "github",
+				Settings: &OrgSettings{
+					StorageRetention: sr,
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil after round-trip")
+	}
+	got := out.Source.Org.Settings.StorageRetention
+	if got == nil {
+		t.Fatal("StorageRetention is nil after round-trip")
+	}
+	if got.CacheDays != 10 {
+		t.Errorf("CacheDays = %d, want 10", got.CacheDays)
+	}
+	if got.WorkspaceDays != 7 {
+		t.Errorf("WorkspaceDays = %d, want 7", got.WorkspaceDays)
+	}
+	if got.ArtifactDays != 1 {
+		t.Errorf("ArtifactDays = %d, want 1", got.ArtifactDays)
+	}
+}
+
+func TestOrgSettingsStorageRetention_OmitEmpty(t *testing.T) {
+	// When StorageRetention is nil, the JSON field must be omitted entirely.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Host: "https://circleci.com",
+			Org: Org{
+				Slug: "gh/acme",
+				Name: "acme",
+				Settings: &OrgSettings{
+					// No StorageRetention set.
+					FeatureFlags: map[string]bool{"some_flag": true},
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings.StorageRetention != nil {
+		t.Errorf("expected StorageRetention to be nil when not set, got %+v",
+			out.Source.Org.Settings.StorageRetention)
+	}
+}
+
 func TestSecretBundleRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.json")

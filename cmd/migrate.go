@@ -238,7 +238,7 @@ Examples:
 				Org:         dstOrgClient,
 				Contexts:    dstCtxClient,
 				Projects:    dstProjClient,
-				OrgSettings: dstOrgClient,
+				OrgSettings: orgSettingsAdapter{dstOrgClient},
 				Groups:      orgGroupLister{dstOrgClient},
 				Out:         cmd.ErrOrStderr(),
 			}

@@ -113,7 +113,7 @@ Examples:
 				Org:         orgClient,
 				Contexts:    ctxClient,
 				Projects:    projClient,
-				OrgSettings: orgClient,
+				OrgSettings: orgSettingsAdapter{orgClient},
 				Groups:      orgGroupLister{orgClient},
 				Out:         cmd.ErrOrStderr(),
 			}
@@ -264,6 +264,42 @@ func decideEnable(apply, yes, isTTY bool, confirm func() bool) bool {
 		return confirm()
 	}
 	return false
+}
+
+// orgSettingsAdapter wraps *org.Client and adapts it to syncer.OrgSettingsWriter.
+// It translates syncer.StorageRetentionArgs → org.StorageRetentionControls and
+// forwards all other methods directly to the underlying org client.
+type orgSettingsAdapter struct {
+	c *org.Client
+}
+
+func (a orgSettingsAdapter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
+	return a.c.UpdateFeatureFlags(vcsType, orgName, flags)
+}
+func (a orgSettingsAdapter) SetOIDCClaims(orgID string, audience []string, ttl string) error {
+	return a.c.SetOIDCClaims(orgID, audience, ttl)
+}
+func (a orgSettingsAdapter) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error {
+	return a.c.CreateURLOrbAllowEntry(slugOrID, name, prefix, auth)
+}
+func (a orgSettingsAdapter) PutPolicyBundle(ownerID string, policies map[string]string) error {
+	return a.c.PutPolicyBundle(ownerID, policies)
+}
+func (a orgSettingsAdapter) SetPolicyEnforcement(ownerID string, enabled bool) error {
+	return a.c.SetPolicyEnforcement(ownerID, enabled)
+}
+func (a orgSettingsAdapter) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+	return a.c.CreateOTelExporter(orgID, endpoint, protocol, insecure, headers)
+}
+func (a orgSettingsAdapter) SetContacts(orgID string, primary, security []string) error {
+	return a.c.SetContacts(orgID, primary, security)
+}
+func (a orgSettingsAdapter) SetStorageRetention(orgUUID string, controls syncer.StorageRetentionArgs) error {
+	return a.c.SetStorageRetention(orgUUID, org.StorageRetentionControls{
+		CacheDays:     controls.CacheDays,
+		WorkspaceDays: controls.WorkspaceDays,
+		ArtifactDays:  controls.ArtifactDays,
+	})
 }
 
 // orgGroupLister adapts the org client's ListGroups (returning []org.Group) to

@@ -134,6 +134,13 @@ type OrgSettings struct {
 	// (auto-created on every org) is excluded. Group MEMBERSHIP is NOT captured:
 	// it is managed via the IdP/SSO and recreated there, not migrated by this tool.
 	Groups []OrgGroup `json:"groups,omitempty"`
+
+	// StorageRetention captures the org's artifact/cache/workspace storage-retention
+	// controls (days) at time of export. When present, sync transfers these values
+	// to the destination org via POST; the server clamps them to the dest plan's
+	// limits, so the resulting values may differ from the source. Nil when the org
+	// has no custom retention or when the export lacked permission to read it.
+	StorageRetention *StorageRetentionControls `json:"storage_retention,omitempty"`
 }
 
 // OrgGroup is a CircleCI group DEFINITION (name/ID) captured for the migration
@@ -142,6 +149,18 @@ type OrgSettings struct {
 type OrgGroup struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// StorageRetentionControls mirrors the storage_retention_controls payload for
+// the BFF private API (GET/POST /private/orgs/{uuid}/storage-retention-controls).
+// Field names are the same retention_days_* keys sent in the POST body.
+type StorageRetentionControls struct {
+	// CacheDays is the retention period for cache artifacts in days.
+	CacheDays int `json:"retention_days_cache"`
+	// WorkspaceDays is the retention period for workspace artifacts in days.
+	WorkspaceDays int `json:"retention_days_workspace"`
+	// ArtifactDays is the retention period for job artifacts in days.
+	ArtifactDays int `json:"retention_days_artifact"`
 }
 
 // SSOSettings is a reference snapshot of an org's SSO (SAML) configuration.
