@@ -106,15 +106,15 @@ enforces a minimum total coverage threshold:
 make cover
 ```
 
-The current threshold is **75%**; it is being raised to **85%**. The gate is
-enforced by `scripts/check-coverage.sh`:
+The current threshold is **85%**. The gate is enforced by
+`scripts/check-coverage.sh`:
 
 ```
 scripts/check-coverage.sh [coverage-profile] [threshold-percent]
 ```
 
 Threshold resolution order: CLI argument → `$COVERAGE_THRESHOLD` env var →
-default (75). Override locally for testing:
+default (85). Override locally for testing:
 
 ```bash
 COVERAGE_THRESHOLD=85 make cover
