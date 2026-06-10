@@ -1360,10 +1360,14 @@ func captureProject(
 	defID := defs[0].ID
 
 	// ── 3. Build var name list and context list ───────────────────────────────
-	// Project env var names.
+	// Project env var names — captured ONLY in project-vars mode. In context
+	// mode (projectVarsOnly=false) this project is just the host for context
+	// extraction, so we must NOT also dump the host project's own secret values.
 	var allVarNames []string
-	for _, ev := range p.EnvVars {
-		allVarNames = append(allVarNames, ev.Name)
+	if projectVarsOnly {
+		for _, ev := range p.EnvVars {
+			allVarNames = append(allVarNames, ev.Name)
+		}
 	}
 
 	// Contexts attached to this project (inferred by matching the manifest
@@ -1464,10 +1468,13 @@ func captureProject(
 	}
 
 	// ── 5. Store in bundle ────────────────────────────────────────────────────
-	// Project vars.
-	for _, ev := range p.EnvVars {
-		if v, ok := values[ev.Name]; ok {
-			bundle.SetProjectSecret(p.Slug, ev.Name, v)
+	// Project vars — only in project-vars mode (in context mode this project is
+	// just the host and its own vars were not requested above).
+	if projectVarsOnly {
+		for _, ev := range p.EnvVars {
+			if v, ok := values[ev.Name]; ok {
+				bundle.SetProjectSecret(p.Slug, ev.Name, v)
+			}
 		}
 	}
 	// Context vars.
