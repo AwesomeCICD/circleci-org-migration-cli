@@ -756,13 +756,67 @@ func (e *Exporter) exportSSO(m *manifest.Manifest, orgID string, s *manifest.Org
 
 	sso := &manifest.SSOSettings{Enforced: enforced}
 	if found {
-		sso.Connection = connection
+		// Extract the (non-sensitive) realm before redacting.
 		if realm, ok := connection["realm"].(string); ok {
 			sso.Realm = realm
+		}
+		// The manifest must never contain secret values. SSO connection bodies
+		// carry IdP material (signing certs, client secrets, metadata XML); keep
+		// the field NAMES for reference but redact their values.
+		redacted, redactedKeys := redactSSOConnection(connection)
+		sso.Connection = redacted
+		if len(redactedKeys) > 0 {
+			m.AddWarning("org", "sso_secret_redacted", fmt.Sprintf(
+				"redacted %d sensitive SSO connection field(s) from the manifest "+
+					"(SSO/SAML is reference-only and must be recreated manually on the "+
+					"destination): %s", len(redactedKeys), strings.Join(redactedKeys, ", ")))
 		}
 	}
 	s.SSO = sso
 	return true
+}
+
+// ssoRedactionPlaceholder marks an SSO connection field whose value held IdP
+// secret material and is intentionally NOT recorded in the manifest.
+const ssoRedactionPlaceholder = "<redacted: SSO IdP material is not migrated; recreate SSO manually>"
+
+// ssoSensitiveKeySubstrings are case-insensitive substrings that mark an SSO
+// connection field as containing secret/IdP material (signing certificate,
+// client secret, metadata XML which embeds certs, private keys, etc.).
+var ssoSensitiveKeySubstrings = []string{
+	"secret", "password", "credential", "token",
+	"private", "cert", "x509", "metadata",
+}
+
+// redactSSOConnection returns a copy of the SSO connection map with the values
+// of secret-shaped keys replaced by ssoRedactionPlaceholder, plus the sorted
+// list of keys that were redacted. Field names are preserved (so the manifest
+// still documents WHICH IdP fields existed) but their values never leak into
+// the manifest, which is contractually free of secret values.
+func redactSSOConnection(conn map[string]any) (map[string]any, []string) {
+	if conn == nil {
+		return nil, nil
+	}
+	out := make(map[string]any, len(conn))
+	var redactedKeys []string
+	for k, v := range conn {
+		lk := strings.ToLower(k)
+		sensitive := false
+		for _, sub := range ssoSensitiveKeySubstrings {
+			if strings.Contains(lk, sub) {
+				sensitive = true
+				break
+			}
+		}
+		if sensitive {
+			out[k] = ssoRedactionPlaceholder
+			redactedKeys = append(redactedKeys, k)
+		} else {
+			out[k] = v
+		}
+	}
+	sort.Strings(redactedKeys)
+	return out, redactedKeys
 }
 
 // splitOrgSlug returns the (vcs, orgName) pair for a "vcs/org" slug. For

@@ -124,18 +124,12 @@ func TestSSO_NotEnforced_NoConnection(t *testing.T) {
 // Scenario 3: SSO connection sub-fields — realistic SAML map with sensitive keys
 // ---------------------------------------------------------------------------
 
-// TestSSO_ConnectionSubFields_StoredAsIs verifies how the exporter stores a
-// realistic SAML connection map that includes potentially sensitive IdP fields
-// such as x509_signing_cert, idp_metadata_xml, and client_secret.
-//
-// FINDING (hardening gap): The exporter copies the connection map verbatim into
-// the manifest without redacting any fields. Sensitive IdP material such as
-// x509_signing_cert, idp_metadata_xml, and any client_secret value will appear
-// in plaintext in the exported manifest. This is intentional "reference-only"
-// behavior (the manifest is never written back) but operators should be aware
-// that the manifest file itself must be treated as sensitive when SSO is
-// configured. A future hardening step could redact or flag these fields.
-func TestSSO_ConnectionSubFields_StoredAsIs(t *testing.T) {
+// TestSSO_ConnectionSubFields_Redacted verifies that the exporter REDACTS
+// secret IdP material from a realistic SAML connection map before recording it
+// in the manifest, while preserving non-sensitive structural fields and the
+// field names. The manifest is contractually free of secret values; SSO/SAML
+// is reference-only and must be recreated manually on the destination.
+func TestSSO_ConnectionSubFields_Redacted(t *testing.T) {
 	// Realistic SAML connection body as returned by the CircleCI SSO API.
 	conn := map[string]any{
 		"realm":              "acme-saml",
@@ -163,37 +157,51 @@ func TestSSO_ConnectionSubFields_StoredAsIs(t *testing.T) {
 	}
 	sso := m.Source.Org.Settings.SSO
 
-	// Verify realm is correctly extracted from the connection map.
+	// Realm is non-sensitive and is still extracted.
 	if sso.Realm != "acme-saml" {
 		t.Errorf("SSO.Realm: got %q want %q", sso.Realm, "acme-saml")
 	}
 
-	// Document current behavior: sensitive fields are stored verbatim.
-	// This is a finding: the manifest may contain sensitive IdP material.
-	storedCert, _ := sso.Connection["x509_signing_cert"].(string)
-	if !strings.HasPrefix(storedCert, "-----BEGIN CERTIFICATE-----") {
-		t.Errorf("x509_signing_cert not stored as-is (current behavior check failed): %q", storedCert)
+	const redacted = "<redacted: SSO IdP material is not migrated; recreate SSO manually>"
+
+	// Secret-shaped fields must be redacted (value replaced, key preserved).
+	for _, key := range []string{"x509_signing_cert", "idp_metadata_xml", "client_secret"} {
+		got, ok := sso.Connection[key].(string)
+		if !ok {
+			t.Errorf("%s: expected the field name to be preserved", key)
+			continue
+		}
+		if got != redacted {
+			t.Errorf("%s: expected redacted placeholder, got %q", key, got)
+		}
 	}
 
-	storedSecret, _ := sso.Connection["client_secret"].(string)
-	if storedSecret == "" {
-		t.Error("client_secret: expected non-empty (current behavior is to store verbatim, no redaction)")
-	}
-	// NOTE: This documents a HARDENING GAP. The exporter does NOT redact
-	// client_secret or x509_signing_cert. If redaction is added in the future
-	// this assertion should be updated to expect a redacted sentinel value.
-	if storedSecret != "super-secret-oauth-client-secret" {
-		t.Logf("client_secret value changed — possible redaction was added: %q", storedSecret)
+	// The original secret values must NOT appear anywhere in the connection.
+	for _, secret := range []string{"BEGIN CERTIFICATE", "EntityDescriptor", "super-secret-oauth-client-secret"} {
+		for k, v := range sso.Connection {
+			if s, ok := v.(string); ok && strings.Contains(s, secret) {
+				t.Errorf("connection[%q] leaked secret material %q", k, secret)
+			}
+		}
 	}
 
-	storedXML, _ := sso.Connection["idp_metadata_xml"].(string)
-	if !strings.Contains(storedXML, "EntityDescriptor") {
-		t.Errorf("idp_metadata_xml not stored as-is: %q", storedXML)
-	}
-
-	// Non-sensitive structural fields should also be preserved.
+	// Non-sensitive structural fields are preserved verbatim.
 	if sso.Connection["sign_authn_request"] != true {
 		t.Errorf("sign_authn_request: got %v want true", sso.Connection["sign_authn_request"])
+	}
+	if sso.Connection["sign_in_endpoint"] != "https://idp.example.com/sso/saml" {
+		t.Errorf("sign_in_endpoint not preserved: %v", sso.Connection["sign_in_endpoint"])
+	}
+
+	// A warning records which fields were redacted.
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "sso_secret_redacted" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an sso_secret_redacted warning")
 	}
 }
 
