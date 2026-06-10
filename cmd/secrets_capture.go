@@ -76,6 +76,12 @@ type captureClient interface {
 
 const orgApiTriggerKey = "allow_api_trigger_with_config"
 
+// errSkipProject is a sentinel that captureProject returns when a project is
+// deliberately skipped (e.g. no pipeline definitions).  The outer loop treats
+// this as informational rather than a hard error so capture continues for the
+// remaining projects.
+var errSkipProject = fmt.Errorf("project skipped")
+
 // parseOrgSlug converts a manifest org slug into the (vcsType, orgName) pair
 // expected by the v1.1 org-settings endpoint.
 //
@@ -249,10 +255,41 @@ func RunCaptureWalkthroughWith(
 		ctxOptions = append(ctxOptions, mc.Name)
 	}
 
-	// Collect project slugs from manifest.
-	projOptions := make([]string, 0, len(m.Projects))
+	// Collect project slugs from manifest. Also build display labels (Name + slug).
+	// projSlugByLabel maps display label → slug so we can convert user selections
+	// back to slugs after the multi-select prompt.
+	projOptions := make([]string, 0, len(m.Projects))           // display labels
+	projSlugByLabel := make(map[string]string, len(m.Projects)) // label → slug
+
+	// Bug 3: default to only projects that have secrets (>=1 env var).
+	projWithSecrets := make([]string, 0, len(m.Projects))
+	projWithoutSecrets := 0
 	for _, mp := range m.Projects {
-		projOptions = append(projOptions, mp.Slug)
+		label := mp.Slug
+		if mp.Name != "" && mp.Name != mp.Slug {
+			label = fmt.Sprintf("%s (%s)", mp.Name, mp.Slug)
+		}
+		projOptions = append(projOptions, label)
+		projSlugByLabel[label] = mp.Slug
+		if len(mp.EnvVars) > 0 {
+			projWithSecrets = append(projWithSecrets, label)
+		} else {
+			projWithoutSecrets++
+		}
+	}
+
+	// Helper: convert display labels back to slugs.
+	labelsToSlugs := func(labels []string) []string {
+		slugs := make([]string, 0, len(labels))
+		for _, lbl := range labels {
+			if s, ok := projSlugByLabel[lbl]; ok {
+				slugs = append(slugs, s)
+			} else {
+				// Fallback: treat the label itself as a slug (for backward compat).
+				slugs = append(slugs, lbl)
+			}
+		}
+		return slugs
 	}
 
 	// Only prompt if not already supplied via flags.
@@ -272,14 +309,24 @@ func RunCaptureWalkthroughWith(
 	}
 
 	if len(res.ProjectSlugs) == 0 && len(projOptions) > 0 {
-		chosen, selErr := p.askMultiSelect(
-			fmt.Sprintf("Select projects to capture project env vars for (%d in manifest, default: all):", len(projOptions)),
+		// Bug 3: default selection to projects-with-secrets only.
+		defaultLabels := projWithSecrets
+		if len(defaultLabels) == 0 {
+			defaultLabels = projOptions // no projects have secrets → show all
+		}
+		promptMsg := fmt.Sprintf("Select projects to capture project env vars for (%d in manifest, default: %d with secrets):", len(projOptions), len(projWithSecrets))
+		if projWithoutSecrets > 0 {
+			fmt.Fprintf(out, "  NOTE: %d project(s) have no env vars in the manifest and are hidden from defaults.\n", projWithoutSecrets)
+		}
+		chosen, selErr := p.askMultiSelectWithDefault(
+			promptMsg,
 			projOptions,
+			defaultLabels,
 		)
 		if selErr != nil {
 			return res, selErr
 		}
-		res.ProjectSlugs = chosen
+		res.ProjectSlugs = labelsToSlugs(chosen)
 	} else if len(projOptions) == 0 {
 		fmt.Fprintln(out, "  (no projects found in manifest)")
 	} else {
@@ -305,15 +352,23 @@ func RunCaptureWalkthroughWith(
 
 	if hasContexts {
 		if res.HostProjectSlug == "" {
-			// Build project options for host selection.
+			// Build project display labels for host selection.
 			// Prefer to auto-pick the first project if only one available.
 			if len(projOptions) == 1 {
+				firstSlug := projSlugByLabel[projOptions[0]]
+				if firstSlug == "" {
+					firstSlug = projOptions[0]
+				}
 				fmt.Fprintf(out, "  Only one project in manifest — auto-selecting %s as the host project.\n", projOptions[0])
-				res.HostProjectSlug = projOptions[0]
+				res.HostProjectSlug = firstSlug
 			} else if len(projOptions) == 0 {
 				return res, fmt.Errorf("cannot extract contexts: no projects found in manifest (a host project is required to run the extraction pipeline under)")
 			} else {
 				// Let user choose, or auto-pick first.
+				firstSlug := projSlugByLabel[projOptions[0]]
+				if firstSlug == "" {
+					firstSlug = projOptions[0]
+				}
 				autoPickOption := "(auto-pick first: " + projOptions[0] + ")"
 				hostOptions := append([]string{autoPickOption}, projOptions...)
 				chosen, choiceErr := p.askChoice(
@@ -324,10 +379,15 @@ func RunCaptureWalkthroughWith(
 					return res, choiceErr
 				}
 				if chosen == autoPickOption {
-					res.HostProjectSlug = projOptions[0]
+					res.HostProjectSlug = firstSlug
 					fmt.Fprintf(out, "  Host project: %s\n", res.HostProjectSlug)
 				} else {
-					res.HostProjectSlug = chosen
+					// Convert label back to slug.
+					if s, ok := projSlugByLabel[chosen]; ok {
+						res.HostProjectSlug = s
+					} else {
+						res.HostProjectSlug = chosen
+					}
 				}
 			}
 		} else {
@@ -803,6 +863,22 @@ Examples:
 
 			var captureErr error
 
+			// ── Bug 5: Build restriction decider ─────────────────────────────
+			// In interactive mode (wantsInteraction was true earlier), ask the user
+			// about restricted contexts instead of silently skipping them.
+			// In non-interactive / --no-input mode, use nil (falls back to
+			// skipRestricted / removeRestrictions flag logic).
+			var resDecider restrictionDecider
+			if wantsInteraction && isInteractiveTTY() {
+				prompter := NewPrompter(os.Stdin, cmd.ErrOrStderr())
+				resDecider = func(ctxName string, n int) (bool, error) {
+					return prompter.askBool(
+						fmt.Sprintf("Context %q has %d restriction(s) — temporarily remove them to extract (restored afterward)?", ctxName, n),
+						false,
+					)
+				}
+			}
+
 			// ── Context extraction via host project ───────────────────────────
 			// When a host project is set, run context extraction under that specific
 			// project so the operator's choice is explicit and surfaced.  This makes
@@ -828,10 +904,15 @@ Examples:
 					enableTrigger, skipRestrictedCtxs, removeRestrictions,
 					pollTimeout,
 					encOpts,
+					resDecider,
 				); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing contexts under host project %s: %v\n", hostProjectSlug, err)
-					if captureErr == nil {
-						captureErr = err
+					if errors.Is(err, errSkipProject) {
+						// Not a hard error; already printed a SKIP notice.
+					} else {
+						fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing contexts under host project %s: %v\n", hostProjectSlug, err)
+						if captureErr == nil {
+							captureErr = err
+						}
 					}
 				}
 			}
@@ -862,11 +943,16 @@ Examples:
 					enableTrigger, skipRestrictedCtxs, removeRestrictions,
 					pollTimeout,
 					encOpts,
+					resDecider,
 				); err != nil {
-					// Continue processing other projects; record the first error.
-					fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing project %s: %v\n", p.Slug, err)
-					if captureErr == nil {
-						captureErr = err
+					if errors.Is(err, errSkipProject) {
+						// Not a hard error; SKIP notice already printed in captureProject.
+					} else {
+						// Continue processing other projects; record the first error.
+						fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing project %s: %v\n", p.Slug, err)
+						if captureErr == nil {
+							captureErr = err
+						}
 					}
 				}
 			}
@@ -1094,8 +1180,19 @@ func findProjectBySlug(m *manifest.Manifest, slug string) *manifest.Project {
 	return nil
 }
 
+// restrictionDecider is a function that is called when a context with real
+// restrictions is encountered.  It should return (true, nil) to remove the
+// restrictions temporarily, (false, nil) to skip the context, or (false, err)
+// to abort.  A nil decider is treated as "skip" (backward-compatible).
+type restrictionDecider func(ctxName string, realRestrictions int) (removeAndRestore bool, err error)
+
 // captureProject handles the full capture flow for a single manifest project.
 // It restores the api-trigger-with-config flag even if capture fails.
+//
+// restrictDecider is an optional callback that is invoked when a context with
+// real restrictions is encountered.  In interactive mode the caller provides a
+// prompter-backed decider; in non-interactive mode nil falls back to the
+// skipRestricted / removeRestrictions flag logic.
 func captureProject(
 	ctx context.Context,
 	cmd *cobra.Command,
@@ -1108,6 +1205,7 @@ func captureProject(
 	enableTrigger, skipRestricted, removeRestrictions bool,
 	pollTimeout time.Duration,
 	encOpts captureEncryptOpts,
+	restrictDecider restrictionDecider,
 ) error {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1147,6 +1245,12 @@ func captureProject(
 	}()
 
 	// ── 2. Resolve pipeline definition ID ────────────────────────────────────
+	// Bug 4: pre-filter unbuildable projects before triggering a doomed pipeline.
+	// Always call the API to get the live definition ID (the manifest struct does
+	// not store the definition UUID).  If the API returns no definitions, skip
+	// the project with a clear message rather than letting TriggerPipelineRun
+	// fail with a cryptic error ("has no pipeline definitions", "github repository
+	// not found", "Failed to fetch Branch").
 	proj, err := client.GetProject(p.Slug)
 	if err != nil {
 		return fmt.Errorf("get project %s: %w", p.Slug, err)
@@ -1157,7 +1261,15 @@ func captureProject(
 		return fmt.Errorf("list pipeline definitions for %s: %w", p.Slug, err)
 	}
 	if len(defs) == 0 {
-		return fmt.Errorf("project %s has no pipeline definitions — is it a GitHub App project?", p.Slug)
+		displayName := p.Name
+		if displayName == "" {
+			displayName = p.Slug
+		}
+		fmt.Fprintf(stderr,
+			"SKIP project %s (%s): no pipeline definitions found — "+
+				"is the repo connected to a GitHub App? Skipping to avoid a doomed trigger.\n",
+			displayName, p.Slug)
+		return fmt.Errorf("%w: project %s has no pipeline definitions", errSkipProject, p.Slug)
 	}
 	defID := defs[0].ID
 
@@ -1186,7 +1298,24 @@ func captureProject(
 		// is not a real restriction — every App-org context has it automatically.
 		real := realRestrictions(mc.Restrictions, m.Source.Org.ID)
 		if len(real) > 0 {
-			if removeRestrictions {
+			// Bug 5: when a restrictionDecider is provided (interactive mode),
+			// ask the user what to do instead of silently skipping.
+			if restrictDecider != nil {
+				doRemove, decideErr := restrictDecider(mc.Name, len(real))
+				if decideErr != nil {
+					return decideErr
+				}
+				if doRemove {
+					restore, prepErr := prepareRestrictionRemoval(cmd, client, mc)
+					if prepErr != nil {
+						return prepErr
+					}
+					defer restore()
+				} else {
+					fmt.Fprintf(stderr, "Skipping restricted context %q (user chose not to remove restrictions).\n", mc.Name)
+					continue
+				}
+			} else if removeRestrictions {
 				// Temporarily remove restrictions so the extraction run can access
 				// the context, then restore from the manifest (source of truth).
 				// The restore func is deferred so it runs even on error or panic.
@@ -1385,6 +1514,24 @@ func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionMana
 // the restore func is a no-op.  On read failure the error is treated as
 // best-effort: a WARNING is printed and a no-op restore func is returned so
 // the caller can proceed; the per-project flag is the primary gate.
+// orgApiTriggerKeyStandalone is the alternate key shape returned by the
+// standalone / GitHub-App org settings endpoint.  The trailing "?" is stripped
+// before the map lookup (the API sometimes returns keys with a "?" suffix).
+const orgApiTriggerKeyStandalone = "allow_api_trigger_with_config_enabled"
+
+// orgTriggerAlreadyEnabled reports whether any of the known key shapes for
+// allow_api_trigger_with_config is present and true in the feature-flag map.
+// It normalises keys by stripping a trailing "?" (standalone API quirk).
+func orgTriggerAlreadyEnabled(flags map[string]bool) bool {
+	for k, v := range flags {
+		k = strings.TrimSuffix(k, "?")
+		if (k == orgApiTriggerKey || k == orgApiTriggerKeyStandalone) && v {
+			return true
+		}
+	}
+	return false
+}
+
 func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, orgName string) func() {
 	stderr := cmd.ErrOrStderr()
 
@@ -1396,8 +1543,10 @@ func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, 
 		return func() {} // no-op restore
 	}
 
-	wasEnabled := flags[orgApiTriggerKey]
-	if wasEnabled {
+	// Bug 6: tolerate both key shapes (OAuth and standalone) and normalise away
+	// the trailing "?" that the standalone endpoint sometimes appends.
+	if orgTriggerAlreadyEnabled(flags) {
+		clog.Infof("org-level allow_api_trigger_with_config already enabled for %s/%s — skipping enable step", vcsType, orgName)
 		return func() {} // already on, nothing to restore
 	}
 

@@ -558,3 +558,121 @@ func TestCaptureWalkthrough_CustomBranch(t *testing.T) {
 		t.Errorf("Branch=%q, want develop", result.Branch)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bug 3 — project default selection is projects-with-secrets only
+// ---------------------------------------------------------------------------
+
+// projectsWithAndWithoutSecrets returns a manifest with two projects: one with
+// secrets and one without.
+func projectsWithAndWithoutSecrets() *manifest.Manifest {
+	return &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: "org-uuid-1"},
+		},
+		Projects: []manifest.Project{
+			// Project WITH env vars (should be in default selection).
+			{Slug: "gh/acme/web", Name: "web", SourceID: "proj-web-uuid",
+				EnvVars: []manifest.ProjectEnvVar{{Name: "WEB_VAR"}}},
+			// Project WITHOUT env vars (should NOT be in default selection).
+			{Slug: "gh/acme/empty", Name: "empty", SourceID: "proj-empty-uuid"},
+		},
+	}
+}
+
+// TestCaptureWalkthrough_ProjectsWithSecretsDefault verifies that accepting
+// the default selection (empty input) picks only projects that have env vars.
+func TestCaptureWalkthrough_ProjectsWithSecretsDefault(t *testing.T) {
+	m := projectsWithAndWithoutSecrets()
+
+	lines := []string{
+		"", // projects: default (should be only web — the one with secrets)
+		// no context/host prompt (no contexts in manifest)
+		"n", // encrypt
+		"1", // storage: artifact
+		"n", // retention
+		"",  // branch: main
+		"y", // enable trigger
+		"y", // confirm
+	}
+
+	result, output, err := driveWalkthrough(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// Default should be only gh/acme/web (has secrets).
+	if len(result.ProjectSlugs) != 1 {
+		t.Errorf("ProjectSlugs=%v, want [gh/acme/web] (only project with secrets)", result.ProjectSlugs)
+	} else if result.ProjectSlugs[0] != "gh/acme/web" {
+		t.Errorf("ProjectSlugs[0]=%q, want gh/acme/web", result.ProjectSlugs[0])
+	}
+
+	// The prompt output should mention how many projects were hidden.
+	if !strings.Contains(output, "1 project(s) have no env vars") {
+		t.Errorf("prompt output should mention hidden projects; got:\n%s", output)
+	}
+}
+
+// TestCaptureWalkthrough_AllProjectsSelectableEvenWithoutSecrets verifies that
+// selecting "all" includes projects without secrets.
+func TestCaptureWalkthrough_AllProjectsSelectableEvenWithoutSecrets(t *testing.T) {
+	m := projectsWithAndWithoutSecrets()
+
+	lines := []string{
+		"all", // projects: override default, select all
+		// no context/host prompt
+		"n", // encrypt
+		"1", // storage: artifact
+		"n", // retention
+		"",  // branch
+		"y", // enable trigger
+		"y", // confirm
+	}
+
+	result, _, err := driveWalkthrough(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	if len(result.ProjectSlugs) != 2 {
+		t.Errorf("expected both projects when 'all' is entered; got %v", result.ProjectSlugs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 2 — project friendly names in walkthrough prompts
+// ---------------------------------------------------------------------------
+
+// TestCaptureWalkthrough_FriendlyNameInPrompts verifies that the walkthrough
+// uses the project Name (not slug) in prompt output when available.
+func TestCaptureWalkthrough_FriendlyNameInPrompts(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/acme", ID: "org-1"}},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/my-repo", Name: "my-repo",
+				EnvVars: []manifest.ProjectEnvVar{{Name: "MY_VAR"}}},
+		},
+	}
+
+	lines := []string{
+		"", // projects: default (accept)
+		// no context / host prompt
+		"n", // encrypt
+		"1", // storage: artifact
+		"n", // retention
+		"",  // branch
+		"y", // enable trigger
+		"y", // confirm
+	}
+
+	_, output, err := driveWalkthrough(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	// The prompt must show the Name+slug label, not just the slug.
+	if !strings.Contains(output, "my-repo") {
+		t.Errorf("walkthrough prompt should contain friendly name 'my-repo'; output:\n%s", output)
+	}
+}
