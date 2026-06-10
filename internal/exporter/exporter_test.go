@@ -29,6 +29,7 @@ type fakeOrgAPI struct {
 	getSSOConnection   func(orgID string) (map[string]any, bool, error)
 	getOTelExporters   func(orgID string) ([]org.OTelExporter, error)
 	getContacts        func(orgID string) ([]string, []string, error)
+	listGroups         func(orgID string) ([]org.Group, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -113,6 +114,13 @@ func (f *fakeOrgAPI) GetContacts(orgID string) ([]string, []string, error) {
 		return f.getContacts(orgID)
 	}
 	return nil, nil, nil
+}
+
+func (f *fakeOrgAPI) ListGroups(orgID string) ([]org.Group, error) {
+	if f.listGroups != nil {
+		return f.listGroups(orgID)
+	}
+	return nil, nil
 }
 
 type fakeContextAPI struct {
@@ -2258,6 +2266,128 @@ func TestExport_OrgSettings_ContactsError_IsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected contacts_unreadable warning, not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Group definitions capture
+// ---------------------------------------------------------------------------
+
+func TestExport_OrgSettings_GroupsCaptured_ExcludesAllMembers(t *testing.T) {
+	// ListGroups returns the default "All members" group (ID == org ID) plus two
+	// real groups. Only the real groups must be captured.
+	orgID := "org-uuid-123" // matches defaultOrg().ID
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			listGroups: func(gotOrgID string) ([]org.Group, error) {
+				if gotOrgID != orgID {
+					t.Errorf("ListGroups orgID: got %q want %q", gotOrgID, orgID)
+				}
+				return []org.Group{
+					{ID: orgID, Name: "All members"}, // default — must be excluded
+					{ID: "grp-1", Name: "security-team"},
+					{ID: "grp-2", Name: "platform"},
+				}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil")
+		return
+	}
+	got := m.Source.Org.Settings.Groups
+	if len(got) != 2 {
+		t.Fatalf("expected 2 groups (All-members excluded), got %d: %+v", len(got), got)
+	}
+	names := map[string]string{}
+	for _, g := range got {
+		names[g.Name] = g.ID
+		if g.ID == orgID {
+			t.Errorf("All-members group (id==orgID) must be excluded, found %+v", g)
+		}
+	}
+	if names["security-team"] != "grp-1" || names["platform"] != "grp-2" {
+		t.Errorf("captured groups not as expected: %+v", got)
+	}
+}
+
+func TestExport_OrgSettings_GroupsNil_WhenOnlyAllMembers(t *testing.T) {
+	// When the only group is the default "All members" group, Groups must be nil.
+	orgID := "org-uuid-123"
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			listGroups: func(string) ([]org.Group, error) {
+				return []org.Group{{ID: orgID, Name: "All members"}}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings != nil && len(m.Source.Org.Settings.Groups) != 0 {
+		t.Errorf("Groups should be nil/empty when only All-members present, got %+v", m.Source.Org.Settings.Groups)
+	}
+}
+
+func TestExport_OrgSettings_GroupsNil_WhenEmpty(t *testing.T) {
+	// No groups at all → Groups must be nil.
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			listGroups: func(string) ([]org.Group, error) {
+				return nil, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Source.Org.Settings != nil && len(m.Source.Org.Settings.Groups) != 0 {
+		t.Errorf("Groups should be nil/empty when no groups present, got %+v", m.Source.Org.Settings.Groups)
+	}
+}
+
+func TestExport_OrgSettings_GroupsError_IsWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+			listGroups: func(string) ([]org.Group, error) {
+				return nil, errors.New("groups API down")
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{},
+	}
+
+	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	if err != nil {
+		t.Fatalf("groups error should not fail Export, got: %v", err)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w.Code == "groups_unreadable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected groups_unreadable warning, not found")
 	}
 }
 

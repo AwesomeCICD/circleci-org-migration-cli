@@ -31,6 +31,7 @@ type OrgAPI interface {
 	GetSSOConnection(orgID string) (connection map[string]any, found bool, err error)
 	GetOTelExporters(orgID string) ([]org.OTelExporter, error)
 	GetContacts(orgID string) (primary, security []string, err error)
+	ListGroups(orgID string) ([]org.Group, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -640,6 +641,28 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		} else if len(primary) > 0 || len(security) > 0 {
 			s.Contacts = &manifest.OrgContacts{Primary: primary, Security: security}
 			hasAny = true
+		}
+
+		// Group definitions (names/IDs only). Captured so the cutover runbook can
+		// tell the operator which groups to recreate in the destination org —
+		// context group-restriction sync resolves destination groups by name. The
+		// default "All members" group (ID == org ID) is auto-created on every org,
+		// so it is excluded. Group MEMBERSHIP is never captured (managed via IdP).
+		if groups, gerr := e.Org.ListGroups(o.ID); gerr != nil {
+			m.AddWarning("org", "groups_unreadable", fmt.Sprintf("could not read org groups: %v", gerr))
+		} else {
+			var captured []manifest.OrgGroup
+			for _, g := range groups {
+				if g.ID == o.ID {
+					// "All members" default group — auto-created everywhere; skip.
+					continue
+				}
+				captured = append(captured, manifest.OrgGroup{ID: g.ID, Name: g.Name})
+			}
+			if len(captured) > 0 {
+				s.Groups = captured
+				hasAny = true
+			}
 		}
 	}
 
