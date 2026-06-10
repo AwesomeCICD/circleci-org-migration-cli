@@ -642,6 +642,508 @@ func TestSecretsCapture_OrgLevelFlagAlreadyOn_NoExtraCall(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// --remove-restrictions flag (end-to-end with fake server)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// newCaptureFakeServerWithRestrictions extends the base fake server to also
+// handle context-restriction endpoints (LIST, DELETE, CREATE).  It records the
+// order of restriction-related calls so tests can verify DELETE precedes the
+// pipeline run, and CREATE follows.
+type fakeCaptureServerWithRestrictions struct {
+	*fakeCaptureServer
+	// restrictionCalls records the HTTP method+path of each restriction call.
+	restrictionCalls []string
+}
+
+func newCaptureFakeServerWithRestrictions(
+	t *testing.T,
+	secretPayload map[string]string,
+	contextID string,
+	liveRestrictions []map[string]any,
+	triggerPipelineErr bool,
+) *fakeCaptureServerWithRestrictions {
+	t.Helper()
+
+	fswr := &fakeCaptureServerWithRestrictions{}
+
+	// Build a new server that handles both the standard capture endpoints AND
+	// the restriction endpoints.
+	payloadJSON, err := json.Marshal(secretPayload)
+	if err != nil {
+		t.Fatalf("marshal secret payload: %v", err)
+	}
+
+	fcs := &fakeCaptureServer{}
+	mux := http.NewServeMux()
+
+	// ── Standard capture endpoints (mirrors newCaptureFakeServer) ──────────
+
+	mux.HandleFunc("/api/v1.1/project/gh/acme/web/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"feature_flags": map[string]any{"api-trigger-with-config": false},
+			})
+			return
+		}
+		if r.Method == http.MethodPut {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			ff, _ := body["feature_flags"].(map[string]any)
+			val, _ := ff["api-trigger-with-config"].(bool)
+			fcs.putCalls = append(fcs.putCalls, val)
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v2/project/gh/acme/web", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": "proj-uuid-123", "slug": "gh/acme/web", "name": "web",
+		})
+	})
+
+	mux.HandleFunc("/api/v2/projects/proj-uuid-123/pipeline-definitions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": []map[string]any{
+				{"id": "def-uuid-1", "name": "default",
+					"config_source":   map[string]any{"provider": "github_app"},
+					"checkout_source": map[string]any{"provider": "github_app"},
+				},
+			},
+			"next_page_token": "",
+		})
+	})
+
+	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+		fswr.restrictionCalls = append(fswr.restrictionCalls, "PIPELINE_RUN")
+		if triggerPipelineErr {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"message": "trigger failed"})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"id": "pipe-uuid-1", "number": 1})
+	})
+
+	mux.HandleFunc("/api/v2/pipeline/pipe-uuid-1/workflow", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":           []map[string]any{{"id": "wf-uuid-1", "name": "extract", "status": "success"}},
+			"next_page_token": "",
+		})
+	})
+
+	mux.HandleFunc("/api/v2/workflow/wf-uuid-1/job", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": []map[string]any{
+				{"name": "circleci-migrate-extract", "job_number": 42, "status": "success"},
+			},
+			"next_page_token": "",
+		})
+	})
+
+	mux.HandleFunc("/api/v2/project/gh/acme/web/42/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		// URL is set after server starts; use a placeholder, override below.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": []map[string]any{
+				{"path": "/tmp/circleci-migrate-secrets.json", "node_index": 0,
+					"url": "__ARTIFACT_URL__"},
+			},
+			"next_page_token": "",
+		})
+	})
+
+	// ── Restriction endpoints ────────────────────────────────────────────────
+
+	listPath := "/api/v2/context/" + contextID + "/restrictions"
+	mux.HandleFunc(listPath, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			fswr.restrictionCalls = append(fswr.restrictionCalls, "LIST")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items":           liveRestrictions,
+				"next_page_token": "",
+			})
+		case http.MethodPost:
+			fswr.restrictionCalls = append(fswr.restrictionCalls, "CREATE")
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"id": "new-restr-id", "restriction_type": body["restriction_type"],
+				"restriction_value": body["restriction_value"], "context_id": contextID,
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	for _, lr := range liveRestrictions {
+		rid, _ := lr["id"].(string)
+		deletePath := "/api/v2/context/" + contextID + "/restrictions/" + rid
+		mux.HandleFunc(deletePath, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			fswr.restrictionCalls = append(fswr.restrictionCalls, "DELETE:"+rid)
+			writeJSON(w, http.StatusOK, map[string]any{})
+		})
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Fix up the artifact URL once we know the server address.
+		if r.URL.Path == "/api/v2/project/gh/acme/web/42/artifacts" {
+			artifactURL := "http://" + r.Host + "/artifact/circleci-migrate-secrets.json"
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items": []map[string]any{
+					{"path": "/tmp/circleci-migrate-secrets.json", "node_index": 0,
+						"url": artifactURL},
+				},
+				"next_page_token": "",
+			})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+
+	// Artifact download handler — must be registered after server URL is known.
+	mux.HandleFunc("/artifact/circleci-migrate-secrets.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payloadJSON)
+	})
+
+	fcs.Server = srv
+	fswr.fakeCaptureServer = fcs
+	return fswr
+}
+
+// TestSecretsCapture_RemoveRestrictions_DeleteBeforeRunRestoreAfter verifies that
+// with --remove-restrictions: DELETE is called before the pipeline run, and
+// CREATE (restore) is called after (via defer, recorded in call order).
+func TestSecretsCapture_RemoveRestrictions_DeleteBeforeRunRestoreAfter(t *testing.T) {
+	const contextID = "ctx-restricted-uuid"
+	const orgID = "acme-org-uuid"
+
+	liveRestrictions := []map[string]any{
+		{"id": "restr-1", "restriction_type": "project", "restriction_value": "proj-uuid-123",
+			"name": "web", "context_id": contextID},
+	}
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "restricted-ctx",
+				SourceID: contextID,
+				EnvVars:  []manifest.ContextEnvVar{{Name: "CTX_SECRET"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: "proj-uuid-123", Name: "web"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv := newCaptureFakeServerWithRestrictions(t,
+		map[string]string{"PROJECT_VAR": "proj-val", "CTX_SECRET": "ctx-val"},
+		contextID, liveRestrictions, false,
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	stdout, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--remove-restrictions",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	// Verify call ordering: LIST → DELETE → PIPELINE_RUN → CREATE (via defer).
+	calls := srv.restrictionCalls
+	t.Logf("restriction/pipeline calls: %v", calls)
+
+	listIdx := -1
+	deleteIdx := -1
+	runIdx := -1
+	createIdx := -1
+	for i, c := range calls {
+		switch {
+		case c == "LIST" && listIdx < 0:
+			listIdx = i
+		case c == "DELETE:restr-1" && deleteIdx < 0:
+			deleteIdx = i
+		case c == "PIPELINE_RUN" && runIdx < 0:
+			runIdx = i
+		case c == "CREATE" && createIdx < 0:
+			createIdx = i
+		}
+	}
+
+	if listIdx < 0 {
+		t.Error("expected LIST call, not found")
+	}
+	if deleteIdx < 0 {
+		t.Error("expected DELETE call, not found")
+	}
+	if runIdx < 0 {
+		t.Error("expected PIPELINE_RUN call, not found")
+	}
+	if createIdx < 0 {
+		t.Error("expected CREATE (restore) call, not found")
+	}
+	if deleteIdx >= 0 && runIdx >= 0 && deleteIdx >= runIdx {
+		t.Errorf("DELETE (%d) must precede PIPELINE_RUN (%d)", deleteIdx, runIdx)
+	}
+	if runIdx >= 0 && createIdx >= 0 && createIdx <= runIdx {
+		t.Errorf("CREATE/restore (%d) must follow PIPELINE_RUN (%d)", createIdx, runIdx)
+	}
+
+	// NOTICE messages should appear in stderr.
+	if !strings.Contains(stderr, "temporarily removing") {
+		t.Errorf("stderr %q should contain 'temporarily removing'", stderr)
+	}
+	if !strings.Contains(stderr, "restoring") {
+		t.Errorf("stderr %q should contain 'restoring'", stderr)
+	}
+}
+
+// TestSecretsCapture_RemoveRestrictions_RestoreOnExtractionError verifies that
+// restrictions are restored (CREATE called) even when the pipeline extraction
+// fails (workflow returns error status).
+func TestSecretsCapture_RemoveRestrictions_RestoreOnExtractionError(t *testing.T) {
+	const contextID = "ctx-restricted-uuid"
+	const orgID = "acme-org-uuid"
+
+	liveRestrictions := []map[string]any{
+		{"id": "restr-fail-1", "restriction_type": "project", "restriction_value": "proj-uuid-123",
+			"name": "web", "context_id": contextID},
+	}
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "restricted-ctx",
+				SourceID: contextID,
+				EnvVars:  []manifest.ContextEnvVar{{Name: "CTX_SECRET"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: "proj-uuid-123", Name: "web"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	// triggerPipelineErr=true makes the pipeline run fail.
+	srv := newCaptureFakeServerWithRestrictions(t,
+		map[string]string{},
+		contextID, liveRestrictions, true,
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--remove-restrictions",
+		"--poll-timeout", "10s",
+	)
+
+	// Capture should fail because pipeline trigger failed.
+	if err == nil {
+		t.Fatal("expected error due to pipeline failure, got nil")
+	}
+
+	// Restore (CREATE) must still have been called despite the error.
+	hasCREATE := false
+	for _, c := range srv.restrictionCalls {
+		if c == "CREATE" {
+			hasCREATE = true
+			break
+		}
+	}
+	if !hasCREATE {
+		t.Errorf("restrictions must be restored (CREATE) even on extraction error; calls: %v", srv.restrictionCalls)
+	}
+	if !strings.Contains(stderr, "restoring") {
+		t.Errorf("stderr should confirm restore happened; got: %s", stderr)
+	}
+}
+
+// TestSecretsCapture_RemoveRestrictions_AllMembersNotTouched verifies that a
+// context whose only restriction is the All-members default is NOT touched by
+// --remove-restrictions (no LIST/DELETE/CREATE calls).
+func TestSecretsCapture_RemoveRestrictions_AllMembersNotTouched(t *testing.T) {
+	const orgID = "acme-org-uuid"
+	const contextID = "ctx-all-members-uuid"
+
+	// We reuse the plain fake server — no restriction endpoints needed.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "all-members-ctx",
+				SourceID: contextID,
+				EnvVars:  []manifest.ContextEnvVar{{Name: "CTX_VAR"}},
+				Restrictions: []manifest.Restriction{
+					// Only the All-members default — not a real restriction.
+					{Type: "group", Value: orgID, Name: "All members"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv := newCaptureFakeServer(t, map[string]string{
+		"PROJECT_VAR": "proj-val",
+		"CTX_VAR":     "ctx-val",
+	})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		"--remove-restrictions",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+
+	// No restriction removal notices should appear.
+	if strings.Contains(stderr, "temporarily removing") {
+		t.Errorf("All-members context should NOT trigger restriction removal; stderr: %s", stderr)
+	}
+}
+
+// TestSecretsCapture_RemoveRestrictionsOff_SkipBehaviorUnchanged verifies that
+// when --remove-restrictions is NOT set, the existing warn+skip behavior is
+// preserved unchanged.
+func TestSecretsCapture_RemoveRestrictionsOff_SkipBehaviorUnchanged(t *testing.T) {
+	const orgID = "acme-org-uuid"
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "restricted-ctx",
+				SourceID: "ctx-restricted-uuid",
+				EnvVars:  []manifest.ContextEnvVar{{Name: "CTX_SECRET"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: "proj-uuid-123"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "gh/acme/web",
+				SourceID: "proj-uuid-123",
+				EnvVars:  []manifest.ProjectEnvVar{{Name: "PROJECT_VAR"}},
+			},
+		},
+	}
+
+	srv := newCaptureFakeServer(t, map[string]string{"PROJECT_VAR": "proj-val"})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+	outPath := filepath.Join(dir, "secrets.json")
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, stderr, err := runCmd(t,
+		"secrets", "capture",
+		"--manifest", mPath,
+		"--output", outPath,
+		"--host", srv.URL,
+		"--enable-trigger",
+		// --remove-restrictions NOT set (default false)
+		"--skip-restricted-contexts=true",
+		"--poll-timeout", "10s",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+
+	if !strings.Contains(stderr, "Skipping restricted context") {
+		t.Errorf("expected skip message without --remove-restrictions; stderr: %s", stderr)
+	}
+	if strings.Contains(stderr, "temporarily removing") {
+		t.Errorf("should not see removal notice when --remove-restrictions is off; stderr: %s", stderr)
+	}
+}
+
+// TestSecretsCapture_FlagsRegistered_IncludesRemoveRestrictions verifies the
+// new flag is registered on the subcommand.
+func TestSecretsCapture_FlagRegistered_RemoveRestrictions(t *testing.T) {
+	root := MakeTestCommands()
+	sub := findSubcommand(root, "secrets", "capture")
+	if sub == nil {
+		t.Fatal("'secrets capture' subcommand not found")
+	}
+	if sub.Flags().Lookup("remove-restrictions") == nil {
+		t.Error("flag --remove-restrictions not registered on 'secrets capture'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 

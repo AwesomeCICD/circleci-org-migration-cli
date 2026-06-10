@@ -277,3 +277,62 @@ func TestCreateRestriction_EmptyType(t *testing.T) {
 		t.Fatal("expected error for empty restrictionType")
 	}
 }
+
+// ---- DeleteRestriction ------------------------------------------------------
+
+func TestDeleteRestriction_DeletePathAndMethod(t *testing.T) {
+	const contextID = "ctx-abc-111"
+	const restrictionID = "restr-uuid-999"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		wantPath := "/api/v2/context/" + contextID + "/restrictions/" + restrictionID
+		if r.URL.Path != wantPath {
+			t.Errorf("expected path %s, got %s", wantPath, r.URL.Path)
+		}
+		// API returns 200 with empty body on successful delete.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if err := c.DeleteRestriction(contextID, restrictionID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeleteRestriction_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"restriction not found"}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.DeleteRestriction("ctx-123", "missing-restr-id")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "restriction not found") {
+		t.Errorf("error should contain 'restriction not found', got: %v", err)
+	}
+}
+
+func TestDeleteRestriction_EmptyContextID(t *testing.T) {
+	c := &Client{}
+	if err := c.DeleteRestriction("", "restr-uuid"); err == nil {
+		t.Fatal("expected error for empty contextID")
+	}
+}
+
+func TestDeleteRestriction_EmptyRestrictionID(t *testing.T) {
+	c := &Client{}
+	if err := c.DeleteRestriction("ctx-123", ""); err == nil {
+		t.Fatal("expected error for empty restrictionID")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	apicontext "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/extract"
@@ -43,11 +44,22 @@ type projectGetter interface {
 	GetProject(slug string) (*project.Project, error)
 }
 
+// contextRestrictionManager manages context restrictions during capture: it can
+// list the live restrictions (to get their IDs for deletion) and create or
+// delete individual restrictions.  Injected by tests; production uses a real
+// *apicontext.Client.
+type contextRestrictionManager interface {
+	ListRestrictions(contextID string) ([]apicontext.Restriction, error)
+	CreateRestriction(contextID, restrictionType, restrictionValue string) error
+	DeleteRestriction(contextID, restrictionID string) error
+}
+
 // captureClient combines all interfaces the capture command exercises.
 type captureClient interface {
 	flagReaderWriter
 	pipelineDefLister
 	projectGetter
+	contextRestrictionManager
 	extract.Deps
 }
 
@@ -107,6 +119,7 @@ func newSecretsCaptureCommand() *cobra.Command {
 		branch             string
 		enableTrigger      bool
 		skipRestrictedCtxs bool
+		removeRestrictions bool
 		pollTimeout        time.Duration
 	)
 
@@ -161,6 +174,19 @@ Examples:
 				return fmt.Errorf("creating project client: %w", err)
 			}
 
+			ctxClient, err := newContextClientForCapture(rootOptions, token)
+			if err != nil {
+				return fmt.Errorf("creating context client: %w", err)
+			}
+
+			capClient := &combinedCaptureClient{
+				flagReaderWriter:          projClient,
+				pipelineDefLister:         projClient,
+				projectGetter:             projClient,
+				contextRestrictionManager: ctxClient,
+				Deps:                      projClient,
+			}
+
 			// Resolve the set of projects to process.
 			projects := selectProjects(m, projectSlugs)
 			if len(projects) == 0 {
@@ -198,12 +224,12 @@ Examples:
 				if err := captureProject(
 					cmd.Context(),
 					cmd,
-					projClient,
+					capClient,
 					m, bundle,
 					p,
 					selectedCtxNames,
 					branch, output,
-					enableTrigger, skipRestrictedCtxs,
+					enableTrigger, skipRestrictedCtxs, removeRestrictions,
 					pollTimeout,
 				); err != nil {
 					// Continue processing other projects; record the first error.
@@ -242,6 +268,8 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 		"Enable api-trigger-with-config if not already on, and restore after capture")
 	f.BoolVar(&skipRestrictedCtxs, "skip-restricted-contexts", true,
 		"Skip contexts that have project/expression/group restrictions (attach warning instead of attempting)")
+	f.BoolVar(&removeRestrictions, "remove-restrictions", false,
+		"Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)")
 	f.DurationVar(&pollTimeout, "poll-timeout", 10*time.Minute,
 		"Maximum time to wait for each pipeline to complete (0 = no timeout)")
 
@@ -278,7 +306,7 @@ func captureProject(
 	p *manifest.Project,
 	selectedCtxNames map[string]bool,
 	branch, output string,
-	enableTrigger, skipRestricted bool,
+	enableTrigger, skipRestricted, removeRestrictions bool,
 	pollTimeout time.Duration,
 ) error {
 	stderr := cmd.ErrOrStderr()
@@ -358,15 +386,26 @@ func captureProject(
 		// is not a real restriction — every App-org context has it automatically.
 		real := realRestrictions(mc.Restrictions, m.Source.Org.ID)
 		if len(real) > 0 {
-			fmt.Fprintf(stderr,
-				"WARNING: context %q has restrictions (%d). The extraction job may not "+
-					"have access to it. Auto-toggling restrictions is not supported; handle "+
-					"manually if needed.\n",
-				mc.Name, len(real),
-			)
-			if skipRestricted {
-				fmt.Fprintf(stderr, "Skipping restricted context %q (--skip-restricted-contexts=true).\n", mc.Name)
-				continue
+			if removeRestrictions {
+				// Temporarily remove restrictions so the extraction run can access
+				// the context, then restore from the manifest (source of truth).
+				// The restore func is deferred so it runs even on error or panic.
+				restore, prepErr := prepareRestrictionRemoval(cmd, client, mc)
+				if prepErr != nil {
+					return prepErr
+				}
+				defer restore()
+			} else {
+				fmt.Fprintf(stderr,
+					"WARNING: context %q has restrictions (%d). The extraction job may not "+
+						"have access to it. Auto-toggling restrictions is not supported; handle "+
+						"manually if needed.\n",
+					mc.Name, len(real),
+				)
+				if skipRestricted {
+					fmt.Fprintf(stderr, "Skipping restricted context %q (--skip-restricted-contexts=true).\n", mc.Name)
+					continue
+				}
 			}
 		}
 
@@ -456,6 +495,83 @@ func newOrgClientForCapture(cfg *settings.Config, token string) (*org.Client, er
 		return nil, fmt.Errorf("creating org client: %w", err)
 	}
 	return c, nil
+}
+
+// newContextClientForCapture creates an *apicontext.Client for managing
+// context restrictions during the capture flow.
+func newContextClientForCapture(cfg *settings.Config, token string) (*apicontext.Client, error) {
+	c, err := apicontext.NewClient(cfg, token)
+	if err != nil {
+		return nil, fmt.Errorf("creating context client: %w", err)
+	}
+	return c, nil
+}
+
+// combinedCaptureClient wires a project client (flagReaderWriter,
+// pipelineDefLister, projectGetter, extract.Deps) together with a separate
+// context client (contextRestrictionManager) into the single captureClient
+// interface that captureProject expects.
+type combinedCaptureClient struct {
+	flagReaderWriter
+	pipelineDefLister
+	projectGetter
+	contextRestrictionManager
+	extract.Deps
+}
+
+// prepareRestrictionRemoval fetches live restriction IDs for mc and deletes
+// every real restriction so the extraction run can access the context.  It
+// returns a restore function that the caller MUST immediately defer — calling
+// it re-creates the restrictions from mc.Restrictions (the exported manifest
+// state, the source of truth).  The restore runs even if extraction later fails
+// or panics.
+//
+// If any DELETE fails, the error is returned and no restore func is registered
+// (nothing was removed yet, nothing needs restoring).
+// If a RESTORE fails, a prominent WARNING is printed naming exactly which
+// restriction (context, type, value) must be manually re-added.
+func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionManager, mc *manifest.Context) (restoreFn func(), err error) {
+	stderr := cmd.ErrOrStderr()
+
+	// Fetch live restrictions to get their IDs for deletion.
+	live, listErr := client.ListRestrictions(mc.SourceID)
+	if listErr != nil {
+		return func() {}, fmt.Errorf("listing live restrictions for context %q: %w", mc.Name, listErr)
+	}
+
+	// The manifest's recorded restrictions are our restore source of truth.
+	// Even if the live state is unexpected we restore to the exported baseline.
+	restoreFrom := make([]manifest.Restriction, len(mc.Restrictions))
+	copy(restoreFrom, mc.Restrictions)
+
+	fmt.Fprintf(stderr,
+		"NOTICE: temporarily removing %d restriction(s) from context %q for extraction.\n",
+		len(live), mc.Name,
+	)
+	for _, lr := range live {
+		if delErr := client.DeleteRestriction(mc.SourceID, lr.ID); delErr != nil {
+			return func() {}, fmt.Errorf("deleting restriction %q from context %q: %w", lr.ID, mc.Name, delErr)
+		}
+	}
+
+	// Build the restore closure.  It re-creates every restriction recorded in
+	// the manifest; the manifest state is the source of truth.
+	restore := func() {
+		fmt.Fprintf(stderr,
+			"NOTICE: restoring %d restriction(s) on context %q.\n",
+			len(restoreFrom), mc.Name,
+		)
+		for _, r := range restoreFrom {
+			if createErr := client.CreateRestriction(mc.SourceID, r.Type, r.Value); createErr != nil {
+				fmt.Fprintf(stderr,
+					"WARNING: failed to restore restriction on context %q "+
+						"(type=%q value=%q): %v — you must re-add this restriction manually.\n",
+					mc.Name, r.Type, r.Value, createErr,
+				)
+			}
+		}
+	}
+	return restore, nil
 }
 
 // maybeEnableOrgTriggerFlag reads the org-level allow_api_trigger_with_config

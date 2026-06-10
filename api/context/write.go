@@ -148,3 +148,32 @@ func (c *Client) CreateRestriction(contextID, restrictionType, restrictionValue 
 	}
 	return nil
 }
+
+// DeleteRestriction removes a single restriction from a context.
+//
+// Endpoint: DELETE /api/v2/context/{contextID}/restrictions/{restrictionID}
+func (c *Client) DeleteRestriction(contextID, restrictionID string) error {
+	if contextID == "" {
+		return fmt.Errorf("context: DeleteRestriction requires contextID")
+	}
+	if restrictionID == "" {
+		return fmt.Errorf("context: DeleteRestriction requires restrictionID")
+	}
+
+	path := fmt.Sprintf("context/%s/restrictions/%s", contextID, restrictionID)
+	u, err := c.rest.BaseURL.Parse(path)
+	if err != nil {
+		return fmt.Errorf("context: DeleteRestriction: build URL: %w", err)
+	}
+
+	req, err := c.rest.NewRequest("DELETE", u, nil)
+	if err != nil {
+		return fmt.Errorf("context: DeleteRestriction: build request: %w", err)
+	}
+
+	var resp struct{}
+	if _, err := c.rest.DoRequest(req, &resp); err != nil {
+		return fmt.Errorf("context: DeleteRestriction %q/%q: %w", contextID, restrictionID, err)
+	}
+	return nil
+}
