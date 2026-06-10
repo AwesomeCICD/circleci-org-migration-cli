@@ -416,8 +416,10 @@ func TestExport_OrgSettingsCaptured_GHSlug(t *testing.T) {
 	}
 }
 
-func TestExport_OrgSettingsSkipped_CircleCISlug(t *testing.T) {
-	featureFlagsCalled := false
+// circleci/<uuid> (GitHub-App / standalone) orgs DO capture v1.1 feature flags:
+// the settings endpoint accepts vcs="circleci", name=<uuid>.
+func TestExport_OrgFeatureFlags_CircleCISlug(t *testing.T) {
+	var gotVCS, gotName string
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) {
@@ -429,20 +431,23 @@ func TestExport_OrgSettingsSkipped_CircleCISlug(t *testing.T) {
 				}, nil
 			},
 			getFeatureFlags: func(vcsType, orgName string) (map[string]bool, error) {
-				featureFlagsCalled = true
-				return nil, nil
+				gotVCS, gotName = vcsType, orgName
+				return map[string]bool{"allow_api_trigger_with_config": true}, nil
 			},
 		},
 		Contexts: &fakeContextAPI{},
 		Projects: &fakeProjectAPI{},
 	}
 
-	_, err := ex.Export(exporter.Options{OrgSlug: "circleci/some-uuid"})
+	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/some-uuid"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if featureFlagsCalled {
-		t.Error("GetFeatureFlags should NOT be called for circleci/ slug (no vcs/name form)")
+	if gotVCS != "circleci" || gotName != "some-uuid" {
+		t.Errorf("GetFeatureFlags called with (%q,%q), want (circleci,some-uuid)", gotVCS, gotName)
+	}
+	if m.Source.Org.Settings == nil || !m.Source.Org.Settings.FeatureFlags["allow_api_trigger_with_config"] {
+		t.Error("expected captured feature flags for circleci/ slug org")
 	}
 }
 

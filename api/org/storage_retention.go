@@ -80,22 +80,23 @@ func (c *Client) GetStorageRetention(orgUUID string) (*StorageRetention, error) 
 }
 
 // SetStorageRetention writes storage-retention controls for the given org via
-// POST. The server clamps values to the plan's limits server-side.
+// PUT (the server clamps values to the plan's limits). PUT returns 204 No
+// Content; POST/PATCH are not routed (they 404 "no such page").
 //
-// Endpoint: POST https://app.circleci.com/private/orgs/{orgUUID}/storage-retention-controls
+// Endpoint: PUT https://app.circleci.com/private/orgs/{orgUUID}/storage-retention-controls
 func (c *Client) SetStorageRetention(orgUUID string, controls StorageRetentionControls) error {
 	u, err := storageRetentionPath(orgUUID)
 	if err != nil {
 		return fmt.Errorf("SetStorageRetention: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("POST", u, controls)
+	req, err := c.app.NewRequest("PUT", u, controls)
 	if err != nil {
 		return fmt.Errorf("SetStorageRetention: build request: %w", err)
 	}
 
-	var ignored map[string]any
-	if _, err := c.app.DoRequest(req, &ignored); err != nil {
+	// 204 No Content on success — no response body to decode.
+	if _, err := c.app.DoRequest(req, nil); err != nil {
 		return fmt.Errorf("SetStorageRetention %s: %w", orgUUID, err)
 	}
 	return nil
