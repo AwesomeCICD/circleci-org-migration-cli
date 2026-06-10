@@ -35,6 +35,8 @@ type OrgAPI interface {
 	GetContacts(orgID string) (primary, security []string, err error)
 	ListGroups(orgID string) ([]org.Group, error)
 	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
+	GetBudgets(orgUUID string) ([]org.Budget, error)
+	GetBlockUnregisteredUsers(orgUUID string) (bool, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
@@ -743,6 +745,44 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			hasAny = true
 			clog.Debugf("storage retention: cache=%d workspace=%d artifact=%d",
 				c.CacheDays, c.WorkspaceDays, c.ArtifactDays)
+		}
+
+		// Spend budgets (best-effort; on error warn and continue).
+		clog.Debugf("GetBudgets org_id=%s", o.ID)
+		if budgets, berr := e.Org.GetBudgets(o.ID); berr != nil {
+			m.AddWarning("org", "budgets_unreadable",
+				fmt.Sprintf("could not read spend budgets: %v", berr))
+		} else if len(budgets) > 0 {
+			ob := &manifest.OrgBudgets{}
+			for i := range budgets {
+				b := &budgets[i]
+				entry := manifest.BudgetEntry{
+					Credits:         b.Credits,
+					BudgetID:        b.BudgetID,
+					EnforcementType: b.EnforcementType,
+					ProjectID:       b.ProjectID,
+				}
+				if b.ProjectID == nil {
+					ob.OrgBudget = &entry
+				} else {
+					ob.ProjectBudgets = append(ob.ProjectBudgets, entry)
+				}
+			}
+			s.Budgets = ob
+			hasAny = true
+			clog.Debugf("budgets: org=%v project_count=%d",
+				ob.OrgBudget != nil, len(ob.ProjectBudgets))
+		}
+
+		// Block-unregistered-users feature flag (best-effort; on error warn and continue).
+		clog.Debugf("GetBlockUnregisteredUsers org_id=%s", o.ID)
+		if blockEnabled, buerr := e.Org.GetBlockUnregisteredUsers(o.ID); buerr != nil {
+			m.AddWarning("org", "block_unregistered_users_unreadable",
+				fmt.Sprintf("could not read block-unregistered-users setting: %v", buerr))
+		} else {
+			s.BlockUnregisteredUsers = &blockEnabled
+			hasAny = true
+			clog.Debugf("block_unregistered_users: enabled=%v", blockEnabled)
 		}
 	}
 

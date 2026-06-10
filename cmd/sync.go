@@ -301,6 +301,12 @@ func (a orgSettingsAdapter) SetStorageRetention(orgUUID string, controls syncer.
 		ArtifactDays:  controls.ArtifactDays,
 	})
 }
+func (a orgSettingsAdapter) SetBudget(orgUUID string, projectID *string, credits int) error {
+	return a.c.SetBudget(orgUUID, projectID, credits)
+}
+func (a orgSettingsAdapter) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
+	return a.c.SetBlockUnregisteredUsers(orgUUID, enabled)
+}
 
 // orgGroupLister adapts the org client's ListGroups (returning []org.Group) to
 // the syncer.GroupLister interface (returning []syncer.Group).

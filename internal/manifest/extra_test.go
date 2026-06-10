@@ -164,6 +164,90 @@ func TestSecretBundleSave_WritesWithRestrictedPerms(t *testing.T) {
 // Manifest round-trip with SortStable
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// OrgSettings new fields: Budgets + BlockUnregisteredUsers round-trip
+// ---------------------------------------------------------------------------
+
+func TestOrgSettings_BudgetsAndBlockUnregisteredUsers_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	projID := "proj-uuid-1"
+	enabled := true
+	in := &Manifest{
+		SchemaVersion: SchemaVersion,
+		Source: Source{
+			Host: "https://circleci.com",
+			Org: Org{
+				Slug: "gh/acme",
+				Name: "acme",
+				Settings: &OrgSettings{
+					Budgets: &OrgBudgets{
+						OrgBudget: &BudgetEntry{
+							Credits:         1000000,
+							BudgetID:        "budget-uuid-1",
+							EnforcementType: "warn",
+						},
+						ProjectBudgets: []BudgetEntry{
+							{
+								Credits:         50000,
+								BudgetID:        "budget-proj-1",
+								EnforcementType: "block",
+								ProjectID:       &projID,
+							},
+						},
+					},
+					BlockUnregisteredUsers: &enabled,
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s := out.Source.Org.Settings
+	if s == nil {
+		t.Fatal("Settings is nil after round-trip")
+	}
+
+	// Budgets
+	if s.Budgets == nil {
+		t.Fatal("Budgets is nil after round-trip")
+	}
+	if s.Budgets.OrgBudget == nil {
+		t.Fatal("OrgBudget is nil after round-trip")
+	}
+	if s.Budgets.OrgBudget.Credits != 1000000 {
+		t.Errorf("OrgBudget.Credits: got %d want 1000000", s.Budgets.OrgBudget.Credits)
+	}
+	if s.Budgets.OrgBudget.EnforcementType != "warn" {
+		t.Errorf("OrgBudget.EnforcementType: got %q want %q", s.Budgets.OrgBudget.EnforcementType, "warn")
+	}
+	if len(s.Budgets.ProjectBudgets) != 1 {
+		t.Fatalf("ProjectBudgets: got %d want 1", len(s.Budgets.ProjectBudgets))
+	}
+	pb := s.Budgets.ProjectBudgets[0]
+	if pb.ProjectID == nil || *pb.ProjectID != projID {
+		t.Errorf("ProjectBudgets[0].ProjectID: got %v want %q", pb.ProjectID, projID)
+	}
+	if pb.Credits != 50000 {
+		t.Errorf("ProjectBudgets[0].Credits: got %d want 50000", pb.Credits)
+	}
+
+	// BlockUnregisteredUsers
+	if s.BlockUnregisteredUsers == nil {
+		t.Fatal("BlockUnregisteredUsers is nil after round-trip")
+	}
+	if !*s.BlockUnregisteredUsers {
+		t.Error("BlockUnregisteredUsers: got false want true")
+	}
+}
+
 func TestManifestSortStable_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sorted.json")

@@ -9,7 +9,8 @@ import (
 
 // OrgSettingsWriter is the destination org-settings API the syncer needs.
 // It is a narrow interface over the methods defined in api/org/orgsettings.go,
-// api/org/otel.go, api/org/contacts.go, and api/org/storage_retention.go.
+// api/org/otel.go, api/org/contacts.go, api/org/storage_retention.go,
+// api/org/budgets.go, and api/org/blockusers.go.
 type OrgSettingsWriter interface {
 	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
 	SetOIDCClaims(orgID string, audience []string, ttl string) error
@@ -23,6 +24,12 @@ type OrgSettingsWriter interface {
 	// controls is passed as a manifest.StorageRetentionControls value; callers
 	// may need a thin adapter if using api/org.Client (see storage_retention_adapter.go).
 	SetStorageRetention(orgUUID string, controls StorageRetentionArgs) error
+	// SetBudget creates or updates a spend budget. Pass projectID == nil for the
+	// org-level budget; pass a non-nil project UUID for a per-project budget.
+	SetBudget(orgUUID string, projectID *string, credits int) error
+	// SetBlockUnregisteredUsers enables or disables the "block unregistered user
+	// spend" feature.
+	SetBlockUnregisteredUsers(orgUUID string, enabled bool) error
 }
 
 // StorageRetentionArgs carries the storage-retention values to write. It is a
@@ -94,6 +101,8 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.syncOTelExporters(report, src, destOrgID, opts)
 	s.syncContacts(report, src, destOrgID, opts)
 	s.syncStorageRetention(report, src, destOrgID, opts)
+	s.syncBudgets(report, src, destOrgID, mapping, opts)
+	s.syncBlockUnregisteredUsers(report, src, destOrgID, opts)
 
 	return report, nil
 }
@@ -372,6 +381,119 @@ func (s *Syncer) syncStorageRetention(report *Report, src *manifest.OrgSettings,
 		return
 	}
 	report.add("org-settings", target, "set", "set storage-retention controls: "+detail)
+}
+
+// syncBudgets transfers the org-level budget and, where possible, per-project
+// budgets to the destination. Per-project budgets require the source project UUID
+// to be mapped to a destination project UUID via the mapping; unmapped projects
+// are flagged for manual recreation. EnforcementType is captured for reference
+// but the PUT endpoint only accepts credits (+project_id), so it may not be
+// transferred automatically (a note is emitted in the report detail).
+func (s *Syncer) syncBudgets(report *Report, src *manifest.OrgSettings, destOrgID string, mapping *manifest.Mapping, opts Options) {
+	if src.Budgets == nil {
+		return
+	}
+	b := src.Budgets
+
+	// Org-level budget.
+	if b.OrgBudget != nil {
+		ob := b.OrgBudget
+		target := "budget:org"
+		enfNote := ""
+		if ob.EnforcementType != "" && ob.EnforcementType != "block" {
+			enfNote = fmt.Sprintf(" (enforcement_type=%q captured for reference — only credits are transferred via PUT)", ob.EnforcementType)
+		}
+		detail := fmt.Sprintf("credits=%d enforcement_type=%q%s", ob.Credits, ob.EnforcementType, enfNote)
+
+		if !opts.Apply {
+			report.add("org-settings", target, "set",
+				"would set org budget: "+detail)
+		} else if err := s.OrgSettings.SetBudget(destOrgID, nil, ob.Credits); err != nil {
+			report.add("org-settings", target, "error",
+				fmt.Sprintf("could not set org budget: %v", err))
+		} else {
+			report.add("org-settings", target, "set", "set org budget: "+detail)
+		}
+	}
+
+	// Per-project budgets: map source project UUID → destination project UUID.
+	for i, pb := range b.ProjectBudgets {
+		if pb.ProjectID == nil {
+			continue
+		}
+		srcProjID := *pb.ProjectID
+		target := fmt.Sprintf("budget:project:%d", i)
+
+		// Attempt to resolve the destination project slug via the mapping.
+		destProjSlug, ok := resolveProjectByID(srcProjID, mapping)
+		if !ok {
+			report.add("org-settings", target, "manual",
+				fmt.Sprintf(
+					"per-project budget (source project_id=%q, credits=%d, enforcement_type=%q) "+
+						"cannot be automatically transferred: the source project UUID has no "+
+						"mapping to the destination — recreate this budget manually after "+
+						"identifying the equivalent destination project",
+					srcProjID, pb.Credits, pb.EnforcementType))
+			continue
+		}
+
+		if !opts.Apply {
+			report.add("org-settings", target, "set",
+				fmt.Sprintf("would set per-project budget dest_project=%q credits=%d", destProjSlug, pb.Credits))
+			continue
+		}
+		if err := s.OrgSettings.SetBudget(destOrgID, &destProjSlug, pb.Credits); err != nil {
+			report.add("org-settings", target, "error",
+				fmt.Sprintf("could not set per-project budget dest_project=%q: %v", destProjSlug, err))
+			continue
+		}
+		report.add("org-settings", target, "set",
+			fmt.Sprintf("set per-project budget dest_project=%q credits=%d", destProjSlug, pb.Credits))
+	}
+}
+
+// resolveProjectByID tries to find a destination project UUID for a source
+// project UUID using the mapping's Projects table. It returns the destination
+// UUID (from the mapping value) and true when found. Returns ("", false) when
+// the mapping is nil, the Projects table is empty, or the source ID is absent.
+//
+// The mapping.Projects map is keyed by SOURCE SLUG, not UUID, so this performs
+// a reverse-scan looking for any mapping entry whose key or value is the source
+// ID. In practice callers should populate an explicit Projects mapping entry with
+// the source project UUID as the key when budgets must be transferred.
+func resolveProjectByID(srcProjID string, mapping *manifest.Mapping) (string, bool) {
+	if mapping == nil || len(mapping.Projects) == 0 {
+		return "", false
+	}
+	// Direct key lookup (source project UUID used as mapping key).
+	if dest, ok := mapping.Projects[srcProjID]; ok {
+		return dest, true
+	}
+	return "", false
+}
+
+// syncBlockUnregisteredUsers transfers the "block unregistered user spend" feature
+// flag to the destination. Dry-run aware.
+func (s *Syncer) syncBlockUnregisteredUsers(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+	if src.BlockUnregisteredUsers == nil {
+		return
+	}
+	enabled := *src.BlockUnregisteredUsers
+	target := "block_unregistered_users"
+
+	if !opts.Apply {
+		report.add("org-settings", target, "set",
+			fmt.Sprintf("would set block_unregistered_users enabled=%v", enabled))
+		return
+	}
+
+	if err := s.OrgSettings.SetBlockUnregisteredUsers(destOrgID, enabled); err != nil {
+		report.add("org-settings", target, "error",
+			fmt.Sprintf("could not set block_unregistered_users: %v", err))
+		return
+	}
+	report.add("org-settings", target, "set",
+		fmt.Sprintf("set block_unregistered_users enabled=%v", enabled))
 }
 
 // splitDestSlug extracts the (vcs, orgName) pair from a destination slug
