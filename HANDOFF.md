@@ -3,7 +3,45 @@
 > **Purpose of this file:** give a new engineer or AI agent everything needed to
 > continue this project with zero prior context. It records what's built, what's
 > proven live, every decision (including chat-only ones), open questions, and the
-> exact next steps. Last updated 2026-06-09.
+> exact next steps. Last updated 2026-06-10.
+
+---
+
+## ⭐ SESSION UPDATE — v0.2.0 SHIPPED (2026-06-10)
+
+The CLI is **released and the full distribution pipeline is proven end-to-end live.**
+
+- **v0.2.0 published** via release-please → tag → CircleCI GoReleaser:
+  - **Binaries** (4 platforms + checksums) on GitHub Releases — public, anonymous
+    download verified, binary runs with the injected version.
+  - **Orb** `awesomecicd/circleci-org-migration@0.2.0` published (private).
+  - **Homebrew** formula in `AwesomeCICD/homebrew-tap`
+    (`brew tap AwesomeCICD/homebrew-tap && brew install circleci-migrate`).
+  - Versioning automated: Conventional Commit → release-please PR → merge → tag →
+    GoReleaser (binaries+brew) + orb-publish-prod. (`release-as` used once for 0.1.0, then removed.)
+- **Repo is PUBLIC**; orb install scripts point at `AwesomeCICD` (anonymous download).
+- **Live-validated this session**: App→App migrate (apply, context+value); OAuth→App
+  and OAuth→OAuth (plans); secret capture; full App project-creation chain
+  (create→pipeline-def→trigger→enable→delete); repo-move verification; `--projects` (bug found+fixed live).
+- **Features added**: cross-type OAuth→App synthesis, `orb inline` (GraphQL orb-source +
+  config inlining), org-group capture, cutover runbook, orb test suite (chunk + CI lint/
+  validate/shellcheck gating publish), context-restriction auto-toggle, OTel/contacts/
+  project-OIDC/v1.1-flags capture+sync.
+- **Hardened live** (the CI project + contexts): `build_fork_prs`=false,
+  `forks_receive_secret_env_vars`=false; `goreleaser` (GITHUB_TOKEN) + `orb-publishing`
+  contexts, both restricted to the project.
+- **Resolved**: public repo ✅, brew ✅, release-please ✅, inline-orb-swap ✅ (GraphQL is
+  the only orb-source path — minimal POST, no SDK), first version 0.1.0→**0.2.0**. PRs #21–#33.
+
+**Remaining (deferred/gated — NOT blocked code):**
+- **CircleCI-Labs republish** (the move): repo → `CircleCI-Labs`, orb namespace → `cci-labs`
+  (public orb), module path + orb install URL + goreleaser owner → CircleCI-Labs, public
+  brew tap. At that point also fix orb-review RC010 (rename orb components kebab→snake_case —
+  breaking, so do on the fresh republish) + RC011 (example version refs). See §7/§8.
+- **SSO sub-field modeling** + **runner resource-class capture**: need an org WITH SSO /
+  WITH self-hosted runners to verify live (test orgs have neither).
+- **Functional orb test in a real pipeline**: binary install proven manually; a
+  self-referential CI job was judged not worth the coupling — optional.
 
 ---
 
