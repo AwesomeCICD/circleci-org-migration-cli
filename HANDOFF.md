@@ -7,6 +7,61 @@
 
 ---
 
+## ⭐ SESSION UPDATE — v0.3.0 SHIPPED (2026-06-10)
+
+**v0.3.0 released** end-to-end (tag pipeline all green: setup ✓, GoReleaser ✓,
+orb-publish-prod ✓): binaries (4 platforms + checksums) on GitHub Releases,
+**orb `awesomecicd/circleci-org-migration@0.3.0`** (now snake_case), and the
+Homebrew formula in `AwesomeCICD/homebrew-tap` all at 0.3.0. PRs #35–#47.
+
+**Features added:** leveled `--debug` logging (`internal/clog`) + actionable API
+errors (endpoint/status/request-id + "file an issue" hint); **interactive
+`migrate`** guided walkthrough (TTY-gated; `--no-input` for CI; flags fully
+bypass); **self-hosted runner resource-class capture/sync** (`export
+--runner-namespace`, `sync --dest-runner-namespace`, `migrate` both; new
+`api/runner`; manifest `runner_resource_classes`); see the `runner-resource-class-api`
+memory.
+
+**Orb hardening (closes the v0.2.0 "remaining RC010" item):** components/params
+renamed kebab→snake_case (RC010) — **breaking orb API** (`extract_context`,
+`extract_project`, `project_slug`, `context_name`, …); long run-commands moved to
+`<<include>>` scripts (RC009); examples → `@volatile` (RC011); `source_url` fixed;
+**orb-review re-enabled** in CI and passing.
+
+**Bugs caught ONLY via live e2e, then fixed + re-validated live:**
+1. Orb **matrix** example didn't compile — a custom-`name` matrix needs an explicit
+   `matrix.alias` for `merge`'s `requires`. Fixed.
+2. Orb **`extract_project`** crashed for every real slug (slashes in the output
+   filename). Fixed: both extract jobs write to a `captured/` dir with sanitized
+   names; merge globs `captured/*.json`; CLI `SecretBundle.Save` `MkdirAll`s.
+
+**Security/hardening:** token flags (`--token`/`--source-token`/`--dest-token`/
+`--github-token`) leaked their env values into `--help` (flag defaults) → now
+default `""`, env fallback in `settings.*OrDefault()` + root PersistentPreRunE
+(regression test). **SSO IdP secrets** (client_secret/x509_cert/idp_metadata_xml)
+were stored plaintext in the manifest → now **redacted** (key kept, value
+placeholdered, `sso_secret_redacted` warning). Added `.gitleaks.toml` (allowlists
+the SSO fixture file); `.claude/worktrees/` gitignored.
+
+**Live-validated this session (DUMMY data only, in `cci-cli-test-1/-2` + the
+`awesomecicd` runner namespace):** orb in a REAL pipeline via `orb inline`
+(the orb is private, so cross-org use = inline) — single-context capture ✓,
+3-context **matrix** ✓, **project** env-var capture ✓; context migration **with
+values** App→App (`sync --apply --secrets`, verified in dest) ✓; **runner
+capture** (11 real resource classes) ✓. See the `live-test-resources` memory for
+the leftover dummy artifacts to clean up.
+
+**Docs:** README badges + `docs/examples.md` (OAuth→OAuth, App→App, mixed two-leg,
+cross-type, EMU repo-move, secrets-capture, runner); fleshed-out CONTRIBUTING; new
+AI skill `.claude/skills/circleci-migration/SKILL.md`. **Coverage gate 75%→85%**
+(total 87.5%).
+
+**Still deferred (unchanged):** the **CircleCI-Labs / `cci-labs`** move — repo,
+public orb namespace, module path, orb install URL, goreleaser owner, public brew
+tap. The orb RC010 snake_case rename is now DONE (no longer pending for the move).
+
+---
+
 ## ⭐ SESSION UPDATE — v0.2.0 SHIPPED (2026-06-10)
 
 The CLI is **released and the full distribution pipeline is proven end-to-end live.**
