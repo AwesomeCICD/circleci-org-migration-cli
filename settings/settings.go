@@ -6,6 +6,7 @@ package settings
 import (
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -35,20 +36,39 @@ func NewConfig() *Config {
 	return cfg
 }
 
-// SourceTokenOrDefault returns SourceToken when set, falling back to Token.
+// TokenOrDefault returns the shared Token, falling back to the
+// CIRCLECI_CLI_TOKEN environment variable. Token flags default to "" (so the
+// secret never appears in --help); the env fallback is resolved here.
+func (cfg *Config) TokenOrDefault() string {
+	if cfg.Token != "" {
+		return cfg.Token
+	}
+	return os.Getenv("CIRCLECI_CLI_TOKEN")
+}
+
+// SourceTokenOrDefault returns SourceToken when set, then the
+// CIRCLECI_SOURCE_TOKEN env var, then the shared token (flag or
+// CIRCLECI_CLI_TOKEN).
 func (cfg *Config) SourceTokenOrDefault() string {
 	if cfg.SourceToken != "" {
 		return cfg.SourceToken
 	}
-	return cfg.Token
+	if v := os.Getenv("CIRCLECI_SOURCE_TOKEN"); v != "" {
+		return v
+	}
+	return cfg.TokenOrDefault()
 }
 
-// DestTokenOrDefault returns DestToken when set, falling back to Token.
+// DestTokenOrDefault returns DestToken when set, then the CIRCLECI_DEST_TOKEN
+// env var, then the shared token (flag or CIRCLECI_CLI_TOKEN).
 func (cfg *Config) DestTokenOrDefault() string {
 	if cfg.DestToken != "" {
 		return cfg.DestToken
 	}
-	return cfg.Token
+	if v := os.Getenv("CIRCLECI_DEST_TOKEN"); v != "" {
+		return v
+	}
+	return cfg.TokenOrDefault()
 }
 
 // ServerURL builds the base REST API URL from Host and RestEndpoint.

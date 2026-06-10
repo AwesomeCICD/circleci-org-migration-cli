@@ -91,6 +91,12 @@ Examples:
     --source-org gh/acme --dest-org gh/acme-new \
     --apply -o manifest.json --report migration-report.md`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Resolve the GitHub token from the env after parsing so the flag
+			// default never leaks $GITHUB_TOKEN into --help output.
+			if githubToken == "" {
+				githubToken = os.Getenv("GITHUB_TOKEN")
+			}
+
 			// Determine whether interactive mode is needed.
 			// Interactive mode fires when BOTH required org flags are absent AND
 			// stdin is an interactive TTY AND --no-input is not set.
@@ -276,9 +282,9 @@ Examples:
 		"Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)")
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip,
 		"How to handle variables with no captured value: skip|placeholder")
-	f.StringVar(&githubToken, "github-token", os.Getenv("GITHUB_TOKEN"),
+	f.StringVar(&githubToken, "github-token", "",
 		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions "+
-			"in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been "+
+			"in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been "+
 			"moved to a new GitHub org (--dest-github-org or mapping github_org).")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new "+
