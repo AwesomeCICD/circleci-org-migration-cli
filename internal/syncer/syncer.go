@@ -5,6 +5,7 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -117,13 +118,19 @@ type Options struct {
 	Placeholder string
 	// GitHubToken is an optional GitHub personal access token used to resolve
 	// repository external IDs when creating pipeline definitions in a GitHub App
-	// destination org. When empty, the captured RepoExternalID from the source
-	// manifest is reused directly (valid for same-org migrations). When set, the
-	// token is used to call the GitHub API and remap the external_id — useful when
-	// the destination org is connected to a different GitHub org.
-	//
-	// TODO: cross-owner full_name remapping via a mapping file is a future follow-on.
+	// destination org. When empty and the GitHub org has not changed, the
+	// captured RepoExternalID from the source manifest is reused directly (valid
+	// for same-org migrations). When the GitHub org has changed (repos moved),
+	// a token is required to look up the new external_id; without one the
+	// project is skipped with a "manual" action.
 	GitHubToken string
+	// DestGitHubOrg is a convenience shorthand for the destination GitHub
+	// organization owner when all repos have moved to the same new GH org. It
+	// acts as the dest owner for every repo that does not have an explicit
+	// GitHubOrg mapping in the Mapping file.
+	//
+	// Precedence: Mapping.GitHubOrg > DestGitHubOrg > unchanged (source owner).
+	DestGitHubOrg string
 }
 
 func (o Options) placeholder() string {
@@ -454,7 +461,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			}
 			if destVCSType == "circleci" {
 				// App org: route through App path (dst will be derived after create).
-				s.syncAppProject(report, p, destOrgID, destSlug, bundle, opts,
+				s.syncAppProject(report, p, destOrgID, destSlug, bundle, mapping, opts,
 					loadDestOrgProjects, &destOrgProjectsByName)
 				continue
 			}
@@ -471,7 +478,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 
 		if destVCSType == "circleci" {
 			// App org with explicit mapping: still go through App path.
-			s.syncAppProject(report, p, destOrgID, destSlug, bundle, opts,
+			s.syncAppProject(report, p, destOrgID, destSlug, bundle, mapping, opts,
 				loadDestOrgProjects, &destOrgProjectsByName)
 			continue
 		}
@@ -545,6 +552,7 @@ func (s *Syncer) syncAppProject(
 	p manifest.Project,
 	destOrgID, destSlug string,
 	bundle *manifest.SecretBundle,
+	mapping *manifest.Mapping,
 	opts Options,
 	loadDestOrgProjects func() error,
 	destOrgProjectsByName *map[string]project.OrgProject,
@@ -585,8 +593,13 @@ func (s *Syncer) syncAppProject(
 	if !opts.Apply {
 		report.add("project", name, "created",
 			fmt.Sprintf("would create App project + %d pipeline-definition(s)", nDefs))
-		// Still run configure helpers so dry-run shows what would happen.
+		// Run resolve checks so the dry-run preview accurately shows which repos
+		// are found in the destination GH org and which will be skipped.
+		// syncAppPipelineDefinition is read-only at resolve time (no API writes).
 		drySlug := "circleci/" + destOrgID + "/<new>"
+		for _, def := range p.PipelineDefinitions {
+			s.syncAppPipelineDefinition(report, name, "", def, destSlug, mapping, opts)
+		}
 		s.syncProjectSettings(report, p, drySlug, opts)
 		s.syncProjectVars(report, p, bundle, drySlug, opts)
 		s.syncProjectWebhooks(report, p, drySlug, "", opts)
@@ -615,7 +628,7 @@ func (s *Syncer) syncAppProject(
 
 	// Create pipeline definitions and triggers.
 	for _, def := range p.PipelineDefinitions {
-		s.syncAppPipelineDefinition(report, name, newProjectID, def, destSlug, opts)
+		s.syncAppPipelineDefinition(report, name, newProjectID, def, destSlug, mapping, opts)
 	}
 
 	// Configure settings, vars, etc. on the new slug.
@@ -634,20 +647,17 @@ func (s *Syncer) syncAppPipelineDefinition(
 	projectName, projectID string,
 	def manifest.PipelineDefinition,
 	destSlug string,
+	mapping *manifest.Mapping,
 	opts Options,
 ) {
 	// Resolve the external_id for config and checkout sources.
-	// Strategy (per spec):
-	//  1. If GitHubToken is set and RepoFullName is non-empty, call ResolveRepoID.
-	//  2. Otherwise reuse the captured RepoExternalID.
-	//  3. If neither is available, emit "manual".
 	configExtID, configOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/config",
-		def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID, opts)
+		def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID, mapping, opts)
 	if !configOK {
 		return
 	}
 	checkoutExtID, checkoutOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/checkout",
-		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID, opts)
+		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID, mapping, opts)
 	if !checkoutOK {
 		return
 	}
@@ -675,6 +685,17 @@ func (s *Syncer) syncAppPipelineDefinition(
 		CheckoutExternalID: checkoutExtID,
 	}
 
+	// Dry-run or no real project yet (preflight resolve pass): record intent only.
+	if !opts.Apply || projectID == "" {
+		report.add("project-pipeline-def", projectName+"/def:"+def.Name, "created",
+			fmt.Sprintf("would create pipeline definition (config ext-id %s, checkout ext-id %s)", configExtID, checkoutExtID))
+		// Still preview trigger actions.
+		for _, trig := range def.Triggers {
+			s.syncAppTrigger(report, projectName, projectID, def.Name, "", trig, mapping, opts)
+		}
+		return
+	}
+
 	defID, err := s.Projects.CreatePipelineDefinition(projectID, spec)
 	if err != nil {
 		// "Installation does not have access to repository" (and similar
@@ -698,7 +719,7 @@ func (s *Syncer) syncAppPipelineDefinition(
 
 	// Create triggers.
 	for _, trig := range def.Triggers {
-		s.syncAppTrigger(report, projectName, projectID, def.Name, defID, trig, opts)
+		s.syncAppTrigger(report, projectName, projectID, def.Name, defID, trig, mapping, opts)
 	}
 }
 
@@ -708,6 +729,7 @@ func (s *Syncer) syncAppTrigger(
 	report *Report,
 	projectName, projectID, defName, defID string,
 	trig manifest.Trigger,
+	mapping *manifest.Mapping,
 	opts Options,
 ) {
 	target := projectName + "/def:" + defName + "/trigger:" + trig.Name
@@ -733,8 +755,14 @@ func (s *Syncer) syncAppTrigger(
 	}
 
 	extID, ok := s.resolveExternalID(report, target,
-		trig.EventSource.RepoFullName, trig.EventSource.RepoExternalID, opts)
+		trig.EventSource.RepoFullName, trig.EventSource.RepoExternalID, mapping, opts)
 	if !ok {
+		return
+	}
+
+	// Dry-run or no real definition yet (preflight resolve pass): record intent only.
+	if !opts.Apply || defID == "" {
+		report.add("project-trigger", target, "created", "would create trigger (disabled — not yet enabled)")
 		return
 	}
 
@@ -762,29 +790,96 @@ func (s *Syncer) syncAppTrigger(
 }
 
 // resolveExternalID returns the external_id to use for a pipeline-definition or
-// trigger. Resolution order:
-//  1. If opts.GitHubToken != "" and fullName != "", call github.ResolveRepoID.
-//     On success → use the resolved id. On failure → warn + fall through to 2.
-//  2. Use capturedID if non-empty (normal same-GitHub-org case — silent).
-//  3. Neither available → emit "manual" action and return ok=false.
-func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID string, opts Options) (string, bool) {
-	if opts.GitHubToken != "" && fullName != "" {
-		id, err := resolveRepoID(fullName, opts.GitHubToken, "")
+// trigger source, implementing the repo-move scenario logic:
+//
+//  1. Compute destFullName: apply GitHubOrg mapping from the Mapping (if set),
+//     then fall back to DestGitHubOrg option, then leave unchanged.
+//
+//  2. If GitHubToken != "" and fullName != "": call ResolveRepoID(destFullName).
+//     - success → use the new external_id (repo found in dest GH org).
+//     - ErrRepoNotFound → emit "manual" with remediation note; return ok=false
+//     (skip project creation — repo not accessible to dest App installation).
+//     - other error → emit "error" action; return ok=false.
+//
+//  3. If GitHubToken == "":
+//     - destFullName == fullName (GH org unchanged) → reuse capturedID silently
+//     (current same-org behaviour).
+//     - destFullName != fullName (org changed, no token) → emit "manual"; return
+//     ok=false (cannot resolve without a token).
+//
+//  4. If capturedID is non-empty and no name to resolve → reuse capturedID.
+//
+//  5. No external_id at all → emit "manual"; return ok=false.
+func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID string, mapping *manifest.Mapping, opts Options) (string, bool) {
+	// Step 1: compute destination full-name by applying the GH-org mapping.
+	destFullName := s.mapRepoFullName(fullName, mapping, opts)
+
+	if opts.GitHubToken != "" && destFullName != "" {
+		// Step 2: token available — call the GitHub API.
+		id, err := resolveRepoID(destFullName, opts.GitHubToken, "")
 		if err != nil {
-			// Resolution failed — warn, fall back to captured id.
-			report.add("project-ext-id", target, "manual",
-				fmt.Sprintf("GitHub repo ID resolution failed for %q: %v — using captured id %q if available", fullName, err, capturedID))
-			// Fall through to capturedID below.
-		} else {
-			return id, true
+			if isNotFound(err) {
+				// Repo missing in dest GH org → skip onboarding, emit manual.
+				report.add("project-ext-id", target, "manual",
+					fmt.Sprintf("repo %s not found in the destination GitHub org — "+
+						"move/connect it to the dest CircleCI GitHub App, then re-run", destFullName))
+				return "", false
+			}
+			// Other error → surface as error action.
+			report.add("project-ext-id", target, "error",
+				fmt.Sprintf("GitHub repo ID resolution failed for %q: %v", destFullName, err))
+			return "", false
 		}
+		// Success: log that the repo was found (helpful in dry-run preview too).
+		report.add("project-ext-id", target, "resolved",
+			fmt.Sprintf("repo %s found in destination GitHub org (id %s)", destFullName, id))
+		return id, true
 	}
+
+	// Step 3: no token.
+	if destFullName != "" && destFullName != fullName {
+		// GH org changed but no token to verify — must skip.
+		report.add("project-ext-id", target, "manual",
+			fmt.Sprintf("cannot resolve %s without --github-token; "+
+				"provide a GitHub token (repo read) to verify/resolve repos in the new GitHub org", destFullName))
+		return "", false
+	}
+
+	// Step 4: same GH org (or no full-name) → reuse captured id.
 	if capturedID != "" {
 		return capturedID, true
 	}
+
+	// Step 5: nothing available.
 	report.add("project-ext-id", target, "manual",
 		"no external_id available (no GitHub token and no captured id) — create pipeline definition manually")
 	return "", false
+}
+
+// mapRepoFullName applies the GH-org mapping to a source repo full-name.
+// Precedence: Mapping.GitHubOrg > opts.DestGitHubOrg > unchanged.
+func (s *Syncer) mapRepoFullName(sourceFullName string, mapping *manifest.Mapping, opts Options) string {
+	if sourceFullName == "" {
+		return sourceFullName
+	}
+	// Explicit mapping wins.
+	if mapping != nil && mapping.GitHubOrg != nil {
+		return mapping.MapRepoFullName(sourceFullName)
+	}
+	// DestGitHubOrg convenience option.
+	if opts.DestGitHubOrg != "" {
+		// Replace the owner portion (everything before the first "/").
+		slash := strings.Index(sourceFullName, "/")
+		if slash > 0 {
+			return opts.DestGitHubOrg + sourceFullName[slash:]
+		}
+	}
+	return sourceFullName
+}
+
+// isNotFound returns true when err wraps or equals github.ErrRepoNotFound.
+func isNotFound(err error) bool {
+	return errors.Is(err, github.ErrRepoNotFound)
 }
 
 // EnableBuilds enables builds for a project that was previously created paused.

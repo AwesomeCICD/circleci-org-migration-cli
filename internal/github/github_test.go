@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,6 +81,27 @@ func TestResolveRepoID_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error %q should mention 'not found'", err.Error())
+	}
+	// 404 must wrap ErrRepoNotFound so callers can distinguish it.
+	if !errors.Is(err, ErrRepoNotFound) {
+		t.Errorf("errors.Is(err, ErrRepoNotFound) = false; 404 must wrap ErrRepoNotFound")
+	}
+}
+
+// TestResolveRepoID_NonNotFoundDoesNotWrapErrRepoNotFound verifies that non-404
+// errors do NOT satisfy errors.Is(err, ErrRepoNotFound).
+func TestResolveRepoID_NonNotFoundDoesNotWrapErrRepoNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := ResolveRepoID("acme/web", "token", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for 500, got nil")
+	}
+	if errors.Is(err, ErrRepoNotFound) {
+		t.Error("500 error must NOT wrap ErrRepoNotFound")
 	}
 }
 

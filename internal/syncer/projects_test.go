@@ -2,10 +2,12 @@ package syncer
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/github"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -2194,25 +2196,21 @@ func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 	}
 }
 
-// TestSyncProjects_AppDest_ExternalID_ResolveFails_FallbackToCaptured verifies
-// that when token resolution fails, the captured ID is used with a warning action.
-func TestSyncProjects_AppDest_ExternalID_ResolveFails_FallbackToCaptured(t *testing.T) {
+// TestSyncProjects_AppDest_ExternalID_ResolveOtherError_Skips verifies that
+// when token resolution fails with a non-404 error (e.g. network failure), an
+// "error" action is emitted and CreatePipelineDefinition is NOT called — the
+// project is skipped rather than onboarded with a potentially stale id.
+func TestSyncProjects_AppDest_ExternalID_ResolveOtherError_Skips(t *testing.T) {
 	origResolve := resolveRepoID
 	defer func() { resolveRepoID = origResolve }()
 	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
 		return "", errors.New("GitHub API unreachable")
 	}
 
-	var gotSpec project.PipelineDefinitionSpec
-	fp := &fakeProjectWriter{
-		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
-			gotSpec = spec
-			return "def-id", nil
-		},
-	}
+	fp := &fakeProjectWriter{}
 	sy := newSyncerAppProjects(fp)
 
-	p := appManifestProject("web", "gh/acme/web", "captured-fallback", "code_push")
+	p := appManifestProject("web", "gh/acme/web", "captured-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
 	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok"})
@@ -2220,20 +2218,20 @@ func TestSyncProjects_AppDest_ExternalID_ResolveFails_FallbackToCaptured(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Captured ID should be used as fallback.
-	if gotSpec.ConfigExternalID != "captured-fallback" {
-		t.Errorf("ConfigExternalID: got %q, want captured-fallback (fallback)", gotSpec.ConfigExternalID)
+	// CreatePipelineDefinition must NOT be called when resolution errors.
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called when repo ID resolution errors out")
 	}
 
-	// A warning (manual) action should be emitted.
+	// An "error" action should be emitted.
 	found := false
 	for _, a := range actionsOfKind(rep, "project-ext-id") {
-		if a.Status == "manual" {
+		if a.Status == "error" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected a 'manual' project-ext-id action when resolution fails")
+		t.Error("expected an 'error' project-ext-id action when resolution fails with non-404")
 	}
 }
 
@@ -2590,4 +2588,306 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Repo-move scenario: resolveExternalID with GitHub-org mapping
+// ---------------------------------------------------------------------------
+
+// stubResolveRepoID replaces resolveRepoID for the duration of a test and
+// restores it on cleanup.  It returns the provided id/error for the given
+// full-name, and errors for any other name.
+func stubResolveRepoID(t *testing.T, expectName, returnID string, returnErr error) {
+	t.Helper()
+	orig := resolveRepoID
+	t.Cleanup(func() { resolveRepoID = orig })
+	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+		if fullName == expectName {
+			return returnID, returnErr
+		}
+		t.Errorf("resolveRepoID called with unexpected name %q (want %q)", fullName, expectName)
+		return "", errors.New("unexpected call")
+	}
+}
+
+// TestResolveExternalID_TokenAndRepoFound verifies that when a token is
+// provided and the repo is found in the dest GH org, the resolved id is used
+// and a "resolved" action is emitted.
+func TestResolveExternalID_TokenAndRepoFound(t *testing.T) {
+	stubResolveRepoID(t, "acme-new/web", "999", nil)
+
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	// Manually override repo full-names to use the source GH owner "acme".
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		Org:       manifest.OrgMapping{From: "circleci/src", To: "circleci/dst"},
+		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must be called when repo is found in dest GH org")
+	}
+
+	// "resolved" actions must be present for config and checkout sources.
+	resolvedCount := 0
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "resolved" {
+			resolvedCount++
+		}
+	}
+	if resolvedCount < 2 {
+		t.Errorf("expected at least 2 'resolved' ext-id actions (config+checkout), got %d", resolvedCount)
+	}
+}
+
+// TestResolveExternalID_TokenAndRepo404_ManualSkip verifies that when a token
+// is provided but the repo returns 404, a "manual" action is emitted and
+// CreatePipelineDefinition is NOT called.
+func TestResolveExternalID_TokenAndRepo404_ManualSkip(t *testing.T) {
+	// Return a 404-style error (wraps github.ErrRepoNotFound).
+	notFoundErr := fmt.Errorf("github: ResolveRepoID %q: %w (HTTP 404)", "acme-new/web", github.ErrRepoNotFound)
+	stubResolveRepoID(t, "acme-new/web", "", notFoundErr)
+
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		Org:       manifest.OrgMapping{From: "circleci/src", To: "circleci/dst"},
+		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called when repo is not found in dest GH org")
+	}
+
+	// A "manual" action must be emitted with remediation guidance.
+	found := false
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "manual" && containsStr(a.Detail, "not found in the destination GitHub org") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-ext-id action mentioning 'not found in the destination GitHub org'")
+	}
+}
+
+// TestResolveExternalID_NoToken_OrgChanged_Manual verifies that when no token
+// is provided but the GH org has changed (destFullName != sourceFullName), a
+// "manual" action is emitted requiring the operator to provide a token.
+func TestResolveExternalID_NoToken_OrgChanged_Manual(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		Org:       manifest.OrgMapping{From: "circleci/src", To: "circleci/dst"},
+		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
+	}
+
+	// No GitHubToken.
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called when org changed and no token provided")
+	}
+
+	found := false
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "manual" && containsStr(a.Detail, "--github-token") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 'manual' project-ext-id action mentioning '--github-token'")
+	}
+}
+
+// TestResolveExternalID_NoToken_OrgSame_ReusesCapturedID verifies that when no
+// token is provided and the GH org has NOT changed, the captured id is reused
+// silently (no ext-id action emitted).
+func TestResolveExternalID_NoToken_OrgSame_ReusesCapturedID(t *testing.T) {
+	var gotSpec project.PipelineDefinitionSpec
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			gotSpec = spec
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	// Same GH org: fullName and destFullName are both "acme/web".
+	p := appManifestProject("web", "gh/acme/web", "captured-123", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	// No mapping and no DestGitHubOrg → org unchanged.
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must be called when captured id is available and org is unchanged")
+	}
+	if gotSpec.ConfigExternalID != "captured-123" {
+		t.Errorf("ConfigExternalID: got %q, want captured-123", gotSpec.ConfigExternalID)
+	}
+
+	// No ext-id action should be emitted for same-org (silent reuse).
+	extIDActions := actionsOfKind(rep, "project-ext-id")
+	for _, a := range extIDActions {
+		if a.Status == "manual" || a.Status == "error" {
+			t.Errorf("unexpected ext-id action status %q for same-org captured id: %s", a.Status, a.Detail)
+		}
+	}
+}
+
+// TestResolveExternalID_DestGitHubOrg_Option verifies that Options.DestGitHubOrg
+// is used to remap the owner when no Mapping.GitHubOrg is set.
+func TestResolveExternalID_DestGitHubOrg_Option(t *testing.T) {
+	stubResolveRepoID(t, "acme-dest/web", "777", nil)
+
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	// Use DestGitHubOrg option (no GitHubOrg in mapping).
+	_, err := sy.SyncProjects(m, nil, nil, Options{
+		Apply:         true,
+		GitHubToken:   "gh-tok",
+		DestGitHubOrg: "acme-dest",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must be called when DestGitHubOrg resolves the repo")
+	}
+}
+
+// TestResolveExternalID_MappingGitHubOrg_PrecedenceOverDestOption verifies that
+// Mapping.GitHubOrg takes precedence over Options.DestGitHubOrg.
+func TestResolveExternalID_MappingGitHubOrg_PrecedenceOverDestOption(t *testing.T) {
+	// The mapping says "acme-mapping"; the option says "acme-option".
+	// The stub should be called with "acme-mapping/web", not "acme-option/web".
+	stubResolveRepoID(t, "acme-mapping/web", "888", nil)
+
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-mapping"},
+	}
+
+	_, err := sy.SyncProjects(m, nil, mapping, Options{
+		Apply:         true,
+		GitHubToken:   "gh-tok",
+		DestGitHubOrg: "acme-option", // must be ignored
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must be called when Mapping.GitHubOrg resolves the repo")
+	}
+}
+
+// TestSyncProjects_AppDest_DryRun_ResolvePreview verifies that in dry-run
+// mode, resolveExternalID is still called (read-only GitHub GET) so the
+// preview accurately shows found/skipped status.
+func TestSyncProjects_AppDest_DryRun_ResolvePreview(t *testing.T) {
+	stubResolveRepoID(t, "acme-new/web", "555", nil)
+
+	fp := &fakeProjectWriter{}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	p.PipelineDefinitions[0].ConfigSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].CheckoutSource.RepoFullName = "acme/web"
+	p.PipelineDefinitions[0].Triggers[0].EventSource.RepoFullName = "acme/web"
+	m := projectManifest("gh/acme", p)
+
+	mapping := &manifest.Mapping{
+		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
+	}
+
+	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: false, GitHubToken: "gh-tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No writes.
+	if fp.hasCalled("CreateAppProject") {
+		t.Error("CreateAppProject must NOT be called in dry-run mode")
+	}
+	if fp.hasCalled("CreatePipelineDefinition") {
+		t.Error("CreatePipelineDefinition must NOT be called in dry-run mode")
+	}
+
+	// But resolve results must be visible in the report.
+	found := false
+	for _, a := range actionsOfKind(rep, "project-ext-id") {
+		if a.Status == "resolved" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("dry-run must show 'resolved' ext-id actions (GitHub GET is read-only — run in dry-run)")
+	}
 }

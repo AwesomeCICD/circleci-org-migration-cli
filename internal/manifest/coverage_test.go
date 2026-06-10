@@ -297,3 +297,96 @@ func TestSecretBundle_SetProjectSecret_NilMap(t *testing.T) {
 		t.Errorf("ProjectSecrets[gh/o/p][K] = %q; want %q", b.ProjectSecrets["gh/o/p"]["K"], "v")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mapping.MapRepoFullName
+// ---------------------------------------------------------------------------
+
+// TestMapRepoFullName_MappedOwner verifies that when GitHubOrg is set and the
+// source full-name matches the From owner, the owner is replaced with To.
+func TestMapRepoFullName_MappedOwner(t *testing.T) {
+	m := &Mapping{
+		Org:       OrgMapping{From: "circleci/src-id", To: "circleci/dst-id"},
+		GitHubOrg: &OrgMapping{From: "acme", To: "acme-new"},
+	}
+	cases := []struct {
+		source string
+		want   string
+	}{
+		{"acme/web", "acme-new/web"},
+		{"acme/api", "acme-new/api"},
+		{"acme/some-repo", "acme-new/some-repo"},
+	}
+	for _, tc := range cases {
+		got := m.MapRepoFullName(tc.source)
+		if got != tc.want {
+			t.Errorf("MapRepoFullName(%q) = %q; want %q", tc.source, got, tc.want)
+		}
+	}
+}
+
+// TestMapRepoFullName_UnmappedOwner verifies that when the source full-name
+// does not match the From owner, it is returned unchanged.
+func TestMapRepoFullName_UnmappedOwner(t *testing.T) {
+	m := &Mapping{
+		GitHubOrg: &OrgMapping{From: "acme", To: "acme-new"},
+	}
+	cases := []string{
+		"other-org/web",
+		"acme-extra/repo", // prefix match must be exact (owner + slash)
+		"",
+	}
+	for _, tc := range cases {
+		got := m.MapRepoFullName(tc)
+		if got != tc {
+			t.Errorf("MapRepoFullName(%q) = %q; want unchanged %q", tc, got, tc)
+		}
+	}
+}
+
+// TestMapRepoFullName_NoGitHubOrg verifies that when GitHubOrg is nil,
+// MapRepoFullName returns the source full-name unchanged.
+func TestMapRepoFullName_NoGitHubOrg(t *testing.T) {
+	m := &Mapping{
+		Org: OrgMapping{From: "circleci/src", To: "circleci/dst"},
+	}
+	got := m.MapRepoFullName("acme/web")
+	if got != "acme/web" {
+		t.Errorf("MapRepoFullName with nil GitHubOrg: got %q, want %q", got, "acme/web")
+	}
+}
+
+// TestMapRepoFullName_NilMapping verifies that calling MapRepoFullName on a
+// nil Mapping returns the source full-name unchanged (nil-safe).
+func TestMapRepoFullName_NilMapping(t *testing.T) {
+	var m *Mapping
+	got := m.MapRepoFullName("acme/web")
+	if got != "acme/web" {
+		t.Errorf("MapRepoFullName on nil Mapping: got %q, want %q", got, "acme/web")
+	}
+}
+
+// TestMappingGitHubOrg_RoundTrip verifies that the GitHubOrg field is
+// persisted and reloaded correctly via Save/LoadMapping.
+func TestMappingGitHubOrg_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/mapping.json"
+
+	in := &Mapping{
+		Org:       OrgMapping{From: "circleci/src-id", To: "circleci/dst-id"},
+		GitHubOrg: &OrgMapping{From: "acme", To: "acme-new"},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := LoadMapping(path)
+	if err != nil {
+		t.Fatalf("LoadMapping: %v", err)
+	}
+	if out.GitHubOrg == nil {
+		t.Fatal("GitHubOrg must not be nil after round-trip")
+	}
+	if out.GitHubOrg.From != "acme" || out.GitHubOrg.To != "acme-new" {
+		t.Errorf("GitHubOrg = %+v; want {From:acme To:acme-new}", out.GitHubOrg)
+	}
+}

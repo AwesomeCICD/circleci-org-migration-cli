@@ -20,6 +20,32 @@ type Mapping struct {
 	// slug is "circleci/<org-id>/<project-id>" and cannot be derived from the
 	// source repo name).
 	Projects map[string]string `json:"projects,omitempty"`
+
+	// GitHubOrg maps the source GitHub organization owner to the destination
+	// GitHub organization owner. Use this when repos have been moved to a
+	// different GitHub org as part of the migration. For example, if repos
+	// lived under "acme" in GitHub and now live under "acme-new":
+	//   {"from": "acme", "to": "acme-new"}
+	//
+	// When set, MapRepoFullName rewrites repo full-names from "{From}/{repo}"
+	// to "{To}/{repo}" so that ResolveRepoID looks up repos in the correct
+	// destination GitHub org.
+	GitHubOrg *OrgMapping `json:"github_org,omitempty"`
+}
+
+// MapRepoFullName returns the destination GitHub repo full-name for a given
+// source full-name (e.g. "acme/web"). If GitHubOrg is set and the source
+// full-name starts with "{GitHubOrg.From}/", the owner is replaced with
+// "{GitHubOrg.To}". Otherwise the full-name is returned unchanged.
+func (m *Mapping) MapRepoFullName(sourceFullName string) string {
+	if m == nil || m.GitHubOrg == nil {
+		return sourceFullName
+	}
+	prefix := m.GitHubOrg.From + "/"
+	if strings.HasPrefix(sourceFullName, prefix) {
+		return m.GitHubOrg.To + "/" + strings.TrimPrefix(sourceFullName, prefix)
+	}
+	return sourceFullName
 }
 
 // OrgMapping maps the source org slug to the destination org slug.
