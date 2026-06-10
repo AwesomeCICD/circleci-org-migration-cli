@@ -299,6 +299,36 @@ func TestSecretBundle_SetProjectSecret_NilMap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SecretBundle.Save — nested directory creation
+// ---------------------------------------------------------------------------
+
+// TestSecretBundleSave_CreatesParentDir verifies that SecretBundle.Save
+// automatically creates the parent directory when it does not exist. This is
+// the fix for the live bug where slugs like "gh/org/repo" caused "no such
+// file or directory" because the path was written verbatim as a nested path.
+func TestSecretBundleSave_CreatesParentDir(t *testing.T) {
+	base := t.TempDir()
+	// Path with three levels of directories that do not yet exist.
+	path := filepath.Join(base, "subdir", "that", "does", "not", "exist", "secrets.json")
+
+	b := NewSecretBundle()
+	b.SetContextSecret("ctx", "KEY", "val")
+
+	if err := b.Save(path); err != nil {
+		t.Fatalf("Save to nested path: %v", err)
+	}
+
+	// Read it back to confirm the file is valid.
+	loaded, err := LoadSecretBundle(path)
+	if err != nil {
+		t.Fatalf("LoadSecretBundle: %v", err)
+	}
+	if loaded.ContextSecrets["ctx"]["KEY"] != "val" {
+		t.Errorf("ContextSecrets[ctx][KEY] = %q; want %q", loaded.ContextSecrets["ctx"]["KEY"], "val")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Mapping.MapRepoFullName
 // ---------------------------------------------------------------------------
 

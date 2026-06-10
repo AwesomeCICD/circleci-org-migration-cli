@@ -11,8 +11,12 @@ parameters:
     description: The context name (must match the manifest).
   output:
     type: string
-    default: secrets.json
-    description: Output path for the secrets bundle.
+    default: ""
+    description: |
+      Output path for the secrets bundle. Leave empty (the default) to let the
+      script choose a sanitized path under captured/ (e.g.
+      captured/secrets-context-<name>.json). Set explicitly only when you need
+      a custom destination; the parent directory is created automatically.
 steps:
   - run:
       name: Extract secrets for context <<parameters.context_name>>

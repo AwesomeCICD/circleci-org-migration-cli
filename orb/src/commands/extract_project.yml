@@ -11,8 +11,13 @@ parameters:
     description: The project slug (e.g. gh/my-org/my-repo).
   output:
     type: string
-    default: secrets.json
-    description: Output path for the secrets bundle.
+    default: ""
+    description: |
+      Output path for the secrets bundle. Leave empty (the default) to let the
+      script choose a sanitized path under captured/ (e.g.
+      captured/secrets-project-<safe-slug>.json, where slashes in the slug are
+      replaced with underscores). Set explicitly only when you need a custom
+      destination; the parent directory is created automatically.
 steps:
   - run:
       name: Extract secrets for project <<parameters.project_slug>>

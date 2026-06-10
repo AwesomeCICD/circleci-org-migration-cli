@@ -28,6 +28,6 @@ steps:
       at: .
   - run:
       name: Merge secret bundles
-      command: circleci-migrate secrets merge -o secrets.json secrets-*.json
+      command: circleci-migrate secrets merge -o secrets.json captured/*.json
   - store_artifacts:
       path: secrets.json
