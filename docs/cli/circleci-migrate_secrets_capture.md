@@ -35,16 +35,17 @@ circleci-migrate secrets capture --manifest <file> [flags]
 ### Options
 
 ```
-      --branch string              Branch to check out for the extraction run (default "main")
-      --context stringArray        Context name(s) to capture for each project (default: all attached)
-      --enable-trigger             Enable api-trigger-with-config if not already on, and restore after capture
-  -h, --help                       help for capture
-      --manifest string            Path to the export manifest (required)
-  -o, --output string              Path to the secret bundle to write/append (default "secrets.json")
-      --poll-timeout duration      Maximum time to wait for each pipeline to complete (0 = no timeout) (default 10m0s)
-      --project stringArray        Project slug(s) to capture (default: all in manifest)
-      --remove-restrictions        Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)
-      --skip-restricted-contexts   Skip contexts that have project/expression/group restrictions (attach warning instead of attempting) (default true)
+      --artifact-retention-days int   Set the org's artifact-retention to this many days BEFORE triggering the extraction pipeline. Recommended value: 1 (the minimum). Default 0 = leave unchanged. The prior value is logged so you can restore it manually. This control is NOT auto-restored after capture — keeping retention low is the safe default when secrets may land in artifacts.
+      --branch string                 Branch to check out for the extraction run (default "main")
+      --context stringArray           Context name(s) to capture for each project (default: all attached)
+      --enable-trigger                Enable api-trigger-with-config if not already on, and restore after capture
+  -h, --help                          help for capture
+      --manifest string               Path to the export manifest (required)
+  -o, --output string                 Path to the secret bundle to write/append (default "secrets.json")
+      --poll-timeout duration         Maximum time to wait for each pipeline to complete (0 = no timeout) (default 10m0s)
+      --project stringArray           Project slug(s) to capture (default: all in manifest)
+      --remove-restrictions           Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)
+      --skip-restricted-contexts      Skip contexts that have project/expression/group restrictions (attach warning instead of attempting) (default true)
 ```
 
 ### Options inherited from parent commands
