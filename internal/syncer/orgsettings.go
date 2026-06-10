@@ -10,7 +10,7 @@ import (
 // OrgSettingsWriter is the destination org-settings API the syncer needs.
 // It is a narrow interface over the methods defined in api/org/orgsettings.go,
 // api/org/otel.go, api/org/contacts.go, api/org/storage_retention.go,
-// api/org/budgets.go, and api/org/blockusers.go.
+// api/org/budgets.go, api/org/blockusers.go, and api/org/release_tracker.go.
 type OrgSettingsWriter interface {
 	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
 	SetOIDCClaims(orgID string, audience []string, ttl string) error
@@ -30,6 +30,9 @@ type OrgSettingsWriter interface {
 	// SetBlockUnregisteredUsers enables or disables the "block unregistered user
 	// spend" feature.
 	SetBlockUnregisteredUsers(orgUUID string, enabled bool) error
+	// SetReleaseTrackerSettings applies release-tracker settings to the destination
+	// org via PATCH. Called only when ReleaseTracker is non-nil in the manifest.
+	SetReleaseTrackerSettings(orgUUID string, ttl string) error
 }
 
 // StorageRetentionArgs carries the storage-retention values to write. It is a
@@ -103,6 +106,9 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	s.syncStorageRetention(report, src, destOrgID, opts)
 	s.syncBudgets(report, src, destOrgID, mapping, opts)
 	s.syncBlockUnregisteredUsers(report, src, destOrgID, opts)
+	s.reportOrbs(report, src)
+	s.syncReleaseTracker(report, src, destOrgID, opts)
+	s.reportEnvironmentHierarchy(report, src)
 
 	return report, nil
 }
@@ -494,6 +500,74 @@ func (s *Syncer) syncBlockUnregisteredUsers(report *Report, src *manifest.OrgSet
 	}
 	report.add("org-settings", target, "set",
 		fmt.Sprintf("set block_unregistered_users enabled=%v", enabled))
+}
+
+// reportOrbs records each captured orb as a "manual" action. Orbs cannot be
+// auto-migrated: the destination org has a different namespace and orb source
+// code is only accessible via GraphQL / the republish workflow. Each entry
+// carries enough metadata (name, version, is_private, hidden) for the operator
+// to republish the orb in the destination namespace.
+func (s *Syncer) reportOrbs(report *Report, src *manifest.OrgSettings) {
+	for _, orb := range src.Orbs {
+		target := "orb:" + orb.OrbName
+		report.add("org-settings", target, "manual",
+			fmt.Sprintf(
+				"orb %q (version %s, private=%v, hidden=%v) — "+
+					"republish this orb in the destination namespace; "+
+					"orbs cannot be auto-migrated (the destination org has a different namespace "+
+					"and orb source is only available via GraphQL/republish)",
+				orb.OrbName, orb.LatestVersionNumber, orb.IsPrivate, orb.Hidden,
+			))
+	}
+}
+
+// syncReleaseTracker transfers the release-tracker settings (inconclusive_release_ttl)
+// to the destination org via PATCH. Dry-run aware.
+func (s *Syncer) syncReleaseTracker(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+	if src.ReleaseTracker == nil || src.ReleaseTracker.InconclusiveReleaseTTL == "" {
+		return
+	}
+	ttl := src.ReleaseTracker.InconclusiveReleaseTTL
+	target := "release_tracker_settings"
+
+	if !opts.Apply {
+		report.add("org-settings", target, "set",
+			fmt.Sprintf("would set release-tracker inconclusive_release_ttl=%q", ttl))
+		return
+	}
+
+	if err := s.OrgSettings.SetReleaseTrackerSettings(destOrgID, ttl); err != nil {
+		report.add("org-settings", target, "error",
+			fmt.Sprintf("could not set release-tracker settings: %v", err))
+		return
+	}
+	report.add("org-settings", target, "set",
+		fmt.Sprintf("set release-tracker inconclusive_release_ttl=%q", ttl))
+}
+
+// reportEnvironmentHierarchy records the captured environment hierarchy as a
+// "manual" action. The hierarchy cannot be auto-migrated because recreating it
+// via the POST endpoint requires destination deploy-integration IDs that cannot
+// be mapped automatically from the source org. The report includes the hierarchy
+// name and level names so the operator can recreate it manually after configuring
+// the matching deploy integrations in the destination.
+func (s *Syncer) reportEnvironmentHierarchy(report *Report, src *manifest.OrgSettings) {
+	if src.EnvironmentHierarchy == nil {
+		return
+	}
+	h := src.EnvironmentHierarchy
+	levelNames := make([]string, 0, len(h.Levels))
+	for _, l := range h.Levels {
+		levelNames = append(levelNames, fmt.Sprintf("%d:%s", l.Position, l.IntegrationName))
+	}
+	report.add("org-settings", "environment_hierarchy", "manual",
+		fmt.Sprintf(
+			"environment hierarchy %q (levels: %v) — "+
+				"recreate the environment hierarchy in the destination after configuring "+
+				"the matching deploy integrations; the source integration IDs cannot be "+
+				"mapped automatically",
+			h.Name, levelNames,
+		))
 }
 
 // splitDestSlug extracts the (vcs, orgName) pair from a destination slug

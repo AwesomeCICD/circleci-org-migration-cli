@@ -275,6 +275,238 @@ func TestOrgSettingsStorageRetention_OmitEmpty(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OrgOrbs round-trip
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestOrgOrbsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Host: "https://circleci.com",
+			Org: Org{
+				Slug: "gh/acme",
+				Settings: &OrgSettings{
+					Orbs: []OrgOrb{
+						{
+							OrbName:             "acme/my-orb",
+							LatestVersionNumber: "0.3.0",
+							OrbID:               "orb-uuid-1",
+							IsPrivate:           true,
+							Hidden:              false,
+							Description:         "A custom orb",
+						},
+						{
+							OrbName:             "acme/other-orb",
+							LatestVersionNumber: "1.0.0",
+							OrbID:               "orb-uuid-2",
+							IsPrivate:           false,
+							Hidden:              true,
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil after round-trip")
+	}
+	orbs := out.Source.Org.Settings.Orbs
+	if len(orbs) != 2 {
+		t.Fatalf("Orbs count = %d, want 2", len(orbs))
+	}
+	if orbs[0].OrbName != "acme/my-orb" || orbs[0].LatestVersionNumber != "0.3.0" {
+		t.Errorf("orbs[0]: got %+v", orbs[0])
+	}
+	if !orbs[0].IsPrivate {
+		t.Error("orbs[0].IsPrivate should be true")
+	}
+	if orbs[0].Description != "A custom orb" {
+		t.Errorf("orbs[0].Description: got %q want %q", orbs[0].Description, "A custom orb")
+	}
+	if orbs[1].OrbName != "acme/other-orb" || !orbs[1].Hidden {
+		t.Errorf("orbs[1]: got %+v", orbs[1])
+	}
+}
+
+func TestOrgOrbs_OmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Org: Org{
+				Slug:     "gh/acme",
+				Settings: &OrgSettings{FeatureFlags: map[string]bool{"f": true}},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(out.Source.Org.Settings.Orbs) != 0 {
+		t.Errorf("expected Orbs to be empty, got %+v", out.Source.Org.Settings.Orbs)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseTrackerSettings round-trip
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestReleaseTrackerSettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Org: Org{
+				Slug: "gh/acme",
+				Settings: &OrgSettings{
+					ReleaseTracker: &ReleaseTrackerSettings{
+						InconclusiveReleaseTTL: "1h",
+					},
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil after round-trip")
+	}
+	rt := out.Source.Org.Settings.ReleaseTracker
+	if rt == nil {
+		t.Fatal("ReleaseTracker is nil after round-trip")
+	}
+	if rt.InconclusiveReleaseTTL != "1h" {
+		t.Errorf("InconclusiveReleaseTTL = %q, want %q", rt.InconclusiveReleaseTTL, "1h")
+	}
+}
+
+func TestReleaseTrackerSettings_OmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Org: Org{
+				Slug:     "gh/acme",
+				Settings: &OrgSettings{FeatureFlags: map[string]bool{"f": true}},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings.ReleaseTracker != nil {
+		t.Errorf("expected ReleaseTracker to be nil when not set, got %+v",
+			out.Source.Org.Settings.ReleaseTracker)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EnvironmentHierarchy round-trip
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestEnvironmentHierarchyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Org: Org{
+				Slug: "gh/acme",
+				Settings: &OrgSettings{
+					EnvironmentHierarchy: &EnvironmentHierarchy{
+						Name:        "prod-hierarchy",
+						Description: "Production environment hierarchy",
+						Levels: []EnvHierarchyLevel{
+							{Position: 1, IntegrationName: "orbs-dev"},
+							{Position: 2, IntegrationName: "prod-integration"},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings == nil {
+		t.Fatal("Settings is nil after round-trip")
+	}
+	h := out.Source.Org.Settings.EnvironmentHierarchy
+	if h == nil {
+		t.Fatal("EnvironmentHierarchy is nil after round-trip")
+	}
+	if h.Name != "prod-hierarchy" {
+		t.Errorf("Name = %q, want %q", h.Name, "prod-hierarchy")
+	}
+	if h.Description != "Production environment hierarchy" {
+		t.Errorf("Description = %q", h.Description)
+	}
+	if len(h.Levels) != 2 {
+		t.Fatalf("Levels count = %d, want 2", len(h.Levels))
+	}
+	if h.Levels[0].Position != 1 || h.Levels[0].IntegrationName != "orbs-dev" {
+		t.Errorf("Levels[0] = %+v", h.Levels[0])
+	}
+	if h.Levels[1].Position != 2 || h.Levels[1].IntegrationName != "prod-integration" {
+		t.Errorf("Levels[1] = %+v", h.Levels[1])
+	}
+}
+
+func TestEnvironmentHierarchy_OmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	in := &Manifest{
+		Source: Source{
+			Org: Org{
+				Slug:     "gh/acme",
+				Settings: &OrgSettings{FeatureFlags: map[string]bool{"f": true}},
+			},
+		},
+	}
+	if err := in.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.Source.Org.Settings.EnvironmentHierarchy != nil {
+		t.Errorf("expected EnvironmentHierarchy to be nil when not set, got %+v",
+			out.Source.Org.Settings.EnvironmentHierarchy)
+	}
+}
+
 func TestSecretBundleRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.json")

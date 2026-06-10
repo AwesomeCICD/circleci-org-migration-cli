@@ -33,6 +33,9 @@ type fakeOrgAPI struct {
 	getStorageRetention       func(orgUUID string) (*org.StorageRetention, error)
 	getBudgets                func(orgUUID string) ([]org.Budget, error)
 	getBlockUnregisteredUsers func(orgUUID string) (bool, error)
+	getOrgOrbs                func(orgUUID string) ([]org.OrgOrb, error)
+	getReleaseTrackerSettings func(orgUUID string) (*org.ReleaseTrackerSettings, error)
+	getEnvironmentHierarchy   func(orgUUID string) (*org.EnvHierarchyConfig, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -145,6 +148,27 @@ func (f *fakeOrgAPI) GetBlockUnregisteredUsers(orgUUID string) (bool, error) {
 		return f.getBlockUnregisteredUsers(orgUUID)
 	}
 	return false, nil
+}
+
+func (f *fakeOrgAPI) GetOrgOrbs(orgUUID string) ([]org.OrgOrb, error) {
+	if f.getOrgOrbs != nil {
+		return f.getOrgOrbs(orgUUID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetReleaseTrackerSettings(orgUUID string) (*org.ReleaseTrackerSettings, error) {
+	if f.getReleaseTrackerSettings != nil {
+		return f.getReleaseTrackerSettings(orgUUID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) GetEnvironmentHierarchy(orgUUID string) (*org.EnvHierarchyConfig, error) {
+	if f.getEnvironmentHierarchy != nil {
+		return f.getEnvironmentHierarchy(orgUUID)
+	}
+	return nil, nil
 }
 
 type fakeContextAPI struct {
