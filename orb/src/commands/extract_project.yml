@@ -16,8 +16,8 @@ parameters:
 steps:
   - run:
       name: Extract secrets for project <<parameters.project_slug>>
-      command: |
-        circleci-migrate secrets extract \
-          --manifest "<<parameters.manifest>>" \
-          --project "<<parameters.project_slug>>" \
-          --output "<<parameters.output>>"
+      environment:
+        ORB_PARAM_MANIFEST: <<parameters.manifest>>
+        ORB_PARAM_PROJECT_SLUG: <<parameters.project_slug>>
+        ORB_PARAM_OUTPUT: <<parameters.output>>
+      command: <<include(scripts/extract-project.sh)>>
