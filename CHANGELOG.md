@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.1.0...v0.2.0) (2026-06-10)
+
+
+### Features
+
+* orb inline — inline private orbs into a config (overlap-window workaround) ([8997747](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/899774780ce6163c8dc8ff17517e209423695ad5))
+
+
+### Bug Fixes
+
+* **ci:** relax orb yamllint (line-length/document-start); drop release-as ([55cc52b](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/55cc52be8c90c3e373527fa34587370d1c644cdc))
+
 ## 0.1.0 (2026-06-10)
 
 
