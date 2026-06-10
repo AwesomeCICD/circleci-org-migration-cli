@@ -7,7 +7,8 @@
 
 set -e
 
-repo="CircleCI-Public/circleci-org-migration-cli"
+# temp home; becomes CircleCI-Labs/<repo> on the Labs move
+repo="AwesomeCICD/circleci-org-migration-cli"
 ver="${ORB_PARAM_VERSION:-latest}"
 install_dir="${ORB_PARAM_INSTALL_DIR:-/usr/local/bin}"
 force="${ORB_PARAM_FORCE_INSTALL:-false}"

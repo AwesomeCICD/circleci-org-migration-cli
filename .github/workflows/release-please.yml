@@ -1,0 +1,35 @@
+# release-please: automated semantic versioning from Conventional Commits.
+#
+# FLOW:
+#   Conventional Commit lands on main
+#     -> release-please opens/updates a "release PR" (bumps version + changelog)
+#     -> merge the release PR
+#     -> release-please creates the git tag + GitHub release
+#     -> CircleCI watches this repo, so the tag push fires the goreleaser
+#        release workflow, which builds + APPENDS cross-platform binaries +
+#        checksums to that release and publishes the Homebrew formula.
+#
+# We use the default GITHUB_TOKEN. For the tag it pushes to trigger the
+# CircleCI release workflow, the tag must reach CircleCI — CircleCI watches the
+# repo, so the tag push fires the release workflow there (CircleCI, not GitHub
+# Actions, runs goreleaser).
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
