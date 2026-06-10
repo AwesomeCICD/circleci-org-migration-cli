@@ -214,6 +214,24 @@ To fix on the move:
 6. Make the repo public + add brew + release-please (per §6 decisions).
 7. Lower-priority audit gaps: SSO sub-fields (timeout/group-mappings/idp-bypass),
    org-group definitions, runner resource classes.
+8. **Orb review findings — address at the CircleCI-Labs republish** (2026-06-09):
+   `orb-tools/review` was removed from both `orb-publish-dev` and `orb-publish-prod`
+   because it is advisory-only but CircleCI has no per-job allow-failure, so its
+   non-zero exit falsely coloured the v0.2.0 `orb-publish-prod` workflow red even
+   though the orb published successfully.  The three findings to act on later:
+
+   - **RC010 — rename orb components to snake_case.**  Current kebab-case names
+     (`extract-context`, `restore-cli`, `cache-cli`, `extract-project`) are the
+     already-published public orb API; renaming is a **breaking change**.  Do it
+     when republishing fresh under the `cci-labs` namespace (no existing consumers
+     to break).
+   - **RC011 — update usage-example orb version refs.**  The `examples/` YAML files
+     pin an old/`1.0.0` version.  Update to the current semver on the next publish.
+   - **Consider moving long inline shell to `<<include(scripts/...)>>` files.**
+     The `extract-context` and `extract-project` commands contain sizeable inline
+     shell blocks; extracting them to `orb/src/scripts/` and referencing them via
+     `<<include(...)>>` would improve readability and `shellcheck` coverage (scripts
+     in `orb/src/scripts/` are already checked by the `shellcheck/check` gate).
 
 ---
 
