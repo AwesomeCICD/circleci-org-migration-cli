@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
@@ -23,6 +24,7 @@ func newMigrateCommand() *cobra.Command {
 		mappingPath     string
 		apply           bool
 		yes             bool
+		noInput         bool
 		missing         string
 		githubToken     string
 		destGitHubOrg   string
@@ -35,9 +37,19 @@ func newMigrateCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "migrate --source-org <slug> --dest-org <slug> [--apply]",
+		Use:   "migrate [--source-org <slug> --dest-org <slug>] [--apply]",
 		Short: "All-in-one: export source org and sync into destination org.",
 		Long: `migrate combines 'export' and 'sync' into a single command.
+
+When run WITHOUT --source-org and --dest-org on an interactive terminal,
+migrate launches a guided walkthrough that prompts for each required value and
+lets you choose which parts of the org to migrate. This interactive mode is
+designed for first-time use and manual one-off migrations.
+
+When --source-org and --dest-org are provided, migrate runs non-interactively
+using only the supplied flags — suitable for scripting and CI pipelines. Pass
+--no-input (or run with stdin redirected / piped) to make the command error
+immediately if any required value is missing, instead of blocking on a prompt.
 
 It reads data from the source CircleCI organisation (using the source token),
 builds an in-memory manifest, and immediately applies it to the destination
@@ -61,18 +73,54 @@ For more control — e.g. to inspect or edit the manifest between steps — run
 'export' and 'sync' separately.
 
 Examples:
+  # Interactive guided walkthrough (no flags required):
+  circleci-migrate migrate
+
+  # Non-interactive (flags bypass all prompts):
   circleci-migrate migrate \
     --source-org gh/acme --dest-org gh/acme-new \
     --source-token $SRC_TOKEN --dest-token $DST_TOKEN
 
+  # CI pipeline (non-interactive, apply immediately):
   circleci-migrate migrate \
     --source-org gh/acme --dest-org gh/acme-new \
-    --secrets secrets.json --apply --yes
+    --secrets secrets.json --apply --yes --no-input
 
+  # Save manifest and audit report:
   circleci-migrate migrate \
     --source-org gh/acme --dest-org gh/acme-new \
     --apply -o manifest.json --report migration-report.md`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Determine whether interactive mode is needed.
+			// Interactive mode fires when BOTH required org flags are absent AND
+			// stdin is an interactive TTY AND --no-input is not set.
+			missingSourceOrg := sourceOrg == ""
+			missingDestOrg := destOrg == ""
+			wantsInteraction := (missingSourceOrg || missingDestOrg) && !noInput
+
+			if wantsInteraction && !isInteractiveTTY() {
+				// Non-TTY (piped/CI) with missing required flags: fail clearly.
+				if missingSourceOrg {
+					return fmt.Errorf("--source-org is required in non-interactive mode " +
+						"(e.g. --source-org gh/acme); run without flags on an interactive " +
+						"terminal for a guided walkthrough")
+				}
+				return fmt.Errorf("--dest-org is required in non-interactive mode " +
+					"(e.g. --dest-org gh/acme-new); run without flags on an interactive " +
+					"terminal for a guided walkthrough")
+			}
+
+			if wantsInteraction {
+				// Launch interactive walkthrough.
+				var err error
+				sourceOrg, destOrg, secretsPath, missing, apply, yes,
+					skipContexts, skipProjects, skipOrgSettings, skipExtras,
+					err = runMigrateWalkthrough(cmd, sourceOrg, destOrg, yes)
+				if err != nil {
+					return err
+				}
+			}
+
 			// --- validation ---------------------------------------------------
 			if sourceOrg == "" {
 				return fmt.Errorf("--source-org is required (e.g. --source-org gh/acme)")
@@ -212,25 +260,287 @@ Examples:
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&sourceOrg, "source-org", "", "Source organization slug: gh/<org> or circleci/<org-id> (required)")
-	f.StringVar(&destOrg, "dest-org", "", "Destination organization slug: gh/<org> or circleci/<org-id> (required)")
-	f.StringVar(&secretsPath, "secrets", "secrets.json", "Path to a captured secret bundle (optional)")
-	f.StringVar(&mappingPath, "mapping", "", "Path to a source->destination mapping file (optional)")
-	f.BoolVar(&apply, "apply", false, "Write changes to the destination (default: dry run)")
-	f.BoolVarP(&yes, "yes", "y", false, "Auto-confirm enabling builds after project creation (skip the interactive prompt)")
-	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
+	f.StringVar(&sourceOrg, "source-org", "",
+		"Source organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)")
+	f.StringVar(&destOrg, "dest-org", "",
+		"Destination organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)")
+	f.StringVar(&secretsPath, "secrets", "secrets.json",
+		"Path to a captured secret bundle (optional)")
+	f.StringVar(&mappingPath, "mapping", "",
+		"Path to a source->destination mapping file (optional)")
+	f.BoolVar(&apply, "apply", false,
+		"Write changes to the destination (default: dry run)")
+	f.BoolVarP(&yes, "yes", "y", false,
+		"Auto-confirm enabling builds after project creation (skip the interactive prompt)")
+	f.BoolVar(&noInput, "no-input", false,
+		"Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)")
+	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip,
+		"How to handle variables with no captured value: skip|placeholder")
 	f.StringVar(&githubToken, "github-token", os.Getenv("GITHUB_TOKEN"),
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).")
+		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions "+
+			"in a GitHub App destination org. Defaults to $GITHUB_TOKEN. Required when repos have been "+
+			"moved to a new GitHub org (--dest-github-org or mapping github_org).")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
-		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
-	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting and syncing contexts")
-	f.BoolVar(&skipProjects, "skip-projects", false, "Skip exporting and syncing projects")
-	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
-	f.BoolVar(&skipExtras, "skip-extras", false, "Skip checkout keys, webhooks, and schedules")
-	f.StringVarP(&output, "output", "o", "", "If set, save the exported manifest to this path")
-	f.StringVar(&reportPath, "report", "", "If set, save the human-readable audit report to this path")
+		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new "+
+			"GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden "+
+			"by an explicit github_org entry in the mapping file. Requires --github-token.")
+	f.BoolVar(&skipContexts, "skip-contexts", false,
+		"Skip exporting and syncing contexts")
+	f.BoolVar(&skipProjects, "skip-projects", false,
+		"Skip exporting and syncing projects")
+	f.BoolVar(&skipOrgSettings, "skip-org-settings", false,
+		"Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
+	f.BoolVar(&skipExtras, "skip-extras", false,
+		"Skip checkout keys, webhooks, and schedules")
+	f.StringVarP(&output, "output", "o", "",
+		"If set, save the exported manifest to this path")
+	f.StringVar(&reportPath, "report", "",
+		"If set, save the human-readable audit report to this path")
 
 	return cmd
+}
+
+// migrateComponents is the ordered list of migration components shown during
+// the interactive walkthrough.
+var migrateComponents = []string{
+	"contexts",
+	"projects",
+	"org settings",
+	"extras (checkout keys, webhooks, schedules)",
+}
+
+// runMigrateWalkthrough conducts the interactive guided migration walkthrough.
+// It writes prompts to cmd.ErrOrStderr() and reads answers from os.Stdin.
+//
+// The function delegates to RunMigrateWalkthroughWith so that tests can inject
+// synthetic I/O via NewPrompter without spawning a real TTY.
+func runMigrateWalkthrough(
+	cmd *cobra.Command,
+	sourceOrg, destOrg string,
+	yes bool,
+) (
+	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
+	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
+	err error,
+) {
+	return RunMigrateWalkthroughWith(
+		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
+		cmd,
+		sourceOrg, destOrg, yes,
+	)
+}
+
+// RunMigrateWalkthroughWith is the injectable interactive walkthrough used by
+// both the command (via runMigrateWalkthrough) and external test files.
+// p supplies the I/O streams; cmd is used for printing the apply summary.
+func RunMigrateWalkthroughWith(
+	p *Prompter,
+	cmd *cobra.Command,
+	sourceOrg, destOrg string,
+	yes bool,
+) (
+	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
+	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
+	err error,
+) {
+	out := p.out
+
+	// Values gathered interactively. The walkthrough only runs when the
+	// corresponding flags are absent, so these start empty and are filled by
+	// the prompts below.
+	var (
+		secretsPath, missing                                           string
+		apply, skipContexts, skipProjects, skipOrgSettings, skipExtras bool
+	)
+
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "╔══════════════════════════════════════════════════╗")
+	fmt.Fprintln(out, "║   CircleCI Organization Migration — guided mode  ║")
+	fmt.Fprintln(out, "╚══════════════════════════════════════════════════╝")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Tip: re-run with --source-org and --dest-org to skip these prompts.")
+	fmt.Fprintln(out, "")
+
+	// --- 1. Org slugs --------------------------------------------------------
+	fmt.Fprintln(out, "Step 1 of 4 — Source and destination organizations")
+	fmt.Fprintln(out, "  Slug format: gh/<org>  or  circleci/<org-id>")
+	fmt.Fprintln(out, "")
+
+	if sourceOrg == "" {
+		sourceOrg, err = p.askRequired("Source org slug", "e.g. gh/acme")
+		if err != nil {
+			return
+		}
+	} else {
+		fmt.Fprintf(out, "  Source org:      %s  (from --source-org)\n", sourceOrg)
+	}
+
+	if destOrg == "" {
+		destOrg, err = p.askRequired("Destination org slug", "e.g. gh/acme-new")
+		if err != nil {
+			return
+		}
+	} else {
+		fmt.Fprintf(out, "  Destination org: %s  (from --dest-org)\n", destOrg)
+	}
+
+	// --- 2. Tokens -----------------------------------------------------------
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 2 of 4 — API tokens")
+	fmt.Fprintln(out, "  Tokens are read without echo and are never written to logs.")
+	fmt.Fprintln(out, "")
+
+	srcToken := rootOptions.SourceTokenOrDefault()
+	if srcToken == "" {
+		srcToken, err = p.askSecretRequired("Source API token (CIRCLECI_SOURCE_TOKEN)")
+		if err != nil {
+			return
+		}
+		rootOptions.SourceToken = srcToken
+	} else {
+		fmt.Fprintln(out, "  Source token:      already set via flag or environment variable")
+	}
+
+	dstToken := rootOptions.DestTokenOrDefault()
+	if dstToken == "" {
+		dstToken, err = p.askSecretRequired("Destination API token (CIRCLECI_DEST_TOKEN)")
+		if err != nil {
+			return
+		}
+		rootOptions.DestToken = dstToken
+	} else {
+		fmt.Fprintln(out, "  Destination token: already set via flag or environment variable")
+	}
+
+	// --- 3. What to migrate --------------------------------------------------
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 3 of 4 — What to migrate")
+	fmt.Fprintln(out, "")
+
+	var chosen []string
+	chosen, err = p.askMultiSelect(
+		"Select components to migrate (default: all):",
+		migrateComponents,
+	)
+	if err != nil {
+		return
+	}
+
+	// Map selection back to skip flags.  Start by skipping everything, then
+	// un-skip whatever the user chose.
+	skipContexts = true
+	skipProjects = true
+	skipOrgSettings = true
+	skipExtras = true
+	for _, c := range chosen {
+		switch c {
+		case migrateComponents[0]: // contexts
+			skipContexts = false
+		case migrateComponents[1]: // projects
+			skipProjects = false
+		case migrateComponents[2]: // org settings
+			skipOrgSettings = false
+		case migrateComponents[3]: // extras
+			skipExtras = false
+		}
+	}
+
+	// --- 3b. Secrets bundle --------------------------------------------------
+	fmt.Fprintln(out, "")
+	var useBundle bool
+	useBundle, err = p.askBool("Do you have a captured secrets bundle to provide?", false)
+	if err != nil {
+		return
+	}
+	if useBundle {
+		secretsPath, err = p.askWithDefault("Path to secrets bundle", "secrets.json")
+		if err != nil {
+			return
+		}
+	} else {
+		secretsPath = "" // no bundle
+	}
+
+	// --- 3c. Missing secrets handling ----------------------------------------
+	fmt.Fprintln(out, "")
+	var missingChoice string
+	missingChoice, err = p.askChoice(
+		"How should missing secret values be handled?",
+		[]string{syncer.MissingSkip, syncer.MissingPlaceholder},
+	)
+	if err != nil {
+		return
+	}
+	missing = missingChoice
+
+	// --- 4. Dry run vs apply -------------------------------------------------
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 4 of 4 — Dry run or apply")
+	fmt.Fprintln(out, "  A dry run previews changes without writing anything to the destination.")
+	fmt.Fprintln(out, "")
+
+	var doApply bool
+	doApply, err = p.askBool("Perform a dry run first (recommended)?", true)
+	if err != nil {
+		return
+	}
+	apply = !doApply // "yes to dry run" → apply=false
+
+	if apply {
+		// Show a summary and require an explicit "yes" before proceeding.
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  !! APPLY MODE — changes WILL be written to the destination org !!")
+		fmt.Fprintln(out, "")
+		fmt.Fprintf(out, "  Source:      %s\n", sourceOrg)
+		fmt.Fprintf(out, "  Destination: %s\n", destOrg)
+		selected := componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras)
+		fmt.Fprintf(out, "  Migrating:   %s\n", selected)
+		fmt.Fprintln(out, "")
+
+		var confirmed bool
+		confirmed, err = p.askBool("Confirm — proceed with APPLY?", false)
+		if err != nil {
+			return
+		}
+		if !confirmed {
+			err = fmt.Errorf("migration cancelled by user")
+			return
+		}
+	}
+
+	outSourceOrg = sourceOrg
+	outDestOrg = destOrg
+	outSecretsPath = secretsPath
+	outMissing = missing
+	outApply = apply
+	outYes = yes
+	outSkipContexts = skipContexts
+	outSkipProjects = skipProjects
+	outSkipOrgSettings = skipOrgSettings
+	outSkipExtras = skipExtras
+	return
+}
+
+// componentsLabel builds a short human-readable list of selected migration
+// components, used in the apply confirmation summary.
+func componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras bool) string {
+	var parts []string
+	if !skipContexts {
+		parts = append(parts, "contexts")
+	}
+	if !skipProjects {
+		parts = append(parts, "projects")
+	}
+	if !skipOrgSettings {
+		parts = append(parts, "org settings")
+	}
+	if !skipExtras {
+		parts = append(parts, "extras")
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // BuildMigrateMapping returns the manifest.Mapping to use during sync.
