@@ -105,6 +105,8 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	rootCmd.AddCommand(newSyncCommand())
 	rootCmd.AddCommand(newMigrateCommand())
 	rootCmd.AddCommand(newOrbCommand())
+	// gen-docs is a hidden developer command — not shown in --help.
+	rootCmd.AddCommand(newGenDocsCommand())
 
 	return rootCmd
 }

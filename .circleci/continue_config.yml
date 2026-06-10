@@ -118,6 +118,21 @@ jobs:
       - run:
           name: golangci-lint
           command: golangci-lint run --timeout 5m
+      - run:
+          name: docs-check (stale docs gate)
+          command: |
+            # Build the binary and regenerate docs; fail if any file changed.
+            go build -o bin/circleci-migrate .
+            ./bin/circleci-migrate gen-docs --man-dir man --md-dir docs/cli
+            if ! git diff --exit-code -- man/ docs/cli/ > /dev/null 2>&1; then
+              echo ""
+              echo "ERROR: Generated docs are out of date."
+              echo "Run 'make docs && make man' locally and commit the result."
+              echo ""
+              git diff --stat -- man/ docs/cli/
+              exit 1
+            fi
+            echo "docs-check: OK (no diff)"
 
   security-vuln:
     executor: go
