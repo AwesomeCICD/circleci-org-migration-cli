@@ -13,6 +13,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	apirunner "github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
@@ -40,6 +41,12 @@ type ContextAPI interface {
 	ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error)
 	ListEnvVars(contextID string) ([]cctx.EnvVar, error)
 	ListRestrictions(contextID string) ([]cctx.Restriction, error)
+}
+
+// RunnerAPI is the subset of the runner client the exporter needs.
+// When Runner is nil on the Exporter, runner resource classes are not captured.
+type RunnerAPI interface {
+	GetResourceClassesByNamespace(namespace string) ([]apirunner.ResourceClass, error)
 }
 
 // ProjectAPI is the subset of the project client the exporter needs.
@@ -78,6 +85,11 @@ type Options struct {
 	// IncludeExtras captures the "safety net" project metadata: checkout-key
 	// metadata, webhooks, and scheduled pipelines.
 	IncludeExtras bool
+	// RunnerNamespace, when non-empty, captures all self-hosted runner resource
+	// classes registered under this namespace via the runner API. The namespace
+	// must be supplied explicitly — there is no clean org→namespace lookup.
+	// When empty, runner resource classes are silently skipped.
+	RunnerNamespace string
 }
 
 // Exporter reads a source org via the injected clients.
@@ -85,6 +97,10 @@ type Exporter struct {
 	Org      OrgAPI
 	Contexts ContextAPI
 	Projects ProjectAPI
+	// Runner, when set, is used to capture self-hosted runner resource classes.
+	// When nil, runner resource classes are silently skipped even if
+	// Options.RunnerNamespace is set.
+	Runner RunnerAPI
 	// Out receives human-readable progress lines. If nil, progress is silent.
 	Out io.Writer
 }
@@ -132,8 +148,47 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 		e.exportProjects(m, opts, o)
 	}
 
+	e.exportRunnerResourceClasses(m, opts)
+
 	m.SortStable()
 	return m, nil
+}
+
+// exportRunnerResourceClasses captures self-hosted runner resource classes for
+// the namespace named in opts.RunnerNamespace. When the namespace is empty or
+// the Runner client is not set, the step is silently skipped. On API error an
+// "org"-scoped warning (code "runner_unreadable") is added and the export
+// continues — runner classes are never a fatal failure.
+func (e *Exporter) exportRunnerResourceClasses(m *manifest.Manifest, opts Options) {
+	if opts.RunnerNamespace == "" {
+		clog.Debugf("runner_namespace not set; skipping runner resource class capture")
+		return
+	}
+	if e.Runner == nil {
+		clog.Debugf("Runner client not set; skipping runner resource class capture")
+		return
+	}
+
+	e.logf("Listing runner resource classes for namespace %q...", opts.RunnerNamespace)
+	clog.Debugf("GetResourceClassesByNamespace namespace=%s", opts.RunnerNamespace)
+
+	classes, err := e.Runner.GetResourceClassesByNamespace(opts.RunnerNamespace)
+	if err != nil {
+		m.AddWarning("org", "runner_unreadable",
+			fmt.Sprintf("could not list runner resource classes for namespace %q: %v", opts.RunnerNamespace, err))
+		return
+	}
+
+	m.RunnerNamespace = opts.RunnerNamespace
+	for _, rc := range classes {
+		m.RunnerResourceClasses = append(m.RunnerResourceClasses, manifest.RunnerResourceClass{
+			Name:        rc.ResourceClass,
+			Description: rc.Description,
+		})
+	}
+
+	clog.Debugf("captured %d runner resource class(es) for namespace %s", len(classes), opts.RunnerNamespace)
+	e.logf("  → captured %d runner resource class(es)", len(classes))
 }
 
 func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) error {

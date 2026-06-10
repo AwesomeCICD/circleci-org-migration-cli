@@ -36,10 +36,28 @@ type Manifest struct {
 	Source      Source    `json:"source"`
 	Contexts    []Context `json:"contexts"`
 	Projects    []Project `json:"projects"`
+	// RunnerNamespace is the source CircleCI namespace whose self-hosted runner
+	// resource classes were captured. Empty when the export was run without
+	// --runner-namespace. The namespace is stored here so that the syncer can
+	// translate "<srcNs>/<name>" → "<destNs>/<name>" when recreating classes.
+	RunnerNamespace       string                `json:"runner_namespace,omitempty"`
+	RunnerResourceClasses []RunnerResourceClass `json:"runner_resource_classes,omitempty"`
 	// Warnings records anything that could not be fully captured (for example
 	// a context secret value, which CircleCI never exposes via API). These are
 	// surfaced in the audit report so nothing is dropped silently.
 	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// RunnerResourceClass is a self-hosted runner resource class definition
+// captured from the CircleCI runner API. Only the class definition is stored;
+// ephemeral runner instances are not captured (they are re-registered by the
+// runner agent at startup and do not need to be migrated).
+type RunnerResourceClass struct {
+	// Name is the full "<namespace>/<class-name>" identifier as it appears in
+	// the source namespace (e.g. "acme/my-runner").
+	Name string `json:"name"`
+	// Description is the human-readable description of the resource class.
+	Description string `json:"description,omitempty"`
 }
 
 // Source identifies the organization an export was taken from.

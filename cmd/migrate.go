@@ -9,6 +9,7 @@ import (
 	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
+	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/exporter"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/report"
@@ -18,22 +19,24 @@ import (
 
 func newMigrateCommand() *cobra.Command {
 	var (
-		sourceOrg       string
-		destOrg         string
-		secretsPath     string
-		mappingPath     string
-		apply           bool
-		yes             bool
-		noInput         bool
-		missing         string
-		githubToken     string
-		destGitHubOrg   string
-		skipContexts    bool
-		skipProjects    bool
-		skipOrgSettings bool
-		skipExtras      bool
-		output          string
-		reportPath      string
+		sourceOrg           string
+		destOrg             string
+		secretsPath         string
+		mappingPath         string
+		apply               bool
+		yes                 bool
+		noInput             bool
+		missing             string
+		githubToken         string
+		destGitHubOrg       string
+		skipContexts        bool
+		skipProjects        bool
+		skipOrgSettings     bool
+		skipExtras          bool
+		output              string
+		reportPath          string
+		runnerNamespace     string
+		destRunnerNamespace string
 	)
 
 	cmd := &cobra.Command{
@@ -168,12 +171,21 @@ Examples:
 				Out:      cmd.ErrOrStderr(),
 			}
 
+			if runnerNamespace != "" {
+				srcRunnerClient, rerr := runner.NewClient(rootOptions, srcToken)
+				if rerr != nil {
+					return fmt.Errorf("creating source runner client: %w", rerr)
+				}
+				ex.Runner = srcRunnerClient
+			}
+
 			m, err := ex.Export(exporter.Options{
 				Host:            rootOptions.Host,
 				OrgSlug:         sourceOrg,
 				IncludeContexts: !skipContexts,
 				IncludeProjects: !skipProjects,
 				IncludeExtras:   !skipExtras,
+				RunnerNamespace: runnerNamespace,
 			})
 			if err != nil {
 				return err
@@ -231,10 +243,20 @@ Examples:
 				Out:         cmd.ErrOrStderr(),
 			}
 			opts := syncer.Options{
-				Apply:          apply,
-				MissingSecrets: missing,
-				GitHubToken:    githubToken,
-				DestGitHubOrg:  destGitHubOrg,
+				Apply:               apply,
+				MissingSecrets:      missing,
+				GitHubToken:         githubToken,
+				DestGitHubOrg:       destGitHubOrg,
+				DestRunnerNamespace: destRunnerNamespace,
+			}
+
+			// Wire up the runner client for the destination when needed.
+			if destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0 {
+				dstRunnerClient, rerr := runner.NewClient(rootOptions, dstToken)
+				if rerr != nil {
+					return fmt.Errorf("creating destination runner client: %w", rerr)
+				}
+				sy.Runner = dstRunnerClient
 			}
 
 			if !skipOrgSettings {
@@ -260,6 +282,15 @@ Examples:
 				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes); enableErr != nil {
 					return enableErr
 				}
+			}
+
+			// Runner resource classes.
+			if len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "" {
+				rep, syncErr := sy.SyncRunnerResourceClasses(m, opts)
+				if syncErr != nil {
+					return syncErr
+				}
+				printSyncReport(cmd, "Runner Resource Classes", rep)
 			}
 			return nil
 		},
@@ -302,6 +333,13 @@ Examples:
 		"If set, save the exported manifest to this path")
 	f.StringVar(&reportPath, "report", "",
 		"If set, save the human-readable audit report to this path")
+	f.StringVar(&runnerNamespace, "runner-namespace", "",
+		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
+			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+	f.StringVar(&destRunnerNamespace, "dest-runner-namespace", "",
+		"Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). "+
+			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
+			"When omitted and the manifest contains runner classes, each is flagged for manual recreation.")
 
 	return cmd
 }
