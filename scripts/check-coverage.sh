@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PROFILE="${1:-coverage.out}"
-THRESHOLD="${2:-${COVERAGE_THRESHOLD:-75}}"
+THRESHOLD="${2:-${COVERAGE_THRESHOLD:-85}}"
 
 if [ ! -f "$PROFILE" ]; then
   echo "coverage profile not found: $PROFILE" >&2
