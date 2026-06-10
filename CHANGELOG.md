@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.4.0...v0.4.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **api:** retention SET via PUT; v1.1 settings flat-shape (standalone orgs) ([#60](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/60)) ([8dbacfd](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/8dbacfdfcdc42c8d2d2317fe358c88e0ab1b96d8))
+* **secrets-capture:** fix 7 live bugs found running capture interactively ([#61](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/61)) ([c306ebb](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c306ebb2f038d1a691d18dc4f8d94b3ead6c29a6))
+
 ## [0.4.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.3.0...v0.4.0) (2026-06-10)
 
 
