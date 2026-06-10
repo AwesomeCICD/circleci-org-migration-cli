@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.3.0...v0.4.0) (2026-06-10)
+
+
+### Features
+
+* capture & transfer spend budgets, block-unregistered-users, and org contacts (write) ([#54](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/54)) ([d4e1147](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d4e114799011e8b89450c9e6e8b5f35584d5b4e5))
+* capture org orbs + release-tracker settings & environment hierarchy ([#56](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/56)) ([2dba112](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2dba11282a9eea6f79de35ec75d4961fb17d5291))
+* capture, transfer, and minimize storage retention (artifacts) ([#52](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/52)) ([c01b06e](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c01b06ecbd0919ce5750dd4d5c0639c70d13690b))
+* **secrets:** age/SSH encryption of the secret bundle + S3 storage option ([#55](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/55)) ([8a0e900](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/8a0e900ac886ee0831e9d4ff2093ee085acfc022))
+* **secrets:** interactive guided extraction (recommended path) with host-project selection ([#57](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/57)) ([c670d24](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c670d24255d3840a0021edb5b0d9b2a4087de240))
+
 ## [0.3.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.2.0...v0.3.0) (2026-06-10)
 
 
