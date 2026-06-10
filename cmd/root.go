@@ -6,6 +6,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
@@ -65,6 +66,14 @@ Typical workflow:
 
 Use "circleci-migrate [command] --help" for more information about a command.`,
 		SilenceUsage: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			level := clog.LevelInfo
+			if rootOptions.Debug {
+				level = clog.LevelDebug
+			}
+			clog.SetDefault(clog.New(os.Stderr, level))
+			return nil
+		},
 	}
 
 	// Persistent (global) flags — available to every sub-command.
