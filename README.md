@@ -70,14 +70,26 @@ For more control — for example to review or edit the manifest between phases �
 
 ## Install
 
-### Prebuilt binaries (recommended)
+<!--
+  NOTE: temp home is github.com/AwesomeCICD; it becomes CircleCI-Labs (repo +
+  homebrew-tap, orb namespace cci-labs) on the Labs move.
+-->
 
-Download the latest release from [GitHub Releases](https://github.com/CircleCI-Public/circleci-org-migration-cli/releases):
+### Homebrew
+
+```bash
+brew install AwesomeCICD/tap/circleci-migrate
+# (becomes CircleCI-Labs/tap/circleci-migrate on the Labs move)
+```
+
+### Prebuilt binaries
+
+Download the latest release from [GitHub Releases](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases):
 
 ```bash
 # Example for Linux amd64 — replace version, os, and arch as needed
 VERSION=v1.0.0
-curl -sfL "https://github.com/CircleCI-Public/circleci-org-migration-cli/releases/download/${VERSION}/circleci-migrate_${VERSION#v}_linux_amd64.tar.gz" \
+curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/${VERSION}/circleci-migrate_${VERSION#v}_linux_amd64.tar.gz" \
   | tar -xz
 sudo install -m 0755 circleci-migrate /usr/local/bin/
 ```
@@ -88,7 +100,7 @@ Supported OS/arch combinations: `linux_amd64`, `linux_arm64`, `darwin_amd64`, `d
 ### Build from source
 
 ```bash
-git clone https://github.com/CircleCI-Public/circleci-org-migration-cli.git
+git clone https://github.com/AwesomeCICD/circleci-org-migration-cli.git
 cd circleci-org-migration-cli
 make build            # produces ./bin/circleci-migrate
 # or without make:
@@ -96,6 +108,28 @@ go build -o bin/circleci-migrate .
 ```
 
 **Requirements:** Go 1.26 or later.
+
+### Releasing
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please)
+and [GoReleaser](https://goreleaser.com/), driven by
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+Conventional Commit lands on main
+  → release-please opens/updates a "release PR" (computes the version bump + changelog)
+  → merge the release PR
+  → release-please creates the git tag + GitHub release
+  → CircleCI (watching this repo) runs GoReleaser on the new tag, which builds
+    and APPENDS the cross-platform binaries + checksums to that release and
+    publishes the Homebrew formula to the tap.
+```
+
+release-please owns version bumps and the changelog; GoReleaser only builds and
+appends artifacts. The Homebrew formula is published to the
+`AwesomeCICD/homebrew-tap` repo (becomes `CircleCI-Labs/homebrew-tap` on the Labs
+move) and requires a push token for that tap repo; until that repo and token
+exist, the formula upload is skipped automatically.
 
 ---
 

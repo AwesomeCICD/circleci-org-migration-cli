@@ -42,18 +42,46 @@ snapshot:
   # version_template is the v2 key (v1 used name_template).
   version_template: '{{ incpatch .Version }}-snapshot'
 
+brews:
+  # Homebrew formula for the circleci-migrate CLI binary.
+  #
+  # PREREQUISITES (publish is skipped until both exist — see skip_upload below):
+  #   1. The tap repo AwesomeCICD/homebrew-tap must exist (becomes
+  #      CircleCI-Labs/homebrew-tap on the Labs move).
+  #   2. A token with push access to the tap repo must be provided to GoReleaser
+  #      via repository.token (commonly a HOMEBREW_TAP_GITHUB_TOKEN /
+  #      GITHUB_TOKEN env var with push rights to the tap repo). The default
+  #      release GITHUB_TOKEN only has access to THIS repo, so a separate token
+  #      is required to push the formula to the tap.
+  - name: circleci-migrate
+    repository:
+      owner: AwesomeCICD # becomes CircleCI-Labs/homebrew-tap on the Labs move
+      name: homebrew-tap
+      branch: main
+    directory: Formula
+    homepage: https://github.com/AwesomeCICD/circleci-org-migration-cli
+    description: CLI to migrate CircleCI organizations (contexts, projects, secrets) between orgs
+    license: MIT
+    install: |
+      bin.install "circleci-migrate"
+    test: |
+      system "#{bin}/circleci-migrate version"
+    # `auto` skips the formula upload on snapshots/pre-releases and gracefully
+    # no-ops when the tap repo / push token are absent, so a release won't fail
+    # before AwesomeCICD/homebrew-tap exists and a token is wired up.
+    skip_upload: auto
+
 release:
-  # Owner and repo are inferred from the remote URL:
-  # github.com/CircleCI-Public/circleci-org-migration-cli
+  # Owner and repo are inferred from the remote URL (temp home):
+  # github.com/AwesomeCICD/circleci-org-migration-cli
+  # (becomes CircleCI-Labs/circleci-org-migration-cli on the Labs move)
   github: {}
+  # release-please creates the tag + GitHub release from Conventional Commits;
+  # GoReleaser appends the cross-platform binaries + checksums to that release
+  # rather than creating its own.
+  mode: append
 
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
-      - Merge pull request
-      - Merge branch
+  # release-please owns the changelog (generated from Conventional Commits),
+  # so GoReleaser does not generate one.
+  disable: true
