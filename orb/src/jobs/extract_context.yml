@@ -13,14 +13,14 @@ parameters:
     type: string
     default: manifest.json
     description: Path to the exported manifest file.
-  context-name:
+  context_name:
     type: string
     description: The context name (must match the manifest and the workflow context key).
-  cache-cli:
+  cache_cli:
     type: boolean
     default: true
     description: Cache the CLI binary between runs.
-  cache-key-prefix:
+  cache_key_prefix:
     type: string
     default: v1
     description: Bump to bust the CLI binary cache.
@@ -29,13 +29,13 @@ steps:
   - checkout
   - install:
       version: <<parameters.version>>
-      cache-cli: <<parameters.cache-cli>>
-      cache-key-prefix: <<parameters.cache-key-prefix>>
-  - extract-context:
+      cache_cli: <<parameters.cache_cli>>
+      cache_key_prefix: <<parameters.cache_key_prefix>>
+  - extract_context:
       manifest: <<parameters.manifest>>
-      context-name: <<parameters.context-name>>
-      output: secrets-context-<<parameters.context-name>>.json
+      context_name: <<parameters.context_name>>
+      output: secrets-context-<<parameters.context_name>>.json
   - persist_to_workspace:
       root: .
       paths:
-        - secrets-context-<<parameters.context-name>>.json
+        - secrets-context-<<parameters.context_name>>.json

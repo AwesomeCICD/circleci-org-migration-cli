@@ -95,8 +95,8 @@ Repo is hosted (temporarily) at **`github.com/AwesomeCICD/circleci-org-migration
 - **Orb** (`orb/src/`): Orb Development Kit layout (`@orb.yml`, `commands/`,
   `jobs/`, `executors/`, `examples/`, `scripts/`). Packed with `circleci orb pack
   orb/src`. Commands: `install` (with version+arch caching, act-orb pattern),
-  `restore-cli`, `cache-cli`, `extract-context`, `extract-project`. Jobs:
-  `extract-context`, `extract-project`, `merge`. Executor `default` = small docker.
+  `restore_cli`, `cache_cli`, `extract_context`, `extract_project`. Jobs:
+  `extract_context`, `extract_project`, `merge`. Executor `default` = small docker.
 - **CI** (`.circleci/`): `config.yml` is a **setup config** using
   `circleci/path-filtering@3.0.0`; it continues to `continue_config.yml` which
   holds the `ci`, `release` (tag-only, GoReleaser), and `orb-publish-dev`/
@@ -116,7 +116,7 @@ Repo is hosted (temporarily) at **`github.com/AwesomeCICD/circleci-org-migration
   (page-size 50 — 100 returns 500), which works for BOTH OAuth and App orgs (the
   old v1.1 followed-list missed App-org projects).
 - **secret VALUES** (the masked-by-API problem) — two paths:
-  - **Orb** (in-pipeline): run `extract-context`/`extract-project` jobs.
+  - **Orb** (in-pipeline): run `extract_context`/`extract_project` jobs.
   - **`secrets capture`** (CLI-orchestrated, NO committed config): enables
     `api-trigger-with-config` (org + project) and RESTORES it; triggers a pipeline
     with an **inline/unversioned config** (`POST .../pipeline/run` with
@@ -258,15 +258,15 @@ To fix on the move:
    non-zero exit falsely coloured the v0.2.0 `orb-publish-prod` workflow red even
    though the orb published successfully.  The three findings to act on later:
 
-   - **RC010 — rename orb components to snake_case.**  Current kebab-case names
-     (`extract-context`, `restore-cli`, `cache-cli`, `extract-project`) are the
-     already-published public orb API; renaming is a **breaking change**.  Do it
-     when republishing fresh under the `cci-labs` namespace (no existing consumers
-     to break).
-   - **RC011 — update usage-example orb version refs.**  The `examples/` YAML files
-     pin an old/`1.0.0` version.  Update to the current semver on the next publish.
+   - **RC010 — DONE (PR #TBD).** Renamed all kebab-case component names and
+     parameters to snake_case (`extract_context`, `restore_cli`, `cache_cli`,
+     `extract_project`; params `context_name`, `project_slug`, `install_dir`,
+     `cache_key_prefix`, `force_install`, `cache_cli`). This is a breaking orb API
+     change; acceptable for a pre-1.0 orb. `orb-tools/review` re-enabled in CI.
+   - **RC011 — DONE (PR #TBD).** Example files updated from stale `@1.0.0` to
+     `@volatile` (orb-tools convention for examples).
    - **Consider moving long inline shell to `<<include(scripts/...)>>` files.**
-     The `extract-context` and `extract-project` commands contain sizeable inline
+     The `extract_context` and `extract_project` commands contain sizeable inline
      shell blocks; extracting them to `orb/src/scripts/` and referencing them via
      `<<include(...)>>` would improve readability and `shellcheck` coverage (scripts
      in `orb/src/scripts/` are already checked by the `shellcheck/check` gate).

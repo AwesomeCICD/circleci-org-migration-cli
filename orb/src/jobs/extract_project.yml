@@ -12,14 +12,14 @@ parameters:
     type: string
     default: manifest.json
     description: Path to the exported manifest file.
-  project-slug:
+  project_slug:
     type: string
     description: The project slug (e.g. gh/my-org/my-repo).
-  cache-cli:
+  cache_cli:
     type: boolean
     default: true
     description: Cache the CLI binary between runs.
-  cache-key-prefix:
+  cache_key_prefix:
     type: string
     default: v1
     description: Bump to bust the CLI binary cache.
@@ -28,13 +28,13 @@ steps:
   - checkout
   - install:
       version: <<parameters.version>>
-      cache-cli: <<parameters.cache-cli>>
-      cache-key-prefix: <<parameters.cache-key-prefix>>
-  - extract-project:
+      cache_cli: <<parameters.cache_cli>>
+      cache_key_prefix: <<parameters.cache_key_prefix>>
+  - extract_project:
       manifest: <<parameters.manifest>>
-      project-slug: <<parameters.project-slug>>
-      output: secrets-project-<<parameters.project-slug>>.json
+      project_slug: <<parameters.project_slug>>
+      output: secrets-project-<<parameters.project_slug>>.json
   - persist_to_workspace:
       root: .
       paths:
-        - secrets-project-<<parameters.project-slug>>.json
+        - secrets-project-<<parameters.project_slug>>.json
