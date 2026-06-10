@@ -1,0 +1,19 @@
+# gitleaks configuration for circleci-org-migration-cli.
+#
+# We extend the upstream default ruleset (so all the real detectors stay on)
+# and add a small, well-justified allowlist for test FIXTURE files that contain
+# deliberately fake, non-secret data which trips entropy/keyword heuristics.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+SSO (SAML) export test fixtures. These files contain only synthetic SAML
+metadata — IdP field NAMES (x509_signing_cert, idp_metadata_xml, …) and
+obviously-fake placeholder values (e.g. FAKE-TEST-CERT-NOT-A-REAL-KEY). The
+generic-api-key heuristic false-positives on the adjacency of these field-name
+string literals. No real credentials live in these files.
+"""
+paths = [
+  '''internal/exporter/sso_export_test\.go''',
+]
