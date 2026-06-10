@@ -70,6 +70,7 @@ The plaintext is held in memory only and is never logged.`,
 				return fmt.Errorf("encrypting bundle: %w", err)
 			}
 
+			// #nosec G703 -- outputFile is an operator-provided path on their own machine (local CLI), not attacker-controlled.
 			if err := os.WriteFile(outputFile, ciphertext, 0o600); err != nil {
 				return fmt.Errorf("writing encrypted output to %s: %w", outputFile, err)
 			}

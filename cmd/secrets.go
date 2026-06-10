@@ -303,6 +303,7 @@ Examples:
 			}
 
 			// Write with 0600 permissions — plaintext secrets.
+			// #nosec G703 -- output is an operator-provided path on their own machine (local CLI), not attacker-controlled.
 			if err := os.WriteFile(output, plaintext, 0o600); err != nil {
 				return fmt.Errorf("writing decrypted bundle to %s: %w", output, err)
 			}
