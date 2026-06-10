@@ -115,8 +115,12 @@ type Exporter struct {
 // the package-level clog logger at Info level. Progress lines are always sent
 // to e.Out for backward compatibility; clog routing allows --debug to add detail.
 func (e *Exporter) logf(format string, args ...any) {
+	// Write progress to e.Out (the operator-facing stream) when set; otherwise
+	// fall back to the leveled logger. Doing BOTH double-prints every line when
+	// e.Out is already stderr (the common case), so pick one.
 	if e.Out != nil {
 		fmt.Fprintf(e.Out, format+"\n", args...)
+		return
 	}
 	clog.Infof(format, args...)
 }
