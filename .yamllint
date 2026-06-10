@@ -1,0 +1,18 @@
+# yamllint configuration for orb source files.
+#
+# orb-tools/lint (circleci/orb-tools@12) runs:
+#   yamllint "$ORB_VAL_SOURCE_DIR"
+# from the checkout root, so yamllint auto-discovers this file.
+# No config-path parameter is available on orb-tools/lint@12 — auto-detection
+# is the only mechanism.
+#
+# Rules relaxed for orb source YAML:
+#   line-length    — orb descriptions and command strings routinely exceed 80
+#                    chars; enforcing this is a style choice, not a bug gate.
+#   document-start — orb source files are YAML fragments (not full documents),
+#                    so the leading "---" is neither required nor conventional.
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
