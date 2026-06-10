@@ -350,6 +350,49 @@ jobs:
           destination: binaries
 
   # ===========================================================================
+  # RELEASE-PLEASE — automated release PR + GitHub Release creation
+  # ===========================================================================
+  #
+  # Triggered on every push to main (branch pipelines only, never on tags).
+  # release-please inspects the Conventional Commits since the last release and:
+  #   1. Opens / updates a "release PR" that bumps the version in
+  #      .release-please-manifest.json and updates CHANGELOG.md.
+  #   2. When that release PR is merged back to main, cuts the git tag and
+  #      creates a bare GitHub Release (no binaries yet).
+  # The tag push then fires the tag-triggered `release` and `orb-publish-prod`
+  # workflows defined below, which build and attach the binary artifacts.
+  #
+  # Requires a CircleCI context that exposes GITHUB_TOKEN with:
+  #   contents:write      — to push the version-bump commit and create the tag
+  #   pull-requests:write — to open / update the release PR
+  #
+  # We reuse the existing "goreleaser" context here.  If the GITHUB_TOKEN stored
+  # in that context has only "repo" scope (classic PAT) it already covers both
+  # permissions above.  If it is a fine-grained PAT scoped only to contents:write
+  # you will need to add pull-requests:write — see the PR body for details.
+  release-please:
+    docker:
+      - image: cimg/node:lts
+    resource_class: small
+    steps:
+      - run:
+          name: release-please release-pr
+          command: |
+            npx release-please@17.9.0 release-pr \
+              --repo-url=AwesomeCICD/circleci-org-migration-cli \
+              --config-file=release-please-config.json \
+              --manifest-file=.release-please-manifest.json \
+              --token="$GITHUB_TOKEN"
+      - run:
+          name: release-please github-release
+          command: |
+            npx release-please@17.9.0 github-release \
+              --repo-url=AwesomeCICD/circleci-org-migration-cli \
+              --config-file=release-please-config.json \
+              --manifest-file=.release-please-manifest.json \
+              --token="$GITHUB_TOKEN"
+
+  # ===========================================================================
   # RELEASE — publish cross-platform binaries via GoReleaser
   # ===========================================================================
 
@@ -468,6 +511,23 @@ jobs:
                     --token "$CIRCLE_TOKEN"
 
 workflows:
+  # ---------------------------------------------------------------------------
+  # release-please — fires on pushes to main ONLY (never on tags, never on PRs).
+  # Opens/updates the release PR and cuts the GitHub Release when the release PR
+  # is merged.  The resulting tag push fires the `release` and
+  # `orb-publish-prod` workflows below.
+  # ---------------------------------------------------------------------------
+  release-please:
+    jobs:
+      - release-please:
+          context:
+            - goreleaser
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+
   ci:
     jobs:
       # -----------------------------------------------------------------------

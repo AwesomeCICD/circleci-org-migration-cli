@@ -402,7 +402,8 @@ and [GoReleaser](https://goreleaser.com/), driven by Conventional Commits.
 ```
 1. Conventional Commits land on main
       ↓
-2. release-please (GitHub Action) opens or updates a "release PR"
+2. release-please (CircleCI `release-please` workflow, main-branch only) opens
+   or updates a "release PR"
    - Computes the SemVer bump from commit types
      (feat → minor, fix → patch, BREAKING CHANGE footer → major)
    - Updates CHANGELOG.md
@@ -410,7 +411,8 @@ and [GoReleaser](https://goreleaser.com/), driven by Conventional Commits.
       ↓
 3. Maintainer reviews and merges the release PR
       ↓
-4. release-please creates the git tag and a bare GitHub Release (no binaries yet)
+4. release-please (CircleCI, triggered by the merge commit on main) creates the
+   git tag and a bare GitHub Release (no binaries yet)
       ↓
 5. CircleCI `release` workflow fires on the new tag (v* filter)
    - Installs GoReleaser at the pinned version (v2.9.0)
@@ -447,5 +449,11 @@ and [GoReleaser](https://goreleaser.com/), driven by Conventional Commits.
 
 | Context name | Secret | Used by |
 |---|---|---|
-| `goreleaser` | `GITHUB_TOKEN` | GoReleaser release job (repo + tap write access). |
+| `goreleaser` | `GITHUB_TOKEN` | release-please job (contents:write + pull-requests:write) **and** GoReleaser release job (repo + tap write access). |
 | `orb-publishing` | `CIRCLE_TOKEN` | Orb dev and prod publish jobs. |
+
+> **Token scopes for release-please:** the `GITHUB_TOKEN` in the `goreleaser`
+> context must have **`contents:write`** (to push the version-bump commit and
+> create the git tag) and **`pull-requests:write`** (to open / update the
+> release PR).  A classic PAT with `repo` scope satisfies both.  A fine-grained
+> PAT needs both permissions granted explicitly.
