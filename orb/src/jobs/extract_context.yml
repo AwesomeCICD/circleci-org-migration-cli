@@ -4,6 +4,10 @@ description: |
   key set to that context. Per-context bundles are NOT stored as artifacts to
   minimise the number of places plaintext secrets are retained — the merge job
   produces the single artifact.
+
+  When encrypt_recipient is set bundles are age-encrypted in the job and only
+  the ciphertext reaches the workspace. Plaintext secrets never persist in
+  CircleCI storage when this parameter is used.
 parameters:
   version:
     type: string
@@ -24,6 +28,13 @@ parameters:
     type: string
     default: v1
     description: Bump to bust the CLI binary cache.
+  encrypt_recipient:
+    type: string
+    default: ""
+    description: |
+      age or SSH public-key recipient string (ssh-ed25519 / ssh-rsa / age1...).
+      When non-empty the output bundle is age-encrypted. The public key is safe
+      to embed here. Decrypt locally with 'circleci-migrate secrets decrypt'.
 executor: default
 steps:
   - checkout
@@ -34,6 +45,7 @@ steps:
   - extract_context:
       manifest: <<parameters.manifest>>
       context_name: <<parameters.context_name>>
+      encrypt_recipient: <<parameters.encrypt_recipient>>
   - persist_to_workspace:
       root: .
       paths:

@@ -16,28 +16,28 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestBuildExtractConfig_ContainsJobName(t *testing.T) {
-	cfg := buildExtractConfig([]string{"SECRET_KEY"}, nil)
+	cfg := buildExtractConfig([]string{"SECRET_KEY"}, nil, nil)
 	if !strings.Contains(cfg, dumpJobName) {
 		t.Errorf("config does not contain job name %q:\n%s", dumpJobName, cfg)
 	}
 }
 
 func TestBuildExtractConfig_ContainsImage(t *testing.T) {
-	cfg := buildExtractConfig([]string{"FOO"}, nil)
+	cfg := buildExtractConfig([]string{"FOO"}, nil, nil)
 	if !strings.Contains(cfg, "cimg/base:current") {
 		t.Errorf("config does not contain expected image:\n%s", cfg)
 	}
 }
 
 func TestBuildExtractConfig_ContainsResourceClassSmall(t *testing.T) {
-	cfg := buildExtractConfig([]string{"FOO"}, nil)
+	cfg := buildExtractConfig([]string{"FOO"}, nil, nil)
 	if !strings.Contains(cfg, "resource_class: small") {
 		t.Errorf("config does not contain resource_class: small:\n%s", cfg)
 	}
 }
 
 func TestBuildExtractConfig_ContainsStoreArtifacts(t *testing.T) {
-	cfg := buildExtractConfig([]string{"FOO"}, nil)
+	cfg := buildExtractConfig([]string{"FOO"}, nil, nil)
 	if !strings.Contains(cfg, "store_artifacts") {
 		t.Errorf("config missing store_artifacts step:\n%s", cfg)
 	}
@@ -48,7 +48,7 @@ func TestBuildExtractConfig_ContainsStoreArtifacts(t *testing.T) {
 
 func TestBuildExtractConfig_ContainsEnvVarNames(t *testing.T) {
 	vars := []string{"SECRET_KEY", "DB_PASS", "API_TOKEN"}
-	cfg := buildExtractConfig(vars, nil)
+	cfg := buildExtractConfig(vars, nil, nil)
 	for _, v := range vars {
 		if !strings.Contains(cfg, v) {
 			t.Errorf("config missing env var %q:\n%s", v, cfg)
@@ -58,7 +58,7 @@ func TestBuildExtractConfig_ContainsEnvVarNames(t *testing.T) {
 
 func TestBuildExtractConfig_ContainsContextNames(t *testing.T) {
 	ctxs := []string{"deploy-prod", "staging-creds"}
-	cfg := buildExtractConfig([]string{"FOO"}, ctxs)
+	cfg := buildExtractConfig([]string{"FOO"}, ctxs, nil)
 	for _, c := range ctxs {
 		if !strings.Contains(cfg, c) {
 			t.Errorf("config missing context %q:\n%s", c, cfg)
@@ -70,14 +70,14 @@ func TestBuildExtractConfig_ContainsContextNames(t *testing.T) {
 }
 
 func TestBuildExtractConfig_NoContextNames_NoContextBlock(t *testing.T) {
-	cfg := buildExtractConfig([]string{"FOO"}, nil)
+	cfg := buildExtractConfig([]string{"FOO"}, nil, nil)
 	if strings.Contains(cfg, "context:") {
 		t.Errorf("config should not have 'context:' when no contexts provided:\n%s", cfg)
 	}
 }
 
 func TestBuildExtractConfig_IsValidYAMLish(t *testing.T) {
-	cfg := buildExtractConfig([]string{"A", "B"}, []string{"ctx-1"})
+	cfg := buildExtractConfig([]string{"A", "B"}, []string{"ctx-1"}, nil)
 	// Must start with version line.
 	if !strings.HasPrefix(cfg, "version: 2.1") {
 		t.Errorf("config must start with 'version: 2.1':\n%s", cfg)
@@ -93,9 +93,67 @@ func TestBuildExtractConfig_IsValidYAMLish(t *testing.T) {
 
 func TestBuildExtractConfig_EmptyVarList(t *testing.T) {
 	// Should not panic; produces a valid (if useless) config.
-	cfg := buildExtractConfig(nil, nil)
+	cfg := buildExtractConfig(nil, nil, nil)
 	if !strings.Contains(cfg, dumpJobName) {
 		t.Errorf("config does not contain job name with empty var list:\n%s", cfg)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildExtractConfig — encryption options
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildExtractConfig_EncryptRecipient_EmbeddedInConfig(t *testing.T) {
+	opts := &Options{EncryptRecipient: "age1fakepublickeystring"}
+	cfg := buildExtractConfig([]string{"FOO"}, nil, opts)
+
+	// Must embed the public key.
+	if !strings.Contains(cfg, "age1fakepublickeystring") {
+		t.Errorf("config missing embedded recipient key:\n%s", cfg)
+	}
+	// Must have a bundle-encrypt step.
+	if !strings.Contains(cfg, "bundle-encrypt") {
+		t.Errorf("config missing bundle-encrypt step:\n%s", cfg)
+	}
+	// Must reference the .age output path.
+	if !strings.Contains(cfg, artifactPathAge) {
+		t.Errorf("config missing .age artifact path:\n%s", cfg)
+	}
+}
+
+func TestBuildExtractConfig_S3Storage_HasS3UploadStep(t *testing.T) {
+	opts := &Options{
+		Storage:  StorageS3,
+		S3Bucket: "my-bucket",
+		S3Prefix: "migration/",
+	}
+	cfg := buildExtractConfig([]string{"FOO"}, nil, opts)
+
+	if !strings.Contains(cfg, "aws s3 cp") {
+		t.Errorf("config missing aws s3 cp step:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "my-bucket") {
+		t.Errorf("config missing S3 bucket:\n%s", cfg)
+	}
+	// S3-only: no store_artifacts.
+	if strings.Contains(cfg, "store_artifacts") {
+		t.Errorf("config should not have store_artifacts for s3-only storage:\n%s", cfg)
+	}
+}
+
+func TestBuildExtractConfig_BothStorage_HasBothSteps(t *testing.T) {
+	opts := &Options{
+		Storage:  StorageBoth,
+		S3Bucket: "my-bucket",
+		S3Prefix: "migration/",
+	}
+	cfg := buildExtractConfig([]string{"FOO"}, nil, opts)
+
+	if !strings.Contains(cfg, "aws s3 cp") {
+		t.Errorf("config missing aws s3 cp step:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "store_artifacts") {
+		t.Errorf("config missing store_artifacts for both storage:\n%s", cfg)
 	}
 }
 

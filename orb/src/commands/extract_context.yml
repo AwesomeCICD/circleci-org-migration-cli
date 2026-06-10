@@ -1,6 +1,11 @@
 description: |
   Capture one context's secret values. The invoking job MUST reference that
   context (via the workflow `context:` key) so its variables are injected.
+
+  When encrypt_recipient is set the output bundle is age-encrypted (writes
+  <output>.age instead of plaintext). The recipient is a PUBLIC key — safe to
+  embed in pipeline config. Decrypt locally with 'circleci-migrate secrets
+  decrypt --identity-file <private-key>'.
 parameters:
   manifest:
     type: string
@@ -17,6 +22,13 @@ parameters:
       script choose a sanitized path under captured/ (e.g.
       captured/secrets-context-<name>.json). Set explicitly only when you need
       a custom destination; the parent directory is created automatically.
+  encrypt_recipient:
+    type: string
+    default: ""
+    description: |
+      age or SSH public-key recipient string (ssh-ed25519 / ssh-rsa / age1...).
+      When non-empty the output bundle is age-encrypted and stored as
+      <output>.age instead of plaintext. The public key is safe to embed here.
 steps:
   - run:
       name: Extract secrets for context <<parameters.context_name>>
@@ -24,4 +36,5 @@ steps:
         ORB_PARAM_MANIFEST: <<parameters.manifest>>
         ORB_PARAM_CONTEXT_NAME: <<parameters.context_name>>
         ORB_PARAM_OUTPUT: <<parameters.output>>
+        ORB_PARAM_ENCRYPT_RECIPIENT: <<parameters.encrypt_recipient>>
       command: <<include(scripts/extract-context.sh)>>

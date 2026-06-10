@@ -36,6 +36,7 @@ keep it out of version control, and delete it once the sync is complete.
 
 * [circleci-migrate](circleci-migrate.md)	 - Migrate data between CircleCI organisations.
 * [circleci-migrate secrets capture](circleci-migrate_secrets_capture.md)	 - Capture secret values by running an unversioned pipeline inside CircleCI.
+* [circleci-migrate secrets decrypt](circleci-migrate_secrets_decrypt.md)	 - Decrypt an age-encrypted secret bundle.
 * [circleci-migrate secrets extract](circleci-migrate_secrets_extract.md)	 - Capture a context's or project's secret values from the job environment.
 * [circleci-migrate secrets merge](circleci-migrate_secrets_merge.md)	 - Merge multiple secret bundles into one.
 

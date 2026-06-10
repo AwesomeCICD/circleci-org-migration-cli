@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	bundlepkg "github.com/AwesomeCICD/circleci-org-migration-cli/internal/bundle"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/extract"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
@@ -118,6 +120,21 @@ func realRestrictions(restrictions []manifest.Restriction, orgID string) []manif
 
 const apiTriggerKey = "api-trigger-with-config"
 
+// captureEncryptOpts groups the encryption-related flags for 'secrets capture'.
+// They are resolved from flags by newSecretsCaptureCommand and threaded through
+// to captureProject / CaptureWithDecrypt.
+type captureEncryptOpts struct {
+	encrypt       bool
+	sshPublicKey  string // path to SSH public key file (recipient)
+	sshPrivateKey string // path to SSH private key file (identity for local decrypt)
+	generateKey   bool   // generate a fresh X25519 keypair and use it
+	recipientStr  string // resolved public key string (after reading file / generating)
+	identityFile  string // resolved private key/identity file path
+	storage       string // "artifact" | "s3" | "both"
+	s3Bucket      string
+	s3Prefix      string
+}
+
 // newSecretsCaptureCommand builds the "secrets capture" subcommand.
 func newSecretsCaptureCommand() *cobra.Command {
 	var (
@@ -131,6 +148,7 @@ func newSecretsCaptureCommand() *cobra.Command {
 		removeRestrictions    bool
 		pollTimeout           time.Duration
 		artifactRetentionDays int
+		encOpts               captureEncryptOpts
 	)
 
 	cmd := &cobra.Command{
@@ -150,15 +168,44 @@ any config to the target project. It:
   6. Restores the api-trigger-with-config flag to its original value (even on
      failure).
 
+ENCRYPTION (--encrypt):
+  When --encrypt is set the in-pipeline extraction job encrypts the artifact
+  with age using a public key you supply (--ssh-public-key or an age key via
+  the recipient field). The CircleCI artifact is then encrypted — plaintext
+  secrets NEVER persist in CircleCI storage.
+
+  After the run, capture downloads the .age artifact and decrypts it locally
+  with --ssh-private-key (or the generated key) to build the in-memory bundle.
+
+  Use --generate-key to have capture create a fresh age X25519 keypair
+  automatically, print the file paths, and use it for this run.
+
+STORAGE (--storage):
+  artifact (default) — store the bundle as a CircleCI job artifact.
+  s3                 — upload to S3 only (requires aws CLI + AWS creds in job).
+  both               — store in both artifact and S3.
+
+  For S3 storage provide --s3-bucket and (optionally) --s3-prefix.
+  The job executor must have AWS credentials via a context or project env vars.
+
 SECURITY NOTES:
-  - The secret bundle contains plaintext secrets. Protect it, do not commit it.
-  - Build artifacts are retained for at least 1 day with no delete-artifact API.
-    Rotate any captured secrets and treat the artifact as sensitive.
+  - Without --encrypt: the secret bundle contains plaintext secrets. Protect it.
+  - Build artifacts are retained for at least 1 day; there is no delete API.
+    With --encrypt the artifact is age-encrypted so plaintext never hits disk.
+  - Rotate any captured secrets after migration.
 
 Examples:
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
-    --enable-trigger --branch main -o secrets.json`,
+    --enable-trigger --branch main -o secrets.json
+  # Encrypted capture with auto-generated key:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key
+  # Encrypted capture with existing SSH key:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt \
+    --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Upload encrypted bundle to S3 instead of artifact:
+  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
+    --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if manifestPath == "" {
 				return errors.New("--manifest is required")
@@ -169,12 +216,24 @@ Examples:
 				return fmt.Errorf("no API token: set --source-token, --token, CIRCLECI_SOURCE_TOKEN, or CIRCLECI_CLI_TOKEN")
 			}
 
+			// ── Resolve encryption options ────────────────────────────────────
+			if encOpts.encrypt {
+				if err := resolveEncryptOpts(cmd, &encOpts); err != nil {
+					return err
+				}
+			}
+
+			// ── Validate storage flags ────────────────────────────────────────
+			if err := validateStorageFlags(&encOpts); err != nil {
+				return err
+			}
+
 			m, err := manifest.Load(manifestPath)
 			if err != nil {
 				return err
 			}
 
-			bundle, err := loadOrNewBundle(output)
+			bndl, err := loadOrNewBundle(output)
 			if err != nil {
 				return err
 			}
@@ -251,12 +310,13 @@ Examples:
 					cmd.Context(),
 					cmd,
 					capClient,
-					m, bundle,
+					m, bndl,
 					p,
 					selectedCtxNames,
 					branch, output,
 					enableTrigger, skipRestrictedCtxs, removeRestrictions,
 					pollTimeout,
+					encOpts,
 				); err != nil {
 					// Continue processing other projects; record the first error.
 					fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing project %s: %v\n", p.Slug, err)
@@ -266,19 +326,27 @@ Examples:
 				}
 			}
 
-			bundle.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-			bundle.ToolVersion = version.UserAgent()
-			if err := bundle.Save(output); err != nil {
+			bndl.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+			bndl.ToolVersion = version.UserAgent()
+			if err := bndl.Save(output); err != nil {
 				return fmt.Errorf("writing secret bundle: %w", err)
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Secret bundle written to %s\n", output)
-			fmt.Fprintln(cmd.ErrOrStderr(), `
+
+			if encOpts.encrypt {
+				fmt.Fprintln(cmd.ErrOrStderr(), `
+NOTE: --encrypt was set. The CircleCI artifact was age-encrypted.
+  Plaintext secrets never persisted in CircleCI artifact storage.
+  The local bundle at `+output+` contains plaintext. Protect it.`)
+			} else {
+				fmt.Fprintln(cmd.ErrOrStderr(), `
 WARNING: The secret bundle contains PLAINTEXT secrets.
   - Protect the file; do not commit it to version control.
   - Build artifacts from the extraction run are retained for at least 1 day.
     There is NO delete-artifact API. Rotate captured secrets and treat the
     artifact as sensitive until it expires.`)
+			}
 
 			return captureErr
 		},
@@ -305,7 +373,144 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 			"This control is NOT auto-restored after capture — keeping retention low is the safe default "+
 			"when secrets may land in artifacts.")
 
+	// ── Encryption flags ──────────────────────────────────────────────────────
+	f.BoolVar(&encOpts.encrypt, "encrypt", false,
+		"Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI. "+
+			"Requires --ssh-public-key or --generate-key.")
+	f.StringVar(&encOpts.sshPublicKey, "ssh-public-key", "",
+		"Path to an SSH public key (.pub) or age recipients file used as the encryption recipient. "+
+			"The public key is safe to embed in the pipeline config.")
+	f.StringVar(&encOpts.sshPrivateKey, "ssh-private-key", "",
+		"Path to an SSH private key or age identity file used to decrypt the artifact locally. "+
+			"Defaults to ~/.ssh/id_ed25519 if present and --ssh-public-key points to the matching .pub.")
+	f.BoolVar(&encOpts.generateKey, "generate-key", false,
+		"Generate a fresh age X25519 keypair for this run. Writes the identity to "+
+			"./migration-identity.age and the recipient to ./migration-recipient.txt. "+
+			"Use --generate-key instead of --ssh-public-key when you do not have an existing key.")
+
+	// ── Storage flags ─────────────────────────────────────────────────────────
+	f.StringVar(&encOpts.storage, "storage", "artifact",
+		`Where to store the (optionally encrypted) bundle after extraction.
+artifact (default) — store as a CircleCI job artifact.
+s3                 — upload to S3 via the aws CLI (requires AWS creds in job).
+both               — store in both artifact and S3.`)
+	f.StringVar(&encOpts.s3Bucket, "s3-bucket", "",
+		"S3 bucket name for --storage s3|both (required when --storage s3 or both)")
+	f.StringVar(&encOpts.s3Prefix, "s3-prefix", "",
+		"S3 key prefix for --storage s3|both (optional; e.g. 'migration/')")
+
 	return cmd
+}
+
+// resolveEncryptOpts resolves the encryption recipient string from flags:
+//   - --generate-key:      generate a fresh age X25519 keypair, write files.
+//   - --ssh-public-key:    read the public key from the file.
+//
+// On success encOpts.recipientStr and encOpts.identityFile are populated.
+// SECURITY: private key material is written to file only; never logged.
+func resolveEncryptOpts(cmd *cobra.Command, encOpts *captureEncryptOpts) error {
+	if encOpts.generateKey && encOpts.sshPublicKey != "" {
+		return errors.New("--generate-key and --ssh-public-key are mutually exclusive")
+	}
+	if !encOpts.generateKey && encOpts.sshPublicKey == "" {
+		return errors.New("--encrypt requires --ssh-public-key <path> or --generate-key")
+	}
+
+	if encOpts.generateKey {
+		// Generate a fresh age X25519 keypair.
+		_, idStr, recipStr, err := bundlepkg.GenerateX25519Keypair()
+		if err != nil {
+			return fmt.Errorf("generating keypair: %w", err)
+		}
+		idFile := "migration-identity.age"
+		recipFile := "migration-recipient.txt"
+		// SECURITY: write identity (private key) to 0600 file; do not log.
+		if err := writeSecretFile(idFile, idStr+"\n"); err != nil {
+			return fmt.Errorf("writing identity file: %w", err)
+		}
+		if err := writeFile(recipFile, recipStr+"\n"); err != nil {
+			return fmt.Errorf("writing recipient file: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"Generated age X25519 keypair:\n"+
+				"  Identity (private key): %s  ← keep secret, needed for decrypt\n"+
+				"  Recipient (public key): %s  ← safe to share\n",
+			idFile, recipFile)
+		encOpts.recipientStr = recipStr
+		encOpts.identityFile = idFile
+		return nil
+	}
+
+	// Read from --ssh-public-key file.
+	_, parseErr := bundlepkg.ParseRecipientFile(encOpts.sshPublicKey)
+	if parseErr != nil {
+		return fmt.Errorf("parsing --ssh-public-key %s: %w", encOpts.sshPublicKey, parseErr)
+	}
+	// Read raw key string for embedding in config.
+	data, err := readFirstKeyLine(encOpts.sshPublicKey)
+	if err != nil {
+		return fmt.Errorf("reading --ssh-public-key %s: %w", encOpts.sshPublicKey, err)
+	}
+	encOpts.recipientStr = data
+
+	// Determine identity file for local decryption.
+	if encOpts.sshPrivateKey != "" {
+		encOpts.identityFile = encOpts.sshPrivateKey
+	} else {
+		// Default to ~/.ssh/id_ed25519 if it exists.
+		home, herr := os.UserHomeDir()
+		if herr == nil {
+			candidate := home + "/.ssh/id_ed25519"
+			if _, serr := os.Stat(candidate); serr == nil {
+				encOpts.identityFile = candidate
+				clog.Infof("capture: using default SSH identity %s for local decryption", candidate)
+			}
+		}
+	}
+	return nil
+}
+
+// validateStorageFlags returns an error if the storage-related flags are
+// inconsistent (e.g. s3 storage requested but no bucket given).
+func validateStorageFlags(encOpts *captureEncryptOpts) error {
+	switch encOpts.storage {
+	case "artifact", "":
+		return nil
+	case "s3", "both":
+		if encOpts.s3Bucket == "" {
+			return fmt.Errorf("--storage %s requires --s3-bucket", encOpts.storage)
+		}
+		return nil
+	default:
+		return fmt.Errorf("--storage must be one of: artifact, s3, both (got %q)", encOpts.storage)
+	}
+}
+
+// writeSecretFile writes data to path with 0600 permissions (private key).
+func writeSecretFile(path, data string) error {
+	return os.WriteFile(path, []byte(data), 0o600)
+}
+
+// writeFile writes data to path with 0644 permissions (public key / recipient).
+func writeFile(path, data string) error {
+	return os.WriteFile(path, []byte(data), 0o644)
+}
+
+// readFirstKeyLine returns the first non-empty, non-comment line from path —
+// suitable for extracting the key string from a .pub or age recipients file.
+func readFirstKeyLine(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line, nil
+	}
+	return "", fmt.Errorf("no key found in %s", path)
 }
 
 // selectProjects returns the manifest projects matching slugs.  If slugs is
@@ -340,6 +545,7 @@ func captureProject(
 	branch, output string,
 	enableTrigger, skipRestricted, removeRestrictions bool,
 	pollTimeout time.Duration,
+	encOpts captureEncryptOpts,
 ) error {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -456,12 +662,17 @@ func captureProject(
 
 	// ── 4. Run Capture ────────────────────────────────────────────────────────
 	opts := extract.Options{
-		DefinitionID: defID,
-		Branch:       branch,
-		PollTimeout:  pollTimeout,
+		DefinitionID:     defID,
+		Branch:           branch,
+		PollTimeout:      pollTimeout,
+		EncryptRecipient: encOpts.recipientStr,
+		Storage:          extract.StorageMode(encOpts.storage),
+		S3Bucket:         encOpts.s3Bucket,
+		S3Prefix:         encOpts.s3Prefix,
 	}
 
-	values, err := extract.Capture(ctx, client, p.Slug, allVarNames, ctxNamesForRun, opts)
+	// SECURITY: encOpts.identityFile is a private key path — do not log.
+	values, err := extract.CaptureWithDecrypt(ctx, client, p.Slug, allVarNames, ctxNamesForRun, opts, encOpts.identityFile)
 	if err != nil {
 		return fmt.Errorf("capture for %s: %w", p.Slug, err)
 	}

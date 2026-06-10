@@ -1,6 +1,11 @@
 description: |
   Capture one project's secret values. The invoking job MUST run within that
   project so its variables are injected.
+
+  When encrypt_recipient is set the output bundle is age-encrypted (writes
+  <output>.age instead of plaintext). The recipient is a PUBLIC key — safe to
+  embed in pipeline config. Decrypt locally with 'circleci-migrate secrets
+  decrypt --identity-file <private-key>'.
 parameters:
   manifest:
     type: string
@@ -18,6 +23,13 @@ parameters:
       captured/secrets-project-<safe-slug>.json, where slashes in the slug are
       replaced with underscores). Set explicitly only when you need a custom
       destination; the parent directory is created automatically.
+  encrypt_recipient:
+    type: string
+    default: ""
+    description: |
+      age or SSH public-key recipient string (ssh-ed25519 / ssh-rsa / age1...).
+      When non-empty the output bundle is age-encrypted and stored as
+      <output>.age instead of plaintext. The public key is safe to embed here.
 steps:
   - run:
       name: Extract secrets for project <<parameters.project_slug>>
@@ -25,4 +37,5 @@ steps:
         ORB_PARAM_MANIFEST: <<parameters.manifest>>
         ORB_PARAM_PROJECT_SLUG: <<parameters.project_slug>>
         ORB_PARAM_OUTPUT: <<parameters.output>>
+        ORB_PARAM_ENCRYPT_RECIPIENT: <<parameters.encrypt_recipient>>
       command: <<include(scripts/extract-project.sh)>>
