@@ -415,7 +415,14 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 	explicit := len(set)
 	usedFollowedFallback := false
 
-	if o.ID != "" {
+	switch {
+	case explicit > 0:
+		// Explicit --projects given: export EXACTLY those; do NOT run org-wide
+		// discovery (which would otherwise add every project in the org). Still
+		// build the followed cross-reference so the per-project Followed flag is set.
+		e.logf("Exporting %d explicitly requested project(s)...", explicit)
+		followedSlugs = e.buildFollowedSet(m, opts, o)
+	case o.ID != "":
 		e.logf("Discovering projects for org %q via private API...", o.ID)
 		orgProjects, oerr := e.Projects.ListOrgProjects(o.ID)
 		if oerr != nil {
@@ -433,7 +440,7 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 			// that have a v1.1 slug form).
 			followedSlugs = e.buildFollowedSet(m, opts, o)
 		}
-	} else {
+	default:
 		// No org ID available — fall back to followed-projects list.
 		e.discoverViaFollowed(m, opts, o, set)
 		usedFollowedFallback = true
