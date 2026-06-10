@@ -16,8 +16,8 @@ parameters:
 steps:
   - run:
       name: Extract secrets for context <<parameters.context_name>>
-      command: |
-        circleci-migrate secrets extract \
-          --manifest "<<parameters.manifest>>" \
-          --context "<<parameters.context_name>>" \
-          --output "<<parameters.output>>"
+      environment:
+        ORB_PARAM_MANIFEST: <<parameters.manifest>>
+        ORB_PARAM_CONTEXT_NAME: <<parameters.context_name>>
+        ORB_PARAM_OUTPUT: <<parameters.output>>
+      command: <<include(scripts/extract-context.sh)>>
