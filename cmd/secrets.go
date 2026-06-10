@@ -21,18 +21,43 @@ import (
 func newSecretsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secrets",
-		Short: "Capture secret values from inside a CircleCI job.",
-		Long: `secrets handles the one thing the API cannot: secret VALUES.
+		Short: "Capture secret values that the API cannot expose (RECOMMENDED: use 'secrets capture').",
+		Long: `secrets handles the one thing the CircleCI API cannot: secret VALUES.
 
-CircleCI masks environment-variable values everywhere in its API, so export
-captures only their names. Inside a running job, however, a context's (or
-project's) variables are injected as ordinary environment variables. The
-'extract' subcommand reads those values from the job environment — using the
-names recorded in the export manifest — and writes them to a secret bundle.
+CircleCI masks environment-variable values everywhere in its API, so 'export'
+captures only their names. The 'secrets' subcommands recover those values by
+running a pipeline inside CircleCI and reading the variables from the job env.
 
-This command is meant to run INSIDE a CircleCI job (see the generated workflow
-and the orb). The resulting bundle contains plaintext secrets: protect it,
-keep it out of version control, and delete it once the sync is complete.`,
+RECOMMENDED PATH — 'secrets capture' (CLI-orchestrated, no committed config):
+
+  circleci-migrate secrets capture
+
+  Run on an interactive terminal to launch the guided walkthrough. The CLI:
+    • Loads your manifest to list available contexts and projects.
+    • Lets you pick which contexts and projects to extract.
+    • Prompts for the HOST PROJECT under which context extraction runs
+      (any project works; build history is irrelevant).
+    • Recommends encryption (age) so plaintext never persists in artifacts.
+    • Builds an inline unversioned pipeline config and triggers the run.
+    • Polls until completion, then downloads and decrypts the artifact.
+    • Writes the captured values to a local secret bundle.
+
+  All flags bypass prompts for CI/scripted use — see 'secrets capture --help'.
+
+ALTERNATIVE PATH — orb / 'secrets extract' (committed config):
+
+  Use 'circleci-migrate orb inline' or the awesomecicd/circleci-org-migration
+  orb to add an extraction job to an existing pipeline config. The in-job
+  'secrets extract' command reads values from the job environment.
+
+  This path requires committing a config change but gives you full control
+  over when and how the extraction job runs.
+
+Subcommands:
+  capture   CLI-orchestrated extraction via unversioned pipeline (RECOMMENDED)
+  extract   In-job extraction from the current environment (orb path)
+  decrypt   Decrypt an age-encrypted secret bundle locally
+  merge     Merge multiple secret bundles into one`,
 	}
 	cmd.AddCommand(newSecretsExtractCommand())
 	cmd.AddCommand(newSecretsMergeCommand())

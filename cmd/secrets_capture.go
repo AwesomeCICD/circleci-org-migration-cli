@@ -123,8 +123,11 @@ const apiTriggerKey = "api-trigger-with-config"
 // captureEncryptOpts groups the encryption-related flags for 'secrets capture'.
 // They are resolved from flags by newSecretsCaptureCommand and threaded through
 // to captureProject / CaptureWithDecrypt.
+//
+// NOTE: fields that need to be inspectable by CaptureWalkthroughResult (which
+// is exported for tests) are also exported here.
 type captureEncryptOpts struct {
-	encrypt       bool
+	encrypt       bool   // Encrypt (exported via EncryptEnabled) — encrypt the artifact
 	sshPublicKey  string // path to SSH public key file (recipient)
 	sshPrivateKey string // path to SSH private key file (identity for local decrypt)
 	generateKey   bool   // generate a fresh X25519 keypair and use it
@@ -135,6 +138,396 @@ type captureEncryptOpts struct {
 	s3Prefix      string
 }
 
+// EncryptEnabled reports whether encryption is enabled.
+func (o captureEncryptOpts) EncryptEnabled() bool { return o.encrypt }
+
+// GenerateKey reports whether a fresh keypair should be generated.
+func (o captureEncryptOpts) GenerateKey() bool { return o.generateKey }
+
+// SSHPublicKey returns the path to the SSH public key file.
+func (o captureEncryptOpts) SSHPublicKey() string { return o.sshPublicKey }
+
+// SSHPrivateKey returns the path to the SSH private key file.
+func (o captureEncryptOpts) SSHPrivateKey() string { return o.sshPrivateKey }
+
+// Storage returns the storage mode string.
+func (o captureEncryptOpts) Storage() string { return o.storage }
+
+// S3Bucket returns the S3 bucket name.
+func (o captureEncryptOpts) S3Bucket() string { return o.s3Bucket }
+
+// S3Prefix returns the S3 key prefix.
+func (o captureEncryptOpts) S3Prefix() string { return o.s3Prefix }
+
+// CaptureWalkthroughResult holds all the values collected by the interactive
+// guided walkthrough for 'secrets capture'.  Fields are exported so that
+// external test packages (cmd_test) can construct and inspect the result.
+type CaptureWalkthroughResult struct {
+	ManifestPath          string
+	Output                string
+	ProjectSlugs          []string
+	ContextNames          []string
+	HostProjectSlug       string // project used to run CONTEXT extraction
+	Branch                string
+	EnableTrigger         bool
+	ArtifactRetentionDays int
+	EncOpts               captureEncryptOpts
+}
+
+// runCaptureWalkthrough launches the interactive guided walkthrough for the
+// capture command. It writes prompts to cmd.ErrOrStderr() and reads answers
+// from os.Stdin.  The function delegates to RunCaptureWalkthroughWith so that
+// tests can inject synthetic I/O via NewPrompter.
+func runCaptureWalkthrough(
+	cmd *cobra.Command,
+	initial CaptureWalkthroughResult,
+) (CaptureWalkthroughResult, error) {
+	return RunCaptureWalkthroughWith(
+		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
+		cmd,
+		initial,
+	)
+}
+
+// RunCaptureWalkthroughWith is the injectable interactive walkthrough used by
+// both the command (via runCaptureWalkthrough) and external test files.
+// p supplies the I/O streams; cmd is used for printing the confirmation summary.
+func RunCaptureWalkthroughWith(
+	p *Prompter,
+	cmd *cobra.Command,
+	initial CaptureWalkthroughResult,
+) (CaptureWalkthroughResult, error) {
+	out := p.out
+	res := initial
+
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "╔══════════════════════════════════════════════════════════╗")
+	fmt.Fprintln(out, "║  CircleCI Secret Capture — guided mode (RECOMMENDED)     ║")
+	fmt.Fprintln(out, "╚══════════════════════════════════════════════════════════╝")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "This guided flow extracts secret values from CircleCI WITHOUT committing")
+	fmt.Fprintln(out, "any config to your repositories. The CLI builds an inline pipeline config,")
+	fmt.Fprintln(out, "triggers a run, and downloads the captured values automatically.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Tip: re-run with all flags set to bypass these prompts (CI-safe).")
+	fmt.Fprintln(out, "")
+
+	// ── Step 1: Manifest path ─────────────────────────────────────────────────
+	fmt.Fprintln(out, "Step 1 of 6 — Manifest")
+	fmt.Fprintln(out, "  The manifest records variable names for all contexts and projects.")
+	fmt.Fprintln(out, "")
+
+	var err error
+	if res.ManifestPath == "" {
+		res.ManifestPath, err = p.askWithDefault("Manifest file path", "manifest.json")
+		if err != nil {
+			return res, err
+		}
+		if res.ManifestPath == "" {
+			res.ManifestPath = "manifest.json"
+		}
+	} else {
+		fmt.Fprintf(out, "  Manifest: %s  (from --manifest)\n", res.ManifestPath)
+	}
+
+	// Load the manifest so we can offer context/project lists.
+	clog.Infof("capture walkthrough: loading manifest from %s", res.ManifestPath)
+	m, loadErr := manifest.Load(res.ManifestPath)
+	if loadErr != nil {
+		return res, fmt.Errorf("loading manifest %s: %w", res.ManifestPath, loadErr)
+	}
+
+	// ── Step 2: What to extract ───────────────────────────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 2 of 6 — What to extract")
+	fmt.Fprintln(out, "  Select the contexts and/or projects to capture.")
+	fmt.Fprintln(out, "")
+
+	// Collect context names from manifest.
+	ctxOptions := make([]string, 0, len(m.Contexts))
+	for _, mc := range m.Contexts {
+		ctxOptions = append(ctxOptions, mc.Name)
+	}
+
+	// Collect project slugs from manifest.
+	projOptions := make([]string, 0, len(m.Projects))
+	for _, mp := range m.Projects {
+		projOptions = append(projOptions, mp.Slug)
+	}
+
+	// Only prompt if not already supplied via flags.
+	if len(res.ContextNames) == 0 && len(ctxOptions) > 0 {
+		chosen, selErr := p.askMultiSelect(
+			fmt.Sprintf("Select contexts to capture (%d in manifest, default: all):", len(ctxOptions)),
+			ctxOptions,
+		)
+		if selErr != nil {
+			return res, selErr
+		}
+		res.ContextNames = chosen
+	} else if len(ctxOptions) == 0 {
+		fmt.Fprintln(out, "  (no contexts found in manifest)")
+	} else {
+		fmt.Fprintf(out, "  Contexts: %v  (from --context)\n", res.ContextNames)
+	}
+
+	if len(res.ProjectSlugs) == 0 && len(projOptions) > 0 {
+		chosen, selErr := p.askMultiSelect(
+			fmt.Sprintf("Select projects to capture project env vars for (%d in manifest, default: all):", len(projOptions)),
+			projOptions,
+		)
+		if selErr != nil {
+			return res, selErr
+		}
+		res.ProjectSlugs = chosen
+	} else if len(projOptions) == 0 {
+		fmt.Fprintln(out, "  (no projects found in manifest)")
+	} else {
+		fmt.Fprintf(out, "  Projects: %v  (from --project)\n", res.ProjectSlugs)
+	}
+
+	// ── Step 3: Host project for context extraction ───────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 3 of 6 — Host project for CONTEXT extraction")
+	fmt.Fprintln(out, "  Context env vars are extracted by attaching the context to a pipeline run.")
+	fmt.Fprintln(out, "  You must choose which project's pipeline to run this under.")
+	fmt.Fprintln(out, "  (Any project works — build history doesn't matter, only the extraction does.)")
+	fmt.Fprintln(out, "")
+
+	hasContexts := len(res.ContextNames) > 0
+	if len(res.ContextNames) == 0 && len(ctxOptions) == 0 {
+		hasContexts = false
+	}
+	// If contextNames is empty slice (user selected none), skip host project.
+	if hasContexts && len(res.ContextNames) == 0 {
+		hasContexts = false
+	}
+
+	if hasContexts {
+		if res.HostProjectSlug == "" {
+			// Build project options for host selection.
+			// Prefer to auto-pick the first project if only one available.
+			if len(projOptions) == 1 {
+				fmt.Fprintf(out, "  Only one project in manifest — auto-selecting %s as the host project.\n", projOptions[0])
+				res.HostProjectSlug = projOptions[0]
+			} else if len(projOptions) == 0 {
+				return res, fmt.Errorf("cannot extract contexts: no projects found in manifest (a host project is required to run the extraction pipeline under)")
+			} else {
+				// Let user choose, or auto-pick first.
+				autoPickOption := "(auto-pick first: " + projOptions[0] + ")"
+				hostOptions := append([]string{autoPickOption}, projOptions...)
+				chosen, choiceErr := p.askChoice(
+					"Choose host project to run the CONTEXT extraction pipeline under:",
+					hostOptions,
+				)
+				if choiceErr != nil {
+					return res, choiceErr
+				}
+				if chosen == autoPickOption {
+					res.HostProjectSlug = projOptions[0]
+					fmt.Fprintf(out, "  Host project: %s\n", res.HostProjectSlug)
+				} else {
+					res.HostProjectSlug = chosen
+				}
+			}
+		} else {
+			fmt.Fprintf(out, "  Host project: %s  (from --host-project)\n", res.HostProjectSlug)
+		}
+	} else {
+		fmt.Fprintln(out, "  No contexts selected — skipping host project selection.")
+	}
+
+	// ── Step 4: Encryption ────────────────────────────────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 4 of 6 — Encryption (RECOMMENDED)")
+	fmt.Fprintln(out, "  When enabled, the in-pipeline artifact is age-encrypted.")
+	fmt.Fprintln(out, "  Plaintext secrets NEVER persist in CircleCI artifact storage.")
+	fmt.Fprintln(out, "")
+
+	if !res.EncOpts.encrypt && res.EncOpts.sshPublicKey == "" && !res.EncOpts.generateKey {
+		doEncrypt, encErr := p.askBool("Encrypt the captured secrets?", true)
+		if encErr != nil {
+			return res, encErr
+		}
+		res.EncOpts.encrypt = doEncrypt
+
+		if doEncrypt {
+			fmt.Fprintln(out, "")
+			fmt.Fprintln(out, "  Encryption key options:")
+			fmt.Fprintln(out, "    1) Generate a fresh keypair automatically (recommended, no key required)")
+			fmt.Fprintln(out, "    2) Use an existing SSH public key file")
+			fmt.Fprintln(out, "")
+			keyChoice, keyErr := p.askChoice(
+				"How to provide the encryption key?",
+				[]string{"generate a fresh keypair (--generate-key)", "use existing SSH public key (--ssh-public-key)"},
+			)
+			if keyErr != nil {
+				return res, keyErr
+			}
+			if strings.HasPrefix(keyChoice, "generate") {
+				res.EncOpts.generateKey = true
+				fmt.Fprintln(out, "  A fresh age X25519 keypair will be generated for this run.")
+				fmt.Fprintln(out, "  Keep the identity file (migration-identity.age) — you will need it to decrypt.")
+			} else {
+				pubKeyPath, pkErr := p.askRequired("Path to SSH public key file", "e.g. ~/.ssh/id_ed25519.pub")
+				if pkErr != nil {
+					return res, pkErr
+				}
+				res.EncOpts.sshPublicKey = pubKeyPath
+
+				privKeyPath, privErr := p.askWithDefault("Path to SSH private key for local decryption", "~/.ssh/id_ed25519")
+				if privErr != nil {
+					return res, privErr
+				}
+				res.EncOpts.sshPrivateKey = privKeyPath
+			}
+		} else {
+			fmt.Fprintln(out, "")
+			fmt.Fprintln(out, "  WARNING: captured secrets will be PLAINTEXT in the CircleCI artifact.")
+			fmt.Fprintln(out, "  Build artifacts are retained for at least 1 day with no delete API.")
+			fmt.Fprintln(out, "  Encryption is strongly recommended for production secrets.")
+		}
+	} else {
+		if res.EncOpts.encrypt {
+			fmt.Fprintln(out, "  Encryption: enabled  (from --encrypt)")
+		} else {
+			fmt.Fprintln(out, "  Encryption: disabled  (from flags)")
+		}
+	}
+
+	// ── Step 5: Storage ───────────────────────────────────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 5 of 6 — Storage")
+	fmt.Fprintln(out, "  Where to store the (optionally encrypted) bundle after extraction.")
+	fmt.Fprintln(out, "")
+
+	if res.EncOpts.storage == "" {
+		storageChoice, storErr := p.askChoice(
+			"Storage mode for the extracted bundle:",
+			[]string{"artifact (default — CircleCI job artifact)", "s3 (S3 upload; requires AWS creds in job)", "both (artifact + S3)"},
+		)
+		if storErr != nil {
+			return res, storErr
+		}
+		switch {
+		case strings.HasPrefix(storageChoice, "s3"):
+			res.EncOpts.storage = "s3"
+		case strings.HasPrefix(storageChoice, "both"):
+			res.EncOpts.storage = "both"
+		default:
+			res.EncOpts.storage = "artifact"
+		}
+
+		if res.EncOpts.storage == "s3" || res.EncOpts.storage == "both" {
+			bucket, bErr := p.askRequired("S3 bucket name", "--s3-bucket")
+			if bErr != nil {
+				return res, bErr
+			}
+			res.EncOpts.s3Bucket = bucket
+
+			prefix, pErr := p.askWithDefault("S3 key prefix (optional)", "migration/")
+			if pErr != nil {
+				return res, pErr
+			}
+			res.EncOpts.s3Prefix = prefix
+
+			fmt.Fprintln(out, "  NOTE: the job must have AWS credentials via a context or project env vars.")
+		}
+	} else {
+		fmt.Fprintf(out, "  Storage: %s  (from --storage)\n", res.EncOpts.storage)
+	}
+
+	// ── Step 6: Artifact retention ────────────────────────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 6 of 6 — Artifact retention (security)")
+	fmt.Fprintln(out, "  Setting retention to 1 day minimises how long secrets linger in artifacts.")
+	fmt.Fprintln(out, "  NOTE: this lowers the ENTIRE ORG's artifact retention, not just this job.")
+	fmt.Fprintln(out, "  The prior value is logged so you can restore it manually afterwards.")
+	fmt.Fprintln(out, "")
+
+	if res.ArtifactRetentionDays == 0 {
+		setRetention, retErr := p.askBool("Set artifact retention to 1 day (recommended minimum)?", true)
+		if retErr != nil {
+			return res, retErr
+		}
+		if setRetention {
+			res.ArtifactRetentionDays = 1
+		}
+	} else {
+		fmt.Fprintf(out, "  Artifact retention: %d day(s)  (from --artifact-retention-days)\n", res.ArtifactRetentionDays)
+	}
+
+	// ── Branch ────────────────────────────────────────────────────────────────
+	if res.Branch == "" {
+		branchVal, brErr := p.askWithDefault("Branch for the extraction run", "main")
+		if brErr != nil {
+			return res, brErr
+		}
+		if branchVal == "" {
+			branchVal = "main"
+		}
+		res.Branch = branchVal
+	}
+
+	// ── Enable trigger ────────────────────────────────────────────────────────
+	if !res.EnableTrigger {
+		doEnable, enErr := p.askBool(
+			"Enable api-trigger-with-config automatically if needed (and restore after)?",
+			true,
+		)
+		if enErr != nil {
+			return res, enErr
+		}
+		res.EnableTrigger = doEnable
+	}
+
+	// ── Confirmation summary ──────────────────────────────────────────────────
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "──────────────────────────────────────────────────────────────")
+	fmt.Fprintln(out, "SUMMARY — review before running:")
+	fmt.Fprintf(out, "  Manifest:            %s\n", res.ManifestPath)
+	fmt.Fprintf(out, "  Output bundle:       %s\n", res.Output)
+	if len(res.ContextNames) > 0 {
+		fmt.Fprintf(out, "  Contexts:            %v\n", res.ContextNames)
+		fmt.Fprintf(out, "  Host project:        %s\n", res.HostProjectSlug)
+	}
+	if len(res.ProjectSlugs) > 0 {
+		fmt.Fprintf(out, "  Projects:            %v\n", res.ProjectSlugs)
+	}
+	if res.EncOpts.encrypt {
+		if res.EncOpts.generateKey {
+			fmt.Fprintln(out, "  Encryption:          age (generate-key)")
+		} else {
+			fmt.Fprintf(out, "  Encryption:          age (public key: %s)\n", res.EncOpts.sshPublicKey)
+		}
+	} else {
+		fmt.Fprintln(out, "  Encryption:          NONE (plaintext artifact)")
+	}
+	fmt.Fprintf(out, "  Storage:             %s\n", func() string {
+		if res.EncOpts.storage == "" {
+			return "artifact"
+		}
+		return res.EncOpts.storage
+	}())
+	fmt.Fprintf(out, "  Branch:              %s\n", res.Branch)
+	fmt.Fprintf(out, "  Enable trigger:      %v\n", res.EnableTrigger)
+	if res.ArtifactRetentionDays > 0 {
+		fmt.Fprintf(out, "  Artifact retention:  %d day(s)\n", res.ArtifactRetentionDays)
+	}
+	fmt.Fprintln(out, "──────────────────────────────────────────────────────────────")
+	fmt.Fprintln(out, "")
+
+	confirmed, confErr := p.askBool("Proceed with capture?", true)
+	if confErr != nil {
+		return res, confErr
+	}
+	if !confirmed {
+		return res, fmt.Errorf("capture cancelled by user")
+	}
+
+	return res, nil
+}
+
 // newSecretsCaptureCommand builds the "secrets capture" subcommand.
 func newSecretsCaptureCommand() *cobra.Command {
 	var (
@@ -142,21 +535,35 @@ func newSecretsCaptureCommand() *cobra.Command {
 		output                string
 		projectSlugs          []string
 		contextNames          []string
+		hostProjectSlug       string
 		branch                string
 		enableTrigger         bool
 		skipRestrictedCtxs    bool
 		removeRestrictions    bool
+		noInput               bool
 		pollTimeout           time.Duration
 		artifactRetentionDays int
 		encOpts               captureEncryptOpts
 	)
 
 	cmd := &cobra.Command{
-		Use:   "capture --manifest <file>",
-		Short: "Capture secret values by running an unversioned pipeline inside CircleCI.",
-		Long: `capture extracts plaintext environment-variable values WITHOUT committing
-any config to the target project. It:
+		Use:   "capture [--manifest <file>]",
+		Short: "Capture secret values by running an unversioned pipeline inside CircleCI (RECOMMENDED).",
+		Long: `capture is the RECOMMENDED way to extract secret values from CircleCI.
 
+It extracts plaintext environment-variable values WITHOUT committing any config
+to the target repository. The CLI builds an inline (unversioned) pipeline config,
+triggers a run inside CircleCI, and downloads the captured values automatically.
+
+  RECOMMENDED: run 'secrets capture' on an interactive terminal without flags to
+  launch the guided walkthrough. It prompts for each option with sensible defaults
+  and explicit guidance on host-project selection for context extraction.
+
+  For the orb-based alternative (committed config), see:
+    circleci-migrate orb inline --help
+    circleci-migrate secrets extract --help
+
+HOW IT WORKS:
   1. Reads variable names from the manifest for the selected project(s) and
      context(s).
   2. Ensures api-trigger-with-config is enabled for each project (either it
@@ -167,6 +574,13 @@ any config to the target project. It:
   5. Writes the captured values into the secret bundle (--output).
   6. Restores the api-trigger-with-config flag to its original value (even on
      failure).
+
+HOST PROJECT FOR CONTEXT EXTRACTION:
+  Context env vars are injected into a job that references the context.
+  The pipeline must run under some project — this is the "host project".
+  Any project works; build history is irrelevant (only extraction matters).
+  Use --host-project to specify it; the guided mode prompts you to choose.
+  Project env vars are always captured under each project's own pipeline.
 
 ENCRYPTION (--encrypt):
   When --encrypt is set the in-pipeline extraction job encrypts the artifact
@@ -195,6 +609,10 @@ SECURITY NOTES:
   - Rotate any captured secrets after migration.
 
 Examples:
+  # Interactive guided walkthrough (recommended for first-time use):
+  circleci-migrate secrets capture
+
+  # Non-interactive (all flags bypass prompts; CI-safe):
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
     --enable-trigger --branch main -o secrets.json
@@ -203,10 +621,90 @@ Examples:
   # Encrypted capture with existing SSH key:
   circleci-migrate secrets capture --manifest manifest.json --encrypt \
     --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Context capture specifying host project explicitly:
+  circleci-migrate secrets capture --manifest manifest.json \
+    --context deploy-prod --host-project gh/acme/web --enable-trigger
   # Upload encrypted bundle to S3 instead of artifact:
   circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
     --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// ── Interactive guided mode ────────────────────────────────────────
+			// Fire when on a TTY and not --no-input AND not enough flags to run
+			// non-interactively (manifest path is the minimum required flag).
+			missingManifest := manifestPath == ""
+			wantsInteraction := missingManifest && !noInput
+
+			if wantsInteraction && !isInteractiveTTY() {
+				// Non-TTY with missing required flags: fail clearly.
+				return fmt.Errorf("--manifest is required in non-interactive mode; " +
+					"run 'secrets capture' on an interactive terminal for the guided walkthrough")
+			}
+
+			if wantsInteraction {
+				// Launch interactive walkthrough.
+				// For storage: only pre-fill if the user explicitly changed the flag
+				// (otherwise the default "artifact" would suppress the storage prompt).
+				walkthroughStorage := ""
+				if cmd.Flags().Changed("storage") {
+					walkthroughStorage = encOpts.storage
+				}
+				walkthroughEncOpts := encOpts
+				walkthroughEncOpts.storage = walkthroughStorage
+
+				// For branch and enable-trigger: only pre-fill if user explicitly set them.
+				walkthroughBranch := ""
+				if cmd.Flags().Changed("branch") {
+					walkthroughBranch = branch
+				}
+				walkthroughEnableTrigger := false
+				if cmd.Flags().Changed("enable-trigger") {
+					walkthroughEnableTrigger = enableTrigger
+				}
+
+				initial := CaptureWalkthroughResult{
+					ManifestPath:          manifestPath,
+					Output:                output,
+					ProjectSlugs:          projectSlugs,
+					ContextNames:          contextNames,
+					HostProjectSlug:       hostProjectSlug,
+					Branch:                walkthroughBranch,
+					EnableTrigger:         walkthroughEnableTrigger,
+					ArtifactRetentionDays: artifactRetentionDays,
+					EncOpts:               walkthroughEncOpts,
+				}
+				result, wErr := runCaptureWalkthrough(cmd, initial)
+				if wErr != nil {
+					return wErr
+				}
+				// Apply walkthrough results back to local vars.
+				manifestPath = result.ManifestPath
+				output = result.Output
+				projectSlugs = result.ProjectSlugs
+				contextNames = result.ContextNames
+				hostProjectSlug = result.HostProjectSlug
+				if result.Branch != "" {
+					branch = result.Branch
+				}
+				enableTrigger = result.EnableTrigger
+				artifactRetentionDays = result.ArtifactRetentionDays
+				// Merge encOpts: walkthrough may have set storage, encrypt, etc.
+				if result.EncOpts.storage != "" {
+					encOpts.storage = result.EncOpts.storage
+				}
+				if result.EncOpts.encrypt {
+					encOpts.encrypt = true
+					encOpts.generateKey = result.EncOpts.generateKey
+					encOpts.sshPublicKey = result.EncOpts.sshPublicKey
+					encOpts.sshPrivateKey = result.EncOpts.sshPrivateKey
+				}
+				if result.EncOpts.s3Bucket != "" {
+					encOpts.s3Bucket = result.EncOpts.s3Bucket
+				}
+				if result.EncOpts.s3Prefix != "" {
+					encOpts.s3Prefix = result.EncOpts.s3Prefix
+				}
+			}
+
 			if manifestPath == "" {
 				return errors.New("--manifest is required")
 			}
@@ -258,12 +756,12 @@ Examples:
 
 			// Resolve the set of projects to process.
 			projects := selectProjects(m, projectSlugs)
-			if len(projects) == 0 {
+			if len(projects) == 0 && hostProjectSlug == "" {
 				return fmt.Errorf("no projects matched the given selectors (manifest has %d projects)", len(m.Projects))
 			}
 
 			// Pre-resolve the set of context names the caller wants to include
-			// (empty slice means: include all contexts attached to each project).
+			// (empty slice means: include all contexts in the manifest).
 			selectedCtxNames := make(map[string]bool, len(contextNames))
 			for _, n := range contextNames {
 				selectedCtxNames[n] = true
@@ -304,15 +802,62 @@ Examples:
 			}
 
 			var captureErr error
+
+			// ── Context extraction via host project ───────────────────────────
+			// When a host project is set, run context extraction under that specific
+			// project so the operator's choice is explicit and surfaced.  This makes
+			// the "any project works for context extraction" invariant visible rather
+			// than implicitly using the first project in the loop.
+			if hostProjectSlug != "" && len(m.Contexts) > 0 {
+				hostProjManifest := findProjectBySlug(m, hostProjectSlug)
+				if hostProjManifest == nil {
+					// Host project not in manifest; synthesise a minimal entry so
+					// captureProject can still look it up via the API.
+					hostProjManifest = &manifest.Project{Slug: hostProjectSlug}
+				}
+				clog.Infof("capture: running CONTEXT extraction under host project %s", hostProjectSlug)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Running CONTEXT extraction under host project %s…\n", hostProjectSlug)
+				if err := captureProject(
+					cmd.Context(),
+					cmd,
+					capClient,
+					m, bndl,
+					hostProjManifest,
+					selectedCtxNames,
+					branch, output,
+					enableTrigger, skipRestrictedCtxs, removeRestrictions,
+					pollTimeout,
+					encOpts,
+				); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "ERROR capturing contexts under host project %s: %v\n", hostProjectSlug, err)
+					if captureErr == nil {
+						captureErr = err
+					}
+				}
+			}
+
+			// ── Project env-var extraction ────────────────────────────────────
+			// Each selected project's own env vars are always captured under that
+			// project's pipeline — no host-project choice needed here.
+			// When contexts were already extracted via host project above, pass an
+			// empty context filter so each project run captures only its own vars.
+			ctxFilterForProjectRun := selectedCtxNames
+			if hostProjectSlug != "" {
+				// Contexts already captured; skip them in per-project runs.
+				ctxFilterForProjectRun = make(map[string]bool)
+			}
+
 			for i := range projects {
 				p := &projects[i]
+				// Skip the host project if it is also in the project list — its
+				// contexts were already captured above; its project vars need capture.
 				if err := captureProject(
 					cmd.Context(),
 					cmd,
 					capClient,
 					m, bndl,
 					p,
-					selectedCtxNames,
+					ctxFilterForProjectRun,
 					branch, output,
 					enableTrigger, skipRestrictedCtxs, removeRestrictions,
 					pollTimeout,
@@ -353,10 +898,14 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&manifestPath, "manifest", "", "Path to the export manifest (required)")
+	f.StringVar(&manifestPath, "manifest", "", "Path to the export manifest (prompted interactively when omitted on a TTY)")
 	f.StringVarP(&output, "output", "o", "secrets.json", "Path to the secret bundle to write/append")
 	f.StringArrayVar(&projectSlugs, "project", nil, "Project slug(s) to capture (default: all in manifest)")
-	f.StringArrayVar(&contextNames, "context", nil, "Context name(s) to capture for each project (default: all attached)")
+	f.StringArrayVar(&contextNames, "context", nil, "Context name(s) to capture (default: all in manifest)")
+	f.StringVar(&hostProjectSlug, "host-project", "",
+		"Project slug to use when running the CONTEXT extraction pipeline. "+
+			"Any project works — build history is irrelevant; only the extraction matters. "+
+			"Prompted interactively when contexts are selected and this flag is absent.")
 	f.StringVar(&branch, "branch", "main", "Branch to check out for the extraction run")
 	f.BoolVar(&enableTrigger, "enable-trigger", false,
 		"Enable api-trigger-with-config if not already on, and restore after capture")
@@ -364,6 +913,8 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 		"Skip contexts that have project/expression/group restrictions (attach warning instead of attempting)")
 	f.BoolVar(&removeRestrictions, "remove-restrictions", false,
 		"Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)")
+	f.BoolVar(&noInput, "no-input", false,
+		"Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)")
 	f.DurationVar(&pollTimeout, "poll-timeout", 10*time.Minute,
 		"Maximum time to wait for each pipeline to complete (0 = no timeout)")
 	f.IntVar(&artifactRetentionDays, "artifact-retention-days", 0,
@@ -530,6 +1081,17 @@ func selectProjects(m *manifest.Manifest, slugs []string) []manifest.Project {
 		}
 	}
 	return out
+}
+
+// findProjectBySlug returns a pointer to the first manifest project whose
+// Slug matches slug, or nil if not found.
+func findProjectBySlug(m *manifest.Manifest, slug string) *manifest.Project {
+	for i := range m.Projects {
+		if m.Projects[i].Slug == slug {
+			return &m.Projects[i]
+		}
+	}
+	return nil
 }
 
 // captureProject handles the full capture flow for a single manifest project.

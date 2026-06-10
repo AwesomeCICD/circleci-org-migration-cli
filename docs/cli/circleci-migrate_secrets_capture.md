@@ -1,12 +1,24 @@
 ## circleci-migrate secrets capture
 
-Capture secret values by running an unversioned pipeline inside CircleCI.
+Capture secret values by running an unversioned pipeline inside CircleCI (RECOMMENDED).
 
 ### Synopsis
 
-capture extracts plaintext environment-variable values WITHOUT committing
-any config to the target project. It:
+capture is the RECOMMENDED way to extract secret values from CircleCI.
 
+It extracts plaintext environment-variable values WITHOUT committing any config
+to the target repository. The CLI builds an inline (unversioned) pipeline config,
+triggers a run inside CircleCI, and downloads the captured values automatically.
+
+  RECOMMENDED: run 'secrets capture' on an interactive terminal without flags to
+  launch the guided walkthrough. It prompts for each option with sensible defaults
+  and explicit guidance on host-project selection for context extraction.
+
+  For the orb-based alternative (committed config), see:
+    circleci-migrate orb inline --help
+    circleci-migrate secrets extract --help
+
+HOW IT WORKS:
   1. Reads variable names from the manifest for the selected project(s) and
      context(s).
   2. Ensures api-trigger-with-config is enabled for each project (either it
@@ -17,6 +29,13 @@ any config to the target project. It:
   5. Writes the captured values into the secret bundle (--output).
   6. Restores the api-trigger-with-config flag to its original value (even on
      failure).
+
+HOST PROJECT FOR CONTEXT EXTRACTION:
+  Context env vars are injected into a job that references the context.
+  The pipeline must run under some project — this is the "host project".
+  Any project works; build history is irrelevant (only extraction matters).
+  Use --host-project to specify it; the guided mode prompts you to choose.
+  Project env vars are always captured under each project's own pipeline.
 
 ENCRYPTION (--encrypt):
   When --encrypt is set the in-pipeline extraction job encrypts the artifact
@@ -45,6 +64,10 @@ SECURITY NOTES:
   - Rotate any captured secrets after migration.
 
 Examples:
+  # Interactive guided walkthrough (recommended for first-time use):
+  circleci-migrate secrets capture
+
+  # Non-interactive (all flags bypass prompts; CI-safe):
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
     --enable-trigger --branch main -o secrets.json
@@ -53,12 +76,15 @@ Examples:
   # Encrypted capture with existing SSH key:
   circleci-migrate secrets capture --manifest manifest.json --encrypt \
     --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Context capture specifying host project explicitly:
+  circleci-migrate secrets capture --manifest manifest.json \
+    --context deploy-prod --host-project gh/acme/web --enable-trigger
   # Upload encrypted bundle to S3 instead of artifact:
   circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
     --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/
 
 ```
-circleci-migrate secrets capture --manifest <file> [flags]
+circleci-migrate secrets capture [--manifest <file>] [flags]
 ```
 
 ### Options
@@ -66,12 +92,14 @@ circleci-migrate secrets capture --manifest <file> [flags]
 ```
       --artifact-retention-days int   Set the org's artifact-retention to this many days BEFORE triggering the extraction pipeline. Recommended value: 1 (the minimum). Default 0 = leave unchanged. The prior value is logged so you can restore it manually. This control is NOT auto-restored after capture — keeping retention low is the safe default when secrets may land in artifacts.
       --branch string                 Branch to check out for the extraction run (default "main")
-      --context stringArray           Context name(s) to capture for each project (default: all attached)
+      --context stringArray           Context name(s) to capture (default: all in manifest)
       --enable-trigger                Enable api-trigger-with-config if not already on, and restore after capture
       --encrypt                       Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI. Requires --ssh-public-key or --generate-key.
       --generate-key                  Generate a fresh age X25519 keypair for this run. Writes the identity to ./migration-identity.age and the recipient to ./migration-recipient.txt. Use --generate-key instead of --ssh-public-key when you do not have an existing key.
   -h, --help                          help for capture
-      --manifest string               Path to the export manifest (required)
+      --host-project string           Project slug to use when running the CONTEXT extraction pipeline. Any project works — build history is irrelevant; only the extraction matters. Prompted interactively when contexts are selected and this flag is absent.
+      --manifest string               Path to the export manifest (prompted interactively when omitted on a TTY)
+      --no-input                      Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
   -o, --output string                 Path to the secret bundle to write/append (default "secrets.json")
       --poll-timeout duration         Maximum time to wait for each pipeline to complete (0 = no timeout) (default 10m0s)
       --project stringArray           Project slug(s) to capture (default: all in manifest)
@@ -99,6 +127,6 @@ circleci-migrate secrets capture --manifest <file> [flags]
 
 ### SEE ALSO
 
-* [circleci-migrate secrets](circleci-migrate_secrets.md)	 - Capture secret values from inside a CircleCI job.
+* [circleci-migrate secrets](circleci-migrate_secrets.md)	 - Capture secret values that the API cannot expose (RECOMMENDED: use 'secrets capture').
 
 ###### Auto generated by spf13/cobra on 10-Jun-2026

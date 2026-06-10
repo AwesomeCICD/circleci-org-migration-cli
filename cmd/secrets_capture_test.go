@@ -176,7 +176,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSecretsCapture_NoManifest(t *testing.T) {
-	_, _, err := runCmd(t, "secrets", "capture")
+	// --no-input prevents the interactive walkthrough (which would block on stdin).
+	_, _, err := runCmd(t, "secrets", "capture", "--no-input")
 	if err == nil {
 		t.Fatal("expected error when --manifest is missing, got nil")
 	}
