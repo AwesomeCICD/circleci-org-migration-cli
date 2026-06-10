@@ -10,11 +10,11 @@ parameters:
     type: string
     default: latest
     description: circleci-migrate release tag to install, or "latest".
-  cache-cli:
+  cache_cli:
     type: boolean
     default: true
     description: Cache the CLI binary between runs.
-  cache-key-prefix:
+  cache_key_prefix:
     type: string
     default: v1
     description: Bump to bust the CLI binary cache.
@@ -22,8 +22,8 @@ executor: default
 steps:
   - install:
       version: <<parameters.version>>
-      cache-cli: <<parameters.cache-cli>>
-      cache-key-prefix: <<parameters.cache-key-prefix>>
+      cache_cli: <<parameters.cache_cli>>
+      cache_key_prefix: <<parameters.cache_key_prefix>>
   - attach_workspace:
       at: .
   - run:

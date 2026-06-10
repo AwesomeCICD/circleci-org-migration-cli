@@ -1,17 +1,17 @@
 description: |
   Resolve the requested circleci-migrate version (writing a version file used as
   the cache-key checksum input), then attempt to restore the binary from cache.
-  Pair with the cache-cli command after the install step.
+  Pair with the cache_cli command after the install step.
 parameters:
   version:
     type: string
     default: latest
     description: Release tag to install (e.g. v1.0.0), or "latest".
-  install-dir:
+  install_dir:
     type: string
     default: /usr/local/bin
     description: Directory where circleci-migrate will be installed.
-  cache-key-prefix:
+  cache_key_prefix:
     type: string
     default: v1
     description: Bump this to invalidate all existing caches (e.g. v1 → v2).
@@ -23,5 +23,5 @@ steps:
       command: <<include(scripts/resolve-version.sh)>>
   - restore_cache:
       keys:
-        - <<parameters.cache-key-prefix>>-circleci-migrate-{{ arch }}-{{ checksum "/tmp/.circleci-migrate-version" }}
-        - <<parameters.cache-key-prefix>>-circleci-migrate-{{ arch }}-
+        - <<parameters.cache_key_prefix>>-circleci-migrate-{{ arch }}-{{ checksum "/tmp/.circleci-migrate-version" }}
+        - <<parameters.cache_key_prefix>>-circleci-migrate-{{ arch }}-

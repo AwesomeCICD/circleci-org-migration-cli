@@ -6,7 +6,7 @@ parameters:
     type: string
     default: manifest.json
     description: Path to the exported manifest file.
-  context-name:
+  context_name:
     type: string
     description: The context name (must match the manifest).
   output:
@@ -15,9 +15,9 @@ parameters:
     description: Output path for the secrets bundle.
 steps:
   - run:
-      name: Extract secrets for context <<parameters.context-name>>
-      command: |
-        circleci-migrate secrets extract \
-          --manifest "<<parameters.manifest>>" \
-          --context "<<parameters.context-name>>" \
-          --output "<<parameters.output>>"
+      name: Extract secrets for context <<parameters.context_name>>
+      environment:
+        ORB_PARAM_MANIFEST: <<parameters.manifest>>
+        ORB_PARAM_CONTEXT_NAME: <<parameters.context_name>>
+        ORB_PARAM_OUTPUT: <<parameters.output>>
+      command: <<include(scripts/extract-context.sh)>>

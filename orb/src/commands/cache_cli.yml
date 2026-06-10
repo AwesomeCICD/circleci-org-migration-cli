@@ -1,0 +1,18 @@
+description: |
+  Save the installed circleci-migrate binary to the cache using the exact-match
+  version key written by restore_cli. Must be called after restore_cli and after
+  the install command have run.
+parameters:
+  install_dir:
+    type: string
+    default: /usr/local/bin
+    description: Directory where circleci-migrate is installed.
+  cache_key_prefix:
+    type: string
+    default: v1
+    description: Must match the prefix used in restore_cli.
+steps:
+  - save_cache:
+      key: <<parameters.cache_key_prefix>>-circleci-migrate-{{ arch }}-{{ checksum "/tmp/.circleci-migrate-version" }}
+      paths:
+        - <<parameters.install_dir>>/circleci-migrate

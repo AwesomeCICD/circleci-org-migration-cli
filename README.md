@@ -199,14 +199,14 @@ workflows:
     jobs:
       # One job per context. Each job must reference exactly that context
       # so its variables are injected — do not mix contexts in one job.
-      - migrate/extract-context:
+      - migrate/extract_context:
           name: extract-deploy-prod
-          context-name: deploy-prod
+          context_name: deploy-prod
           context:
             - deploy-prod
-      - migrate/extract-context:
+      - migrate/extract_context:
           name: extract-shared
-          context-name: shared
+          context_name: shared
           context:
             - shared
       # Merge all per-context bundles into a single secrets.json artifact.

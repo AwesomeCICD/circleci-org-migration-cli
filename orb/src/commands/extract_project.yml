@@ -6,7 +6,7 @@ parameters:
     type: string
     default: manifest.json
     description: Path to the exported manifest file.
-  project-slug:
+  project_slug:
     type: string
     description: The project slug (e.g. gh/my-org/my-repo).
   output:
@@ -15,9 +15,9 @@ parameters:
     description: Output path for the secrets bundle.
 steps:
   - run:
-      name: Extract secrets for project <<parameters.project-slug>>
-      command: |
-        circleci-migrate secrets extract \
-          --manifest "<<parameters.manifest>>" \
-          --project "<<parameters.project-slug>>" \
-          --output "<<parameters.output>>"
+      name: Extract secrets for project <<parameters.project_slug>>
+      environment:
+        ORB_PARAM_MANIFEST: <<parameters.manifest>>
+        ORB_PARAM_PROJECT_SLUG: <<parameters.project_slug>>
+        ORB_PARAM_OUTPUT: <<parameters.output>>
+      command: <<include(scripts/extract-project.sh)>>

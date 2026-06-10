@@ -1,47 +1,47 @@
 description: |
   Install the circleci-migrate CLI from GitHub Releases, with optional binary
-  caching (act-orb pattern). When cache-cli is true, restore-cli is called
-  first to attempt a cache hit, then cache-cli saves the binary after a fresh
-  download. Set cache-cli to false to always download.
+  caching (act-orb pattern). When cache_cli is true, restore_cli is called
+  first to attempt a cache hit, then cache_cli saves the binary after a fresh
+  download. Set cache_cli to false to always download.
 parameters:
   version:
     type: string
     default: latest
     description: Release tag to install (e.g. v1.0.0), or "latest".
-  install-dir:
+  install_dir:
     type: string
     default: /usr/local/bin
     description: Directory where circleci-migrate will be installed.
-  cache-cli:
+  cache_cli:
     type: boolean
     default: true
     description: Cache the installed binary to speed up subsequent runs.
-  cache-key-prefix:
+  cache_key_prefix:
     type: string
     default: v1
     description: Bump to invalidate all existing caches (e.g. v1 → v2).
-  force-install:
+  force_install:
     type: boolean
     default: false
     description: Reinstall even if circleci-migrate is already on PATH (e.g. after a cache hit).
 steps:
   - when:
-      condition: <<parameters.cache-cli>>
+      condition: <<parameters.cache_cli>>
       steps:
-        - restore-cli:
+        - restore_cli:
             version: <<parameters.version>>
-            install-dir: <<parameters.install-dir>>
-            cache-key-prefix: <<parameters.cache-key-prefix>>
+            install_dir: <<parameters.install_dir>>
+            cache_key_prefix: <<parameters.cache_key_prefix>>
   - run:
       name: Install circleci-migrate
       environment:
         ORB_PARAM_VERSION: <<parameters.version>>
-        ORB_PARAM_INSTALL_DIR: <<parameters.install-dir>>
-        ORB_PARAM_FORCE_INSTALL: <<parameters.force-install>>
+        ORB_PARAM_INSTALL_DIR: <<parameters.install_dir>>
+        ORB_PARAM_FORCE_INSTALL: <<parameters.force_install>>
       command: <<include(scripts/install.sh)>>
   - when:
-      condition: <<parameters.cache-cli>>
+      condition: <<parameters.cache_cli>>
       steps:
-        - cache-cli:
-            install-dir: <<parameters.install-dir>>
-            cache-key-prefix: <<parameters.cache-key-prefix>>
+        - cache_cli:
+            install_dir: <<parameters.install_dir>>
+            cache_key_prefix: <<parameters.cache_key_prefix>>
