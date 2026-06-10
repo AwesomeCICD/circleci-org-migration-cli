@@ -1,4 +1,4 @@
-module github.com/CircleCI-Public/circleci-org-migration-cli
+module github.com/AwesomeCICD/circleci-org-migration-cli
 
 go 1.26
 

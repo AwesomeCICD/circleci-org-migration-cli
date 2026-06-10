@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 )
 
 // ---------------------------------------------------------------------------

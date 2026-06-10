@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // newTestClient builds a runner.Client pointed at srv, with the API base

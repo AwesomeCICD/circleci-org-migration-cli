@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 	"github.com/spf13/cobra"
 )
 

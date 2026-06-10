@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/github"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/github"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // ---------------------------------------------------------------------------

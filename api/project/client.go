@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/rest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // Client holds REST clients for API v2, v1.1, and the private API.

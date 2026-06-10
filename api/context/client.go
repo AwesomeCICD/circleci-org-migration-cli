@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/rest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // Client is a CircleCI v2 REST client for context operations.

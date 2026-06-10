@@ -10,13 +10,13 @@ import (
 	"sort"
 	"strings"
 
-	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
-	apirunner "github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
+	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
 // OrgAPI is the subset of the org client the exporter needs.

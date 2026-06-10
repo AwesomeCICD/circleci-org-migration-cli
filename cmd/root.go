@@ -6,8 +6,8 @@ package cmd
 import (
 	"os"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
 

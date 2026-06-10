@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	apirunner "github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // ---------------------------------------------------------------------------

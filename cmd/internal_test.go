@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/syncer"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
 

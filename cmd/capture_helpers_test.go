@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	apicontext "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/spf13/cobra"
 )
 

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/clog"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
 const defaultTimeout = 30 * time.Second

@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/secrets"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/version"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/secrets"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 	"github.com/spf13/cobra"
 )
 

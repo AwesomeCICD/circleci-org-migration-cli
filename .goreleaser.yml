@@ -1,7 +1,7 @@
 # GoReleaser v2 configuration for circleci-migrate.
 #
 # Archive naming MUST match the orb's install command (orb/orb.yml):
-#   https://github.com/CircleCI-Public/circleci-org-migration-cli/releases/download/{tag}/
+#   https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/{tag}/
 #     circleci-migrate_{version-without-v}_{os}_{arch}.tar.gz
 #
 # GoReleaser's {{ .Version }} is the tag with the leading `v` stripped, so
@@ -24,8 +24,8 @@ builds:
     ldflags:
       - >-
         -s -w
-        -X github.com/CircleCI-Public/circleci-org-migration-cli/version.Version={{ .Version }}
-        -X github.com/CircleCI-Public/circleci-org-migration-cli/version.Commit={{ .Commit }}
+        -X github.com/AwesomeCICD/circleci-org-migration-cli/version.Version={{ .Version }}
+        -X github.com/AwesomeCICD/circleci-org-migration-cli/version.Commit={{ .Commit }}
 
 archives:
   - formats:

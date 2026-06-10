@@ -7,12 +7,12 @@ import (
 	"sort"
 	"strings"
 
-	cctx "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/org"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/project"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/api/runner"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/syncer"
+	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
 	"github.com/spf13/cobra"
 )
 

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/cmd"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
 )
 
 func main() {

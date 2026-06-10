@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/settings"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // ---- helpers ----------------------------------------------------------------

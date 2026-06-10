@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // OrgSettingsWriter is the destination org-settings API the syncer needs.
