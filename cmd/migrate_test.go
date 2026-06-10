@@ -94,13 +94,14 @@ func TestMigrateCmd_OutputShorthandRegistered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestMigrateCmd_NoSourceOrg_ReturnsError verifies that omitting --source-org
-// returns an error mentioning "source-org".
+// returns an error mentioning "source-org".  --no-input prevents the interactive
+// walkthrough from triggering (which would block waiting for stdin input).
 func TestMigrateCmd_NoSourceOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
 
-	_, _, err := runMigrateCmd(t)
+	_, _, err := runMigrateCmd(t, "--no-input")
 	if err == nil {
 		t.Fatal("expected error when --source-org is missing, got nil")
 	}
@@ -110,13 +111,14 @@ func TestMigrateCmd_NoSourceOrg_ReturnsError(t *testing.T) {
 }
 
 // TestMigrateCmd_NoDestOrg_ReturnsError verifies that omitting --dest-org
-// returns an error mentioning "dest-org".
+// returns an error mentioning "dest-org".  --no-input prevents the interactive
+// walkthrough from triggering.
 func TestMigrateCmd_NoDestOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
 
-	_, _, err := runMigrateCmd(t, "--source-org", "gh/acme")
+	_, _, err := runMigrateCmd(t, "--no-input", "--source-org", "gh/acme")
 	if err == nil {
 		t.Fatal("expected error when --dest-org is missing, got nil")
 	}
