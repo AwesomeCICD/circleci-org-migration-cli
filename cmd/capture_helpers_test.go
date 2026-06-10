@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	apicontext "github.com/CircleCI-Public/circleci-org-migration-cli/api/context"
 	"github.com/CircleCI-Public/circleci-org-migration-cli/internal/manifest"
 	"github.com/spf13/cobra"
 )
@@ -236,5 +237,206 @@ func TestMaybeEnableOrgTriggerFlag_UpdateError_WarnsAndNoOp(t *testing.T) {
 
 	if !bytes.Contains(errBuf.Bytes(), []byte("WARNING")) {
 		t.Errorf("expected WARNING in stderr, got %q", errBuf.String())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fakeRestrictionManager — test double for contextRestrictionManager
+// ─────────────────────────────────────────────────────────────────────────────
+
+type fakeRestrictionManager struct {
+	// liveRestrictions is returned by ListRestrictions.
+	liveRestrictions []apicontext.Restriction
+	// deletedIDs records restriction IDs passed to DeleteRestriction.
+	deletedIDs []string
+	// createdRestrictions records (type, value) pairs passed to CreateRestriction.
+	createdRestrictions []struct{ rType, rValue string }
+
+	listErr   error
+	deleteErr error
+	createErr error
+}
+
+func (f *fakeRestrictionManager) ListRestrictions(_ string) ([]apicontext.Restriction, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.liveRestrictions, nil
+}
+
+func (f *fakeRestrictionManager) DeleteRestriction(_, restrictionID string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedIDs = append(f.deletedIDs, restrictionID)
+	return nil
+}
+
+func (f *fakeRestrictionManager) CreateRestriction(_, rType, rValue string) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.createdRestrictions = append(f.createdRestrictions, struct{ rType, rValue string }{rType, rValue})
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// prepareRestrictionRemoval
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestPrepareRestrictionRemoval_DeletesAndRestores(t *testing.T) {
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{
+			{ID: "live-r-1", Type: "project", Value: "proj-uuid-1"},
+			{ID: "live-r-2", Type: "expression", Value: `pipeline.git.branch == "main"`},
+		},
+	}
+
+	mc := &manifest.Context{
+		Name:     "my-ctx",
+		SourceID: "ctx-source-uuid",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "proj-uuid-1"},
+			{Type: "expression", Value: `pipeline.git.branch == "main"`},
+		},
+	}
+
+	cmd, errBuf := newTestCobraCmd()
+
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	if err != nil {
+		t.Fatalf("unexpected error from prepareRestrictionRemoval: %v", err)
+	}
+
+	// Both live restrictions should have been deleted.
+	if len(mgr.deletedIDs) != 2 {
+		t.Errorf("expected 2 DELETE calls, got %d: %v", len(mgr.deletedIDs), mgr.deletedIDs)
+	}
+	wantDeleted := map[string]bool{"live-r-1": true, "live-r-2": true}
+	for _, id := range mgr.deletedIDs {
+		if !wantDeleted[id] {
+			t.Errorf("unexpected deleted ID %q", id)
+		}
+	}
+
+	// Notice should have been printed.
+	if !bytes.Contains(errBuf.Bytes(), []byte("NOTICE")) {
+		t.Errorf("expected NOTICE in stderr, got %q", errBuf.String())
+	}
+
+	// No creates yet.
+	if len(mgr.createdRestrictions) != 0 {
+		t.Errorf("expected 0 CREATE calls before restore, got %d", len(mgr.createdRestrictions))
+	}
+
+	// Call restore — should re-create from the manifest state.
+	restore()
+
+	if len(mgr.createdRestrictions) != 2 {
+		t.Fatalf("expected 2 CREATE calls after restore, got %d: %v", len(mgr.createdRestrictions), mgr.createdRestrictions)
+	}
+	wantCreated := map[string]bool{"project/proj-uuid-1": true, `expression/pipeline.git.branch == "main"`: true}
+	for _, c := range mgr.createdRestrictions {
+		key := c.rType + "/" + c.rValue
+		if !wantCreated[key] {
+			t.Errorf("unexpected created restriction: type=%q value=%q", c.rType, c.rValue)
+		}
+	}
+}
+
+func TestPrepareRestrictionRemoval_ListError_ReturnsError(t *testing.T) {
+	mgr := &fakeRestrictionManager{listErr: fmt.Errorf("network failure")}
+	mc := &manifest.Context{Name: "ctx", SourceID: "ctx-uuid"}
+	cmd, _ := newTestCobraCmd()
+
+	_, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	if err == nil {
+		t.Fatal("expected error on ListRestrictions failure, got nil")
+	}
+	if len(mgr.deletedIDs) != 0 {
+		t.Errorf("no deletes should occur if list fails, got %v", mgr.deletedIDs)
+	}
+}
+
+func TestPrepareRestrictionRemoval_DeleteError_ReturnsError(t *testing.T) {
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{{ID: "r-1", Type: "project", Value: "p"}},
+		deleteErr:        fmt.Errorf("forbidden"),
+	}
+	mc := &manifest.Context{Name: "ctx", SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{{Type: "project", Value: "p"}},
+	}
+	cmd, _ := newTestCobraCmd()
+
+	_, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	if err == nil {
+		t.Fatal("expected error on DeleteRestriction failure, got nil")
+	}
+}
+
+func TestPrepareRestrictionRemoval_RestoreFailure_PrintsWarning(t *testing.T) {
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{{ID: "r-1", Type: "project", Value: "proj-uuid"}},
+	}
+
+	mc := &manifest.Context{
+		Name:     "ctx",
+		SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "proj-uuid"},
+		},
+	}
+
+	cmd, errBuf := newTestCobraCmd()
+
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	if err != nil {
+		t.Fatalf("unexpected setup error: %v", err)
+	}
+
+	// Inject create error before calling restore.
+	mgr.createErr = fmt.Errorf("create failed")
+	restore()
+
+	// A WARNING must be printed naming the restriction to re-add manually.
+	out := errBuf.String()
+	if !bytes.Contains(errBuf.Bytes(), []byte("WARNING")) {
+		t.Errorf("expected WARNING in stderr after restore failure, got %q", out)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("proj-uuid")) {
+		t.Errorf("WARNING should name the restriction value, got %q", out)
+	}
+}
+
+func TestPrepareRestrictionRemoval_UsesManifestStateForRestore(t *testing.T) {
+	// Live restrictions have different IDs from manifest, but restore must use
+	// the manifest's type+value pairs (not the live IDs).
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{
+			{ID: "live-id-A", Type: "project", Value: "proj-X"},
+		},
+	}
+	mc := &manifest.Context{
+		Name:     "ctx",
+		SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{
+			// Manifest records the same logical restriction.
+			{Type: "project", Value: "proj-X", Name: "my-project"},
+		},
+	}
+
+	cmd, _ := newTestCobraCmd()
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	restore()
+
+	if len(mgr.createdRestrictions) != 1 {
+		t.Fatalf("expected 1 created restriction, got %d", len(mgr.createdRestrictions))
+	}
+	got := mgr.createdRestrictions[0]
+	if got.rType != "project" || got.rValue != "proj-X" {
+		t.Errorf("restore created wrong restriction: type=%q value=%q", got.rType, got.rValue)
 	}
 }
