@@ -42,19 +42,31 @@ secrets, etc.).
 ### Step 2 — Capture secret values
 
 Secret values are never returned by the CircleCI API. You must capture them
-from inside a CircleCI pipeline. See the full [secrets capture
-flow](#example-5--secrets-capture-in-detail) below — here is the quick version
-using the CLI-orchestrated approach:
+from inside a CircleCI pipeline. The recommended way is the interactive
+guided walkthrough — run with no flags on a TTY:
+
+```bash
+circleci-migrate secrets capture
+```
+
+For non-interactive use, supply all flags. The following example uses
+encryption and 1-day artifact retention (both strongly recommended):
 
 ```bash
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest.json \
+  --encrypt --generate-key \
+  --artifact-retention-days 1 \
+  --enable-trigger \
   --output secrets.json
 ```
 
-> **Protect `secrets.json`** — it contains plaintext values. Set a short
-> artifact retention period, do not commit it, and delete it after the sync.
+See [Example 5](#example-5--secrets-capture-in-detail) below for full details
+on the encryption options, S3 storage, and the orb-based alternative.
+
+> **Protect `secrets.json`** — it contains plaintext values. Use `--encrypt`
+> so the CircleCI artifact is age-encrypted (plaintext never stored in CircleCI).
+> Do not commit `secrets.json` to version control. Delete it after the sync.
 
 ### Step 3 — Dry run (review the plan)
 
@@ -332,7 +344,7 @@ are injected as real environment variables.
 
 There are two approaches:
 
-### Option A — CLI-orchestrated (`secrets capture`)
+### Option A — CLI-orchestrated (`secrets capture`, recommended)
 
 Best for: ad-hoc migrations where you do not want to commit a config.
 
@@ -340,22 +352,51 @@ Best for: ad-hoc migrations where you do not want to commit a config.
 inline (unversioned) config to the CircleCI Pipelines API, waits for the run,
 and downloads the merged `secrets.json` — all without touching `.circleci/config.yml`.
 
+**Interactive guided walkthrough (recommended for first-time use):**
+
 ```bash
-circleci-migrate secrets capture \
-  --org gh/acme \
-  --manifest manifest.json \
-  --output secrets.json
+circleci-migrate secrets capture
 ```
 
-If the pipeline trigger is paused (common for App orgs), add
-`--enable-trigger` to temporarily enable it for the run:
+The walkthrough (6 steps) covers manifest selection, context/project selection,
+host-project choice, encryption, storage, and artifact retention.
+
+**Non-interactive with all flags (CI-safe):**
 
 ```bash
+# Basic (plaintext artifact — not recommended for production secrets)
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest.json \
   --output secrets.json \
   --enable-trigger
+
+# Encrypted with auto-generated key + 1-day artifact retention (recommended)
+circleci-migrate secrets capture \
+  --manifest manifest.json \
+  --encrypt --generate-key \
+  --artifact-retention-days 1 \
+  --enable-trigger \
+  --output secrets.json
+
+# Encrypted with existing SSH key
+circleci-migrate secrets capture \
+  --manifest manifest.json \
+  --encrypt \
+  --ssh-public-key ~/.ssh/id_ed25519.pub \
+  --ssh-private-key ~/.ssh/id_ed25519 \
+  --artifact-retention-days 1 \
+  --enable-trigger \
+  --output secrets.json
+
+# Upload to S3 instead of CircleCI artifact
+circleci-migrate secrets capture \
+  --manifest manifest.json \
+  --encrypt --generate-key \
+  --storage s3 \
+  --s3-bucket my-migration-bucket \
+  --s3-prefix migration/ \
+  --enable-trigger \
+  --output secrets.json
 ```
 
 If any contexts have restrictions that block the inline pipeline, use one of:
@@ -364,7 +405,7 @@ If any contexts have restrictions that block the inline pipeline, use one of:
 # Remove restrictions temporarily, restore after run
 --remove-restrictions
 
-# Skip contexts with restrictions entirely
+# Skip contexts with restrictions entirely (default: true)
 --skip-restricted-contexts
 ```
 
@@ -444,10 +485,13 @@ workflows:
 
 ### Protecting `secrets.json`
 
-- The file is written with `0600` permissions.
+- **Use `--encrypt --generate-key`** (or `--ssh-public-key`) to age-encrypt the
+  in-pipeline artifact. Plaintext secrets never land in CircleCI artifact storage.
+- **Use `--artifact-retention-days 1`** to minimize the window secrets are accessible
+  in CircleCI artifacts. The prior retention value is logged so you can restore it.
+- The local `secrets.json` file is written with `0600` permissions.
 - Do **not** commit it to version control.
 - Use a **private** CircleCI project for the capture pipeline.
-- Set a **short artifact retention period** in the project settings.
 - Delete the artifact and your local copy once the sync is complete.
 - Rotate every captured secret value after the destination is confirmed healthy.
 
