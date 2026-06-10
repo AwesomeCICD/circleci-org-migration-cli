@@ -569,6 +569,40 @@ func TestMarkdown_ManualSteps_OTelAndContactsAndPipelineDefs(t *testing.T) {
 	}
 }
 
+func TestMarkdown_ManualSteps_GroupsOnlyWhenPresent(t *testing.T) {
+	// Without groups: no CircleCI groups manual step.
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "**CircleCI groups**") {
+		t.Errorf("Markdown should not list a CircleCI groups manual step when no groups captured")
+	}
+
+	// With groups: step appears, with count and names.
+	withGroups := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				Groups: []manifest.OrgGroup{
+					{ID: "g1", Name: "security-team"},
+					{ID: "g2", Name: "platform"},
+				},
+			},
+		}},
+	})
+	for _, want := range []string{
+		"**CircleCI groups**",
+		"recreate 2 CircleCI group(s)",
+		"security-team",
+		"platform",
+		"managed via your IdP/SSO and is not migrated",
+	} {
+		if !strings.Contains(withGroups, want) {
+			t.Errorf("Markdown groups manual step missing %q", want)
+		}
+	}
+}
+
 func TestMarkdown_ManualSteps_DangerFlags(t *testing.T) {
 	m := &manifest.Manifest{
 		Source: manifest.Source{Org: manifest.Org{

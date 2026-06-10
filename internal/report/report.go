@@ -253,6 +253,20 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 			"verify the addresses after cutover.")
 	}
 
+	// CircleCI group definitions — only when captured. Context group-restriction
+	// sync resolves destination groups BY NAME, so they must already exist there.
+	if s != nil && len(s.Groups) > 0 {
+		names := make([]string, 0, len(s.Groups))
+		for _, g := range s.Groups {
+			names = append(names, g.Name)
+		}
+		items = append(items, fmt.Sprintf(
+			"**CircleCI groups** — recreate %d CircleCI group(s) in the destination org before/at cutover "+
+				"so context group-restrictions resolve: %s. "+
+				"Group membership is managed via your IdP/SSO and is not migrated.",
+			len(s.Groups), joinNames(names)))
+	}
+
 	// App-destination repo connection — relevant whenever App pipeline definitions exist.
 	if hasPipelineDefinitions(m) {
 		items = append(items, "**Repository connections (App destinations)** — repos must already exist and be connected to "+

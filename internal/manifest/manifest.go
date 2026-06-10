@@ -108,6 +108,22 @@ type OrgSettings struct {
 	// Contacts holds the org's technical (primary) and security contact email
 	// lists. Up to 5 addresses per list. Sync uses PUT (overwrites).
 	Contacts *OrgContacts `json:"contacts,omitempty"`
+
+	// Groups captures the org's CircleCI group DEFINITIONS (names/IDs only) so the
+	// cutover runbook can tell the operator which groups to recreate in the
+	// destination org — context group-restriction sync resolves destination groups
+	// BY NAME, so they must already exist there. The default "All members" group
+	// (auto-created on every org) is excluded. Group MEMBERSHIP is NOT captured:
+	// it is managed via the IdP/SSO and recreated there, not migrated by this tool.
+	Groups []OrgGroup `json:"groups,omitempty"`
+}
+
+// OrgGroup is a CircleCI group DEFINITION (name/ID) captured for the migration
+// runbook. Only the identity is recorded — group membership is managed via the
+// IdP/SSO and is recreated there, never migrated by this tool.
+type OrgGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // SSOSettings is a reference snapshot of an org's SSO (SAML) configuration.
