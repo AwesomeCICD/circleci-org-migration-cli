@@ -1,5 +1,34 @@
 default: build
 
+# ---------------------------------------------------------------------------
+# Documentation targets
+# ---------------------------------------------------------------------------
+
+# docs regenerates the markdown CLI reference into docs/cli/.
+# Builds the binary first so the generated docs reflect the current tree.
+.PHONY: docs
+docs: build
+	./$(OUTPUT) gen-docs --man-dir man --md-dir docs/cli
+
+# man regenerates the man pages into man/.
+# Builds the binary first so the generated pages reflect the current tree.
+.PHONY: man
+man: build
+	./$(OUTPUT) gen-docs --man-dir man --md-dir docs/cli
+
+# docs-check regenerates docs and fails if the committed versions are stale.
+# Used by CI to enforce that docs are always up-to-date.
+.PHONY: docs-check
+docs-check: docs
+	@if ! git diff --exit-code -- man/ docs/cli/ > /dev/null 2>&1; then \
+		echo ""; \
+		echo "ERROR: Generated docs are out of date. Run 'make docs && make man' and commit the result."; \
+		echo ""; \
+		git diff --stat -- man/ docs/cli/; \
+		exit 1; \
+	fi
+	@echo "docs-check: OK (no diff)"
+
 BINARY   := circleci-migrate
 GOOS     := $(shell go env GOOS)
 GOARCH   := $(shell go env GOARCH)
