@@ -1017,9 +1017,11 @@ func TestExport_Projects_ExplicitSlugs_NoDiscoveryOnlyWarning(t *testing.T) {
 	}
 }
 
-func TestExport_Projects_ExplicitAndDiscovered_Deduplicated(t *testing.T) {
-	// "gh/myorg/web" appears in both explicit slugs and ListOrgProjects result;
-	// it must appear only once in the manifest.
+func TestExport_Projects_ExplicitSlugs_SkipOrgWideDiscovery(t *testing.T) {
+	// When explicit --projects are given, ONLY those are exported — org-wide
+	// discovery (ListOrgProjects) must NOT run, so projects returned by it that
+	// are not in the explicit set must not appear in the manifest.
+	listOrgCalled := false
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
@@ -1027,8 +1029,10 @@ func TestExport_Projects_ExplicitAndDiscovered_Deduplicated(t *testing.T) {
 		Contexts: &fakeContextAPI{},
 		Projects: &fakeProjectAPI{
 			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				listOrgCalled = true
 				return []project.OrgProject{
 					{ID: "pid-1", Slug: "gh/myorg/web", Name: "web"},
+					{ID: "pid-2", Slug: "gh/myorg/should-not-appear", Name: "should-not-appear"},
 				}, nil
 			},
 		},
@@ -1042,18 +1046,18 @@ func TestExport_Projects_ExplicitAndDiscovered_Deduplicated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// "gh/myorg/web" is explicit AND discovered; should appear only once.
-	count := 0
+	if listOrgCalled {
+		t.Error("ListOrgProjects should NOT be called when explicit --projects are given")
+	}
+	got := map[string]bool{}
 	for _, p := range m.Projects {
-		if p.Slug == "gh/myorg/web" {
-			count++
-		}
+		got[p.Slug] = true
 	}
-	if count != 1 {
-		t.Errorf("gh/myorg/web appears %d times, expected exactly 1", count)
+	if len(m.Projects) != 2 || !got["gh/myorg/web"] || !got["gh/myorg/api"] {
+		t.Errorf("expected exactly the 2 explicit projects {web, api}, got %d: %v", len(m.Projects), got)
 	}
-	if len(m.Projects) != 2 {
-		t.Errorf("expected 2 projects, got %d", len(m.Projects))
+	if got["gh/myorg/should-not-appear"] {
+		t.Error("a discovered project leaked into the manifest despite explicit --projects")
 	}
 }
 
