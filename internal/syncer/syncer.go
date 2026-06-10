@@ -589,14 +589,28 @@ func (s *Syncer) syncAppProject(
 	}
 
 	// Project does not exist — create it.
+	//
+	// An OAuth-source project (gh//github slug) has no captured pipeline
+	// definitions — OAuth uses an implicit pipeline — so we synthesize one App
+	// pipeline definition + trigger, translating its build flags. An App-source
+	// project (circleci/ slug) carries its own definitions and is recreated.
+	synthesize := len(p.PipelineDefinitions) == 0
 	nDefs := len(p.PipelineDefinitions)
 	if !opts.Apply {
-		report.add("project", name, "created",
-			fmt.Sprintf("would create App project + %d pipeline-definition(s)", nDefs))
+		if synthesize {
+			report.add("project", name, "created",
+				"would create App project + 1 synthesized pipeline-definition (OAuth source)")
+		} else {
+			report.add("project", name, "created",
+				fmt.Sprintf("would create App project + %d pipeline-definition(s)", nDefs))
+		}
 		// Run resolve checks so the dry-run preview accurately shows which repos
 		// are found in the destination GH org and which will be skipped.
 		// syncAppPipelineDefinition is read-only at resolve time (no API writes).
 		drySlug := "circleci/" + destOrgID + "/<new>"
+		if synthesize {
+			s.synthesizeOAuthPipelineDefinition(report, name, "", p, mapping, opts)
+		}
 		for _, def := range p.PipelineDefinitions {
 			s.syncAppPipelineDefinition(report, name, "", def, destSlug, mapping, opts)
 		}
@@ -626,7 +640,12 @@ func (s *Syncer) syncAppProject(
 		Name: name,
 	}
 
-	// Create pipeline definitions and triggers.
+	// Create pipeline definitions and triggers. OAuth-source projects (no
+	// captured definitions) get one synthesized App pipeline-def + trigger;
+	// App-source projects recreate their captured definitions.
+	if synthesize {
+		s.synthesizeOAuthPipelineDefinition(report, name, newProjectID, p, mapping, opts)
+	}
 	for _, def := range p.PipelineDefinitions {
 		s.syncAppPipelineDefinition(report, name, newProjectID, def, destSlug, mapping, opts)
 	}
