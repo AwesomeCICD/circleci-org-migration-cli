@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // isInteractiveTTY returns true when os.Stdin is connected to an interactive
@@ -96,10 +98,25 @@ func (p *Prompter) askRequired(label, hint string) (string, error) {
 	}
 }
 
-// askSecret reads a value that must not be logged.  The value is read as a
-// normal line and is never stored in any log or written to p.out.
+// askSecret reads a secret value (e.g. an API token).  When stdin is an
+// interactive terminal, echo is suppressed via term.ReadPassword so typed
+// characters are not visible on screen; a trailing newline is printed
+// afterward because the user's Enter key is not echoed.  When stdin is a
+// pipe or redirected file, input is read as a plain line (no masking is
+// possible in that case and no masking is claimed).
 func (p *Prompter) askSecret(label string) (string, error) {
-	fmt.Fprintf(p.out, "%s (input hidden): ", label)
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		fmt.Fprintf(p.out, "%s (input hidden): ", label)
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(p.out) // restore cursor to new line after silent Enter
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	// Non-TTY path: read a plain line; do not claim masking.
+	fmt.Fprintf(p.out, "%s: ", label)
 	return p.readLine()
 }
 

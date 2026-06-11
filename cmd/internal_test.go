@@ -438,6 +438,76 @@ func TestOrgGroupLister_ListGroups_ErrorPropagated(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// askSecret — non-TTY fallback path
+// ---------------------------------------------------------------------------
+//
+// The TTY path (term.ReadPassword) cannot be unit-tested without a real
+// pseudo-terminal, so we cover only the non-TTY (piped) path here.  When
+// stdin is not a terminal, askSecret falls back to a plain bufio.ReadLine
+// so that tests and CI pipelines can still supply secrets via stdin pipes.
+
+// TestAskSecret_NonTTY_ReadsPlainLine verifies that on a non-TTY stream
+// askSecret reads and returns the value without claiming masking.
+func TestAskSecret_NonTTY_ReadsPlainLine(t *testing.T) {
+	var out strings.Builder
+	p := NewPrompter(strings.NewReader("mysecrettoken\n"), &out)
+
+	val, err := p.askSecret("API token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "mysecrettoken" {
+		t.Errorf("got %q, want %q", val, "mysecrettoken")
+	}
+	// The prompt should NOT claim input is hidden on a non-TTY.
+	prompt := out.String()
+	if strings.Contains(prompt, "input hidden") {
+		t.Errorf("non-TTY prompt must not claim 'input hidden', got: %q", prompt)
+	}
+	// The prompt should still show the label.
+	if !strings.Contains(prompt, "API token") {
+		t.Errorf("prompt should contain the label 'API token', got: %q", prompt)
+	}
+}
+
+// TestAskSecret_NonTTY_TrimsWhitespace verifies that surrounding whitespace
+// and the trailing newline are trimmed from the returned secret.
+func TestAskSecret_NonTTY_TrimsWhitespace(t *testing.T) {
+	var out strings.Builder
+	p := NewPrompter(strings.NewReader("  token-with-spaces  \n"), &out)
+
+	val, err := p.askSecret("Token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "token-with-spaces" {
+		t.Errorf("got %q, want %q", val, "token-with-spaces")
+	}
+}
+
+// TestAskSecretRequired_NonTTY_RepromptOnEmpty verifies that askSecretRequired
+// re-prompts when the user supplies an empty line, then accepts a non-empty value.
+func TestAskSecretRequired_NonTTY_RepromptOnEmpty(t *testing.T) {
+	var out strings.Builder
+	// First line is empty → re-prompt; second line has the real value.
+	p := NewPrompter(strings.NewReader("\nrealtoken\n"), &out)
+
+	val, err := p.askSecretRequired("API token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "realtoken" {
+		t.Errorf("got %q, want %q", val, "realtoken")
+	}
+	// Should have re-prompted (label appears twice).
+	prompt := out.String()
+	count := strings.Count(prompt, "API token")
+	if count < 2 {
+		t.Errorf("expected at least 2 occurrences of label (re-prompt), got %d in %q", count, prompt)
+	}
+}
+
 // Ensure unused imports compile away.
 var _ = errors.New
 
