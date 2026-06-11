@@ -46,12 +46,17 @@ type orgSettingsCall struct {
 }
 
 // fakeOrgSettingsWriter records calls for assertion in tests.
+// It optionally implements URLOrbAllowListGetter and OTelExporterGetter when
+// the corresponding func fields are set; this lets tests exercise the
+// idempotency pre-flight code paths without requiring a new interface.
 type fakeOrgSettingsWriter struct {
 	updateFeatureFlags        func(vcsType, orgName string, flags map[string]bool) error
 	setOIDCClaims             func(orgID string, audience []string, ttl string) error
+	getURLOrbAllowList        func(slugOrID string) ([]URLOrbAllowEntry, error)
 	createURLOrbAllowEntry    func(slugOrID, name, prefix, auth string) error
 	putPolicyBundle           func(ownerID string, policies map[string]string) error
 	setPolicyEnforcement      func(ownerID string, enabled bool) error
+	getOTelExporters          func(orgID string) ([]OTelExporter, error)
 	createOTelExporter        func(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
 	setContacts               func(orgID string, primary, security []string) error
 	setStorageRetention       func(orgUUID string, controls StorageRetentionArgs) error
@@ -63,9 +68,11 @@ type fakeOrgSettingsWriter struct {
 	flagsWritten               []map[string]bool // each call to UpdateFeatureFlags
 	oidcCalls                  int
 	urlOrbCalls                int
+	urlOrbGetCalls             int
 	policyPuts                 int
 	enforcementSets            int
 	otelCalls                  int
+	otelGetCalls               int
 	contactsCalls              int
 	storageRetentionSets       int
 	budgetSets                 int
@@ -91,6 +98,18 @@ func (f *fakeOrgSettingsWriter) SetOIDCClaims(orgID string, audience []string, t
 	return nil
 }
 
+// GetURLOrbAllowList implements URLOrbAllowListGetter (optional capability).
+// Only active when f.getURLOrbAllowList is non-nil; otherwise the method is not
+// exposed (type assertion returns false).
+func (f *fakeOrgSettingsWriter) GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error) {
+	f.calls = append(f.calls, orgSettingsCall{"GetURLOrbAllowList", []string{slugOrID}})
+	f.urlOrbGetCalls++
+	if f.getURLOrbAllowList != nil {
+		return f.getURLOrbAllowList(slugOrID)
+	}
+	return nil, nil
+}
+
 func (f *fakeOrgSettingsWriter) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error {
 	f.calls = append(f.calls, orgSettingsCall{"CreateURLOrbAllowEntry", []string{slugOrID, name, prefix, auth}})
 	f.urlOrbCalls++
@@ -98,6 +117,18 @@ func (f *fakeOrgSettingsWriter) CreateURLOrbAllowEntry(slugOrID, name, prefix, a
 		return f.createURLOrbAllowEntry(slugOrID, name, prefix, auth)
 	}
 	return nil
+}
+
+// GetOTelExporters implements OTelExporterGetter (optional capability).
+// Only active when f.getOTelExporters is non-nil; otherwise the method is not
+// exposed (type assertion returns false).
+func (f *fakeOrgSettingsWriter) GetOTelExporters(orgID string) ([]OTelExporter, error) {
+	f.calls = append(f.calls, orgSettingsCall{"GetOTelExporters", []string{orgID}})
+	f.otelGetCalls++
+	if f.getOTelExporters != nil {
+		return f.getOTelExporters(orgID)
+	}
+	return nil, nil
 }
 
 func (f *fakeOrgSettingsWriter) PutPolicyBundle(ownerID string, policies map[string]string) error {
@@ -1618,5 +1649,395 @@ func TestSyncOrgSettings_EnvironmentHierarchy_Nil_NoActions(t *testing.T) {
 		if a.Target == "environment_hierarchy" {
 			t.Errorf("unexpected environment_hierarchy action when nil: %+v", a)
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix #2: OTel exporter idempotency (duplicate on re-run guard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSyncOrgSettings_OTel_IdempotentRerun_SkipExisting verifies that when
+// GetOTelExporters reports an exporter with the same endpoint+protocol already
+// present, it is skipped with status "exists" and CreateOTelExporter is NOT
+// called a second time.
+func TestSyncOrgSettings_OTel_IdempotentRerun_SkipExisting(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getOTelExporters: func(orgID string) ([]OTelExporter, error) {
+			return []OTelExporter{
+				{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf"},
+			}, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf", Insecure: false},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("CreateOTelExporter") {
+		t.Error("CreateOTelExporter must NOT be called when exporter already exists (idempotent re-run)")
+	}
+
+	existsActions := actionsOfStatus(rep, "exists")
+	found := false
+	for _, a := range existsActions {
+		if strings.Contains(a.Target, "otel") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an 'exists' action for the already-present OTel exporter, got: %+v", rep.Actions)
+	}
+}
+
+// TestSyncOrgSettings_OTel_IdempotentRerun_NewExporterStillCreated verifies
+// that when one exporter already exists and another is new, only the new one
+// is created.
+func TestSyncOrgSettings_OTel_IdempotentRerun_NewExporterStillCreated(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getOTelExporters: func(orgID string) ([]OTelExporter, error) {
+			return []OTelExporter{
+				{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf"},
+			}, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf"}, // already exists
+			{Endpoint: "grpc.example.com:4317", Protocol: "grpc"},                  // new
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only one call to CreateOTelExporter (for the new exporter).
+	if fw.otelCalls != 1 {
+		t.Errorf("expected 1 CreateOTelExporter call (new only), got %d", fw.otelCalls)
+	}
+
+	existsActions := actionsOfStatus(rep, "exists")
+	setActions := actionsOfStatus(rep, "set")
+	var otelExists, otelSet int
+	for _, a := range existsActions {
+		if strings.Contains(a.Target, "otel") {
+			otelExists++
+		}
+	}
+	for _, a := range setActions {
+		if strings.Contains(a.Target, "otel") {
+			otelSet++
+		}
+	}
+	if otelExists != 1 {
+		t.Errorf("expected 1 'exists' OTel action, got %d", otelExists)
+	}
+	if otelSet != 1 {
+		t.Errorf("expected 1 'set' OTel action, got %d", otelSet)
+	}
+}
+
+// TestSyncOrgSettings_OTel_DryRun_NoGetCall verifies that in dry-run mode
+// GetOTelExporters is NOT called (pre-flight only runs in apply mode).
+func TestSyncOrgSettings_OTel_DryRun_NoGetCall(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getOTelExporters: func(orgID string) ([]OTelExporter, error) {
+			return nil, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		OTelExporters: []manifest.OTelExporter{
+			{Endpoint: "https://otel.example.com:4318", Protocol: "http/protobuf"},
+		},
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("GetOTelExporters") {
+		t.Error("GetOTelExporters must NOT be called in dry-run mode")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix #3: URL-orb allow list idempotency (duplicate on re-run guard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSyncOrgSettings_URLOrb_IdempotentRerun_SkipExisting verifies that when
+// GetURLOrbAllowList reports an entry with the same name+prefix already present,
+// it is skipped with status "exists" and CreateURLOrbAllowEntry is NOT called.
+func TestSyncOrgSettings_URLOrb_IdempotentRerun_SkipExisting(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getURLOrbAllowList: func(slugOrID string) ([]URLOrbAllowEntry, error) {
+			return []URLOrbAllowEntry{
+				{Name: "github-raw", Prefix: "https://raw.githubusercontent.com/"},
+			}, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		URLOrbAllowList: []manifest.URLOrbAllowEntry{
+			{Name: "github-raw", Prefix: "https://raw.githubusercontent.com/", Auth: "none"},
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("CreateURLOrbAllowEntry") {
+		t.Error("CreateURLOrbAllowEntry must NOT be called when entry already exists (idempotent re-run)")
+	}
+
+	existsActions := actionsOfStatus(rep, "exists")
+	found := false
+	for _, a := range existsActions {
+		if strings.Contains(a.Target, "github-raw") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an 'exists' action for the already-present URL-orb entry, got: %+v", rep.Actions)
+	}
+}
+
+// TestSyncOrgSettings_URLOrb_IdempotentRerun_NewEntryStillCreated verifies
+// that when one URL-orb entry already exists and another is new, only the new
+// one is created.
+func TestSyncOrgSettings_URLOrb_IdempotentRerun_NewEntryStillCreated(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getURLOrbAllowList: func(slugOrID string) ([]URLOrbAllowEntry, error) {
+			return []URLOrbAllowEntry{
+				{Name: "github-raw", Prefix: "https://raw.githubusercontent.com/"},
+			}, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		URLOrbAllowList: []manifest.URLOrbAllowEntry{
+			{Name: "github-raw", Prefix: "https://raw.githubusercontent.com/", Auth: "none"}, // exists
+			{Name: "s3-scripts", Prefix: "https://s3.example.com/scripts/", Auth: "aws"},     // new
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.urlOrbCalls != 1 {
+		t.Errorf("expected 1 CreateURLOrbAllowEntry call (new only), got %d", fw.urlOrbCalls)
+	}
+
+	existsActions := actionsOfStatus(rep, "exists")
+	found := false
+	for _, a := range existsActions {
+		if strings.Contains(a.Target, "github-raw") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an 'exists' action for github-raw, got: %+v", rep.Actions)
+	}
+}
+
+// TestSyncOrgSettings_URLOrb_DryRun_NoGetCall verifies that in dry-run mode
+// GetURLOrbAllowList is NOT called.
+func TestSyncOrgSettings_URLOrb_DryRun_NoGetCall(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		getURLOrbAllowList: func(slugOrID string) ([]URLOrbAllowEntry, error) {
+			return nil, nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		URLOrbAllowList: []manifest.URLOrbAllowEntry{
+			{Name: "github-raw", Prefix: "https://raw.githubusercontent.com/", Auth: "none"},
+		},
+	})
+
+	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("GetURLOrbAllowList") {
+		t.Error("GetURLOrbAllowList must NOT be called in dry-run mode")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix #7: Budget per-project mapping uses UUID (not slug); slug warns
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSyncOrgSettings_Budget_ProjectUUID_Applied verifies that when the
+// mapping value is a valid UUID (no "/"), SetBudget is called with that UUID
+// as the project ID.
+func TestSyncOrgSettings_Budget_ProjectUUID_Applied(t *testing.T) {
+	var capturedProjID *string
+	fw := &fakeOrgSettingsWriter{
+		setBudget: func(orgUUID string, projectID *string, credits int) error {
+			if projectID != nil {
+				s := *projectID
+				capturedProjID = &s
+			}
+			return nil
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+
+	srcProjUUID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	destProjUUID := "ffffffff-0000-1111-2222-333333333333"
+	credits := 5000
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Budgets: &manifest.OrgBudgets{
+			ProjectBudgets: []manifest.BudgetEntry{
+				{ProjectID: &srcProjUUID, Credits: credits},
+			},
+		},
+	})
+
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{srcProjUUID: destProjUUID},
+	}
+
+	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedProjID == nil {
+		t.Fatal("SetBudget must be called with a non-nil projectID")
+	}
+	if *capturedProjID != destProjUUID {
+		t.Errorf("SetBudget projectID: got %q want %q", *capturedProjID, destProjUUID)
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	found := false
+	for _, a := range setActions {
+		if strings.Contains(a.Target, "budget:project") {
+			found = true
+			if !strings.Contains(a.Detail, destProjUUID) {
+				t.Errorf("budget action detail should mention dest project UUID, got: %q", a.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'set' action for per-project budget, got: %+v", rep.Actions)
+	}
+}
+
+// TestSyncOrgSettings_Budget_ProjectSlug_Warning verifies that when the
+// mapping value looks like a slug (contains "/"), a "manual" action is emitted
+// and SetBudget is NOT called (the budgets API requires a UUID).
+func TestSyncOrgSettings_Budget_ProjectSlug_Warning(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	srcProjUUID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	destSlugValue := "gh/acme/web" // slug, not UUID — should warn
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Budgets: &manifest.OrgBudgets{
+			ProjectBudgets: []manifest.BudgetEntry{
+				{ProjectID: &srcProjUUID, Credits: 5000},
+			},
+		},
+	})
+
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{srcProjUUID: destSlugValue},
+	}
+
+	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetBudget") {
+		t.Error("SetBudget must NOT be called when mapping value is a slug (not a UUID)")
+	}
+
+	manualActions := actionsOfStatus(rep, "manual")
+	found := false
+	for _, a := range manualActions {
+		if strings.Contains(a.Target, "budget:project") {
+			found = true
+			if !strings.Contains(a.Detail, "UUID") {
+				t.Errorf("warning should mention UUID requirement, got: %q", a.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'manual' action warning about slug mapping, got: %+v", rep.Actions)
+	}
+}
+
+// TestSyncOrgSettings_Budget_ProjectUUID_DryRun verifies that in dry-run mode
+// a valid UUID mapping produces a "set" (would-set) action without calling SetBudget.
+func TestSyncOrgSettings_Budget_ProjectUUID_DryRun(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	srcProjUUID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	destProjUUID := "ffffffff-0000-1111-2222-333333333333"
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		Budgets: &manifest.OrgBudgets{
+			ProjectBudgets: []manifest.BudgetEntry{
+				{ProjectID: &srcProjUUID, Credits: 3000},
+			},
+		},
+	})
+
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{srcProjUUID: destProjUUID},
+	}
+
+	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fw.hasCalled("SetBudget") {
+		t.Error("SetBudget must NOT be called in dry-run mode")
+	}
+
+	setActions := actionsOfStatus(rep, "set")
+	found := false
+	for _, a := range setActions {
+		if strings.Contains(a.Target, "budget:project") {
+			found = true
+			if !strings.Contains(a.Detail, destProjUUID) {
+				t.Errorf("dry-run action should mention dest project UUID %q, got: %q", destProjUUID, a.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a dry-run 'set' action for per-project budget, got: %+v", rep.Actions)
 	}
 }
