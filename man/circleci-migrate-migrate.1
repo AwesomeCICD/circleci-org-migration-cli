@@ -104,6 +104,10 @@ Examples:
 	help for migrate
 
 .PP
+\fB--json\fP[=false]
+	Print a machine-readable JSON summary to stdout instead of the human-readable output; progress is written to stderr
+
+.PP
 \fB--mapping\fP=""
 	Path to a source->destination mapping file (optional)
 
@@ -146,6 +150,10 @@ Examples:
 .PP
 \fB--skip-projects\fP[=false]
 	Skip exporting and syncing projects
+
+.PP
+\fB--skip-runner\fP[=false]
+	Skip exporting and syncing self-hosted runner resource classes
 
 .PP
 \fB--source-org\fP=""
