@@ -283,7 +283,7 @@ Examples:
 					return syncErr
 				}
 				printSyncReport(cmd, "Projects", rep)
-				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes); enableErr != nil {
+				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, false); enableErr != nil {
 					return enableErr
 				}
 			}

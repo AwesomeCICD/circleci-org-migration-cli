@@ -68,6 +68,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --skip-contexts                  Skip syncing contexts
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
       --skip-projects                  Skip syncing projects
+      --skip-runner                    Skip syncing self-hosted runner resource classes
   -y, --yes                            Auto-confirm enabling builds after project creation (skip the interactive prompt)
 ```
 

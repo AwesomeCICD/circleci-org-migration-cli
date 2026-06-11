@@ -79,37 +79,38 @@ func TestHandleEnableBuilds_NoPending_NoOp(t *testing.T) {
 	c.SetOut(&outBuf)
 
 	rep := &syncer.Report{}
-	if err := handleEnableBuilds(c, nil, rep, false, false); err != nil {
+	if err := handleEnableBuilds(c, nil, rep, false, false, false); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if outBuf.Len() > 0 {
-		t.Errorf("expected no output for empty PendingEnable, got: %q", outBuf.String())
+		t.Errorf("expected no stdout output for empty PendingEnable, got: %q", outBuf.String())
 	}
 }
 
 func TestHandleEnableBuilds_DryRunWithPending_PrintsPlanMessage(t *testing.T) {
 	c := internalTestCmd()
-	var outBuf bytes.Buffer
-	c.SetOut(&outBuf)
+	var errBuf bytes.Buffer
+	c.SetErr(&errBuf)
 
 	rep := &syncer.Report{
 		PendingEnable: []syncer.EnableTarget{
 			{Kind: "follow", Slug: "gh/acme/web"},
 		},
 	}
-	if err := handleEnableBuilds(c, nil, rep, false /*apply*/, false); err != nil {
+	if err := handleEnableBuilds(c, nil, rep, false /*apply*/, false, false /*jsonOutput*/); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out := outBuf.String()
-	if !strings.Contains(out, "would be created paused") {
-		t.Errorf("expected dry-run plan message, got: %q", out)
+	// Dry-run plan message now goes to stderr, not stdout.
+	errOut := errBuf.String()
+	if !strings.Contains(errOut, "would be created paused") {
+		t.Errorf("expected dry-run plan message on stderr, got: %q", errOut)
 	}
 }
 
 func TestHandleEnableBuilds_ApplyNoTTYNoYes_PrintsSkippedMessage(t *testing.T) {
 	c := internalTestCmd()
-	var outBuf bytes.Buffer
-	c.SetOut(&outBuf)
+	var errBuf bytes.Buffer
+	c.SetErr(&errBuf)
 
 	rep := &syncer.Report{
 		PendingEnable: []syncer.EnableTarget{
@@ -117,13 +118,36 @@ func TestHandleEnableBuilds_ApplyNoTTYNoYes_PrintsSkippedMessage(t *testing.T) {
 		},
 	}
 	// apply=true, yes=false; stdin is not a char device in tests → no TTY.
-	if err := handleEnableBuilds(c, nil, rep, true /*apply*/, false); err != nil {
+	if err := handleEnableBuilds(c, nil, rep, true /*apply*/, false, false /*jsonOutput*/); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out := outBuf.String()
-	// Should print one of the "Skipped" messages (no TTY path).
-	if !strings.Contains(out, "Skipped") && !strings.Contains(out, "skipped") {
-		t.Errorf("expected 'Skipped' in output for apply+noTTY+noYes, got: %q", out)
+	errOut := errBuf.String()
+	// Should print one of the "Skipped" messages on stderr (no TTY path).
+	if !strings.Contains(errOut, "Skipped") && !strings.Contains(errOut, "skipped") {
+		t.Errorf("expected 'Skipped' in stderr for apply+noTTY+noYes, got: %q", errOut)
+	}
+}
+
+func TestHandleEnableBuilds_DryRunWithPending_JSONSuppressed(t *testing.T) {
+	c := internalTestCmd()
+	var outBuf, errBuf bytes.Buffer
+	c.SetOut(&outBuf)
+	c.SetErr(&errBuf)
+
+	rep := &syncer.Report{
+		PendingEnable: []syncer.EnableTarget{
+			{Kind: "follow", Slug: "gh/acme/web"},
+		},
+	}
+	// With jsonOutput=true, no text should be written to either stream.
+	if err := handleEnableBuilds(c, nil, rep, false /*apply*/, false, true /*jsonOutput*/); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outBuf.Len() > 0 {
+		t.Errorf("expected no stdout output with jsonOutput=true, got: %q", outBuf.String())
+	}
+	if errBuf.Len() > 0 {
+		t.Errorf("expected no stderr output with jsonOutput=true, got: %q", errBuf.String())
 	}
 }
 
@@ -436,24 +460,25 @@ func TestLoadBundleWithFeedback_Absent_Default_PrintsNote(t *testing.T) {
 	}
 }
 
-// TestLoadBundleWithFeedback_Absent_Explicit_SilentlySkips verifies that when
+// TestLoadBundleWithFeedback_Absent_Explicit_FatalError verifies that when
 // the bundle is absent and isDefault=false (user supplied the path explicitly),
-// no note is printed (the caller handles this case separately).
-func TestLoadBundleWithFeedback_Absent_Explicit_SilentlySkips(t *testing.T) {
+// a fatal error is returned rather than silently skipping the bundle.
+func TestLoadBundleWithFeedback_Absent_Explicit_FatalError(t *testing.T) {
 	noSuchPath := t.TempDir() + "/explicit-missing.json"
 
 	var errBuf strings.Builder
 	got, err := loadBundleWithFeedback(noSuchPath, false, &errBuf)
-	if err != nil {
-		t.Fatalf("unexpected error for absent explicit file: %v", err)
+	if err == nil {
+		t.Fatal("expected error for absent explicit --secrets path, got nil")
+	}
+	if !strings.Contains(err.Error(), "secrets bundle not found") {
+		t.Errorf("expected 'secrets bundle not found' in error; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), noSuchPath) {
+		t.Errorf("expected path %q in error; got %q", noSuchPath, err.Error())
 	}
 	if got != nil {
-		t.Error("expected nil bundle for missing explicit file")
-	}
-	// No note should be printed for an explicitly-supplied absent path.
-	msg := errBuf.String()
-	if msg != "" {
-		t.Errorf("expected no output for absent explicit path; got %q", msg)
+		t.Error("expected nil bundle on error")
 	}
 }
 

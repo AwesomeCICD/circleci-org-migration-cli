@@ -69,9 +69,11 @@ func TestPrintSyncReport_SkipAllSections(t *testing.T) {
 // loadBundleIfPresent — exercised via sync --secrets
 // ---------------------------------------------------------------------------
 
-// TestLoadBundleIfPresent_MissingFileIsNotError verifies that pointing
-// --secrets at a non-existent file is not an error (it is optional).
-func TestLoadBundleIfPresent_MissingFileIsNotError(t *testing.T) {
+// TestLoadBundleIfPresent_ExplicitMissingSecretsFatal verifies that pointing
+// --secrets at a non-existent path (explicitly supplied by the user) is a
+// fatal error, not silently ignored.  The default path is optional, but an
+// explicit flag is treated as a configuration error when the file is absent.
+func TestLoadBundleIfPresent_ExplicitMissingSecretsFatal(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-bundle")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
@@ -83,9 +85,12 @@ func TestLoadBundleIfPresent_MissingFileIsNotError(t *testing.T) {
 
 	_, _, err := runSyncCmd(t, "--manifest", mPath, "--secrets", noSecrets,
 		"--skip-contexts", "--skip-projects", "--skip-org-settings")
-	// Missing secrets file should not cause an error.
-	if err != nil {
-		t.Fatalf("missing secrets file should not error, got: %v", err)
+	// Explicit missing secrets file must now be a fatal error.
+	if err == nil {
+		t.Fatal("expected fatal error for explicit missing --secrets path, got nil")
+	}
+	if !strings.Contains(err.Error(), "secrets bundle not found") {
+		t.Errorf("expected 'secrets bundle not found' in error, got: %v", err)
 	}
 }
 
@@ -162,6 +167,247 @@ func TestSyncCmd_ManifestWithRunnerClasses_DryRun(t *testing.T) {
 		if strings.Contains(err.Error(), "manifest") && strings.Contains(err.Error(), "required") {
 			t.Errorf("should not get manifest-required error: %v", err)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --skip-runner flag
+// ---------------------------------------------------------------------------
+
+// TestSyncCmd_SkipRunnerFlagRegistered verifies that --skip-runner is a known
+// flag on the sync subcommand.
+func TestSyncCmd_SkipRunnerFlagRegistered(t *testing.T) {
+	syncSub := findSyncCmd(t)
+	if syncSub.Flags().Lookup("skip-runner") == nil {
+		t.Error("sync flag --skip-runner not registered")
+	}
+}
+
+// TestSyncCmd_SkipRunner_FlagAccepted verifies that --skip-runner is accepted
+// without causing a flag-parsing error.
+func TestSyncCmd_SkipRunner_FlagAccepted(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	_, _, err := runSyncCmd(t, "--manifest", mPath, "--skip-runner")
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("--skip-runner should be a known flag; got: %v", err)
+	}
+}
+
+// TestSyncCmd_SkipRunner_SkipsRunnerEvenWithManifestClasses verifies that when
+// --skip-runner is set, the runner sync section is bypassed even when the
+// manifest contains runner resource classes (no runner-client creation, no
+// network call for runner).
+func TestSyncCmd_SkipRunner_SkipsRunnerEvenWithManifestClasses(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-skip-runner")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	// Manifest with runner classes that would normally trigger runner sync.
+	m := map[string]any{
+		"schema_version": "1",
+		"source": map[string]any{
+			"host": "https://circleci.com",
+			"org":  map[string]any{"slug": "gh/testorg", "name": "testorg"},
+		},
+		"contexts":         []any{},
+		"projects":         []any{},
+		"runner_namespace": "testorg",
+		"runner_resource_classes": []any{
+			map[string]any{"name": "testorg/my-runner", "description": "test runner"},
+		},
+	}
+	data, _ := json.MarshalIndent(m, "", "  ")
+	mPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(mPath, data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	// With --skip-runner, the runner client is not created and no network call
+	// for runner sync is made, so this should succeed (not fail on network).
+	_, _, err := runSyncCmd(t, "--manifest", mPath,
+		"--skip-contexts", "--skip-projects", "--skip-org-settings",
+		"--skip-runner")
+	if err != nil {
+		// Only acceptable errors are network-level (not config/token).
+		if strings.Contains(err.Error(), "no destination API token") {
+			t.Errorf("should not get token error: %v", err)
+		}
+		if strings.Contains(err.Error(), "creating runner client") {
+			t.Errorf("runner client should not be created when --skip-runner is set: %v", err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --json stdout hygiene — no text interleaved into JSON
+// ---------------------------------------------------------------------------
+
+// TestSyncCmd_JSON_NoTextInStdout verifies that with --json, stdout contains
+// ONLY valid JSON (no interleaved progress text).
+func TestSyncCmd_JSON_NoTextInStdout(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-json-hygiene")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	stdout, _, err := runSyncCmd(t,
+		"--manifest", mPath,
+		"--skip-contexts",
+		"--skip-projects",
+		"--skip-org-settings",
+		"--skip-runner",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	// Stdout must be valid JSON — no text may precede or follow it.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &result); err != nil {
+		t.Fatalf("--json stdout is not valid JSON: %v\noutput: %q", err, stdout)
+	}
+
+	// Sanity: top-level keys must be present.
+	if _, ok := result["dry_run"]; !ok {
+		t.Errorf("expected 'dry_run' key in JSON output; got: %v", result)
+	}
+	if _, ok := result["sections"]; !ok {
+		t.Errorf("expected 'sections' key in JSON output; got: %v", result)
+	}
+}
+
+// TestSyncCmd_JSON_NoEnableBuildTextInStdout verifies that the enable-builds
+// progress messages ("Skipped enabling builds", "Enabling builds for N...") do
+// NOT appear in stdout when --json is used.
+func TestSyncCmd_JSON_NoEnableBuildTextInStdout(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-json-enable")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	stdout, _, err := runSyncCmd(t,
+		"--manifest", mPath,
+		"--skip-contexts",
+		"--skip-projects",
+		"--skip-org-settings",
+		"--skip-runner",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	// None of the enable-builds progress messages must appear in stdout.
+	for _, noWant := range []string{
+		"would be created paused",
+		"Skipped enabling builds",
+		"Enabling builds for",
+	} {
+		if strings.Contains(stdout, noWant) {
+			t.Errorf("enable-builds progress text %q must not appear in --json stdout; got: %q", noWant, stdout)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Skipped-secrets warning
+// ---------------------------------------------------------------------------
+
+// TestSyncCmd_SkippedSecretsWarning_NoBundle verifies that when no secrets
+// bundle is loaded and the manifest has env vars, a warning is emitted on
+// stderr.
+func TestSyncCmd_SkippedSecretsWarning_NoBundle(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-warn-secrets")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	// Manifest with context env vars — no secrets bundle provided.
+	m := map[string]any{
+		"schema_version": "1",
+		"source": map[string]any{
+			"host": "https://circleci.com",
+			"org":  map[string]any{"slug": "gh/testorg", "name": "testorg"},
+		},
+		"contexts": []any{
+			map[string]any{
+				"name":                  "deploy",
+				"environment_variables": []any{map[string]any{"name": "AWS_SECRET"}},
+			},
+		},
+		"projects": []any{},
+	}
+	data, _ := json.MarshalIndent(m, "", "  ")
+	mPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(mPath, data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	// Use --secrets "" (empty) so the bundle is explicitly absent but not an
+	// error. Skip all sections so we don't hit live API calls.
+	_, stderr, err := runSyncCmd(t, "--manifest", mPath,
+		"--secrets", "",
+		"--skip-contexts", "--skip-projects", "--skip-org-settings",
+		"--skip-runner",
+	)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	// The WARNING must appear on stderr.
+	if !strings.Contains(stderr, "WARNING: no secrets bundle loaded") {
+		t.Errorf("expected skipped-secrets warning on stderr; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "env var value(s) were not synced") {
+		t.Errorf("expected 'env var value(s) were not synced' in warning; got: %q", stderr)
+	}
+}
+
+// TestSyncCmd_SkippedSecretsWarning_WithBundle verifies that the warning is
+// NOT emitted when a bundle is actually loaded.
+func TestSyncCmd_SkippedSecretsWarning_WithBundle(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-warn-bundle-present")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	// Write a minimal valid secrets bundle.
+	bundle := map[string]any{
+		"schema_version":  "1",
+		"context_secrets": map[string]any{},
+		"project_secrets": map[string]any{},
+	}
+	bData, _ := json.MarshalIndent(bundle, "", "  ")
+	bPath := filepath.Join(dir, "secrets.json")
+	if err := os.WriteFile(bPath, bData, 0o600); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+
+	_, stderr, err := runSyncCmd(t, "--manifest", mPath,
+		"--secrets", bPath,
+		"--skip-contexts", "--skip-projects", "--skip-org-settings",
+		"--skip-runner",
+	)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	if strings.Contains(stderr, "WARNING: no secrets bundle loaded") {
+		t.Errorf("warning must not appear when bundle is loaded; got stderr: %q", stderr)
 	}
 }
 
