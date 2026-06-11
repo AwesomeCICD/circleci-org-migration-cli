@@ -84,7 +84,7 @@ func (b *SecretBundle) Save(path string) error {
 		b.SchemaVersion = SchemaVersion
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // G301: secret dirs must be owner-only (0700)
 			return fmt.Errorf("creating output directory %s: %w", dir, err)
 		}
 	}
