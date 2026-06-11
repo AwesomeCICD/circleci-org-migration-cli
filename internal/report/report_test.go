@@ -2623,14 +2623,19 @@ func TestIssue156_DetailedCutoverCommands(t *testing.T) {
 
 	for _, want := range []string{
 		"### 1a. Copy-pasteable command sequence",
-		"circleci-migrate secrets capture --org gh/acme",
-		"circleci-migrate sync --org gh/acme",
-		"--apply",
-		"--secrets secrets.json",
-		"<destination-org-slug>",
+		"circleci-migrate export --source-org gh/acme -o manifest.json",
+		"circleci-migrate secrets capture --manifest manifest.json -o secrets.json",
+		"circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply",
+		"--mapping",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("detailed cutover commands missing %q", want)
+		}
+	}
+	// sync must NOT use the (non-existent) --org/--dest-org flags.
+	for _, bad := range []string{"sync --org", "--dest-org", "secrets capture --org"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("cutover commands should not contain %q (wrong flags)", bad)
 		}
 	}
 }
@@ -2649,17 +2654,17 @@ func TestIssue156_DetailedCutoverCommands_SSHKeysLine(t *testing.T) {
 		},
 	}
 	md := report.Markdown(withSSH)
-	if !strings.Contains(md, "secrets capture --org gh/acme --ssh-keys") {
-		t.Errorf("cutover commands should include --ssh-keys step when SSH keys present; got:\n%s", md[:min(2000, len(md))])
+	if !strings.Contains(md, "secrets capture --manifest manifest.json --ssh-keys -o secrets.json") {
+		t.Errorf("cutover commands should include the --ssh-keys capture step when SSH keys present; got:\n%s", md[:min(2000, len(md))])
 	}
 
-	// Without SSH keys: --ssh-keys step should NOT appear.
+	// Without SSH keys: the --ssh-keys flag should NOT appear in the capture command.
 	plain := &manifest.Manifest{
 		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
 	}
 	mdPlain := report.Markdown(plain)
-	if strings.Contains(mdPlain, "secrets capture --org gh/acme --ssh-keys") {
-		t.Errorf("cutover commands should NOT include --ssh-keys step when no SSH keys present")
+	if strings.Contains(mdPlain, "secrets capture --manifest manifest.json --ssh-keys") {
+		t.Errorf("cutover commands should NOT include --ssh-keys when no SSH keys present")
 	}
 }
 

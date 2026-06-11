@@ -525,36 +525,34 @@ func writeDetailedCutoverCommands(b *strings.Builder, m *manifest.Manifest) {
 		orgSlug = "<source-org-slug>"
 	}
 
-	fmt.Fprintf(b, "\n### 1a. Copy-pasteable command sequence\n\n")
-	fmt.Fprintf(b, "Run these commands **in order** from the directory where your manifest (`manifest.json`) lives:\n\n")
-	fmt.Fprintf(b, "```sh\n")
-	fmt.Fprintf(b, "# Step 1 — export (already done; this report is the result)\n")
-	fmt.Fprintf(b, "# circleci-migrate export --org %s\n\n", orgSlug)
-
-	fmt.Fprintf(b, "# Step 2 — capture secret values (context + project env-var values)\n")
-	fmt.Fprintf(b, "# Option A: automated in-pipeline capture (recommended)\n")
-	fmt.Fprintf(b, "#   Add the secrets-capture orb step to a pipeline in the source org and trigger it.\n")
-	fmt.Fprintf(b, "# Option B: local capture (requires CIRCLE_TOKEN with source-org scope)\n")
-	fmt.Fprintf(b, "circleci-migrate secrets capture --org %s\n", orgSlug)
-
+	sshFlag := ""
+	sshNote := ""
 	if hasAdditionalSSHKeys(m) {
-		fmt.Fprintf(b, "\n# Step 2b — capture additional SSH key private material\n")
-		fmt.Fprintf(b, "circleci-migrate secrets capture --org %s --ssh-keys\n", orgSlug)
+		sshFlag = " --ssh-keys"
+		sshNote = " + additional SSH private keys"
 	}
 
-	fmt.Fprintf(b, "\n# Step 3 — dry-run (preview what sync would create/update)\n")
-	fmt.Fprintf(b, "circleci-migrate sync --org %s --dest-org <destination-org-slug>\n\n", orgSlug)
+	fmt.Fprintf(b, "\n### 1a. Copy-pasteable command sequence\n\n")
+	fmt.Fprintf(b, "Run these in order. `sync` reads the destination org from the manifest — pass\n")
+	fmt.Fprintf(b, "`--mapping mapping.json` to target a different org and/or rename projects.\n\n")
+	fmt.Fprintf(b, "```sh\n")
+	fmt.Fprintf(b, "# Step 1 — export the source org to a manifest (already done; this report is the result)\n")
+	fmt.Fprintf(b, "circleci-migrate export --source-org %s -o manifest.json\n\n", orgSlug)
 
-	fmt.Fprintf(b, "# Step 4 — apply (create all destination resources)\n")
-	fmt.Fprintf(b, "circleci-migrate sync --org %s --dest-org <destination-org-slug> --apply\n\n", orgSlug)
+	fmt.Fprintf(b, "# Step 2 — capture secret VALUES (context + project env-var values%s).\n", sshNote)
+	fmt.Fprintf(b, "#   Triggers an in-pipeline job in the source org; the artifact is age-encrypted.\n")
+	fmt.Fprintf(b, "circleci-migrate secrets capture --manifest manifest.json%s -o secrets.json\n\n", sshFlag)
 
-	fmt.Fprintf(b, "# Step 5 — apply WITH secrets (inject captured env-var values)\n")
-	fmt.Fprintf(b, "circleci-migrate sync --org %s --dest-org <destination-org-slug> --apply --secrets secrets.json\n\n", orgSlug)
+	fmt.Fprintf(b, "# Step 3 — dry-run sync (preview the plan; writes nothing)\n")
+	fmt.Fprintf(b, "circleci-migrate sync --manifest manifest.json --secrets secrets.json\n\n")
 
-	fmt.Fprintf(b, "# Step 6 — validate the destination, then rotate every captured secret value.\n")
+	fmt.Fprintf(b, "# Step 4 — apply (create destination resources + inject captured values)\n")
+	fmt.Fprintf(b, "circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply\n\n")
+
+	fmt.Fprintf(b, "# Step 5 — validate the destination, then rotate every captured secret value.\n")
 	fmt.Fprintf(b, "# Delete secrets.json and any pipeline artifacts that contain secret material.\n")
 	fmt.Fprintf(b, "```\n\n")
-	fmt.Fprintf(b, "_Replace `<destination-org-slug>` with the destination org's slug (e.g. `gh/acme-new` or `circleci/<new-org-uuid>`). Replace `<source-org-slug>` if the placeholder was used above._\n")
+	fmt.Fprintf(b, "_The destination org comes from the manifest; use `--mapping mapping.json` to target a different org (e.g. `gh/acme-new` or `circleci/<new-org-uuid>`) or rename projects. Replace `<source-org-slug>` above if the placeholder was used._\n")
 }
 
 // writeAutomatedBySync lists what `sync --apply` handles end-to-end.
