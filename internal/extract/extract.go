@@ -358,13 +358,18 @@ func buildExtractConfigWithVersion(envNames []string, contextNames []string, opt
 	sb.WriteString("workflows:\n")
 	sb.WriteString("  extract:\n")
 	sb.WriteString("    jobs:\n")
-	sb.WriteString("      - " + dumpJobName + ":\n")
-
 	if len(contextNames) > 0 {
+		// Job needs a `context:` mapping — emit the job as a mapping key.
+		sb.WriteString("      - " + dumpJobName + ":\n")
 		sb.WriteString("          context:\n")
 		for _, ctx := range contextNames {
 			sb.WriteString(fmt.Sprintf("            - %s\n", ctx))
 		}
+	} else {
+		// No contexts ⇒ no job-level config. Emit the bare job name as a
+		// STRING; `- job:` with nothing under it is an invalid null mapping
+		// ("expected type: String, found: Mapping") and the pipeline errors.
+		sb.WriteString("      - " + dumpJobName + "\n")
 	}
 
 	return sb.String()

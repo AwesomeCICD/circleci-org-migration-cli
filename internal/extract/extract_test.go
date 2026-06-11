@@ -10,7 +10,52 @@ import (
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"gopkg.in/yaml.v3"
 )
+
+// workflowJobs0 parses cfg as YAML and returns workflows.extract.jobs[0].
+func workflowJobs0(t *testing.T, cfg string) any {
+	t.Helper()
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(cfg), &doc); err != nil {
+		t.Fatalf("generated config is not valid YAML: %v\n%s", err, cfg)
+	}
+	wf, ok := doc["workflows"].(map[string]any)
+	if !ok {
+		t.Fatalf("no workflows mapping in config:\n%s", cfg)
+	}
+	ex, ok := wf["extract"].(map[string]any)
+	if !ok {
+		t.Fatalf("no workflows.extract mapping:\n%s", cfg)
+	}
+	jobs, ok := ex["jobs"].([]any)
+	if !ok || len(jobs) == 0 {
+		t.Fatalf("workflows.extract.jobs missing/empty:\n%s", cfg)
+	}
+	return jobs[0]
+}
+
+// Regression: with NO contexts the job must be a bare STRING, not a `- job:`
+// null mapping (which CircleCI rejects: "expected type: String, found:
+// Mapping"). Found via live testing on a project with no contexts.
+func TestBuildExtractConfig_NoContexts_JobIsString(t *testing.T) {
+	job := workflowJobs0(t, buildExtractConfig([]string{"FOO"}, nil, nil))
+	if _, ok := job.(string); !ok {
+		t.Fatalf("with no contexts, jobs[0] must be a string; got %T (%v) — a null mapping fails CircleCI validation", job, job)
+	}
+}
+
+// With contexts the job is a mapping carrying the context list.
+func TestBuildExtractConfig_WithContexts_JobIsMapping(t *testing.T) {
+	job := workflowJobs0(t, buildExtractConfig([]string{"FOO"}, []string{"ctx1"}, nil))
+	m, ok := job.(map[string]any)
+	if !ok {
+		t.Fatalf("with contexts, jobs[0] must be a mapping; got %T (%v)", job, job)
+	}
+	if _, ok := m[dumpJobName]; !ok {
+		t.Fatalf("job mapping missing key %q: %v", dumpJobName, m)
+	}
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildExtractConfig unit tests
