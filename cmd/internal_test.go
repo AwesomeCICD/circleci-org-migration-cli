@@ -369,6 +369,111 @@ func TestLoadBundleIfPresent_MissingFile_ReturnsNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// loadBundleWithFeedback (internal) — Issue #76
+// ---------------------------------------------------------------------------
+
+// writeTempBundle writes a minimal valid SecretBundle JSON to a temp file and
+// returns the path.
+func writeTempBundle(t *testing.T, b *manifest.SecretBundle) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/secrets.json"
+	if err := b.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	return path
+}
+
+// TestLoadBundleWithFeedback_Present_PrintsLoadedMessage verifies that when
+// the bundle file exists, a "Loaded secrets bundle" line is printed to stderr
+// and the bundle is returned without error.
+func TestLoadBundleWithFeedback_Present_PrintsLoadedMessage(t *testing.T) {
+	b := manifest.NewSecretBundle()
+	b.SetContextSecret("my-ctx", "SECRET", "value1")
+	b.SetProjectSecret("gh/acme/web", "WEB_VAR", "value2")
+	path := writeTempBundle(t, b)
+
+	var errBuf strings.Builder
+	got, err := loadBundleWithFeedback(path, true, &errBuf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil bundle")
+	}
+	msg := errBuf.String()
+	if !strings.Contains(msg, "Loaded secrets bundle from") {
+		t.Errorf("expected 'Loaded secrets bundle from' in stderr; got %q", msg)
+	}
+	// Should report the correct value count (2 values total).
+	if !strings.Contains(msg, "2 values") {
+		t.Errorf("expected '2 values' in load message; got %q", msg)
+	}
+	if !strings.Contains(msg, path) {
+		t.Errorf("expected path %q in load message; got %q", path, msg)
+	}
+}
+
+// TestLoadBundleWithFeedback_Absent_Default_PrintsNote verifies that when the
+// bundle is absent and isDefault=true, a "Note:" line is printed to stderr.
+func TestLoadBundleWithFeedback_Absent_Default_PrintsNote(t *testing.T) {
+	noSuchPath := t.TempDir() + "/no-such-secrets.json"
+
+	var errBuf strings.Builder
+	got, err := loadBundleWithFeedback(noSuchPath, true, &errBuf)
+	if err != nil {
+		t.Fatalf("unexpected error for absent file: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil bundle for missing file")
+	}
+	msg := errBuf.String()
+	if !strings.Contains(msg, "Note:") {
+		t.Errorf("expected 'Note:' line for absent default bundle; got %q", msg)
+	}
+	if !strings.Contains(msg, "not found") {
+		t.Errorf("expected 'not found' in absent-default message; got %q", msg)
+	}
+}
+
+// TestLoadBundleWithFeedback_Absent_Explicit_SilentlySkips verifies that when
+// the bundle is absent and isDefault=false (user supplied the path explicitly),
+// no note is printed (the caller handles this case separately).
+func TestLoadBundleWithFeedback_Absent_Explicit_SilentlySkips(t *testing.T) {
+	noSuchPath := t.TempDir() + "/explicit-missing.json"
+
+	var errBuf strings.Builder
+	got, err := loadBundleWithFeedback(noSuchPath, false, &errBuf)
+	if err != nil {
+		t.Fatalf("unexpected error for absent explicit file: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil bundle for missing explicit file")
+	}
+	// No note should be printed for an explicitly-supplied absent path.
+	msg := errBuf.String()
+	if msg != "" {
+		t.Errorf("expected no output for absent explicit path; got %q", msg)
+	}
+}
+
+// TestLoadBundleWithFeedback_EmptyPath_SilentlySkips verifies that an empty
+// path returns nil bundle without any output.
+func TestLoadBundleWithFeedback_EmptyPath_SilentlySkips(t *testing.T) {
+	var errBuf strings.Builder
+	got, err := loadBundleWithFeedback("", true, &errBuf)
+	if err != nil {
+		t.Fatalf("unexpected error for empty path: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil bundle for empty path")
+	}
+	if errBuf.Len() > 0 {
+		t.Errorf("expected no output for empty path; got %q", errBuf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // orgGroupLister.ListGroups — uses a real *org.Client backed by httptest
 // ---------------------------------------------------------------------------
 
