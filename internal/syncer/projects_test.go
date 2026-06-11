@@ -37,6 +37,8 @@ type fakeProjectWriter struct {
 	setProjectOIDCClaims      func(orgID, projID string, audience []string, ttl string) error
 	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
 	setV11ProjectFeatureFlags func(slug string, flags map[string]bool) error
+	listAdditionalSSHKeys     func(slug string) ([]project.SSHKeyMeta, error)
+	addAdditionalSSHKey       func(slug, hostname, privateKey string) error
 
 	// App-org methods
 	createAppProject         func(orgID, name string) (*project.Project, error)
@@ -163,6 +165,22 @@ func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[str
 	f.calls = append(f.calls, projectCall{"SetV11ProjectFeatureFlags", append([]string{slug}, keys...)})
 	if f.setV11ProjectFeatureFlags != nil {
 		return f.setV11ProjectFeatureFlags(slug, flags)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error) {
+	f.calls = append(f.calls, projectCall{"ListAdditionalSSHKeys", []string{slug}})
+	if f.listAdditionalSSHKeys != nil {
+		return f.listAdditionalSSHKeys(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
+	f.calls = append(f.calls, projectCall{"AddAdditionalSSHKey", []string{slug, hostname, privateKey}})
+	if f.addAdditionalSSHKey != nil {
+		return f.addAdditionalSSHKey(slug, hostname, privateKey)
 	}
 	return nil
 }
@@ -2889,5 +2907,273 @@ func TestSyncProjects_AppDest_DryRun_ResolvePreview(t *testing.T) {
 	}
 	if !found {
 		t.Error("dry-run must show 'resolved' ext-id actions (GitHub GET is read-only — run in dry-run)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncProjectSSHKeys tests
+// ---------------------------------------------------------------------------
+
+// bundleWithSSHKey builds a SecretBundle containing one SSH key for the given slug.
+func bundleWithSSHKey(slug, fingerprint, hostname, privateKey string) *manifest.SecretBundle {
+	b := manifest.NewSecretBundle()
+	b.AddSSHKey(slug, manifest.BundleSSHKey{
+		Fingerprint: fingerprint,
+		Hostname:    hostname,
+		PrivateKey:  privateKey,
+	})
+	return b
+}
+
+// projectWithSSHKey builds a manifest.Project with one SSHKeys entry.
+func projectWithSSHKey(slug, fingerprint, hostname string) manifest.Project {
+	return manifest.Project{
+		Slug: slug,
+		Name: slug,
+		SSHKeys: []manifest.ProjectSSHKey{
+			{Fingerprint: fingerprint, Hostname: hostname},
+		},
+	}
+}
+
+// TestSyncProjectSSHKeys_ReAddsFromBundle verifies that when a matching
+// BundleSSHKey exists, AddAdditionalSSHKey is called with the correct
+// arguments in apply mode.
+func TestSyncProjectSSHKeys_ReAddsFromBundle(t *testing.T) {
+	const slug = "gh/acme/web"
+	const fp = "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg="
+	const host = "github.com"
+	const privKey = "-----BEGIN RSA PRIVATE KEY-----\nMIIEo...\n-----END RSA PRIVATE KEY-----\n"
+
+	fp2 := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp2)
+
+	p := projectWithSSHKey(slug, fp, host)
+	m := projectManifest("gh/acme", p)
+	bundle := bundleWithSSHKey(slug, fp, host, privKey)
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	adds := fp2.callsTo("AddAdditionalSSHKey")
+	if len(adds) != 1 {
+		t.Fatalf("expected 1 AddAdditionalSSHKey call, got %d", len(adds))
+	}
+	if adds[0].args[0] != slug {
+		t.Errorf("AddAdditionalSSHKey slug: got %q want %q", adds[0].args[0], slug)
+	}
+	if adds[0].args[1] != host {
+		t.Errorf("AddAdditionalSSHKey hostname: got %q want %q", adds[0].args[1], host)
+	}
+	if adds[0].args[2] != privKey {
+		t.Errorf("AddAdditionalSSHKey privateKey: got %q want %q", adds[0].args[2], privKey)
+	}
+
+	sshActions := actionsOfKind(rep, "project-ssh-key")
+	if len(sshActions) == 0 {
+		t.Fatal("expected at least one project-ssh-key action")
+	}
+	if sshActions[0].Status != "set" {
+		t.Errorf("action status: got %q want set", sshActions[0].Status)
+	}
+}
+
+// TestSyncProjectSSHKeys_IdempotentSkipExisting verifies that a key whose
+// fingerprint already exists on the destination is not added again.
+func TestSyncProjectSSHKeys_IdempotentSkipExisting(t *testing.T) {
+	const slug = "gh/acme/web"
+	const fp = "existing-fingerprint="
+
+	fakeWriter := &fakeProjectWriter{
+		listAdditionalSSHKeys: func(s string) ([]project.SSHKeyMeta, error) {
+			return []project.SSHKeyMeta{{Fingerprint: fp, Hostname: "github.com"}}, nil
+		},
+	}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := projectWithSSHKey(slug, fp, "github.com")
+	m := projectManifest("gh/acme", p)
+	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fakeWriter.hasCalled("AddAdditionalSSHKey") {
+		t.Error("AddAdditionalSSHKey must NOT be called when fingerprint already exists on destination")
+	}
+
+	sshActions := actionsOfKind(rep, "project-ssh-key")
+	if len(sshActions) == 0 {
+		t.Fatal("expected a project-ssh-key action")
+	}
+	if sshActions[0].Status != "exists" {
+		t.Errorf("action status: got %q want exists", sshActions[0].Status)
+	}
+}
+
+// TestSyncProjectSSHKeys_DryRunNoWrite verifies that in dry-run mode
+// AddAdditionalSSHKey is not called but a "set" action is recorded.
+func TestSyncProjectSSHKeys_DryRunNoWrite(t *testing.T) {
+	const slug = "gh/acme/web"
+	const fp = "dry-run-fingerprint="
+
+	fakeWriter := &fakeProjectWriter{}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := projectWithSSHKey(slug, fp, "github.com")
+	m := projectManifest("gh/acme", p)
+	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fakeWriter.hasCalled("AddAdditionalSSHKey") {
+		t.Error("AddAdditionalSSHKey must NOT be called in dry-run mode")
+	}
+	if fakeWriter.hasCalled("ListAdditionalSSHKeys") {
+		t.Error("ListAdditionalSSHKeys must NOT be called in dry-run mode (no writes, no idempotency check needed)")
+	}
+
+	sshActions := actionsOfKind(rep, "project-ssh-key")
+	if len(sshActions) == 0 {
+		t.Fatal("expected a project-ssh-key action in dry-run")
+	}
+	if sshActions[0].Status != "set" {
+		t.Errorf("dry-run action status: got %q want set", sshActions[0].Status)
+	}
+}
+
+// TestSyncProjectSSHKeys_ManualWhenKeyMissingFromBundle verifies that when a
+// project has SSHKeys metadata but the bundle has no entry with that
+// fingerprint, a "manual" warning is emitted.
+func TestSyncProjectSSHKeys_ManualWhenKeyMissingFromBundle(t *testing.T) {
+	const slug = "gh/acme/web"
+	const fp = "missing-in-bundle="
+
+	fakeWriter := &fakeProjectWriter{}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := projectWithSSHKey(slug, fp, "github.com")
+	m := projectManifest("gh/acme", p)
+	// Bundle has no SSH keys for this project.
+	bundle := manifest.NewSecretBundle()
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fakeWriter.hasCalled("AddAdditionalSSHKey") {
+		t.Error("AddAdditionalSSHKey must NOT be called when private key is not in the bundle")
+	}
+
+	sshActions := actionsOfKind(rep, "project-ssh-key")
+	if len(sshActions) == 0 {
+		t.Fatal("expected a project-ssh-key action")
+	}
+	if sshActions[0].Status != "manual" {
+		t.Errorf("action status: got %q want manual", sshActions[0].Status)
+	}
+}
+
+// TestSyncProjectSSHKeys_ManualWhenNilBundle verifies that a nil bundle causes
+// all SSH keys to be emitted as "manual" warnings.
+func TestSyncProjectSSHKeys_ManualWhenNilBundle(t *testing.T) {
+	const slug = "gh/acme/web"
+
+	fakeWriter := &fakeProjectWriter{}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := manifest.Project{
+		Slug: slug,
+		Name: slug,
+		SSHKeys: []manifest.ProjectSSHKey{
+			{Fingerprint: "fp1=", Hostname: "github.com"},
+			{Fingerprint: "fp2=", Hostname: "bitbucket.org"},
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fakeWriter.hasCalled("AddAdditionalSSHKey") {
+		t.Error("AddAdditionalSSHKey must NOT be called with nil bundle")
+	}
+
+	manualCount := 0
+	for _, a := range actionsOfKind(rep, "project-ssh-key") {
+		if a.Status == "manual" {
+			manualCount++
+		}
+	}
+	if manualCount != 2 {
+		t.Errorf("expected 2 manual ssh-key actions, got %d", manualCount)
+	}
+}
+
+// TestSyncProjectSSHKeys_AddError verifies that an AddAdditionalSSHKey failure
+// is recorded as an "error" action without propagating to the top-level error.
+func TestSyncProjectSSHKeys_AddError(t *testing.T) {
+	const slug = "gh/acme/web"
+	const fp = "error-fingerprint="
+
+	fakeWriter := &fakeProjectWriter{
+		addAdditionalSSHKey: func(s, hostname, privateKey string) error {
+			return errors.New("API unavailable")
+		},
+	}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := projectWithSSHKey(slug, fp, "github.com")
+	m := projectManifest("gh/acme", p)
+	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+
+	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("AddAdditionalSSHKey error must not propagate, got: %v", err)
+	}
+
+	hasError := false
+	for _, a := range actionsOfKind(rep, "project-ssh-key") {
+		if a.Status == "error" {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected an 'error' project-ssh-key action when AddAdditionalSSHKey fails")
+	}
+}
+
+// TestSyncProjectSSHKeys_NoSSHKeysInManifest verifies that when a project has
+// no SSHKeys, no SSH key actions are emitted and no API calls are made.
+func TestSyncProjectSSHKeys_NoSSHKeysInManifest(t *testing.T) {
+	fakeWriter := &fakeProjectWriter{}
+	sy := newSyncerProjects(fakeWriter)
+
+	p := simpleProject("gh/acme/web") // no SSHKeys
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fakeWriter.hasCalled("ListAdditionalSSHKeys") {
+		t.Error("ListAdditionalSSHKeys must NOT be called when project has no SSHKeys")
+	}
+	if fakeWriter.hasCalled("AddAdditionalSSHKey") {
+		t.Error("AddAdditionalSSHKey must NOT be called when project has no SSHKeys")
+	}
+	if len(actionsOfKind(rep, "project-ssh-key")) != 0 {
+		t.Error("expected no project-ssh-key actions when project has no SSHKeys")
 	}
 }

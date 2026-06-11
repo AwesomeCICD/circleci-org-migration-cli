@@ -5,6 +5,50 @@ import (
 	"net/url"
 )
 
+// addSSHKeyRequest is the wire format for POST /api/v1.1/project/{slug}/ssh-key.
+type addSSHKeyRequest struct {
+	Hostname   string `json:"hostname"`
+	PrivateKey string `json:"private_key"`
+}
+
+// AddAdditionalSSHKey uploads a new additional SSH key to the project. The
+// private key material must be the raw PEM-encoded private key (e.g. an RSA
+// or Ed25519 private key as produced by ssh-keygen).
+//
+// Endpoint: POST /api/v1.1/project/{slug}/ssh-key
+// Request body: {"hostname": "<hostname>", "private_key": "<private-key-pem>"}
+//
+// hostname may be empty to create a globally-scoped key.  The endpoint returns
+// 201 on success; any non-2xx response is returned as an error.
+//
+// Idempotency note: if the same key has already been uploaded, the server
+// returns 201 again (no-op at the API level). Callers should pre-check the
+// destination fingerprint list to avoid duplicate calls.
+func (c *Client) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
+	if slug == "" {
+		return fmt.Errorf("AddAdditionalSSHKey: slug is required")
+	}
+	if privateKey == "" {
+		return fmt.Errorf("AddAdditionalSSHKey: privateKey is required")
+	}
+
+	u, err := slugSubresource(slug, "ssh-key")
+	if err != nil {
+		return fmt.Errorf("AddAdditionalSSHKey: %w", err)
+	}
+
+	body := addSSHKeyRequest{Hostname: hostname, PrivateKey: privateKey}
+	req, err := c.v11.NewRequest("POST", u, &body)
+	if err != nil {
+		return fmt.Errorf("AddAdditionalSSHKey: build request: %w", err)
+	}
+
+	if _, err := c.v11.DoRequest(req, nil); err != nil {
+		return fmt.Errorf("AddAdditionalSSHKey %q: %w", slug, err)
+	}
+	return nil
+}
+
 // SSHKeyMeta is the public metadata for one additional SSH key on a project.
 // The private key is NEVER returned by the CircleCI API; it is intentionally
 // excluded from this struct (and from the manifest).
