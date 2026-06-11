@@ -923,7 +923,7 @@ Examples:
 
 			token := rootOptions.SourceTokenOrDefault()
 			if token == "" {
-				return fmt.Errorf("no API token: set --source-token, --token, CIRCLECI_SOURCE_TOKEN, or CIRCLECI_CLI_TOKEN")
+				return noSourceTokenError()
 			}
 
 			// ── Resolve encryption options ────────────────────────────────────

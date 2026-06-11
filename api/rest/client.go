@@ -21,6 +21,21 @@ import (
 
 const defaultTimeout = 30 * time.Second
 
+// defaultCommandPath is forwarded as the Circleci-Cli-Command header on every
+// Client built via New (and therefore via NewFromConfig and all the api/*
+// constructors that wrap New). It is set once from the root command's
+// PersistentPreRunE via SetDefaultCommandPath so individual call sites do not
+// each have to remember to call (*Client).SetCommandPath.
+var defaultCommandPath string
+
+// SetDefaultCommandPath records the active cobra command path (e.g.
+// "circleci-migrate export") that every subsequently-constructed Client will
+// forward to the API via the Circleci-Cli-Command request header. Call it once
+// from the root command's PersistentPreRunE using cmd.CommandPath().
+func SetDefaultCommandPath(path string) {
+	defaultCommandPath = path
+}
+
 // Client is a CircleCI REST API client.
 type Client struct {
 	BaseURL     *url.URL
@@ -38,6 +53,7 @@ func New(baseURL *url.URL, token string, httpClient *http.Client) *Client {
 		BaseURL:     baseURL,
 		circleToken: token,
 		client:      httpClient,
+		commandPath: defaultCommandPath,
 	}
 }
 
@@ -52,7 +68,10 @@ func (c *Client) SetCommandPath(path string) {
 // NewFromConfig constructs a Client from a settings.Config.  The token
 // parameter is passed explicitly so callers can choose the source or
 // destination token without mutating the shared Config.
-func NewFromConfig(host string, cfg *settings.Config, token string) *Client {
+//
+// It returns an error (rather than panicking) when host is not a valid URL,
+// so that a bad --host / CIRCLECI_HOST value surfaces as a clean CLI error.
+func NewFromConfig(host string, cfg *settings.Config, token string) (*Client, error) {
 	endpoint := cfg.RestEndpoint
 	if !strings.HasSuffix(endpoint, "/") {
 		endpoint += "/"
@@ -60,7 +79,7 @@ func NewFromConfig(host string, cfg *settings.Config, token string) *Client {
 
 	baseURL, err := url.Parse(host)
 	if err != nil || baseURL.Host == "" {
-		panic("circleci-migrate: invalid CircleCI host URL: " + host)
+		return nil, fmt.Errorf("invalid CircleCI host URL %q: %w", host, err)
 	}
 
 	timeout := defaultTimeout
@@ -82,7 +101,7 @@ func NewFromConfig(host string, cfg *settings.Config, token string) *Client {
 		baseURL.ResolveReference(&url.URL{Path: endpoint}),
 		token,
 		httpClient,
-	)
+	), nil
 }
 
 // NewRequest builds an *http.Request, JSON-encoding payload when non-nil.

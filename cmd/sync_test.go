@@ -194,6 +194,7 @@ func TestSyncCmd_FlagsRegistered(t *testing.T) {
 	wantFlags := []string{
 		"manifest", "secrets", "mapping", "apply", "missing-secrets",
 		"skip-contexts", "skip-projects", "skip-org-settings", "skip-runner",
+		"skip-extras",
 	}
 	for _, name := range wantFlags {
 		if syncSub.Flags().Lookup(name) == nil {

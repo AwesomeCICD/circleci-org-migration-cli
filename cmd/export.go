@@ -138,28 +138,6 @@ func usageFileBase(rawURL string) string {
 	return "usage.csv.gz"
 }
 
-// parseURLForFilename extracts the path component of rawURL (stripping the
-// query string) so we can derive a safe local filename.
-func parseURLForFilename(rawURL string) (string, error) {
-	// Strip query string by splitting on '?'
-	path := rawURL
-	if idx := findByte(rawURL, '?'); idx >= 0 {
-		path = rawURL[:idx]
-	}
-	return path, nil
-}
-
-// findByte returns the index of the first occurrence of b in s, or -1 if not
-// found.  It avoids importing strings for a single-byte search.
-func findByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
 // runUsageExport orchestrates the full async usage-export flow: submit the job,
 // poll until completed (or timeout), then download all CSVs to outDir.
 // Errors are non-fatal: they are written to errOut and the function returns.
@@ -175,7 +153,7 @@ func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, tim
 
 	deadline := time.Now().Add(timeout)
 	var downloadURLs []string
-	for {
+	for completed := false; !completed; {
 		state, urls, pollErr := orgClient.GetUsageExportJob(orgID, jobID)
 		if pollErr != nil {
 			fmt.Fprintf(errOut, "Warning: usage export poll failed: %v\n", pollErr)
@@ -184,19 +162,19 @@ func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, tim
 		switch state {
 		case "completed":
 			downloadURLs = urls
-			goto download
+			completed = true
 		case "failed", "error":
 			fmt.Fprintf(errOut, "Warning: usage export job %s ended with state %q — skipping download.\n", jobID, state)
 			return
+		default:
+			if time.Now().After(deadline) {
+				fmt.Fprintf(errOut, "Warning: usage export job %s did not complete within %s — skipping download.\n", jobID, timeout)
+				return
+			}
+			time.Sleep(usagePollInterval)
 		}
-		if time.Now().After(deadline) {
-			fmt.Fprintf(errOut, "Warning: usage export job %s did not complete within %s — skipping download.\n", jobID, timeout)
-			return
-		}
-		time.Sleep(usagePollInterval)
 	}
 
-download:
 	if len(downloadURLs) == 0 {
 		fmt.Fprintf(errOut, "Warning: usage export job completed but returned no download URLs.\n")
 		return
@@ -284,7 +262,7 @@ Examples:
 			}
 			token := rootOptions.SourceTokenOrDefault()
 			if token == "" {
-				return fmt.Errorf("no source API token: set --source-token, --token, CIRCLECI_SOURCE_TOKEN, or CIRCLECI_CLI_TOKEN")
+				return noSourceTokenError()
 			}
 
 			orgClient, err := org.NewClient(rootOptions, token)

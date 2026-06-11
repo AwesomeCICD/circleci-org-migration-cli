@@ -50,9 +50,28 @@ func TestNewFromConfig_BaseURLHasTrailingSlash(t *testing.T) {
 		RestEndpoint: "api/v2",
 		HTTPClient:   &http.Client{},
 	}
-	c := rest.NewFromConfig("https://circleci.com", cfg, "tok")
+	c, err := rest.NewFromConfig("https://circleci.com", cfg, "tok")
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 	if !strings.HasSuffix(c.BaseURL.String(), "/") {
 		t.Errorf("BaseURL = %q; must end with '/'", c.BaseURL)
+	}
+}
+
+func TestNewFromConfig_InvalidHostReturnsError(t *testing.T) {
+	cfg := &settings.Config{
+		RestEndpoint: "api/v2",
+		HTTPClient:   &http.Client{},
+	}
+	for _, host := range []string{"", "://nope", "not-a-url"} {
+		c, err := rest.NewFromConfig(host, cfg, "tok")
+		if err == nil {
+			t.Errorf("NewFromConfig(%q): expected error, got client %v", host, c)
+		}
+		if c != nil {
+			t.Errorf("NewFromConfig(%q): expected nil client on error, got %v", host, c)
+		}
 	}
 }
 
@@ -61,7 +80,10 @@ func TestNewFromConfig_BaseURLContainsHostAndEndpoint(t *testing.T) {
 		RestEndpoint: "api/v2",
 		HTTPClient:   &http.Client{},
 	}
-	c := rest.NewFromConfig("https://example.circleci.com", cfg, "tok")
+	c, err := rest.NewFromConfig("https://example.circleci.com", cfg, "tok")
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 	got := c.BaseURL.String()
 	if !strings.Contains(got, "example.circleci.com") {
 		t.Errorf("BaseURL = %q; expected to contain host", got)
@@ -78,7 +100,10 @@ func TestNewFromConfig_ExplicitTokenIsUsed(t *testing.T) {
 		HTTPClient:   &http.Client{},
 	}
 	// Pass a different token explicitly — it must be the one used.
-	c := rest.NewFromConfig("https://circleci.com", cfg, "explicit-token")
+	c, err := rest.NewFromConfig("https://circleci.com", cfg, "explicit-token")
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 
 	base := mustParseURL(t, "https://circleci.com/")
 	req, err := c.NewRequest(http.MethodGet, base, nil)
@@ -96,8 +121,10 @@ func TestNewFromConfig_TimeoutFromEnv(t *testing.T) {
 		RestEndpoint: "api/v2",
 		HTTPClient:   &http.Client{},
 	}
-	// Should not panic; timeout applied silently.
-	_ = rest.NewFromConfig("https://circleci.com", cfg, "tok")
+	// Should not error; timeout applied silently.
+	if _, err := rest.NewFromConfig("https://circleci.com", cfg, "tok"); err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 }
 
 func TestNewFromConfig_InvalidTimeoutDoesNotPanic(t *testing.T) {
@@ -106,8 +133,10 @@ func TestNewFromConfig_InvalidTimeoutDoesNotPanic(t *testing.T) {
 		RestEndpoint: "api/v2",
 		HTTPClient:   &http.Client{},
 	}
-	// Should not panic; warning is printed to stderr but execution continues.
-	_ = rest.NewFromConfig("https://circleci.com", cfg, "tok")
+	// Should not error; warning is printed to stderr but execution continues.
+	if _, err := rest.NewFromConfig("https://circleci.com", cfg, "tok"); err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 }
 
 func TestNewFromConfig_NilHTTPClientIsHandled(t *testing.T) {
@@ -115,8 +144,10 @@ func TestNewFromConfig_NilHTTPClientIsHandled(t *testing.T) {
 		RestEndpoint: "api/v2",
 		HTTPClient:   nil,
 	}
-	// Must not panic when HTTPClient is nil.
-	_ = rest.NewFromConfig("https://circleci.com", cfg, "tok")
+	// Must not error when HTTPClient is nil.
+	if _, err := rest.NewFromConfig("https://circleci.com", cfg, "tok"); err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
