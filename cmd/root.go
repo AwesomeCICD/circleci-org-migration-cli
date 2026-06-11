@@ -334,7 +334,7 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	// flag cannot be parsed (e.g. unknown flag, wrong type).  Mirrors the
 	// official circleci-cli behaviour so error output is uniform.
 	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
-		return fmt.Errorf("%w\nRun '%s --help' for usage.", err, cmd.CommandPath())
+		return fmt.Errorf("%w\nRun '%s --help' for usage", err, cmd.CommandPath())
 	})
 
 	// Persistent (global) flags — available to every sub-command.
