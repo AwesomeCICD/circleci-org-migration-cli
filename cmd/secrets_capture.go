@@ -107,15 +107,40 @@ func parseOrgSlug(slug string) (vcsType, orgName string, ok bool) {
 	}
 }
 
+// isDefaultAllMembersGroup reports whether r is the default "All members"
+// group restriction (type=="group", value==orgID).  Every App-org context has
+// this restriction automatically; it is NOT a real access restriction.
+func isDefaultAllMembersGroup(r manifest.Restriction, orgID string) bool {
+	return r.Type == "group" && r.Value == orgID
+}
+
+// isGroupRestriction reports whether r is any group restriction
+// (type=="group").  Group restrictions are ONLY supported on GitHub OAuth
+// ("gh/…") orgs; they cannot be created via the API on standalone
+// ("circleci/…") or Bitbucket orgs.  The capture command therefore NEVER
+// removes or recreates group restrictions: attempting to do so on a
+// non-OAuth org would fail with "This is only supported for OAuth orgs."
+// Only `project` and `expression` restrictions are touched during capture.
+func isGroupRestriction(r manifest.Restriction) bool {
+	return r.Type == "group"
+}
+
 // realRestrictions filters out the default "All members" group restriction
 // (type=="group" with value==orgID) from the supplied list.  Every App-org
-// context has this restriction by default; it is NOT a real access restriction
+// context has this restriction by default; it is NOT a real restriction
 // — it simply means "all org members".  A context is considered genuinely
 // restricted only when at least one non-All-members restriction remains.
+//
+// NOTE: non-default group restrictions (type=="group", value!=orgID) ARE real
+// restrictions and remain in the list so callers can warn about them.
+// The remove/restore path in prepareRestrictionRemoval explicitly skips all
+// group restrictions (including non-default ones) because they are org-type
+// specific: they can only be created on GitHub OAuth orgs, not standalone or
+// Bitbucket orgs.  Users are directed to re-apply them manually.
 func realRestrictions(restrictions []manifest.Restriction, orgID string) []manifest.Restriction {
 	out := make([]manifest.Restriction, 0, len(restrictions))
 	for _, r := range restrictions {
-		if r.Type == "group" && r.Value == orgID {
+		if isDefaultAllMembersGroup(r, orgID) {
 			// Default "All members" restriction — skip it.
 			continue
 		}
@@ -1615,16 +1640,26 @@ type combinedCaptureClient struct {
 }
 
 // prepareRestrictionRemoval fetches live restriction IDs for mc, deletes only
-// the REAL restrictions (skipping the default "All members" group restriction
-// whose value equals orgID), and returns a restore function that re-creates
-// exactly the same real restrictions from the manifest.
+// the project and expression restrictions (skipping ALL group restrictions),
+// and returns a restore function that re-creates the same project/expression
+// restrictions from the manifest.
 //
-// Fix 3: the default "All members" group (type=="group", value==orgID) must
-// NEVER be deleted: on standalone orgs it cannot be recreated via the API
-// ("only supported for OAuth orgs"), which would permanently strip the context
-// of its default access restriction.  We apply the same realRestrictions
-// predicate used elsewhere to filter both the live deletions and the restore
-// set.
+// Org-type restriction matrix (CircleCI API v2):
+//
+//	restriction_type | GitHub OAuth ("gh/…") | Standalone ("circleci/…") | Bitbucket
+//	-----------------+----------------------+---------------------------+----------
+//	project          | supported            | supported                 | supported
+//	expression       | supported            | supported                 | supported
+//	group            | supported            | NOT SUPPORTED             | NOT SUPPORTED
+//
+// Group restrictions are managed by CircleCI / VCS and are tied to VCS team
+// IDs that are org-specific.  Attempting to create a group restriction on a
+// non-OAuth org fails with "This is only supported for OAuth orgs."  To avoid
+// permanently breaking context access on any org type, this function NEVER
+// removes or recreates group restrictions — not even on GitHub OAuth orgs.
+// The default "All members" group (type=="group", value==orgID) must especially
+// never be deleted.  Any non-default group restrictions in the manifest are
+// surfaced to the operator as a manual follow-up notice.
 //
 // The caller MUST immediately defer the returned restore function.  It runs
 // even if extraction later fails or panics.
@@ -1642,37 +1677,56 @@ func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionMana
 		return func() {}, fmt.Errorf("listing live restrictions for context %q: %w", mc.Name, listErr)
 	}
 
-	// Filter live restrictions: skip the default "All members" group so we
-	// never attempt to delete (or later re-create) it.
-	var liveReal []apicontext.Restriction
+	// Filter live restrictions: only touch project and expression types.
+	// ALL group restrictions (including the default "All members" group) are
+	// left completely untouched.  Group restrictions are org-type-specific:
+	// they can only be created via the API on GitHub OAuth orgs, not on
+	// standalone or Bitbucket orgs.  We never delete a group restriction
+	// because we might not be able to recreate it.
+	var liveToDelete []apicontext.Restriction
 	for _, lr := range live {
-		if lr.Type == "group" && lr.Value == orgID {
-			// Default "All members" restriction — leave it untouched.
+		if lr.Type == "group" {
+			// Group restriction — managed by CircleCI/VCS; never modified by capture.
+			fmt.Fprintf(stderr,
+				"NOTICE: group restriction on context %q (value=%q) is managed by CircleCI/VCS and is not modified.\n",
+				mc.Name, lr.Value,
+			)
 			continue
 		}
-		liveReal = append(liveReal, lr)
+		liveToDelete = append(liveToDelete, lr)
 	}
 
-	// The restore set comes from the manifest's recorded restrictions, also
-	// filtered by the same predicate (we never attempt to re-create the
-	// default group).
-	restoreFrom := realRestrictions(mc.Restrictions, orgID)
+	// The restore set comes from the manifest's recorded restrictions, filtered
+	// to only project and expression types.  Group restrictions are never
+	// re-created — they must be managed manually on the destination.
+	var restoreFrom []manifest.Restriction
+	for _, r := range mc.Restrictions {
+		if isGroupRestriction(r) {
+			// Skip group restrictions: not removable/recreatable via API on all org types.
+			continue
+		}
+		if isDefaultAllMembersGroup(r, orgID) {
+			// Belt-and-suspenders: skip the All-members default explicitly.
+			continue
+		}
+		restoreFrom = append(restoreFrom, r)
+	}
 
 	fmt.Fprintf(stderr,
-		"NOTICE: temporarily removing %d real restriction(s) from context %q for extraction.\n",
-		len(liveReal), mc.Name,
+		"NOTICE: temporarily removing %d project/expression restriction(s) from context %q for extraction.\n",
+		len(liveToDelete), mc.Name,
 	)
-	for _, lr := range liveReal {
+	for _, lr := range liveToDelete {
 		if delErr := client.DeleteRestriction(mc.SourceID, lr.ID); delErr != nil {
 			return func() {}, fmt.Errorf("deleting restriction %q from context %q: %w", lr.ID, mc.Name, delErr)
 		}
 	}
 
-	// Build the restore closure.  Re-creates only real restrictions from the
-	// manifest; the default group is left untouched throughout.
+	// Build the restore closure.  Re-creates only project/expression restrictions
+	// from the manifest.  Group restrictions are never touched.
 	restore := func() {
 		fmt.Fprintf(stderr,
-			"NOTICE: restoring %d restriction(s) on context %q.\n",
+			"NOTICE: restoring %d project/expression restriction(s) on context %q.\n",
 			len(restoreFrom), mc.Name,
 		)
 		for _, r := range restoreFrom {

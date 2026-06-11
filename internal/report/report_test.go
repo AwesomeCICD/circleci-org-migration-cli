@@ -921,3 +921,143 @@ func TestMarkdown_RepositoryLine_SchemelessGitHubURL(t *testing.T) {
 		t.Errorf("Markdown must not emit scheme-less //github.com in Repository line; got:\n%s", md)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #74: group-restriction manual note in report
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_GroupRestriction_ManualNote_PresentWhenNonDefault verifies that
+// the report includes the group-restriction manual note when at least one
+// context has a non-default group restriction (type=="group", value!=orgID).
+func TestMarkdown_GroupRestriction_ManualNote_PresentWhenNonDefault(t *testing.T) {
+	const orgID = "acme-org-uuid"
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "secured-ctx",
+				SourceID: "ctx-uuid-1",
+				EnvVars:  []manifest.ContextEnvVar{{Name: "DEPLOY_KEY"}},
+				Restrictions: []manifest.Restriction{
+					// Default All-members group — should NOT trigger the note alone.
+					{Type: "group", Value: orgID, Name: "All members"},
+					// Non-default group restriction — SHOULD trigger the note.
+					{Type: "group", Value: "engineering-team-uuid", Name: "engineering"},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Context group restrictions (manual)",
+		"GitHub OAuth",
+		"standalone",
+		"Re-apply group restrictions manually",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown group-restriction note missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_GroupRestriction_ManualNote_AbsentWhenOnlyDefaultAllMembers
+// verifies that the group-restriction note is NOT emitted when the only group
+// restriction is the default "All members" (type=="group", value==orgID).
+func TestMarkdown_GroupRestriction_ManualNote_AbsentWhenOnlyDefaultAllMembers(t *testing.T) {
+	const orgID = "acme-org-uuid"
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "all-members-ctx",
+				SourceID: "ctx-uuid-1",
+				EnvVars:  []manifest.ContextEnvVar{{Name: "VAR"}},
+				Restrictions: []manifest.Restriction{
+					// Only the All-members default — should NOT produce the note.
+					{Type: "group", Value: orgID, Name: "All members"},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	if strings.Contains(md, "Context group restrictions (manual)") {
+		t.Error("Markdown should NOT emit group-restriction note when only the default All-members restriction is present")
+	}
+}
+
+// TestMarkdown_GroupRestriction_ManualNote_AbsentWhenNoGroupRestrictions
+// verifies that the note is absent when no contexts have group restrictions.
+func TestMarkdown_GroupRestriction_ManualNote_AbsentWhenNoGroupRestrictions(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme", ID: "acme-org-uuid"},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "ctx",
+				SourceID: "ctx-uuid-1",
+				EnvVars:  []manifest.ContextEnvVar{{Name: "VAR"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: "proj-uuid"},
+					{Type: "expression", Value: `project.slug == "gh/acme/web"`},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	if strings.Contains(md, "Context group restrictions (manual)") {
+		t.Error("Markdown should NOT emit group-restriction note when no group restrictions exist")
+	}
+}
+
+// TestMarkdown_GroupRestriction_ManualNote_PullsWarning verifies that when a
+// "group_restriction" warning is in the manifest, the note includes the
+// export warning text via warningSuffix.
+func TestMarkdown_GroupRestriction_ManualNote_PullsWarning(t *testing.T) {
+	const orgID = "org-uuid"
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "o", Slug: "gh/o", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "ctx",
+				SourceID: "ctx-uuid",
+				EnvVars:  []manifest.ContextEnvVar{{Name: "VAR"}},
+				Restrictions: []manifest.Restriction{
+					{Type: "group", Value: "team-uuid", Name: "eng"},
+				},
+			},
+		},
+		Warnings: []manifest.Warning{
+			{
+				Scope:   "context:ctx",
+				Code:    "group_restriction_manual",
+				Message: "group restriction must be recreated manually",
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "export note:") {
+		t.Errorf("Markdown group-restriction note should include 'export note:'; got:\n%s", md)
+	}
+	if !strings.Contains(md, "group restriction must be recreated manually") {
+		t.Errorf("Markdown should include the warning message text; got:\n%s", md)
+	}
+}
