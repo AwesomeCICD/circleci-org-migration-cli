@@ -47,16 +47,17 @@ environment variables, and more — from one CircleCI organisation to another.
 Typical workflow:
 
   1. Export the source organisation to a local manifest file:
-       circleci-migrate export --source-token $SRC_TOKEN --org myorg > manifest.json
+       circleci-migrate export --source-token $SRC_TOKEN --org gh/myorg
 
   2. (Optional) Review or edit the manifest.
 
-  3. Sync the manifest into the destination organisation:
-       circleci-migrate sync  --dest-token $DST_TOKEN --org neworg manifest.json
+  3. Sync the manifest into the destination organisation (the destination org is
+     inferred from the manifest; no --org flag is needed):
+       circleci-migrate sync  --dest-token $DST_TOKEN --manifest manifest.json --apply
 
   Or run both steps in one shot:
        circleci-migrate migrate --source-token $SRC_TOKEN --dest-token $DST_TOKEN \
-         --source-org myorg --dest-org neworg
+         --source-org gh/myorg --dest-org gh/neworg
 
 Use "circleci-migrate [command] --help" for more information about a command.`,
 		SilenceUsage: true,
