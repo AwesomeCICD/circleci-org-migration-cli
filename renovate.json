@@ -58,6 +58,13 @@
         "major"
       ],
       "enabled": false
+    },
+    {
+      "description": "Group the pinned CI security/lint tool bumps (govulncheck, golangci-lint, gosec, etc.) tracked by the custom regex manager so they land in one easy-to-review PR.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "groupName": "ci tools"
     }
   ],
   "customManagers": [
@@ -70,7 +77,8 @@
         "/^Makefile$/"
       ],
       "matchStrings": [
-        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>.+?)\\s*\\n.*?(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>.+?)\\s*\\n.*?(?<currentValue>v?\\d+\\.\\d+\\.\\d+)",
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>.+?)\\s*\\n\\s*-\\s*goinstall:\\s*\\n\\s*pkg:\\s*\\S+@(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
       ],
       "versioningTemplate": "semver"
     }
