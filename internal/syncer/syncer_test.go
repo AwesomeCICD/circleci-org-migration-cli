@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -20,14 +21,14 @@ type fakeOrgResolver struct {
 	getOrganization func(slug string) (*org.Organization, error)
 }
 
-func (f *fakeOrgResolver) ResolveOrgID(slug string) (string, error) {
+func (f *fakeOrgResolver) ResolveOrgID(_ context.Context, slug string) (string, error) {
 	if f.resolveOrgID != nil {
 		return f.resolveOrgID(slug)
 	}
 	return "org-uuid-" + slug, nil
 }
 
-func (f *fakeOrgResolver) GetOrganization(slug string) (*org.Organization, error) {
+func (f *fakeOrgResolver) GetOrganization(_ context.Context, slug string) (*org.Organization, error) {
 	if f.getOrganization != nil {
 		return f.getOrganization(slug)
 	}
@@ -51,7 +52,7 @@ type fakeContextWriter struct {
 	calls             []call
 }
 
-func (f *fakeContextWriter) ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error) {
+func (f *fakeContextWriter) ListContexts(_ context.Context, ownerID, ownerSlug string) ([]cctx.Context, error) {
 	f.calls = append(f.calls, call{"ListContexts", []string{ownerID, ownerSlug}})
 	if f.listContexts != nil {
 		return f.listContexts(ownerID, ownerSlug)
@@ -59,7 +60,7 @@ func (f *fakeContextWriter) ListContexts(ownerID, ownerSlug string) ([]cctx.Cont
 	return nil, nil
 }
 
-func (f *fakeContextWriter) CreateContext(name, ownerID string) (*cctx.Context, error) {
+func (f *fakeContextWriter) CreateContext(_ context.Context, name, ownerID string) (*cctx.Context, error) {
 	f.calls = append(f.calls, call{"CreateContext", []string{name, ownerID}})
 	if f.createContext != nil {
 		return f.createContext(name, ownerID)
@@ -67,7 +68,7 @@ func (f *fakeContextWriter) CreateContext(name, ownerID string) (*cctx.Context, 
 	return &cctx.Context{ID: "new-ctx-" + name, Name: name}, nil
 }
 
-func (f *fakeContextWriter) UpsertEnvVar(contextID, name, value string) error {
+func (f *fakeContextWriter) UpsertEnvVar(_ context.Context, contextID, name, value string) error {
 	f.calls = append(f.calls, call{"UpsertEnvVar", []string{contextID, name, value}})
 	if f.upsertEnvVar != nil {
 		return f.upsertEnvVar(contextID, name, value)
@@ -75,7 +76,7 @@ func (f *fakeContextWriter) UpsertEnvVar(contextID, name, value string) error {
 	return nil
 }
 
-func (f *fakeContextWriter) ListRestrictions(contextID string) ([]cctx.Restriction, error) {
+func (f *fakeContextWriter) ListRestrictions(_ context.Context, contextID string) ([]cctx.Restriction, error) {
 	f.calls = append(f.calls, call{"ListRestrictions", []string{contextID}})
 	if f.listRestrictions != nil {
 		return f.listRestrictions(contextID)
@@ -83,7 +84,7 @@ func (f *fakeContextWriter) ListRestrictions(contextID string) ([]cctx.Restricti
 	return nil, nil
 }
 
-func (f *fakeContextWriter) CreateRestriction(contextID, restrictionType, restrictionValue string) error {
+func (f *fakeContextWriter) CreateRestriction(_ context.Context, contextID, restrictionType, restrictionValue string) error {
 	f.calls = append(f.calls, call{"CreateRestriction", []string{contextID, restrictionType, restrictionValue}})
 	if f.createRestriction != nil {
 		return f.createRestriction(contextID, restrictionType, restrictionValue)
@@ -118,7 +119,7 @@ type fakeGroupLister struct {
 	calls      int
 }
 
-func (f *fakeGroupLister) ListGroups(orgID string) ([]Group, error) {
+func (f *fakeGroupLister) ListGroups(_ context.Context, orgID string) ([]Group, error) {
 	f.calls++
 	if f.listGroups != nil {
 		return f.listGroups(orgID)
@@ -178,7 +179,7 @@ func TestSyncContexts_DryRun_MissingContext(t *testing.T) {
 	m := simpleManifest("deploy-prod", "API_KEY")
 	bundle := bundleWith("deploy-prod", "API_KEY", "s3cr3t")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: false})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestSyncContexts_ExistingContext(t *testing.T) {
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw}
 
 	m := simpleManifest("deploy-prod")
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestSyncContexts_ApplyTrue_CreatesContext(t *testing.T) {
 	m := simpleManifest("deploy-prod", "API_KEY")
 	bundle := bundleWith("deploy-prod", "API_KEY", "secretvalue")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestSyncContexts_EnvVar_SetFromBundle(t *testing.T) {
 	m := simpleManifest("prod", "DB_PASS")
 	bundle := bundleWith("prod", "DB_PASS", "hunter2")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestSyncContexts_MissingSecret_Skip(t *testing.T) {
 	// No bundle values for MISSING_VAR.
 	bundle := bundleWith("prod")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: true, MissingSecrets: MissingSkip})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: true, MissingSecrets: MissingSkip})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestSyncContexts_MissingSecret_Placeholder(t *testing.T) {
 	m := simpleManifest("prod", "MISSING_VAR")
 	bundle := bundleWith("prod")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -480,7 +481,7 @@ func TestSyncContexts_Restriction_Expression_Created(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -543,7 +544,7 @@ func TestSyncContexts_Restriction_Expression_Exists(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -597,7 +598,7 @@ func TestSyncContexts_Restriction_ProjectAndGroup_Manual(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -667,7 +668,7 @@ func TestSyncContexts_GroupRestriction_AllMembers_UsesDestOrgID(t *testing.T) {
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
 
 	m := groupRestrictionManifest("prod", "All members", "src-org-id")
-	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -707,7 +708,7 @@ func TestSyncContexts_GroupRestriction_NamedGroup_FoundResolvesUUID(t *testing.T
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
 
 	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
-	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -741,7 +742,7 @@ func TestSyncContexts_GroupRestriction_NotFound_Manual(t *testing.T) {
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
 
 	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
-	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -778,7 +779,7 @@ func TestSyncContexts_GroupRestriction_Idempotent_SkipWhenPresent(t *testing.T) 
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
 
 	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
-	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -807,7 +808,7 @@ func TestSyncContexts_GroupRestriction_DryRun_NoWrite(t *testing.T) {
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Groups: gl}
 
 	m := groupRestrictionManifest("prod", "sec-team", "src-grp-uuid")
-	rep, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -846,7 +847,7 @@ func TestSyncContexts_GroupRestriction_CacheLoadedOnce(t *testing.T) {
 			{Name: "b", Restrictions: []manifest.Restriction{{Type: "group", Name: "sec-team"}}},
 		},
 	}
-	if _, err := sy.SyncContexts(m, nil, mappingTo("gh/dest"), Options{Apply: true}); err != nil {
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), Options{Apply: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gl.calls != 1 {
@@ -877,7 +878,7 @@ func TestSyncContexts_MappingUsedForDestSlug(t *testing.T) {
 	}
 	mapping := mappingTo("gh/dest-org")
 
-	_, err := sy.SyncContexts(m, nil, mapping, Options{Apply: false})
+	_, err := sy.SyncContexts(context.Background(), m, nil, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -904,7 +905,7 @@ func TestSyncContexts_NilMapping_FallsBackToSourceSlug(t *testing.T) {
 		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/source-org"}},
 	}
 
-	_, err := sy.SyncContexts(m, nil, nil, Options{Apply: false})
+	_, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -927,7 +928,7 @@ func TestSyncContexts_ResolveOrgIDError_ReturnsError(t *testing.T) {
 	}
 	sy := &Syncer{Org: fr, Contexts: &fakeContextWriter{}}
 
-	_, err := sy.SyncContexts(simpleManifest("prod"), nil, nil, Options{})
+	_, err := sy.SyncContexts(context.Background(), simpleManifest("prod"), nil, nil, Options{})
 	if err == nil {
 		t.Fatal("expected error from ResolveOrgID failure, got nil")
 	}
@@ -943,7 +944,7 @@ func TestSyncContexts_ListContextsError_ReturnsError(t *testing.T) {
 	}
 	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw}
 
-	_, err := sy.SyncContexts(simpleManifest("prod"), nil, nil, Options{})
+	_, err := sy.SyncContexts(context.Background(), simpleManifest("prod"), nil, nil, Options{})
 	if err == nil {
 		t.Fatal("expected error from ListContexts failure, got nil")
 	}
@@ -980,7 +981,7 @@ func TestSyncContexts_CreateRestrictionError_IsErrorAction(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("write error must not propagate from SyncContexts, got: %v", err)
 	}
@@ -1013,7 +1014,7 @@ func TestSyncContexts_UpsertEnvVarError_IsErrorAction(t *testing.T) {
 	m := simpleManifest("prod", "MY_VAR")
 	bundle := bundleWith("prod", "MY_VAR", "val")
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("write error must not propagate from SyncContexts, got: %v", err)
 	}
@@ -1099,7 +1100,7 @@ func TestSyncContexts_DryRun_ExpressionRestriction_Set(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1141,7 +1142,7 @@ func TestSyncContexts_NilBundle_AllVarsManual(t *testing.T) {
 
 	m := simpleManifest("prod", "VAR1", "VAR2")
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true, MissingSecrets: MissingSkip})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true, MissingSecrets: MissingSkip})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1175,7 +1176,7 @@ func TestSyncContexts_CustomPlaceholder(t *testing.T) {
 	m := simpleManifest("prod", "MY_SECRET")
 	bundle := bundleWith("prod") // no value for MY_SECRET
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{
 		Apply:          true,
 		MissingSecrets: MissingPlaceholder,
 		Placeholder:    "TODO_FILL_IN",
@@ -1215,7 +1216,7 @@ func TestSyncContexts_Report_DestFields(t *testing.T) {
 	}
 	mapping := mappingTo("gh/dest")
 
-	rep, err := sy.SyncContexts(m, nil, mapping, Options{Apply: false})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1247,7 +1248,7 @@ func TestSyncer_Logf_WritesToOut(t *testing.T) {
 		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
 	}
 
-	_, err := sy.SyncContexts(m, nil, nil, Options{Apply: false})
+	_, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1273,7 +1274,7 @@ func TestSyncContexts_CreateContextError_RecordsErrorAction(t *testing.T) {
 
 	m := simpleManifest("broken-ctx")
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("CreateContext error must not propagate, got: %v", err)
 	}
@@ -1321,7 +1322,7 @@ func TestSyncContexts_Restriction_NamedProject_LabelUsesName(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1360,7 +1361,7 @@ func TestSyncContexts_DryRun_Placeholder_NoUpsert(t *testing.T) {
 	m := simpleManifest("prod", "MY_VAR")
 	bundle := bundleWith("prod") // no value for MY_VAR
 
-	_, err := sy.SyncContexts(m, bundle, nil, Options{
+	_, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{
 		Apply:          false,
 		MissingSecrets: MissingPlaceholder,
 	})
@@ -1397,7 +1398,7 @@ func TestSyncContexts_EmptyMappingOrgTo_FallsBackToSourceSlug(t *testing.T) {
 	// Mapping with empty Org.To
 	mapping := &manifest.Mapping{Org: manifest.OrgMapping{From: "gh/source-fallback", To: ""}}
 
-	_, err := sy.SyncContexts(m, nil, mapping, Options{Apply: false})
+	_, err := sy.SyncContexts(context.Background(), m, nil, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1439,7 +1440,7 @@ func TestSyncContexts_Restriction_UnnamedProject_LabelUsesValue(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1499,7 +1500,7 @@ func TestSyncContexts_ListRestrictions_Error_SkipsContext(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("ListRestrictions error must not propagate as top-level error, got: %v", err)
 	}
@@ -1543,7 +1544,7 @@ func TestSyncContexts_Placeholder_UpsertError_IsErrorAction(t *testing.T) {
 	m := simpleManifest("prod", "MISSING_VAR")
 	bundle := bundleWith("prod") // no value for MISSING_VAR
 
-	rep, err := sy.SyncContexts(m, bundle, nil, Options{
+	rep, err := sy.SyncContexts(context.Background(), m, bundle, nil, Options{
 		Apply:          true,
 		MissingSecrets: MissingPlaceholder,
 	})

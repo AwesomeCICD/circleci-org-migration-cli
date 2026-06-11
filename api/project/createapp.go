@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -27,7 +28,7 @@ type createAppProjectRequest struct {
 // Endpoint: POST /api/v2/organization/{orgID}/project
 // Request body: {"name": "<name>"}
 // Response 200: Project JSON (id, name, slug:"circleci/<orgUUID>/<projUUID>", organization_id, ...)
-func (c *Client) CreateAppProject(orgID, name string) (*Project, error) {
+func (c *Client) CreateAppProject(ctx context.Context, orgID, name string) (*Project, error) {
 	if orgID == "" || name == "" {
 		return nil, fmt.Errorf("project: CreateAppProject requires orgID and name")
 	}
@@ -39,7 +40,7 @@ func (c *Client) CreateAppProject(orgID, name string) (*Project, error) {
 	}
 
 	body := createAppProjectRequest{Name: name}
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return nil, fmt.Errorf("project: CreateAppProject: build request: %w", err)
 	}
@@ -113,7 +114,7 @@ type createPipelineDefinitionResponse struct {
 // Endpoint: POST /api/v2/projects/{projUUID}/pipeline-definitions
 // Request body: PipelineDefinitionSpec fields mapped to the API wire shape.
 // Response 200: {"id": "<defUUID>", ...}
-func (c *Client) CreatePipelineDefinition(projectID string, spec PipelineDefinitionSpec) (string, error) {
+func (c *Client) CreatePipelineDefinition(ctx context.Context, projectID string, spec PipelineDefinitionSpec) (string, error) {
 	if projectID == "" {
 		return "", fmt.Errorf("project: CreatePipelineDefinition requires projectID")
 	}
@@ -141,7 +142,7 @@ func (c *Client) CreatePipelineDefinition(projectID string, spec PipelineDefinit
 		},
 	}
 
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return "", fmt.Errorf("project: CreatePipelineDefinition: build request: %w", err)
 	}
@@ -193,7 +194,7 @@ type createTriggerResponse struct {
 // Endpoint: POST /api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers
 // Request body: TriggerSpec fields mapped to the API wire shape.
 // Response 200: {"id": "<triggerUUID>", ...}
-func (c *Client) CreateTrigger(projectID, defID string, spec TriggerSpec) (string, error) {
+func (c *Client) CreateTrigger(ctx context.Context, projectID, defID string, spec TriggerSpec) (string, error) {
 	if projectID == "" || defID == "" {
 		return "", fmt.Errorf("project: CreateTrigger requires projectID and defID")
 	}
@@ -215,7 +216,7 @@ func (c *Client) CreateTrigger(projectID, defID string, spec TriggerSpec) (strin
 		Disabled:    spec.Disabled,
 	}
 
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return "", fmt.Errorf("project: CreateTrigger: build request: %w", err)
 	}
@@ -245,7 +246,7 @@ type enableTriggerRequest struct {
 // Endpoint: PATCH /api/v2/projects/{projUUID}/triggers/{triggerUUID}
 // Request body: {"disabled": false}
 // Response 200: trigger JSON (ignored)
-func (c *Client) EnableTrigger(projectID, triggerID string) error {
+func (c *Client) EnableTrigger(ctx context.Context, projectID, triggerID string) error {
 	if projectID == "" || triggerID == "" {
 		return fmt.Errorf("project: EnableTrigger requires projectID and triggerID")
 	}
@@ -258,7 +259,7 @@ func (c *Client) EnableTrigger(projectID, triggerID string) error {
 	}
 
 	body := enableTriggerRequest{Disabled: false}
-	req, err := c.v2.NewRequest("PATCH", u, &body)
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, &body)
 	if err != nil {
 		return fmt.Errorf("project: EnableTrigger: build request: %w", err)
 	}
@@ -275,7 +276,7 @@ func (c *Client) EnableTrigger(projectID, triggerID string) error {
 // Response 200: empty body
 //
 // This is primarily used for rollback / cleanup in tests and tooling.
-func (c *Client) DeleteProject(slug string) error {
+func (c *Client) DeleteProject(ctx context.Context, slug string) error {
 	if slug == "" {
 		return fmt.Errorf("project: DeleteProject requires slug")
 	}
@@ -285,7 +286,7 @@ func (c *Client) DeleteProject(slug string) error {
 		return fmt.Errorf("project: DeleteProject: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("DELETE", u, nil)
+	req, err := c.v2.NewRequest(ctx, "DELETE", u, nil)
 	if err != nil {
 		return fmt.Errorf("project: DeleteProject: build request: %w", err)
 	}

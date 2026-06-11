@@ -24,35 +24,35 @@ import (
 // and restore the api-trigger-with-config project feature flag. Injected by
 // tests; production uses a real *project.Client.
 type flagReaderWriter interface {
-	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
-	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
+	SetV11ProjectFeatureFlags(ctx context.Context, slug string, flags map[string]bool) error
 }
 
 // storageRetentionManager reads and writes org-level storage-retention controls
 // before the extraction pipeline runs. Injected by tests; production uses a
 // real *org.Client which satisfies this interface directly.
 type storageRetentionManager interface {
-	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
-	SetStorageRetention(orgUUID string, controls org.StorageRetentionControls) error
+	GetStorageRetention(ctx context.Context, orgUUID string) (*org.StorageRetention, error)
+	SetStorageRetention(ctx context.Context, orgUUID string, controls org.StorageRetentionControls) error
 }
 
 // orgFlagManager reads and writes org-level feature flags via the v1.1
 // organization settings endpoint.  Injected by tests; production uses a real
 // *org.Client.
 type orgFlagManager interface {
-	GetFeatureFlags(vcsType, orgName string) (map[string]bool, error)
-	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
+	GetFeatureFlags(ctx context.Context, vcsType, orgName string) (map[string]bool, error)
+	UpdateFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error
 }
 
 // pipelineDefLister lists pipeline definitions for a project so the command
 // can resolve the first definition's UUID automatically.
 type pipelineDefLister interface {
-	ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error)
+	ListPipelineDefinitions(ctx context.Context, projectID string) ([]project.PipelineDefinition, error)
 }
 
 // projectGetter retrieves project metadata (used to get the project UUID).
 type projectGetter interface {
-	GetProject(slug string) (*project.Project, error)
+	GetProject(ctx context.Context, slug string) (*project.Project, error)
 }
 
 // contextRestrictionManager manages context restrictions during capture: it can
@@ -60,9 +60,9 @@ type projectGetter interface {
 // delete individual restrictions.  Injected by tests; production uses a real
 // *apicontext.Client.
 type contextRestrictionManager interface {
-	ListRestrictions(contextID string) ([]apicontext.Restriction, error)
-	CreateRestriction(contextID, restrictionType, restrictionValue string) error
-	DeleteRestriction(contextID, restrictionID string) error
+	ListRestrictions(ctx context.Context, contextID string) ([]apicontext.Restriction, error)
+	CreateRestriction(ctx context.Context, contextID, restrictionType, restrictionValue string) error
+	DeleteRestriction(ctx context.Context, contextID, restrictionID string) error
 }
 
 // captureClient combines all interfaces the capture command exercises.
@@ -1496,7 +1496,7 @@ func captureProject(
 	stdout := cmd.OutOrStdout()
 
 	// ── 1. Ensure api-trigger-with-config ────────────────────────────────────
-	flags, err := client.GetV11ProjectFeatureFlags(p.Slug)
+	flags, err := client.GetV11ProjectFeatureFlags(ctx, p.Slug)
 	if err != nil {
 		return fmt.Errorf("read feature flags for %s: %w", p.Slug, err)
 	}
@@ -1514,7 +1514,7 @@ func captureProject(
 			)
 		}
 		fmt.Fprintf(stderr, "Enabling api-trigger-with-config for %s…\n", p.Slug)
-		if err := client.SetV11ProjectFeatureFlags(p.Slug, map[string]bool{"api-trigger-with-config": true}); err != nil {
+		if err := client.SetV11ProjectFeatureFlags(ctx, p.Slug, map[string]bool{"api-trigger-with-config": true}); err != nil {
 			return fmt.Errorf("enable api-trigger-with-config for %s: %w", p.Slug, err)
 		}
 	}
@@ -1523,7 +1523,7 @@ func captureProject(
 	defer func() {
 		if !wasEnabled && enableTrigger {
 			fmt.Fprintf(stderr, "Restoring api-trigger-with-config=false for %s…\n", p.Slug)
-			if restoreErr := client.SetV11ProjectFeatureFlags(p.Slug, map[string]bool{"api-trigger-with-config": false}); restoreErr != nil {
+			if restoreErr := client.SetV11ProjectFeatureFlags(ctx, p.Slug, map[string]bool{"api-trigger-with-config": false}); restoreErr != nil {
 				fmt.Fprintf(stderr, "WARNING: failed to restore api-trigger-with-config for %s: %v\n", p.Slug, restoreErr)
 			}
 		}
@@ -1536,12 +1536,12 @@ func captureProject(
 	// the project with a clear message rather than letting TriggerPipelineRun
 	// fail with a cryptic error ("has no pipeline definitions", "github repository
 	// not found", "Failed to fetch Branch").
-	proj, err := client.GetProject(p.Slug)
+	proj, err := client.GetProject(ctx, p.Slug)
 	if err != nil {
 		return fmt.Errorf("get project %s: %w", p.Slug, err)
 	}
 
-	defs, err := client.ListPipelineDefinitions(proj.ID)
+	defs, err := client.ListPipelineDefinitions(ctx, proj.ID)
 	if err != nil {
 		return fmt.Errorf("list pipeline definitions for %s: %w", p.Slug, err)
 	}
@@ -1833,10 +1833,11 @@ type combinedCaptureClient struct {
 // If a RESTORE fails, a prominent WARNING is printed naming exactly which
 // restriction (context, type, value) must be manually re-added.
 func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionManager, mc *manifest.Context, orgID string) (restoreFn func(), err error) {
+	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
 	// Fetch live restrictions to get their IDs for deletion.
-	live, listErr := client.ListRestrictions(mc.SourceID)
+	live, listErr := client.ListRestrictions(ctx, mc.SourceID)
 	if listErr != nil {
 		return func() {}, fmt.Errorf("listing live restrictions for context %q: %w", mc.Name, listErr)
 	}
@@ -1881,7 +1882,7 @@ func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionMana
 		len(liveToDelete), mc.Name,
 	)
 	for _, lr := range liveToDelete {
-		if delErr := client.DeleteRestriction(mc.SourceID, lr.ID); delErr != nil {
+		if delErr := client.DeleteRestriction(ctx, mc.SourceID, lr.ID); delErr != nil {
 			return func() {}, fmt.Errorf("deleting restriction %q from context %q: %w", lr.ID, mc.Name, delErr)
 		}
 	}
@@ -1894,7 +1895,7 @@ func prepareRestrictionRemoval(cmd *cobra.Command, client contextRestrictionMana
 			len(restoreFrom), mc.Name,
 		)
 		for _, r := range restoreFrom {
-			if createErr := client.CreateRestriction(mc.SourceID, r.Type, r.Value); createErr != nil {
+			if createErr := client.CreateRestriction(ctx, mc.SourceID, r.Type, r.Value); createErr != nil {
 				fmt.Fprintf(stderr,
 					"WARNING: failed to restore restriction on context %q "+
 						"(type=%q value=%q): %v — you must re-add this restriction manually.\n",
@@ -1931,9 +1932,10 @@ func orgTriggerAlreadyEnabled(flags map[string]bool) bool {
 }
 
 func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, orgName string) func() {
+	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	flags, err := mgr.GetFeatureFlags(vcsType, orgName)
+	flags, err := mgr.GetFeatureFlags(ctx, vcsType, orgName)
 	if err != nil {
 		fmt.Fprintf(stderr,
 			"WARNING: could not read org-level feature flags (%s/%s): %v — proceeding\n",
@@ -1949,7 +1951,7 @@ func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, 
 	}
 
 	fmt.Fprintf(stderr, "Enabling org-level allow_api_trigger_with_config for %s/%s…\n", vcsType, orgName)
-	if uerr := mgr.UpdateFeatureFlags(vcsType, orgName, map[string]bool{orgApiTriggerKey: true}); uerr != nil {
+	if uerr := mgr.UpdateFeatureFlags(ctx, vcsType, orgName, map[string]bool{orgApiTriggerKey: true}); uerr != nil {
 		fmt.Fprintf(stderr,
 			"WARNING: could not enable org-level allow_api_trigger_with_config for %s/%s: %v — proceeding\n",
 			vcsType, orgName, uerr)
@@ -1959,7 +1961,7 @@ func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, 
 	// Return a restore func that the caller must defer.
 	return func() {
 		fmt.Fprintf(stderr, "Restoring org-level allow_api_trigger_with_config=false for %s/%s…\n", vcsType, orgName)
-		if rerr := mgr.UpdateFeatureFlags(vcsType, orgName, map[string]bool{orgApiTriggerKey: false}); rerr != nil {
+		if rerr := mgr.UpdateFeatureFlags(ctx, vcsType, orgName, map[string]bool{orgApiTriggerKey: false}); rerr != nil {
 			fmt.Fprintf(stderr,
 				"WARNING: failed to restore org-level allow_api_trigger_with_config for %s/%s: %v\n",
 				vcsType, orgName, rerr)
@@ -1977,9 +1979,10 @@ func maybeEnableOrgTriggerFlag(cmd *cobra.Command, mgr orgFlagManager, vcsType, 
 //
 // A clear note is printed to stderr with the prior value and restore instructions.
 func applyArtifactRetentionControl(cmd *cobra.Command, mgr storageRetentionManager, orgUUID string, targetDays int) {
+	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	current, err := mgr.GetStorageRetention(orgUUID)
+	current, err := mgr.GetStorageRetention(ctx, orgUUID)
 	if err != nil {
 		fmt.Fprintf(stderr,
 			"WARNING: could not read current artifact-retention for org %s: %v — skipping retention control\n",
@@ -1997,7 +2000,7 @@ func applyArtifactRetentionControl(cmd *cobra.Command, mgr storageRetentionManag
 		WorkspaceDays: current.Controls.WorkspaceDays,
 		ArtifactDays:  targetDays,
 	}
-	if err := mgr.SetStorageRetention(orgUUID, newControls); err != nil {
+	if err := mgr.SetStorageRetention(ctx, orgUUID, newControls); err != nil {
 		fmt.Fprintf(stderr,
 			"WARNING: could not set artifact-retention to %d days for org %s: %v — skipping retention control\n",
 			targetDays, orgUUID, err)

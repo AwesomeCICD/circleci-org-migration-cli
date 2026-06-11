@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestGetStorageRetention_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	got, err := c.GetStorageRetention(testOrgUUID)
+	got, err := c.GetStorageRetention(context.Background(), testOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestGetStorageRetention_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.GetStorageRetention(testOrgUUID)
+	_, err := c.GetStorageRetention(context.Background(), testOrgUUID)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -94,7 +95,7 @@ func TestSetStorageRetention_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetStorageRetention(testOrgUUID, StorageRetentionControls{
+	err := c.SetStorageRetention(context.Background(), testOrgUUID, StorageRetentionControls{
 		CacheDays:     10,
 		WorkspaceDays: 7,
 		ArtifactDays:  1,
@@ -122,7 +123,7 @@ func TestSetStorageRetention_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetStorageRetention(testOrgUUID, StorageRetentionControls{ArtifactDays: 1})
+	err := c.SetStorageRetention(context.Background(), testOrgUUID, StorageRetentionControls{ArtifactDays: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

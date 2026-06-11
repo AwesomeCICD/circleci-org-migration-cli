@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -23,7 +24,7 @@ type createEnvVarRequest struct {
 // The slug is encoded using the same slug-path convention as the read methods
 // (each component is percent-encoded individually; literal '/' separators are
 // kept as delimiters).
-func (c *Client) CreateEnvVar(slug, name, value string) error {
+func (c *Client) CreateEnvVar(ctx context.Context, slug, name, value string) error {
 	if slug == "" {
 		return fmt.Errorf("project: CreateEnvVar requires slug")
 	}
@@ -37,7 +38,7 @@ func (c *Client) CreateEnvVar(slug, name, value string) error {
 	}
 
 	body := createEnvVarRequest{Name: name, Value: value}
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return fmt.Errorf("project: CreateEnvVar: build request: %w", err)
 	}
@@ -87,7 +88,7 @@ type updateSettingsRequest struct {
 //
 // Only fields explicitly set in s (non-nil *bool, non-empty PROnlyBranchOverrides)
 // are included in the request body; all other fields are omitted via omitempty.
-func (c *Client) UpdateSettings(provider, org, proj string, s *AdvancedSettings) error {
+func (c *Client) UpdateSettings(ctx context.Context, provider, org, proj string, s *AdvancedSettings) error {
 	if provider == "" || org == "" || proj == "" {
 		return fmt.Errorf("project: UpdateSettings requires provider, org, and proj")
 	}
@@ -118,7 +119,7 @@ func (c *Client) UpdateSettings(provider, org, proj string, s *AdvancedSettings)
 		PROnlyBranchOverrides:      s.PROnlyBranchOverrides,
 	}
 	body := updateSettingsRequest{Advanced: patch}
-	req, err := c.v2.NewRequest("PATCH", u, &body)
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, &body)
 	if err != nil {
 		return fmt.Errorf("project: UpdateSettings: build request: %w", err)
 	}

@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,7 +37,7 @@ func TestListSchedules_ActorLoginCaptured(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	scheds, err := c.ListSchedules("gh/acme/web")
+	scheds, err := c.ListSchedules(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestListSchedules_ActorLoginEmpty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	scheds, err := c.ListSchedules("gh/acme/web")
+	scheds, err := c.ListSchedules(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestListSchedules_MultiplePages_ActorCapturedAcrossPages(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	scheds, err := c.ListSchedules("gh/acme/web")
+	scheds, err := c.ListSchedules(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

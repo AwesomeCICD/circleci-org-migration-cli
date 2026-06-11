@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -49,7 +50,7 @@ func TestCreateEnvVar_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateEnvVar(slug, varName, varValue); err != nil {
+	if err := c.CreateEnvVar(context.Background(), slug, varName, varValue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -68,7 +69,7 @@ func TestCreateEnvVar_EncodedSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateEnvVar(slug, "V", "val"); err != nil {
+	if err := c.CreateEnvVar(context.Background(), slug, "V", "val"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -80,7 +81,7 @@ func TestCreateEnvVar_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.CreateEnvVar("gh/acme/web", "VAR", "val")
+	err := c.CreateEnvVar(context.Background(), "gh/acme/web", "VAR", "val")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -88,14 +89,14 @@ func TestCreateEnvVar_Error(t *testing.T) {
 
 func TestCreateEnvVar_EmptySlug(t *testing.T) {
 	c := &Client{}
-	if err := c.CreateEnvVar("", "VAR", "val"); err == nil {
+	if err := c.CreateEnvVar(context.Background(), "", "VAR", "val"); err == nil {
 		t.Fatal("expected error for empty slug")
 	}
 }
 
 func TestCreateEnvVar_EmptyName(t *testing.T) {
 	c := &Client{}
-	if err := c.CreateEnvVar("gh/acme/web", "", "val"); err == nil {
+	if err := c.CreateEnvVar(context.Background(), "gh/acme/web", "", "val"); err == nil {
 		t.Fatal("expected error for empty name")
 	}
 }
@@ -162,7 +163,7 @@ func TestUpdateSettings_HappyPath(t *testing.T) {
 		OSS:              &ossTrue,
 		AutocancelBuilds: &autocancelFalse,
 	}
-	if err := c.UpdateSettings("gh", "acme", "web", s); err != nil {
+	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -180,7 +181,7 @@ func TestUpdateSettings_DecomposedPath(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	s := &AdvancedSettings{OSS: boolPtr(true)}
-	if err := c.UpdateSettings("bitbucket", "my-org", "my-repo", s); err != nil {
+	if err := c.UpdateSettings(context.Background(), "bitbucket", "my-org", "my-repo", s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -212,7 +213,7 @@ func TestUpdateSettings_PROnlyBranchOverridesIncluded(t *testing.T) {
 	s := &AdvancedSettings{
 		PROnlyBranchOverrides: []string{"main", "develop"},
 	}
-	if err := c.UpdateSettings("gh", "acme", "web", s); err != nil {
+	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -225,14 +226,14 @@ func TestUpdateSettings_Error(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	s := &AdvancedSettings{OSS: boolPtr(true)}
-	if err := c.UpdateSettings("gh", "acme", "web", s); err == nil {
+	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestUpdateSettings_NilSettings(t *testing.T) {
 	c := &Client{}
-	if err := c.UpdateSettings("gh", "acme", "web", nil); err == nil {
+	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", nil); err == nil {
 		t.Fatal("expected error for nil settings")
 	}
 }
@@ -240,7 +241,7 @@ func TestUpdateSettings_NilSettings(t *testing.T) {
 func TestUpdateSettings_EmptyProvider(t *testing.T) {
 	c := &Client{}
 	s := &AdvancedSettings{}
-	if err := c.UpdateSettings("", "acme", "web", s); err == nil {
+	if err := c.UpdateSettings(context.Background(), "", "acme", "web", s); err == nil {
 		t.Fatal("expected error for empty provider")
 	}
 }

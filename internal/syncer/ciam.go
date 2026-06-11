@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,19 +12,19 @@ import (
 // When nil on the Syncer, CIAM sync is skipped.
 type CIAMWriter interface {
 	// ListOrgRoleGrants returns existing org-level role grants for the email→userId map.
-	ListOrgRoleGrants(orgID string) ([]CIAMRoleGrant, error)
+	ListOrgRoleGrants(ctx context.Context, orgID string) ([]CIAMRoleGrant, error)
 	// SetOrgUserRole assigns an org-level CIAM role to a user.
-	SetOrgUserRole(orgID, userID, role string) error
+	SetOrgUserRole(ctx context.Context, orgID, userID, role string) error
 	// ListGroups returns existing groups (name→ID map for idempotency).
-	ListGroups(orgID string) ([]CIAMGroupInfo, error)
+	ListGroups(ctx context.Context, orgID string) ([]CIAMGroupInfo, error)
 	// CreateGroup creates a new CIAM group.
-	CreateGroup(orgID, name, description string) (string, error)
+	CreateGroup(ctx context.Context, orgID, name, description string) (string, error)
 	// AddUsersToGroup adds users to a group by userID.
-	AddUsersToGroup(orgID, groupID string, userIDs []string) error
+	AddUsersToGroup(ctx context.Context, orgID, groupID string, userIDs []string) error
 	// SetProjectUserRole assigns a project-level CIAM role to a user.
-	SetProjectUserRole(orgID, projectID, userID, role string) error
+	SetProjectUserRole(ctx context.Context, orgID, projectID, userID, role string) error
 	// AddProjectGroupRole grants a role to groups on a project.
-	AddProjectGroupRole(orgID, projectID string, groupIDs []string, role string) error
+	AddProjectGroupRole(ctx context.Context, orgID, projectID string, groupIDs []string, role string) error
 }
 
 // CIAMRoleGrant carries the identity of an existing destination role grant
@@ -59,7 +60,7 @@ type CIAMGroupInfo struct {
 //     applied automatically (see #179).
 //   - Unmatched users (not yet in dest org) emit "manual" actions.
 //   - Dry-run: no writes, plans are recorded in the report.
-func (s *Syncer) SyncCIAM(m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
+func (s *Syncer) SyncCIAM(ctx context.Context, m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
 	}
@@ -81,14 +82,14 @@ func (s *Syncer) SyncCIAM(m *manifest.Manifest, mapping *manifest.Mapping, opts 
 		return report, nil
 	}
 
-	destOrgID, err := s.Org.ResolveOrgID(destSlug)
+	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
 	if err != nil {
 		return nil, fmt.Errorf("SyncCIAM: resolving destination org %q: %w", destSlug, err)
 	}
 	report.DestOrgID = destOrgID
 
 	// Gate: destination must be circleci-type.
-	destOrg, err := s.Org.GetOrganization(destSlug)
+	destOrg, err := s.Org.GetOrganization(ctx, destSlug)
 	if err != nil {
 		return nil, fmt.Errorf("SyncCIAM: get destination org %q: %w", destSlug, err)
 	}
@@ -107,16 +108,16 @@ func (s *Syncer) SyncCIAM(m *manifest.Manifest, mapping *manifest.Mapping, opts 
 	// The CIAM role-grants API often returns an empty email, so we index dest
 	// users by email, username, AND userID and match source grants by whichever
 	// identity is available.
-	resolver := s.buildUserResolver(report, destOrgID)
+	resolver := s.buildUserResolver(ctx, report, destOrgID)
 
 	// ── Step 2: Create groups (idempotent by name) ───────────────────────────
-	s.syncCIAMGroups(report, ciam, destOrgID, resolver, opts)
+	s.syncCIAMGroups(ctx, report, ciam, destOrgID, resolver, opts)
 
 	// ── Step 3: Apply org-level role grants ──────────────────────────────────
-	s.syncCIAMOrgRoles(report, ciam, destOrgID, resolver, opts)
+	s.syncCIAMOrgRoles(ctx, report, ciam, destOrgID, resolver, opts)
 
 	// ── Step 4: Record project role grants as manual (see #179) ──────────────
-	s.syncCIAMProjectGrants(report, ciam)
+	s.syncCIAMProjectGrants(ctx, report, ciam)
 
 	return report, nil
 }
@@ -161,13 +162,13 @@ func (r *ciamUserResolver) resolve(email, username, userID string) (string, stri
 // them by email, username, and userID. On error an "error" action is recorded
 // and an empty resolver is returned (subsequent steps will emit "manual" for
 // every source user).
-func (s *Syncer) buildUserResolver(report *Report, destOrgID string) *ciamUserResolver {
+func (s *Syncer) buildUserResolver(ctx context.Context, report *Report, destOrgID string) *ciamUserResolver {
 	r := &ciamUserResolver{
 		byEmail:    map[string]string{},
 		byUsername: map[string]string{},
 		byUserID:   map[string]string{},
 	}
-	grants, err := s.CIAM.ListOrgRoleGrants(destOrgID)
+	grants, err := s.CIAM.ListOrgRoleGrants(ctx, destOrgID)
 	if err != nil {
 		report.add("ciam", "user_resolve", "error",
 			fmt.Sprintf("could not list destination org role grants to resolve users: %v", err))
@@ -203,13 +204,13 @@ func ciamUserLabel(email, username string) string {
 // syncCIAMGroups creates groups that don't already exist in the dest org and
 // returns a name→ID map for all groups (existing + newly created) so project
 // grants can reference them.
-func (s *Syncer) syncCIAMGroups(report *Report, ciam *manifest.CIAMData, destOrgID string, resolver *ciamUserResolver, opts Options) map[string]string {
+func (s *Syncer) syncCIAMGroups(ctx context.Context, report *Report, ciam *manifest.CIAMData, destOrgID string, resolver *ciamUserResolver, opts Options) map[string]string {
 	if len(ciam.Groups) == 0 {
 		return map[string]string{}
 	}
 
 	// Fetch existing groups once for idempotency.
-	existingGroups, err := s.CIAM.ListGroups(destOrgID)
+	existingGroups, err := s.CIAM.ListGroups(ctx, destOrgID)
 	if err != nil {
 		report.add("ciam", "groups_list", "error",
 			fmt.Sprintf("could not list destination groups: %v", err))
@@ -232,7 +233,7 @@ func (s *Syncer) syncCIAMGroups(report *Report, ciam *manifest.CIAMData, destOrg
 				// In dry-run we don't have a real ID, so skip member assignment.
 				continue
 			}
-			newID, createErr := s.CIAM.CreateGroup(destOrgID, g.Name, g.Description)
+			newID, createErr := s.CIAM.CreateGroup(ctx, destOrgID, g.Name, g.Description)
 			if createErr != nil {
 				report.add("ciam", target, "error", fmt.Sprintf("create group %q: %v", g.Name, createErr))
 				continue
@@ -270,7 +271,7 @@ func (s *Syncer) syncCIAMGroups(report *Report, ciam *manifest.CIAMData, destOrg
 				report.add("ciam", target+"/members", "set",
 					fmt.Sprintf("would add %d member(s) to group %q", len(matchedUserIDs), g.Name))
 			} else {
-				if addErr := s.CIAM.AddUsersToGroup(destOrgID, groupID, matchedUserIDs); addErr != nil {
+				if addErr := s.CIAM.AddUsersToGroup(ctx, destOrgID, groupID, matchedUserIDs); addErr != nil {
 					report.add("ciam", target+"/members", "error",
 						fmt.Sprintf("add members to group %q: %v", g.Name, addErr))
 				} else {
@@ -286,7 +287,7 @@ func (s *Syncer) syncCIAMGroups(report *Report, ciam *manifest.CIAMData, destOrg
 
 // syncCIAMOrgRoles applies org-level CIAM role grants. Users matched by email
 // get their roles set; unmatched users emit "manual" actions.
-func (s *Syncer) syncCIAMOrgRoles(report *Report, ciam *manifest.CIAMData, destOrgID string, resolver *ciamUserResolver, opts Options) {
+func (s *Syncer) syncCIAMOrgRoles(ctx context.Context, report *Report, ciam *manifest.CIAMData, destOrgID string, resolver *ciamUserResolver, opts Options) {
 	for _, r := range ciam.OrgRoles {
 		label := ciamUserLabel(r.Email, r.Username)
 		target := "ciam-org-role:" + label
@@ -301,7 +302,7 @@ func (s *Syncer) syncCIAMOrgRoles(report *Report, ciam *manifest.CIAMData, destO
 				fmt.Sprintf("would set org role %q for %q", r.Role, label))
 			continue
 		}
-		if err := s.CIAM.SetOrgUserRole(destOrgID, uid, r.Role); err != nil {
+		if err := s.CIAM.SetOrgUserRole(ctx, destOrgID, uid, r.Role); err != nil {
 			report.add("ciam", target, "error",
 				fmt.Sprintf("set org role %q for %q: %v", r.Role, label, err))
 			continue
@@ -319,7 +320,7 @@ func (s *Syncer) syncCIAMOrgRoles(report *Report, ciam *manifest.CIAMData, destO
 // the wrong project (and the API accepts it without persisting a usable grant).
 // Reliable project-grant apply requires resolving the destination project UUID
 // by name on the destination org — tracked in #179.
-func (s *Syncer) syncCIAMProjectGrants(report *Report, ciam *manifest.CIAMData) {
+func (s *Syncer) syncCIAMProjectGrants(ctx context.Context, report *Report, ciam *manifest.CIAMData) {
 	const note = " — project-level CIAM grants are not applied automatically because the destination project UUID is not reliably mappable from the source (see #179); recreate this grant manually on the destination project"
 
 	for _, g := range ciam.ProjectUserGrants {

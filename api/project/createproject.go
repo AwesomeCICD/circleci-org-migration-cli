@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -27,7 +28,7 @@ type createProjectShellRequest struct {
 // Endpoint: POST /api/v2/organization/{provider}/{org}/project
 // Request body: {"name": "<repo>"}
 // Response 200: Project JSON (id, name, slug, organization_id, ...)
-func (c *Client) CreateProjectShell(provider, org, name string) (*Project, error) {
+func (c *Client) CreateProjectShell(ctx context.Context, provider, org, name string) (*Project, error) {
 	if provider == "" || org == "" || name == "" {
 		return nil, fmt.Errorf("project: CreateProjectShell requires provider, org, and name")
 	}
@@ -42,7 +43,7 @@ func (c *Client) CreateProjectShell(provider, org, name string) (*Project, error
 	}
 
 	body := createProjectShellRequest{Name: name}
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return nil, fmt.Errorf("project: CreateProjectShell: build request: %w", err)
 	}

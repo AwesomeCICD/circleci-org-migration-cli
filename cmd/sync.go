@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -210,6 +211,7 @@ Examples:
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
   circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			// Resolve the GitHub token from the env after parsing so the flag
 			// default never leaks $GITHUB_TOKEN into --help output.
 			if githubToken == "" {
@@ -338,7 +340,7 @@ Examples:
 			repsBySection := make(map[string]*syncer.Report)
 
 			if !skipOrgSettings {
-				rep, err := sy.SyncOrgSettings(m, mapping, opts)
+				rep, err := sy.SyncOrgSettings(ctx, m, mapping, opts)
 				if err != nil {
 					return err
 				}
@@ -348,7 +350,7 @@ Examples:
 				}
 			}
 			if !skipContexts {
-				rep, err := sy.SyncContexts(m, bundle, mapping, opts)
+				rep, err := sy.SyncContexts(ctx, m, bundle, mapping, opts)
 				if err != nil {
 					return err
 				}
@@ -358,7 +360,7 @@ Examples:
 				}
 			}
 			if !skipProjects {
-				rep, err := sy.SyncProjects(m, bundle, mapping, opts)
+				rep, err := sy.SyncProjects(ctx, m, bundle, mapping, opts)
 				if err != nil {
 					return err
 				}
@@ -375,7 +377,7 @@ Examples:
 
 			// Runner resource classes (attempted when present in manifest, unless skipped).
 			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
-				rep, err := sy.SyncRunnerResourceClasses(m, opts)
+				rep, err := sy.SyncRunnerResourceClasses(ctx, m, opts)
 				if err != nil {
 					return err
 				}
@@ -389,7 +391,7 @@ Examples:
 			// self-gates on the destination org type and on the manifest having
 			// CIAM data, so it is safe to always attempt unless --skip-ciam).
 			if !skipCIAM && m.CIAM != nil {
-				rep, err := sy.SyncCIAM(m, mapping, opts)
+				rep, err := sy.SyncCIAM(ctx, m, mapping, opts)
 				if err != nil {
 					return err
 				}
@@ -403,8 +405,8 @@ Examples:
 			// context or project env vars that needed values.
 			if bundle == nil {
 				totalEnvVars := 0
-				for _, ctx := range m.Contexts {
-					totalEnvVars += len(ctx.EnvVars)
+				for _, mc := range m.Contexts {
+					totalEnvVars += len(mc.EnvVars)
 				}
 				for _, proj := range m.Projects {
 					totalEnvVars += len(proj.EnvVars)
@@ -516,7 +518,7 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nEnabling builds for %d project(s)...\n", n)
 	}
 	for _, t := range pending {
-		action, _ := sy.EnableBuilds(t, true)
+		action, _ := sy.EnableBuilds(cmd.Context(), t, true)
 		if !jsonOutput {
 			fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
 		}
@@ -551,30 +553,30 @@ type orgSettingsAdapter struct {
 	c *org.Client
 }
 
-func (a orgSettingsAdapter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
-	return a.c.UpdateFeatureFlags(vcsType, orgName, flags)
+func (a orgSettingsAdapter) UpdateFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error {
+	return a.c.UpdateFeatureFlags(ctx, vcsType, orgName, flags)
 }
-func (a orgSettingsAdapter) SetOIDCClaims(orgID string, audience []string, ttl string) error {
-	return a.c.SetOIDCClaims(orgID, audience, ttl)
+func (a orgSettingsAdapter) SetOIDCClaims(ctx context.Context, orgID string, audience []string, ttl string) error {
+	return a.c.SetOIDCClaims(ctx, orgID, audience, ttl)
 }
-func (a orgSettingsAdapter) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error {
-	return a.c.CreateURLOrbAllowEntry(slugOrID, name, prefix, auth)
+func (a orgSettingsAdapter) CreateURLOrbAllowEntry(ctx context.Context, slugOrID, name, prefix, auth string) error {
+	return a.c.CreateURLOrbAllowEntry(ctx, slugOrID, name, prefix, auth)
 }
-func (a orgSettingsAdapter) PutPolicyBundle(ownerID string, policies map[string]string) error {
-	return a.c.PutPolicyBundle(ownerID, policies)
+func (a orgSettingsAdapter) PutPolicyBundle(ctx context.Context, ownerID string, policies map[string]string) error {
+	return a.c.PutPolicyBundle(ctx, ownerID, policies)
 }
-func (a orgSettingsAdapter) SetPolicyEnforcement(ownerID string, enabled bool) error {
-	return a.c.SetPolicyEnforcement(ownerID, enabled)
+func (a orgSettingsAdapter) SetPolicyEnforcement(ctx context.Context, ownerID string, enabled bool) error {
+	return a.c.SetPolicyEnforcement(ctx, ownerID, enabled)
 }
-func (a orgSettingsAdapter) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
-	return a.c.CreateOTelExporter(orgID, endpoint, protocol, insecure, headers)
+func (a orgSettingsAdapter) CreateOTelExporter(ctx context.Context, orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+	return a.c.CreateOTelExporter(ctx, orgID, endpoint, protocol, insecure, headers)
 }
 
 // GetURLOrbAllowList + GetOTelExporters satisfy the syncer's optional
 // *Getter interfaces so re-running `sync --apply` is idempotent (skips
 // already-present URL-orb entries / OTel exporters instead of duplicating).
-func (a orgSettingsAdapter) GetURLOrbAllowList(slugOrID string) ([]syncer.URLOrbAllowEntry, error) {
-	entries, err := a.c.GetURLOrbAllowList(slugOrID)
+func (a orgSettingsAdapter) GetURLOrbAllowList(ctx context.Context, slugOrID string) ([]syncer.URLOrbAllowEntry, error) {
+	entries, err := a.c.GetURLOrbAllowList(ctx, slugOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -585,8 +587,8 @@ func (a orgSettingsAdapter) GetURLOrbAllowList(slugOrID string) ([]syncer.URLOrb
 	return out, nil
 }
 
-func (a orgSettingsAdapter) GetOTelExporters(orgID string) ([]syncer.OTelExporter, error) {
-	exporters, err := a.c.GetOTelExporters(orgID)
+func (a orgSettingsAdapter) GetOTelExporters(ctx context.Context, orgID string) ([]syncer.OTelExporter, error) {
+	exporters, err := a.c.GetOTelExporters(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -604,24 +606,24 @@ var (
 	_ syncer.OTelExporterGetter    = orgSettingsAdapter{}
 )
 
-func (a orgSettingsAdapter) SetContacts(orgID string, primary, security []string) error {
-	return a.c.SetContacts(orgID, primary, security)
+func (a orgSettingsAdapter) SetContacts(ctx context.Context, orgID string, primary, security []string) error {
+	return a.c.SetContacts(ctx, orgID, primary, security)
 }
-func (a orgSettingsAdapter) SetStorageRetention(orgUUID string, controls syncer.StorageRetentionArgs) error {
-	return a.c.SetStorageRetention(orgUUID, org.StorageRetentionControls{
+func (a orgSettingsAdapter) SetStorageRetention(ctx context.Context, orgUUID string, controls syncer.StorageRetentionArgs) error {
+	return a.c.SetStorageRetention(ctx, orgUUID, org.StorageRetentionControls{
 		CacheDays:     controls.CacheDays,
 		WorkspaceDays: controls.WorkspaceDays,
 		ArtifactDays:  controls.ArtifactDays,
 	})
 }
-func (a orgSettingsAdapter) SetBudget(orgUUID string, projectID *string, credits int) error {
-	return a.c.SetBudget(orgUUID, projectID, credits)
+func (a orgSettingsAdapter) SetBudget(ctx context.Context, orgUUID string, projectID *string, credits int) error {
+	return a.c.SetBudget(ctx, orgUUID, projectID, credits)
 }
-func (a orgSettingsAdapter) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
-	return a.c.SetBlockUnregisteredUsers(orgUUID, enabled)
+func (a orgSettingsAdapter) SetBlockUnregisteredUsers(ctx context.Context, orgUUID string, enabled bool) error {
+	return a.c.SetBlockUnregisteredUsers(ctx, orgUUID, enabled)
 }
-func (a orgSettingsAdapter) SetReleaseTrackerSettings(orgUUID string, ttl string) error {
-	return a.c.SetReleaseTrackerSettings(orgUUID, org.ReleaseTrackerSettings{
+func (a orgSettingsAdapter) SetReleaseTrackerSettings(ctx context.Context, orgUUID string, ttl string) error {
+	return a.c.SetReleaseTrackerSettings(ctx, orgUUID, org.ReleaseTrackerSettings{
 		InconclusiveReleaseTTL: ttl,
 	})
 }
@@ -632,8 +634,8 @@ type orgGroupLister struct {
 	c *org.Client
 }
 
-func (g orgGroupLister) ListGroups(orgID string) ([]syncer.Group, error) {
-	groups, err := g.c.ListGroups(orgID)
+func (g orgGroupLister) ListGroups(ctx context.Context, orgID string) ([]syncer.Group, error) {
+	groups, err := g.c.ListGroups(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -653,8 +655,8 @@ type ciamWriterAdapter struct {
 	c *org.Client
 }
 
-func (a ciamWriterAdapter) ListOrgRoleGrants(orgID string) ([]syncer.CIAMRoleGrant, error) {
-	grants, err := a.c.ListOrgRoleGrants(orgID)
+func (a ciamWriterAdapter) ListOrgRoleGrants(ctx context.Context, orgID string) ([]syncer.CIAMRoleGrant, error) {
+	grants, err := a.c.ListOrgRoleGrants(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -664,11 +666,11 @@ func (a ciamWriterAdapter) ListOrgRoleGrants(orgID string) ([]syncer.CIAMRoleGra
 	}
 	return out, nil
 }
-func (a ciamWriterAdapter) SetOrgUserRole(orgID, userID, role string) error {
-	return a.c.SetOrgUserRole(orgID, userID, role)
+func (a ciamWriterAdapter) SetOrgUserRole(ctx context.Context, orgID, userID, role string) error {
+	return a.c.SetOrgUserRole(ctx, orgID, userID, role)
 }
-func (a ciamWriterAdapter) ListGroups(orgID string) ([]syncer.CIAMGroupInfo, error) {
-	groups, err := a.c.ListGroups(orgID)
+func (a ciamWriterAdapter) ListGroups(ctx context.Context, orgID string) ([]syncer.CIAMGroupInfo, error) {
+	groups, err := a.c.ListGroups(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -678,21 +680,21 @@ func (a ciamWriterAdapter) ListGroups(orgID string) ([]syncer.CIAMGroupInfo, err
 	}
 	return out, nil
 }
-func (a ciamWriterAdapter) CreateGroup(orgID, name, description string) (string, error) {
-	g, err := a.c.CreateGroup(orgID, name, description)
+func (a ciamWriterAdapter) CreateGroup(ctx context.Context, orgID, name, description string) (string, error) {
+	g, err := a.c.CreateGroup(ctx, orgID, name, description)
 	if err != nil {
 		return "", err
 	}
 	return g.ID, nil
 }
-func (a ciamWriterAdapter) AddUsersToGroup(orgID, groupID string, userIDs []string) error {
-	return a.c.AddUsersToGroup(orgID, groupID, userIDs)
+func (a ciamWriterAdapter) AddUsersToGroup(ctx context.Context, orgID, groupID string, userIDs []string) error {
+	return a.c.AddUsersToGroup(ctx, orgID, groupID, userIDs)
 }
-func (a ciamWriterAdapter) SetProjectUserRole(orgID, projectID, userID, role string) error {
-	return a.c.SetProjectUserRole(orgID, projectID, userID, role)
+func (a ciamWriterAdapter) SetProjectUserRole(ctx context.Context, orgID, projectID, userID, role string) error {
+	return a.c.SetProjectUserRole(ctx, orgID, projectID, userID, role)
 }
-func (a ciamWriterAdapter) AddProjectGroupRole(orgID, projectID string, groupIDs []string, role string) error {
-	return a.c.AddProjectGroupRole(orgID, projectID, groupIDs, role)
+func (a ciamWriterAdapter) AddProjectGroupRole(ctx context.Context, orgID, projectID string, groupIDs []string, role string) error {
+	return a.c.AddProjectGroupRole(ctx, orgID, projectID, groupIDs, role)
 }
 
 // Compile-time assertion that the adapter satisfies the syncer interface.

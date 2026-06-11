@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestGetContacts_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivateServer(t, srv)
-	primary, security, err := c.GetContacts(orgID)
+	primary, security, err := c.GetContacts(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestGetContacts_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivateServer(t, srv)
-	primary, security, err := c.GetContacts("some-org")
+	primary, security, err := c.GetContacts(context.Background(), "some-org")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestGetContacts_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivateServer(t, srv)
-	_, _, err := c.GetContacts("missing-org")
+	_, _, err := c.GetContacts(context.Background(), "missing-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -109,7 +110,7 @@ func TestSetContacts_HappyPath(t *testing.T) {
 	c := newTestClientWithPrivateServer(t, srv)
 	primary := []string{"alice@example.com", "bob@example.com"}
 	security := []string{"sec@example.com"}
-	if err := c.SetContacts(orgID, primary, security); err != nil {
+	if err := c.SetContacts(context.Background(), orgID, primary, security); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -151,7 +152,7 @@ func TestSetContacts_EmptyLists(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivateServer(t, srv)
-	if err := c.SetContacts("org-id", nil, nil); err != nil {
+	if err := c.SetContacts(context.Background(), "org-id", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// primary and security should be present (as null/omitted — JSON omitempty
@@ -166,7 +167,7 @@ func TestSetContacts_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivateServer(t, srv)
-	err := c.SetContacts("org-id", []string{"a@b.com", "c@d.com", "e@f.com", "g@h.com", "i@j.com", "k@l.com"}, nil)
+	err := c.SetContacts(context.Background(), "org-id", []string{"a@b.com", "c@d.com", "e@f.com", "g@h.com", "i@j.com", "k@l.com"}, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

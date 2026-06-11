@@ -4,6 +4,7 @@ package context
 // to raise coverage above 80%.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -51,7 +52,7 @@ func TestListContexts_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListContexts("org-uuid", "")
+	_, err := c.ListContexts(context.Background(), "org-uuid", "")
 	if err == nil {
 		t.Fatal("expected error for server error, got nil")
 	}
@@ -66,7 +67,7 @@ func TestListContexts_Unauthorized(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListContexts("", "github/myorg")
+	_, err := c.ListContexts(context.Background(), "", "github/myorg")
 	if err == nil {
 		t.Fatal("expected error for unauthorized, got nil")
 	}
@@ -78,7 +79,7 @@ func TestListContexts_Unauthorized(t *testing.T) {
 
 func TestListEnvVars_EmptyContextID(t *testing.T) {
 	c := &Client{}
-	_, err := c.ListEnvVars("")
+	_, err := c.ListEnvVars(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty contextID, got nil")
 	}
@@ -93,7 +94,7 @@ func TestListEnvVars_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListEnvVars("ctx-test")
+	_, err := c.ListEnvVars(context.Background(), "ctx-test")
 	if err == nil {
 		t.Fatal("expected error for server error, got nil")
 	}
@@ -129,7 +130,7 @@ func TestListEnvVars_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListEnvVars("ctx-paged")
+	got, err := c.ListEnvVars(context.Background(), "ctx-paged")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestListEnvVars_Pagination(t *testing.T) {
 
 func TestListRestrictions_EmptyContextID(t *testing.T) {
 	c := &Client{}
-	_, err := c.ListRestrictions("")
+	_, err := c.ListRestrictions(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty contextID, got nil")
 	}
@@ -162,7 +163,7 @@ func TestListRestrictions_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListRestrictions("ctx-403")
+	_, err := c.ListRestrictions(context.Background(), "ctx-403")
 	if err == nil {
 		t.Fatal("expected error for forbidden, got nil")
 	}
@@ -198,7 +199,7 @@ func TestListRestrictions_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListRestrictions("ctx-paginated")
+	got, err := c.ListRestrictions(context.Background(), "ctx-paginated")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

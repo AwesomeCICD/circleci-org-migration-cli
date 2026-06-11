@@ -5,6 +5,7 @@ package exporter_test
 // org orbs (republish), and budget enforcement=block.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
@@ -43,7 +44,7 @@ func TestWebhookSigningSecretWarning_EmittedWhenWebhooksPresent(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -85,7 +86,7 @@ func TestWebhookSigningSecretWarning_NotEmittedWhenNoWebhooks(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -118,7 +119,7 @@ func TestRunnerAgentTokenWarning_EmittedPerResourceClass(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		RunnerNamespace: "acme",
 	})
@@ -147,7 +148,7 @@ func TestRunnerAgentTokenWarning_NotEmittedWhenNoRunnerClasses(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		RunnerNamespace: "acme",
 	})
@@ -183,7 +184,7 @@ func TestOrgOrbsWarning_EmittedWhenOrbsPresent(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestOrgOrbsWarning_NotEmittedWhenNoOrbs(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestBudgetEnforcementBlockWarning_EmittedWhenBlockPresent(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -290,7 +291,7 @@ func TestBudgetEnforcementBlockWarning_NotEmittedForWarn(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -324,7 +325,7 @@ func TestBudgetEnforcementBlockWarning_PerProjectBudget(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -55,7 +56,7 @@ func TestTriggerPipelineRun_201Created(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.TriggerPipelineRun(slug, defID, branch, wantYAML, nil)
+	got, err := c.TriggerPipelineRun(context.Background(), slug, defID, branch, wantYAML, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestTriggerPipelineRun_200Skipped(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	id, err := c.TriggerPipelineRun("gh/acme/web", "def-1", "main", "version: 2.1\n", nil)
+	id, err := c.TriggerPipelineRun(context.Background(), "gh/acme/web", "def-1", "main", "version: 2.1\n", nil)
 	if id != "" {
 		t.Errorf("expected empty pipelineID on skip, got %q", id)
 	}
@@ -95,7 +96,7 @@ func TestTriggerPipelineRun_WithParams(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.TriggerPipelineRun("gh/acme/web", "def-1", "main", "v: 2.1\n", map[string]any{"run_mode": "extract"})
+	_, err := c.TriggerPipelineRun(context.Background(), "gh/acme/web", "def-1", "main", "v: 2.1\n", map[string]any{"run_mode": "extract"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestTriggerPipelineRun_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.TriggerPipelineRun("gh/acme/web", "def-1", "main", "v: 2.1\n", nil)
+	_, err := c.TriggerPipelineRun(context.Background(), "gh/acme/web", "def-1", "main", "v: 2.1\n", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -140,7 +141,7 @@ func TestGetPipelineWorkflows_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetPipelineWorkflows(pipelineID)
+	got, err := c.GetPipelineWorkflows(context.Background(), pipelineID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestGetPipelineWorkflows_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetPipelineWorkflows("pipe-1")
+	got, err := c.GetPipelineWorkflows(context.Background(), "pipe-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestGetPipelineWorkflows_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetPipelineWorkflows("missing-pipe")
+	_, err := c.GetPipelineWorkflows(context.Background(), "missing-pipe")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -224,7 +225,7 @@ func TestGetWorkflowJobs_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetWorkflowJobs(wfID)
+	got, err := c.GetWorkflowJobs(context.Background(), wfID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestGetWorkflowJobs_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetWorkflowJobs("wf-1")
+	got, err := c.GetWorkflowJobs(context.Background(), "wf-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestGetWorkflowJobs_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetWorkflowJobs("wf-bad")
+	_, err := c.GetWorkflowJobs(context.Background(), "wf-bad")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -311,7 +312,7 @@ func TestListJobArtifacts_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListJobArtifacts(slug, jobNumber)
+	got, err := c.ListJobArtifacts(context.Background(), slug, jobNumber)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -355,7 +356,7 @@ func TestListJobArtifacts_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListJobArtifacts("gh/acme/web", 1)
+	got, err := c.ListJobArtifacts(context.Background(), "gh/acme/web", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestListJobArtifacts_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListJobArtifacts("gh/acme/web", 999)
+	_, err := c.ListJobArtifacts(context.Background(), "gh/acme/web", 999)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -399,7 +400,7 @@ func TestDownloadArtifact_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithToken(t, srv, wantToken)
-	got, err := c.DownloadArtifact(srv.URL + "/some/artifact.json")
+	got, err := c.DownloadArtifact(context.Background(), srv.URL+"/some/artifact.json")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,7 +416,7 @@ func TestDownloadArtifact_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.DownloadArtifact(srv.URL + "/missing.json")
+	_, err := c.DownloadArtifact(context.Background(), srv.URL+"/missing.json")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

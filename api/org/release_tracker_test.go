@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestGetReleaseTrackerSettings_WithTTL(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	settings, err := c.GetReleaseTrackerSettings(releaseTrackerOrgUUID)
+	settings, err := c.GetReleaseTrackerSettings(context.Background(), releaseTrackerOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestGetReleaseTrackerSettings_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	settings, err := c.GetReleaseTrackerSettings(releaseTrackerOrgUUID)
+	settings, err := c.GetReleaseTrackerSettings(context.Background(), releaseTrackerOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestGetReleaseTrackerSettings_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if _, err := c.GetReleaseTrackerSettings(releaseTrackerOrgUUID); err == nil {
+	if _, err := c.GetReleaseTrackerSettings(context.Background(), releaseTrackerOrgUUID); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -97,7 +98,7 @@ func TestSetReleaseTrackerSettings_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetReleaseTrackerSettings(releaseTrackerOrgUUID, ReleaseTrackerSettings{
+	err := c.SetReleaseTrackerSettings(context.Background(), releaseTrackerOrgUUID, ReleaseTrackerSettings{
 		InconclusiveReleaseTTL: "2h",
 	})
 	if err != nil {
@@ -115,7 +116,7 @@ func TestSetReleaseTrackerSettings_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetReleaseTrackerSettings(releaseTrackerOrgUUID, ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"})
+	err := c.SetReleaseTrackerSettings(context.Background(), releaseTrackerOrgUUID, ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

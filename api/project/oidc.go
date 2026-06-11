@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -23,11 +24,11 @@ type projectOIDCClaimsResponse struct {
 //
 // orgID and projID are bare UUIDs; they are percent-escaped individually.
 // Mirrors api/org GetOIDCClaims exactly, scoped to a project.
-func (c *Client) GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error) {
+func (c *Client) GetProjectOIDCClaims(ctx context.Context, orgID, projID string) (audience []string, ttl string, err error) {
 	path := "org/" + url.PathEscape(orgID) + "/project/" + url.PathEscape(projID) + "/oidc-custom-claims"
 	u := &url.URL{Path: path}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("GetProjectOIDCClaims: build request: %w", err)
 	}
@@ -45,7 +46,7 @@ func (c *Client) GetProjectOIDCClaims(orgID, projID string) (audience []string, 
 //
 // Confirmed by oidc-tasks-service openapi.yaml: PATCH with {"audience":[...],"ttl":"..."}.
 // Mirrors api/org SetOIDCClaims exactly, scoped to a project.
-func (c *Client) SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error {
+func (c *Client) SetProjectOIDCClaims(ctx context.Context, orgID, projID string, audience []string, ttl string) error {
 	path := "org/" + url.PathEscape(orgID) + "/project/" + url.PathEscape(projID) + "/oidc-custom-claims"
 	u := &url.URL{Path: path}
 
@@ -60,7 +61,7 @@ func (c *Client) SetProjectOIDCClaims(orgID, projID string, audience []string, t
 		return nil // nothing to set
 	}
 
-	req, err := c.v2.NewRequest("PATCH", u, body)
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, body)
 	if err != nil {
 		return fmt.Errorf("SetProjectOIDCClaims: build request: %w", err)
 	}

@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -31,7 +32,7 @@ type listRestrictionsResponse struct {
 
 // ListRestrictions returns all restrictions attached to a context.
 // All pages are fetched automatically.
-func (c *Client) ListRestrictions(contextID string) ([]Restriction, error) {
+func (c *Client) ListRestrictions(ctx context.Context, contextID string) ([]Restriction, error) {
 	if contextID == "" {
 		return nil, fmt.Errorf("context: ListRestrictions requires contextID")
 	}
@@ -51,7 +52,7 @@ func (c *Client) ListRestrictions(contextID string) ([]Restriction, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.rest.NewRequest("GET", u, nil)
+		req, err := c.rest.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
 		}

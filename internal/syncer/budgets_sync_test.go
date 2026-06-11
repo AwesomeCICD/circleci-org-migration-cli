@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestSyncBudgets_OrgBudget_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestSyncBudgets_OrgBudget_ApplyTrue(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestSyncBudgets_OrgBudget_WriteError_IsErrorAction(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("budget write error must not propagate, got: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestSyncBudgets_ProjectBudget_NoMapping_ManualAction(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestSyncBudgets_ProjectBudget_WithMapping_ApplyTrue(t *testing.T) {
 		Projects: map[string]string{srcProjID: destProjID},
 	}
 
-	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestSyncBudgets_NilBudgets_NoWrite(t *testing.T) {
 		// No Budgets.
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestSyncBudgets_DryRun_EnforcementTypeNoted(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestSyncBlockUnregisteredUsers_DryRunNoWrites(t *testing.T) {
 		BlockUnregisteredUsers: &enabled,
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestSyncBlockUnregisteredUsers_ApplyTrue_Enable(t *testing.T) {
 		BlockUnregisteredUsers: &enabled,
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +330,7 @@ func TestSyncBlockUnregisteredUsers_ApplyTrue_Disable(t *testing.T) {
 		BlockUnregisteredUsers: &disabled,
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -351,7 +352,7 @@ func TestSyncBlockUnregisteredUsers_Nil_NoWrite(t *testing.T) {
 		// No BlockUnregisteredUsers
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,7 +375,7 @@ func TestSyncBlockUnregisteredUsers_WriteError_IsErrorAction(t *testing.T) {
 		BlockUnregisteredUsers: &enabled,
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("block_unregistered_users write error must not propagate, got: %v", err)
 	}

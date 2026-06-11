@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -53,7 +54,7 @@ func TestCreateProjectShell_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.CreateProjectShell("github", "myorg", "myrepo")
+	got, err := c.CreateProjectShell(context.Background(), "github", "myorg", "myrepo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestCreateProjectShell_PathEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.CreateProjectShell("github", "my org", "repo"); err != nil {
+	if _, err := c.CreateProjectShell(context.Background(), "github", "my org", "repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -95,7 +96,7 @@ func TestCreateProjectShell_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateProjectShell("github", "acme", "web")
+	_, err := c.CreateProjectShell(context.Background(), "github", "acme", "web")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -111,7 +112,7 @@ func TestCreateProjectShell_MissingArgsError(t *testing.T) {
 		{"provider", "org", ""},
 	}
 	for _, tc := range cases {
-		if _, err := c.CreateProjectShell(tc.provider, tc.org, tc.name); err == nil {
+		if _, err := c.CreateProjectShell(context.Background(), tc.provider, tc.org, tc.name); err == nil {
 			t.Errorf("CreateProjectShell(%q,%q,%q): expected error, got nil", tc.provider, tc.org, tc.name)
 		}
 	}

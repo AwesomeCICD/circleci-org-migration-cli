@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func TestGetProjectOIDCClaims_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	audience, ttl, err := c.GetProjectOIDCClaims(orgID, projID)
+	audience, ttl, err := c.GetProjectOIDCClaims(context.Background(), orgID, projID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestGetProjectOIDCClaims_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, _, err := c.GetProjectOIDCClaims("org-id", "proj-id")
+	_, _, err := c.GetProjectOIDCClaims(context.Background(), "org-id", "proj-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -88,7 +89,7 @@ func TestSetProjectOIDCClaims_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetProjectOIDCClaims(orgID, projID, []string{"https://example.com"}, "2h")
+	err := c.SetProjectOIDCClaims(context.Background(), orgID, projID, []string{"https://example.com"}, "2h")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestSetProjectOIDCClaims_EmptyBody_NoRequest(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetProjectOIDCClaims("org", "proj", nil, "")
+	err := c.SetProjectOIDCClaims(context.Background(), "org", "proj", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestSetProjectOIDCClaims_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetProjectOIDCClaims("org", "proj", []string{"aud"}, "1h")
+	err := c.SetProjectOIDCClaims(context.Background(), "org", "proj", []string{"aud"}, "1h")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -141,5 +142,5 @@ func TestSetProjectOIDCClaims_PathEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_ = c.SetProjectOIDCClaims(orgID, projID, []string{"aud"}, "")
+	_ = c.SetProjectOIDCClaims(context.Background(), orgID, projID, []string{"aud"}, "")
 }

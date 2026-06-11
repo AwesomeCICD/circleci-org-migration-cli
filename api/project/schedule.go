@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -46,7 +47,7 @@ type listSchedulesResponse struct {
 // fetching all pages automatically.
 //
 // Endpoint: GET /api/v2/project/{project-slug}/schedule
-func (c *Client) ListSchedules(slug string) ([]Schedule, error) {
+func (c *Client) ListSchedules(ctx context.Context, slug string) ([]Schedule, error) {
 	var all []Schedule
 	pageToken := ""
 
@@ -61,7 +62,7 @@ func (c *Client) ListSchedules(slug string) ([]Schedule, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListSchedules: build request: %w", err)
 		}

@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -51,7 +52,7 @@ func TestGetEnvironmentHierarchy_WithHierarchy(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	h, err := c.GetEnvironmentHierarchy(envHierarchyOrgUUID)
+	h, err := c.GetEnvironmentHierarchy(context.Background(), envHierarchyOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestGetEnvironmentHierarchy_ScopeNone(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	h, err := c.GetEnvironmentHierarchy(envHierarchyOrgUUID)
+	h, err := c.GetEnvironmentHierarchy(context.Background(), envHierarchyOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestGetEnvironmentHierarchy_NullHierarchy(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	h, err := c.GetEnvironmentHierarchy(envHierarchyOrgUUID)
+	h, err := c.GetEnvironmentHierarchy(context.Background(), envHierarchyOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestGetEnvironmentHierarchy_IntegrationIDNotExposed(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	h, err := c.GetEnvironmentHierarchy(envHierarchyOrgUUID)
+	h, err := c.GetEnvironmentHierarchy(context.Background(), envHierarchyOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestGetEnvironmentHierarchy_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if _, err := c.GetEnvironmentHierarchy(envHierarchyOrgUUID); err == nil {
+	if _, err := c.GetEnvironmentHierarchy(context.Background(), envHierarchyOrgUUID); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }

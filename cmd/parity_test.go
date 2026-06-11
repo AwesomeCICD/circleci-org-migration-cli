@@ -7,6 +7,7 @@ package cmd_test
 //   4. version format aligns with circleci-cli style
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -114,7 +115,7 @@ func TestSetCommandPath_HeaderPresentOnRequest(t *testing.T) {
 	c := rest.New(base, "tok", srv.Client())
 	c.SetCommandPath("circleci-migrate export")
 
-	req, err := c.NewRequest(http.MethodGet, &url.URL{Path: "me"}, nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, &url.URL{Path: "me"}, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestSetCommandPath_HeaderAbsentWhenEmpty(t *testing.T) {
 	rest.SetDefaultCommandPath("")
 	c := rest.New(base, "tok", srv.Client())
 
-	req, err := c.NewRequest(http.MethodGet, &url.URL{Path: "me"}, nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, &url.URL{Path: "me"}, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestRootPersistentPreRun_SetsDefaultCommandPath(t *testing.T) {
 	}
 	// A client built AFTER the command ran must inherit the default path.
 	c := rest.New(base, "tok", srv.Client())
-	req, err := c.NewRequest(http.MethodGet, &url.URL{Path: "me"}, nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, &url.URL{Path: "me"}, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

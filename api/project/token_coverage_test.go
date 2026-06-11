@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +19,7 @@ func TestCreateProjectToken_Validation(t *testing.T) {
 		{"gh/acme/web", "all", "", "label is required"},
 	}
 	for _, tc := range cases {
-		if _, err := c.CreateProjectToken(tc.slug, tc.scope, tc.label); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := c.CreateProjectToken(context.Background(), tc.slug, tc.scope, tc.label); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("CreateProjectToken(%q,%q,%q): want error %q, got %v", tc.slug, tc.scope, tc.label, tc.want, err)
 		}
 	}
@@ -30,7 +31,7 @@ func TestListProjectTokens_Empty(t *testing.T) {
 		respondJSON(w, http.StatusOK, []map[string]any{})
 	}))
 	defer srv.Close()
-	tokens, err := newTestClient(t, srv).ListProjectTokens("gh/acme/web")
+	tokens, err := newTestClient(t, srv).ListProjectTokens(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,10 +47,10 @@ func TestProjectTokens_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
-	if _, err := c.ListProjectTokens("gh/acme/web"); err == nil {
+	if _, err := c.ListProjectTokens(context.Background(), "gh/acme/web"); err == nil {
 		t.Error("ListProjectTokens: expected error on 500")
 	}
-	if _, err := c.CreateProjectToken("gh/acme/web", "all", "l"); err == nil {
+	if _, err := c.CreateProjectToken(context.Background(), "gh/acme/web", "all", "l"); err == nil {
 		t.Error("CreateProjectToken: expected error on 500")
 	}
 }

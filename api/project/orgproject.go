@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -37,7 +38,7 @@ type listOrgProjectsResponse struct {
 //
 // Pagination is driven by the next_page_token field; additional pages are
 // requested with the &page-token= query parameter.
-func (c *Client) ListOrgProjects(orgID string) ([]OrgProject, error) {
+func (c *Client) ListOrgProjects(ctx context.Context, orgID string) ([]OrgProject, error) {
 	var all []OrgProject
 	pageToken := ""
 
@@ -51,7 +52,7 @@ func (c *Client) ListOrgProjects(orgID string) ([]OrgProject, error) {
 		}
 		u := &url.URL{Path: "project", RawQuery: q.Encode()}
 
-		req, err := c.private.NewRequest("GET", u, nil)
+		req, err := c.private.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListOrgProjects: build request: %w", err)
 		}

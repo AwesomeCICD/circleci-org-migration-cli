@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -53,7 +54,7 @@ type fakeProjectWriter struct {
 	settingsUpdates []*project.AdvancedSettings // captures the settings arg each time UpdateSettings is called
 }
 
-func (f *fakeProjectWriter) GetProject(slug string) (*project.Project, error) {
+func (f *fakeProjectWriter) GetProject(_ context.Context, slug string) (*project.Project, error) {
 	f.calls = append(f.calls, projectCall{"GetProject", []string{slug}})
 	if f.getProject != nil {
 		return f.getProject(slug)
@@ -61,7 +62,7 @@ func (f *fakeProjectWriter) GetProject(slug string) (*project.Project, error) {
 	return &project.Project{Slug: slug, ID: "proj-id-" + slug, Name: slug}, nil
 }
 
-func (f *fakeProjectWriter) CreateProjectShell(provider, org, name string) (*project.Project, error) {
+func (f *fakeProjectWriter) CreateProjectShell(_ context.Context, provider, org, name string) (*project.Project, error) {
 	f.calls = append(f.calls, projectCall{"CreateProjectShell", []string{provider, org, name}})
 	if f.createProjectShell != nil {
 		return f.createProjectShell(provider, org, name)
@@ -70,7 +71,7 @@ func (f *fakeProjectWriter) CreateProjectShell(provider, org, name string) (*pro
 	return &project.Project{Slug: slug, ID: "new-proj-id-" + name, Name: name}, nil
 }
 
-func (f *fakeProjectWriter) FollowProject(vcsType, org, repo string) (*project.FollowResult, error) {
+func (f *fakeProjectWriter) FollowProject(_ context.Context, vcsType, org, repo string) (*project.FollowResult, error) {
 	f.calls = append(f.calls, projectCall{"FollowProject", []string{vcsType, org, repo}})
 	if f.followProject != nil {
 		return f.followProject(vcsType, org, repo)
@@ -78,7 +79,7 @@ func (f *fakeProjectWriter) FollowProject(vcsType, org, repo string) (*project.F
 	return &project.FollowResult{Followed: true}, nil
 }
 
-func (f *fakeProjectWriter) ListEnvVars(slug string) ([]project.EnvVar, error) {
+func (f *fakeProjectWriter) ListEnvVars(_ context.Context, slug string) ([]project.EnvVar, error) {
 	f.calls = append(f.calls, projectCall{"ListEnvVars", []string{slug}})
 	if f.listEnvVars != nil {
 		return f.listEnvVars(slug)
@@ -86,7 +87,7 @@ func (f *fakeProjectWriter) ListEnvVars(slug string) ([]project.EnvVar, error) {
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) CreateEnvVar(slug, name, value string) error {
+func (f *fakeProjectWriter) CreateEnvVar(_ context.Context, slug, name, value string) error {
 	f.calls = append(f.calls, projectCall{"CreateEnvVar", []string{slug, name, value}})
 	if f.createEnvVar != nil {
 		return f.createEnvVar(slug, name, value)
@@ -94,7 +95,7 @@ func (f *fakeProjectWriter) CreateEnvVar(slug, name, value string) error {
 	return nil
 }
 
-func (f *fakeProjectWriter) UpdateSettings(provider, org, proj string, s *project.AdvancedSettings) error {
+func (f *fakeProjectWriter) UpdateSettings(_ context.Context, provider, org, proj string, s *project.AdvancedSettings) error {
 	f.calls = append(f.calls, projectCall{"UpdateSettings", []string{provider, org, proj}})
 	f.settingsUpdates = append(f.settingsUpdates, s)
 	if f.updateSettings != nil {
@@ -103,7 +104,7 @@ func (f *fakeProjectWriter) UpdateSettings(provider, org, proj string, s *projec
 	return nil
 }
 
-func (f *fakeProjectWriter) ListWebhooks(projectID string) ([]project.Webhook, error) {
+func (f *fakeProjectWriter) ListWebhooks(_ context.Context, projectID string) ([]project.Webhook, error) {
 	f.calls = append(f.calls, projectCall{"ListWebhooks", []string{projectID}})
 	if f.listWebhooks != nil {
 		return f.listWebhooks(projectID)
@@ -111,7 +112,7 @@ func (f *fakeProjectWriter) ListWebhooks(projectID string) ([]project.Webhook, e
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) CreateWebhook(destProjectID string, w project.Webhook) error {
+func (f *fakeProjectWriter) CreateWebhook(_ context.Context, destProjectID string, w project.Webhook) error {
 	f.calls = append(f.calls, projectCall{"CreateWebhook", []string{destProjectID, w.Name, w.URL}})
 	if f.createWebhook != nil {
 		return f.createWebhook(destProjectID, w)
@@ -119,7 +120,7 @@ func (f *fakeProjectWriter) CreateWebhook(destProjectID string, w project.Webhoo
 	return nil
 }
 
-func (f *fakeProjectWriter) ListSchedules(slug string) ([]project.Schedule, error) {
+func (f *fakeProjectWriter) ListSchedules(_ context.Context, slug string) ([]project.Schedule, error) {
 	f.calls = append(f.calls, projectCall{"ListSchedules", []string{slug}})
 	if f.listSchedules != nil {
 		return f.listSchedules(slug)
@@ -127,7 +128,7 @@ func (f *fakeProjectWriter) ListSchedules(slug string) ([]project.Schedule, erro
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) CreateSchedule(destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error {
+func (f *fakeProjectWriter) CreateSchedule(_ context.Context, destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error {
 	f.calls = append(f.calls, projectCall{"CreateSchedule", []string{destSlug, name, description, attributionActor}})
 	if f.createSchedule != nil {
 		return f.createSchedule(destSlug, name, description, attributionActor, timetable, parameters)
@@ -135,7 +136,7 @@ func (f *fakeProjectWriter) CreateSchedule(destSlug, name, description, attribut
 	return nil
 }
 
-func (f *fakeProjectWriter) GetProjectOIDCClaims(orgID, projID string) ([]string, string, error) {
+func (f *fakeProjectWriter) GetProjectOIDCClaims(_ context.Context, orgID, projID string) ([]string, string, error) {
 	f.calls = append(f.calls, projectCall{"GetProjectOIDCClaims", []string{orgID, projID}})
 	if f.getProjectOIDCClaims != nil {
 		return f.getProjectOIDCClaims(orgID, projID)
@@ -143,7 +144,7 @@ func (f *fakeProjectWriter) GetProjectOIDCClaims(orgID, projID string) ([]string
 	return nil, "", nil
 }
 
-func (f *fakeProjectWriter) SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error {
+func (f *fakeProjectWriter) SetProjectOIDCClaims(_ context.Context, orgID, projID string, audience []string, ttl string) error {
 	f.calls = append(f.calls, projectCall{"SetProjectOIDCClaims", []string{orgID, projID, ttl}})
 	if f.setProjectOIDCClaims != nil {
 		return f.setProjectOIDCClaims(orgID, projID, audience, ttl)
@@ -151,7 +152,7 @@ func (f *fakeProjectWriter) SetProjectOIDCClaims(orgID, projID string, audience 
 	return nil
 }
 
-func (f *fakeProjectWriter) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
+func (f *fakeProjectWriter) GetV11ProjectFeatureFlags(_ context.Context, slug string) (map[string]bool, error) {
 	f.calls = append(f.calls, projectCall{"GetV11ProjectFeatureFlags", []string{slug}})
 	if f.getV11ProjectFeatureFlags != nil {
 		return f.getV11ProjectFeatureFlags(slug)
@@ -159,7 +160,7 @@ func (f *fakeProjectWriter) GetV11ProjectFeatureFlags(slug string) (map[string]b
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error {
+func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(_ context.Context, slug string, flags map[string]bool) error {
 	keys := make([]string, 0, len(flags))
 	for k := range flags {
 		keys = append(keys, k)
@@ -171,7 +172,7 @@ func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[str
 	return nil
 }
 
-func (f *fakeProjectWriter) ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error) {
+func (f *fakeProjectWriter) ListAdditionalSSHKeys(_ context.Context, slug string) ([]project.SSHKeyMeta, error) {
 	f.calls = append(f.calls, projectCall{"ListAdditionalSSHKeys", []string{slug}})
 	if f.listAdditionalSSHKeys != nil {
 		return f.listAdditionalSSHKeys(slug)
@@ -179,7 +180,7 @@ func (f *fakeProjectWriter) ListAdditionalSSHKeys(slug string) ([]project.SSHKey
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
+func (f *fakeProjectWriter) AddAdditionalSSHKey(_ context.Context, slug, hostname, privateKey string) error {
 	f.calls = append(f.calls, projectCall{"AddAdditionalSSHKey", []string{slug, hostname, privateKey}})
 	if f.addAdditionalSSHKey != nil {
 		return f.addAdditionalSSHKey(slug, hostname, privateKey)
@@ -187,7 +188,7 @@ func (f *fakeProjectWriter) AddAdditionalSSHKey(slug, hostname, privateKey strin
 	return nil
 }
 
-func (f *fakeProjectWriter) ListProjectTokens(slug string) ([]project.ProjectAPIToken, error) {
+func (f *fakeProjectWriter) ListProjectTokens(_ context.Context, slug string) ([]project.ProjectAPIToken, error) {
 	f.calls = append(f.calls, projectCall{"ListProjectTokens", []string{slug}})
 	if f.listProjectTokens != nil {
 		return f.listProjectTokens(slug)
@@ -195,7 +196,7 @@ func (f *fakeProjectWriter) ListProjectTokens(slug string) ([]project.ProjectAPI
 	return nil, nil
 }
 
-func (f *fakeProjectWriter) CreateProjectToken(slug, scope, label string) (string, error) {
+func (f *fakeProjectWriter) CreateProjectToken(_ context.Context, slug, scope, label string) (string, error) {
 	f.calls = append(f.calls, projectCall{"CreateProjectToken", []string{slug, scope, label}})
 	if f.createProjectToken != nil {
 		return f.createProjectToken(slug, scope, label)
@@ -203,7 +204,7 @@ func (f *fakeProjectWriter) CreateProjectToken(slug, scope, label string) (strin
 	return "ccipat_PLACEHOLDER_syncer_test_value", nil
 }
 
-func (f *fakeProjectWriter) CreateAppProject(orgID, name string) (*project.Project, error) {
+func (f *fakeProjectWriter) CreateAppProject(_ context.Context, orgID, name string) (*project.Project, error) {
 	f.calls = append(f.calls, projectCall{"CreateAppProject", []string{orgID, name}})
 	if f.createAppProject != nil {
 		return f.createAppProject(orgID, name)
@@ -212,7 +213,7 @@ func (f *fakeProjectWriter) CreateAppProject(orgID, name string) (*project.Proje
 	return &project.Project{Slug: slug, ID: "app-proj-id-" + name, Name: name}, nil
 }
 
-func (f *fakeProjectWriter) CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+func (f *fakeProjectWriter) CreatePipelineDefinition(_ context.Context, projectID string, spec project.PipelineDefinitionSpec) (string, error) {
 	f.calls = append(f.calls, projectCall{"CreatePipelineDefinition", []string{projectID, spec.Name}})
 	if f.createPipelineDefinition != nil {
 		return f.createPipelineDefinition(projectID, spec)
@@ -220,7 +221,7 @@ func (f *fakeProjectWriter) CreatePipelineDefinition(projectID string, spec proj
 	return "def-id-" + spec.Name, nil
 }
 
-func (f *fakeProjectWriter) CreateTrigger(projectID, defID string, spec project.TriggerSpec) (string, error) {
+func (f *fakeProjectWriter) CreateTrigger(_ context.Context, projectID, defID string, spec project.TriggerSpec) (string, error) {
 	f.calls = append(f.calls, projectCall{"CreateTrigger", []string{projectID, defID, spec.EventPreset}})
 	if f.createTrigger != nil {
 		return f.createTrigger(projectID, defID, spec)
@@ -228,7 +229,7 @@ func (f *fakeProjectWriter) CreateTrigger(projectID, defID string, spec project.
 	return "trigger-id-" + spec.EventPreset, nil
 }
 
-func (f *fakeProjectWriter) EnableTrigger(projectID, triggerID string) error {
+func (f *fakeProjectWriter) EnableTrigger(_ context.Context, projectID, triggerID string) error {
 	f.calls = append(f.calls, projectCall{"EnableTrigger", []string{projectID, triggerID}})
 	if f.enableTrigger != nil {
 		return f.enableTrigger(projectID, triggerID)
@@ -236,7 +237,7 @@ func (f *fakeProjectWriter) EnableTrigger(projectID, triggerID string) error {
 	return nil
 }
 
-func (f *fakeProjectWriter) ListOrgProjects(orgID string) ([]project.OrgProject, error) {
+func (f *fakeProjectWriter) ListOrgProjects(_ context.Context, orgID string) ([]project.OrgProject, error) {
 	f.calls = append(f.calls, projectCall{"ListOrgProjects", []string{orgID}})
 	if f.listOrgProjects != nil {
 		return f.listOrgProjects(orgID)
@@ -378,7 +379,7 @@ func TestSyncProjects_ProjectMissingInDest_OAuth(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith("gh/acme/web", "DB_URL", "postgres://localhost")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -429,7 +430,7 @@ func TestSyncProjects_ProjectMissingInDest_OAuth_DryRun(t *testing.T) {
 	p := simpleProject("gh/acme/web", "DB_URL")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,7 +472,7 @@ func TestSyncProjects_ProjectMissingInDest_App_Manual(t *testing.T) {
 		Projects: map[string]string{"gh/acme/web": appDstSlug},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -513,7 +514,7 @@ func TestSyncProjects_MappingUnresolved_Manual(t *testing.T) {
 		Org: manifest.OrgMapping{From: "gh/acme", To: "circleci/org-id-abc"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -554,7 +555,7 @@ func TestSyncProjects_Settings_ApplyTrue_UpdateSettingsCalled(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -605,7 +606,7 @@ func TestSyncProjects_Settings_DryRun_UpdateSettingsNotCalled(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -649,7 +650,7 @@ func TestSyncProjects_EnvVar_ApplyTrue_BundleLookedUpBySourceSlug(t *testing.T) 
 		Projects: map[string]string{srcSlug: dstSlug},
 	}
 
-	rep, err := sy.SyncProjects(m, bundle, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -690,7 +691,7 @@ func TestSyncProjects_EnvVar_DryRun_CreateEnvVarNotCalled(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug, "API_KEY", "s3cr3t")
 
-	_, err := sy.SyncProjects(m, bundle, nil, Options{Apply: false})
+	_, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -720,7 +721,7 @@ func TestSyncProjects_EnvVar_AlreadyExists(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug, "DB_PASS", "hunter2")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -754,7 +755,7 @@ func TestSyncProjects_MissingValue_Skip(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug) // no value for MISSING_VAR
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true, MissingSecrets: MissingSkip})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true, MissingSecrets: MissingSkip})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -789,7 +790,7 @@ func TestSyncProjects_MissingValue_Placeholder_ApplyTrue(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug) // no value for MISSING_VAR
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +824,7 @@ func TestSyncProjects_MissingValue_Placeholder_DryRun_NoCreate(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug)
 
-	_, err := sy.SyncProjects(m, bundle, nil, Options{Apply: false, MissingSecrets: MissingPlaceholder})
+	_, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: false, MissingSecrets: MissingPlaceholder})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -853,7 +854,7 @@ func TestSyncProjects_CreateEnvVar_Error_IsErrorAction(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug, "MY_VAR", "val")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("CreateEnvVar error must not propagate, got: %v", err)
 	}
@@ -895,7 +896,7 @@ func TestSyncProjects_UpdateSettings_Error_IsErrorAction(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("UpdateSettings error must not propagate, got: %v", err)
 	}
@@ -924,7 +925,7 @@ func TestSyncProjects_Report_DestOrgSlug_FromMapping(t *testing.T) {
 	m := projectManifest("gh/acme")
 	mapping := &manifest.Mapping{Org: manifest.OrgMapping{From: "gh/acme", To: "gh/acme-new"}}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -942,7 +943,7 @@ func TestSyncProjects_Report_DestOrgSlug_NilMapping(t *testing.T) {
 
 	m := projectManifest("gh/source-org")
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -982,7 +983,7 @@ func TestSyncProjects_TwoProjects(t *testing.T) {
 	bundle.SetProjectSecret("gh/acme/api", "API_KEY", "key-val")
 	bundle.SetProjectSecret("gh/acme/web", "WEB_SECRET", "web-val")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1030,7 +1031,7 @@ func TestSyncProjects_NoSettings_UpdateSettingsNotCalled(t *testing.T) {
 	p := simpleProject("gh/acme/web") // no settings
 	m := projectManifest("gh/acme", p)
 
-	_, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	_, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1062,7 +1063,7 @@ func TestSyncProjects_ExplicitMapping_DestSlugUsed(t *testing.T) {
 		Projects: map[string]string{srcSlug: dstSlug},
 	}
 
-	_, err := sy.SyncProjects(m, bundle, mapping, Options{Apply: true})
+	_, err := sy.SyncProjects(context.Background(), m, bundle, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1101,7 +1102,7 @@ func TestSyncProjects_NilBundle_AllVarsManual(t *testing.T) {
 	p := simpleProject("gh/acme/web", "VAR1", "VAR2")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, MissingSecrets: MissingSkip})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, MissingSecrets: MissingSkip})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1193,7 +1194,7 @@ func TestSyncProjects_Placeholder_CreateEnvVarError_IsErrorAction(t *testing.T) 
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug) // no value
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true, MissingSecrets: MissingPlaceholder})
 	if err != nil {
 		t.Fatalf("placeholder write error must not propagate, got: %v", err)
 	}
@@ -1220,7 +1221,7 @@ func TestSyncProjects_Report_AppliedField(t *testing.T) {
 	sy := newSyncerProjects(fp)
 	m := projectManifest("gh/acme")
 
-	repDry, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	repDry, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1228,7 +1229,7 @@ func TestSyncProjects_Report_AppliedField(t *testing.T) {
 		t.Error("Report.Applied should be false when Apply=false")
 	}
 
-	repApply, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	repApply, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1265,7 +1266,7 @@ func TestSyncProjects_InvalidDestSlug_ErrorAction(t *testing.T) {
 		Projects: map[string]string{"gh/acme/web": "gh/badslug"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected top-level error: %v", err)
 	}
@@ -1301,7 +1302,7 @@ func TestSyncProjects_Webhook_Created(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1349,7 +1350,7 @@ func TestSyncProjects_Webhook_Exists(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1384,7 +1385,7 @@ func TestSyncProjects_Webhook_DryRun(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1424,7 +1425,7 @@ func TestSyncProjects_Schedule_OAuth_Created(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1461,7 +1462,7 @@ func TestSyncProjects_Schedule_OAuth_Exists(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1506,7 +1507,7 @@ func TestSyncProjects_Schedule_AppSlug_Manual(t *testing.T) {
 		Projects: map[string]string{srcSlug: appDstSlug},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1548,7 +1549,7 @@ func TestSyncProjects_OIDCClaims_Set(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1586,7 +1587,7 @@ func TestSyncProjects_OIDCClaims_DryRun(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1615,7 +1616,7 @@ func TestSyncProjects_OIDCClaims_Empty_NoAction(t *testing.T) {
 	p := simpleProject("gh/acme/web")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1648,7 +1649,7 @@ func TestSyncProjects_APITriggerFlag_Set(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1685,7 +1686,7 @@ func TestSyncProjects_DropAllBuildRequests_TrueEmitsManual(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1722,7 +1723,7 @@ func TestSyncProjects_DropAllBuildRequests_FalseNoNoise(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1754,7 +1755,7 @@ func TestSyncProjects_APITriggerFlag_DryRun(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1785,7 +1786,7 @@ func TestEnableBuilds_Apply_CallsFollowProject(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
-	action, err := sy.EnableBuilds(target, true)
+	action, err := sy.EnableBuilds(context.Background(), target, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1808,7 +1809,7 @@ func TestEnableBuilds_DryRun_NoFollowProject(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
-	action, err := sy.EnableBuilds(target, false)
+	action, err := sy.EnableBuilds(context.Background(), target, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1832,7 +1833,7 @@ func TestEnableBuilds_Apply_FollowError_ReturnsError(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "follow", Slug: "gh/acme/web", VCSType: "gh", Org: "acme", Repo: "web"}
-	action, err := sy.EnableBuilds(target, true)
+	action, err := sy.EnableBuilds(context.Background(), target, true)
 	if err == nil {
 		t.Fatal("expected error from FollowProject failure, got nil")
 	}
@@ -1852,7 +1853,7 @@ func TestEnableBuilds_Trigger_Apply_CallsEnableTrigger(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
-	action, err := sy.EnableBuilds(target, true)
+	action, err := sy.EnableBuilds(context.Background(), target, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1872,7 +1873,7 @@ func TestEnableBuilds_Trigger_DryRun_NoEnableTrigger(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
-	action, err := sy.EnableBuilds(target, false)
+	action, err := sy.EnableBuilds(context.Background(), target, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1896,7 +1897,7 @@ func TestEnableBuilds_Trigger_Error_ReturnsError(t *testing.T) {
 	sy := newSyncerProjects(fp)
 
 	target := EnableTarget{Kind: "trigger", ProjectID: "proj-uuid", TriggerID: "trig-uuid"}
-	action, err := sy.EnableBuilds(target, true)
+	action, err := sy.EnableBuilds(context.Background(), target, true)
 	if err == nil {
 		t.Fatal("expected error from EnableTrigger failure, got nil")
 	}
@@ -1922,7 +1923,7 @@ func TestSyncProjects_CreateProjectShell_Error_IsErrorAction(t *testing.T) {
 	p := simpleProject("gh/acme/web", "DB_URL")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1993,7 +1994,7 @@ func TestSyncProjects_AppDest_CreateProject_Apply(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2036,7 +2037,7 @@ func TestSyncProjects_AppDest_CreateProject_DryRun(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2078,7 +2079,7 @@ func TestSyncProjects_AppDest_ExistingProject_Reused(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith("gh/acme/web", "MY_VAR", "secretval")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2134,7 +2135,7 @@ func TestSyncProjects_AppDest_WebhookTrigger_Manual(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2189,7 +2190,7 @@ func TestSyncProjects_AppDest_ScheduleTrigger_Manual(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2224,7 +2225,7 @@ func TestSyncProjects_AppDest_ExternalID_CapturedReused(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "captured-ext-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true}); err != nil {
+	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -2238,7 +2239,7 @@ func TestSyncProjects_AppDest_ExternalID_CapturedReused(t *testing.T) {
 func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 	origResolve := resolveRepoID
 	defer func() { resolveRepoID = origResolve }()
-	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+	resolveRepoID = func(_ context.Context, fullName, token, baseURL string) (string, error) {
 		if fullName == "acme/web" && token == "gh-tok" {
 			return "resolved-id-999", nil
 		}
@@ -2257,7 +2258,7 @@ func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "old-captured-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
+	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -2273,7 +2274,7 @@ func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 func TestSyncProjects_AppDest_ExternalID_ResolveOtherError_Skips(t *testing.T) {
 	origResolve := resolveRepoID
 	defer func() { resolveRepoID = origResolve }()
-	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+	resolveRepoID = func(_ context.Context, fullName, token, baseURL string) (string, error) {
 		return "", errors.New("GitHub API unreachable")
 	}
 
@@ -2283,7 +2284,7 @@ func TestSyncProjects_AppDest_ExternalID_ResolveOtherError_Skips(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "captured-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2330,7 +2331,7 @@ func TestSyncProjects_AppDest_ExternalID_NoTokenNoCaptured_Manual(t *testing.T) 
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2363,7 +2364,7 @@ func TestSyncProjects_AppDest_CreateAppProject_Error(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2425,7 +2426,7 @@ func TestSyncProjects_AppDest_Settings_OAuthOnlyFieldsStripped(t *testing.T) {
 		Projects: map[string]string{"gh/acme/web": appDstSlug},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2488,7 +2489,7 @@ func TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 
 	// gh/ destination — OAuth path.
-	_, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	_, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2576,7 +2577,7 @@ func TestSyncProjects_AppDest_PipelineDef_RepoAccessError_Manual(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2607,7 +2608,7 @@ func TestSyncProjects_AppDest_PipelineDef_OtherError_IsErrorAction(t *testing.T)
 	p := appManifestProject("web", "gh/acme/web", "12345", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2671,7 +2672,7 @@ func stubResolveRepoID(t *testing.T, expectName, returnID string, returnErr erro
 	t.Helper()
 	orig := resolveRepoID
 	t.Cleanup(func() { resolveRepoID = orig })
-	resolveRepoID = func(fullName, token, baseURL string) (string, error) {
+	resolveRepoID = func(_ context.Context, fullName, token, baseURL string) (string, error) {
 		if fullName == expectName {
 			return returnID, returnErr
 		}
@@ -2706,7 +2707,7 @@ func TestResolveExternalID_TokenAndRepoFound(t *testing.T) {
 		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2749,7 +2750,7 @@ func TestResolveExternalID_TokenAndRepo404_ManualSkip(t *testing.T) {
 		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2789,7 +2790,7 @@ func TestResolveExternalID_NoToken_OrgChanged_Manual(t *testing.T) {
 	}
 
 	// No GitHubToken.
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2827,7 +2828,7 @@ func TestResolveExternalID_NoToken_OrgSame_ReusesCapturedID(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 
 	// No mapping and no DestGitHubOrg → org unchanged.
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2867,7 +2868,7 @@ func TestResolveExternalID_DestGitHubOrg_Option(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 
 	// Use DestGitHubOrg option (no GitHubOrg in mapping).
-	_, err := sy.SyncProjects(m, nil, nil, Options{
+	_, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{
 		Apply:         true,
 		GitHubToken:   "gh-tok",
 		DestGitHubOrg: "acme-dest",
@@ -2905,7 +2906,7 @@ func TestResolveExternalID_MappingGitHubOrg_PrecedenceOverDestOption(t *testing.
 		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-mapping"},
 	}
 
-	_, err := sy.SyncProjects(m, nil, mapping, Options{
+	_, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{
 		Apply:         true,
 		GitHubToken:   "gh-tok",
 		DestGitHubOrg: "acme-option", // must be ignored
@@ -2938,7 +2939,7 @@ func TestSyncProjects_AppDest_DryRun_ResolvePreview(t *testing.T) {
 		GitHubOrg: &manifest.OrgMapping{From: "acme", To: "acme-new"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: false, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: false, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3006,7 +3007,7 @@ func TestSyncProjectSSHKeys_ReAddsFromBundle(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := bundleWithSSHKey(slug, fp, host, privKey)
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3051,7 +3052,7 @@ func TestSyncProjectSSHKeys_IdempotentSkipExisting(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3082,7 +3083,7 @@ func TestSyncProjectSSHKeys_DryRunNoWrite(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: false})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3118,7 +3119,7 @@ func TestSyncProjectSSHKeys_ManualWhenKeyMissingFromBundle(t *testing.T) {
 	// Bundle has no SSH keys for this project.
 	bundle := manifest.NewSecretBundle()
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3154,7 +3155,7 @@ func TestSyncProjectSSHKeys_ManualWhenNilBundle(t *testing.T) {
 	}
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3191,7 +3192,7 @@ func TestSyncProjectSSHKeys_AddError(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := bundleWithSSHKey(slug, fp, "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
 
-	rep, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("AddAdditionalSSHKey error must not propagate, got: %v", err)
 	}
@@ -3216,7 +3217,7 @@ func TestSyncProjectSSHKeys_NoSSHKeysInManifest(t *testing.T) {
 	p := simpleProject("gh/acme/web") // no SSHKeys
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3252,7 +3253,7 @@ func TestSyncProjects_DryRun_NoListEnvVars_AppOrg(t *testing.T) {
 	p.Name = "web"
 	m := projectManifest("gh/acme", p)
 
-	_, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	_, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3273,7 +3274,7 @@ func TestSyncProjects_Apply_CallsListEnvVars(t *testing.T) {
 	m := projectManifest("gh/acme", p)
 	bundle := projectBundleWith(srcSlug, "API_KEY", "val")
 
-	_, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	_, err := sy.SyncProjects(context.Background(), m, bundle, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3302,7 +3303,7 @@ func TestSyncProjects_ExistingProject_OAuth_EmitsExists(t *testing.T) {
 	p := simpleProject("gh/acme/web", "DB_URL")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3334,7 +3335,7 @@ func TestSyncProjects_ExistingProject_App_EmitsExists(t *testing.T) {
 	p.Name = "web"
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3371,7 +3372,7 @@ func TestResolveExternalID_ResolvedCountsInSummary(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3429,7 +3430,7 @@ func TestSyncProjectAPITokens_FlagOff_DefaultManual(t *testing.T) {
 	)
 
 	// Apply with CreateProjectTokens=false (default).
-	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: false})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3479,7 +3480,7 @@ func TestSyncProjectAPITokens_FlagOn_Apply_Creates(t *testing.T) {
 		manifest.ProjectAPIToken{Label: "deploy-bot", Scope: "all"},
 	)
 
-	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3530,7 +3531,7 @@ func TestSyncProjectAPITokens_FlagOn_Apply_IdempotentSkip(t *testing.T) {
 		manifest.ProjectAPIToken{Label: "deploy-bot", Scope: "all"},
 	)
 
-	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3570,7 +3571,7 @@ func TestSyncProjectAPITokens_FlagOn_DryRun_NoCreate(t *testing.T) {
 		manifest.ProjectAPIToken{Label: "ci-token", Scope: "view-builds"},
 	)
 
-	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: false, CreateProjectTokens: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: false, CreateProjectTokens: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

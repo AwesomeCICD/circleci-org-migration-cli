@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -43,7 +44,7 @@ func TestGetOTelExporters_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	exporters, err := c.GetOTelExporters(orgID)
+	exporters, err := c.GetOTelExporters(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestGetOTelExporters_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	exporters, err := c.GetOTelExporters("some-org")
+	exporters, err := c.GetOTelExporters(context.Background(), "some-org")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestGetOTelExporters_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetOTelExporters("some-org")
+	_, err := c.GetOTelExporters(context.Background(), "some-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -130,7 +131,7 @@ func TestCreateOTelExporter_HappyPath(t *testing.T) {
 
 	headers := map[string]string{"X-Api-Key": "secret", "X-Trace-Id": "tid"}
 	c := newTestClient(t, srv)
-	if err := c.CreateOTelExporter(orgID, "https://otel.example.com:4318", "http/protobuf", false, headers); err != nil {
+	if err := c.CreateOTelExporter(context.Background(), orgID, "https://otel.example.com:4318", "http/protobuf", false, headers); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -168,7 +169,7 @@ func TestCreateOTelExporter_NilHeaders(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateOTelExporter("org-id", "https://otel.example.com", "grpc", true, nil); err != nil {
+	if err := c.CreateOTelExporter(context.Background(), "org-id", "https://otel.example.com", "grpc", true, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, hasHeaders := receivedBody["headers"]; hasHeaders {
@@ -183,7 +184,7 @@ func TestCreateOTelExporter_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.CreateOTelExporter("org-id", "", "grpc", false, nil)
+	err := c.CreateOTelExporter(context.Background(), "org-id", "", "grpc", false, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

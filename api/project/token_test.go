@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func TestListProjectTokens_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tokens, err := c.ListProjectTokens(slug)
+	tokens, err := c.ListProjectTokens(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestListProjectTokens_EmptyList(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tokens, err := c.ListProjectTokens("gh/acme/web")
+	tokens, err := c.ListProjectTokens(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestListProjectTokens_StandaloneSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tokens, err := c.ListProjectTokens(slug)
+	tokens, err := c.ListProjectTokens(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestListProjectTokens_APIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListProjectTokens("gh/acme/web")
+	_, err := c.ListProjectTokens(context.Background(), "gh/acme/web")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -156,7 +157,7 @@ func TestCreateProjectToken_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tok, err := c.CreateProjectToken(slug, "all", "deploy-bot")
+	tok, err := c.CreateProjectToken(context.Background(), slug, "all", "deploy-bot")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestCreateProjectToken_HappyPath(t *testing.T) {
 // without making an HTTP request.
 func TestCreateProjectToken_EmptySlug(t *testing.T) {
 	c := &Client{}
-	_, err := c.CreateProjectToken("", "all", "label")
+	_, err := c.CreateProjectToken(context.Background(), "", "all", "label")
 	if err == nil {
 		t.Fatal("expected error for empty slug, got nil")
 	}
@@ -184,7 +185,7 @@ func TestCreateProjectToken_EmptySlug(t *testing.T) {
 // TestCreateProjectToken_EmptyScope verifies that an empty scope returns an error.
 func TestCreateProjectToken_EmptyScope(t *testing.T) {
 	c := &Client{}
-	_, err := c.CreateProjectToken("gh/acme/web", "", "label")
+	_, err := c.CreateProjectToken(context.Background(), "gh/acme/web", "", "label")
 	if err == nil {
 		t.Fatal("expected error for empty scope, got nil")
 	}
@@ -193,7 +194,7 @@ func TestCreateProjectToken_EmptyScope(t *testing.T) {
 // TestCreateProjectToken_EmptyLabel verifies that an empty label returns an error.
 func TestCreateProjectToken_EmptyLabel(t *testing.T) {
 	c := &Client{}
-	_, err := c.CreateProjectToken("gh/acme/web", "all", "")
+	_, err := c.CreateProjectToken(context.Background(), "gh/acme/web", "all", "")
 	if err == nil {
 		t.Fatal("expected error for empty label, got nil")
 	}
@@ -207,7 +208,7 @@ func TestCreateProjectToken_APIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateProjectToken("gh/acme/web", "all", "deploy-bot")
+	_, err := c.CreateProjectToken(context.Background(), "gh/acme/web", "all", "deploy-bot")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -234,7 +235,7 @@ func TestCreateProjectToken_StandaloneSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tok, err := c.CreateProjectToken(slug, "status", "ci-status")
+	tok, err := c.CreateProjectToken(context.Background(), slug, "status", "ci-status")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ type fakeRunnerWriter struct {
 	createCalls         []string
 }
 
-func (f *fakeRunnerWriter) GetResourceClassesByNamespace(namespace string) ([]apirunner.ResourceClass, error) {
+func (f *fakeRunnerWriter) GetResourceClassesByNamespace(_ context.Context, namespace string) ([]apirunner.ResourceClass, error) {
 	f.getCalls = append(f.getCalls, namespace)
 	if f.getResourceClasses != nil {
 		return f.getResourceClasses(namespace)
@@ -28,7 +29,7 @@ func (f *fakeRunnerWriter) GetResourceClassesByNamespace(namespace string) ([]ap
 	return nil, nil
 }
 
-func (f *fakeRunnerWriter) CreateResourceClass(resourceClass, description string) (*apirunner.ResourceClass, error) {
+func (f *fakeRunnerWriter) CreateResourceClass(_ context.Context, resourceClass, description string) (*apirunner.ResourceClass, error) {
 	f.createCalls = append(f.createCalls, resourceClass)
 	if f.createResourceClass != nil {
 		return f.createResourceClass(resourceClass, description)
@@ -66,7 +67,7 @@ func TestSyncRunner_NoClassesInManifest(t *testing.T) {
 	sy.Runner = rw
 
 	m := &manifest.Manifest{SchemaVersion: manifest.SchemaVersion}
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})
@@ -92,7 +93,7 @@ func TestSyncRunner_DryRun_ReportsCreated(t *testing.T) {
 		manifest.RunnerResourceClass{Name: "acme/fast", Description: "fast runner"},
 		manifest.RunnerResourceClass{Name: "acme/slow", Description: "slow runner"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               false, // dry run
 		DestRunnerNamespace: "acme-new",
 	})
@@ -124,7 +125,7 @@ func TestSyncRunner_Apply_Creates(t *testing.T) {
 	m := runnerManifestWith("acme",
 		manifest.RunnerResourceClass{Name: "acme/fast", Description: "speedy"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})
@@ -156,7 +157,7 @@ func TestSyncRunner_Apply_AlreadyExists_Idempotent(t *testing.T) {
 	m := runnerManifestWith("acme",
 		manifest.RunnerResourceClass{Name: "acme/fast", Description: "speedy"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})
@@ -189,7 +190,7 @@ func TestSyncRunner_Apply_Conflict_Idempotent(t *testing.T) {
 	m := runnerManifestWith("acme",
 		manifest.RunnerResourceClass{Name: "acme/fast", Description: "speedy"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})
@@ -213,7 +214,7 @@ func TestSyncRunner_NoDestNamespace_Manual(t *testing.T) {
 		manifest.RunnerResourceClass{Name: "acme/fast"},
 		manifest.RunnerResourceClass{Name: "acme/slow"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "", // no destination namespace
 	})
@@ -272,7 +273,7 @@ func TestSyncRunner_CreateError_Reported(t *testing.T) {
 	m := runnerManifestWith("acme",
 		manifest.RunnerResourceClass{Name: "acme/fast"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})
@@ -319,7 +320,7 @@ func TestSyncRunner_NilRunnerClient_Manual(t *testing.T) {
 	m := runnerManifestWith("acme",
 		manifest.RunnerResourceClass{Name: "acme/fast"},
 	)
-	rep, err := sy.SyncRunnerResourceClasses(m, Options{
+	rep, err := sy.SyncRunnerResourceClasses(context.Background(), m, Options{
 		Apply:               true,
 		DestRunnerNamespace: "acme-new",
 	})

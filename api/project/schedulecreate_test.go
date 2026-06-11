@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -49,7 +50,7 @@ func TestCreateSchedule_HappyPath(t *testing.T) {
 	c := newTestClient(t, srv)
 	timetable := map[string]any{"per-hour": 1, "hours-of-day": []int{2}, "days-of-week": []string{"MON"}}
 	params := map[string]any{"branch": "main"}
-	if err := c.CreateSchedule(slug, "nightly", "Nightly build", "system", timetable, params); err != nil {
+	if err := c.CreateSchedule(context.Background(), slug, "nightly", "Nightly build", "system", timetable, params); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -68,14 +69,14 @@ func TestCreateSchedule_SlugEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateSchedule(slug, "s", "", "system", nil, nil); err != nil {
+	if err := c.CreateSchedule(context.Background(), slug, "s", "", "system", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestCreateSchedule_EmptySlug_Error(t *testing.T) {
 	c := &Client{}
-	if err := c.CreateSchedule("", "s", "", "system", nil, nil); err == nil {
+	if err := c.CreateSchedule(context.Background(), "", "s", "", "system", nil, nil); err == nil {
 		t.Fatal("expected error for empty destSlug")
 	}
 }
@@ -87,7 +88,7 @@ func TestCreateSchedule_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateSchedule("gh/acme/web", "s", "", "system", nil, nil); err == nil {
+	if err := c.CreateSchedule(context.Background(), "gh/acme/web", "s", "", "system", nil, nil); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -109,7 +110,7 @@ func TestCreateSchedule_AttributionActorAlwaysSystem(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	// Pass "user" — implementation should override to "system".
-	if err := c.CreateSchedule("gh/acme/web", "s", "", "user", nil, nil); err != nil {
+	if err := c.CreateSchedule(context.Background(), "gh/acme/web", "s", "", "user", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

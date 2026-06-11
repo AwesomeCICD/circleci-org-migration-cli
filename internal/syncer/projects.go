@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -25,7 +26,7 @@ var dangerProjectFlags = map[string]bool{
 //
 // Safety note: the HMAC signing-secret is never readable from the source, so
 // we always emit a "manual" action reminding the operator to set it.
-func (s *Syncer) syncProjectWebhooks(report *Report, p manifest.Project, dst, destProjectID string, opts Options) {
+func (s *Syncer) syncProjectWebhooks(ctx context.Context, report *Report, p manifest.Project, dst, destProjectID string, opts Options) {
 	if len(p.Webhooks) == 0 {
 		return
 	}
@@ -33,7 +34,7 @@ func (s *Syncer) syncProjectWebhooks(report *Report, p manifest.Project, dst, de
 	// Fetch existing destination webhooks for idempotency checking.
 	var existing []project.Webhook
 	if destProjectID != "" {
-		if hooks, err := s.Projects.ListWebhooks(destProjectID); err == nil {
+		if hooks, err := s.Projects.ListWebhooks(ctx, destProjectID); err == nil {
 			existing = hooks
 		}
 	}
@@ -58,7 +59,7 @@ func (s *Syncer) syncProjectWebhooks(report *Report, p manifest.Project, dst, de
 		}
 
 		verifyTLS := wh.VerifyTLS
-		if err := s.Projects.CreateWebhook(destProjectID, project.Webhook{
+		if err := s.Projects.CreateWebhook(ctx, destProjectID, project.Webhook{
 			Name:      wh.Name,
 			URL:       wh.URL,
 			Events:    wh.Events,
@@ -93,7 +94,7 @@ func hasWebhook(existing []project.Webhook, name, rawURL string) bool {
 // "manual" actions and no API calls are made.
 //
 // Idempotency: an existing schedule with the same name is treated as "exists".
-func (s *Syncer) syncProjectSchedules(report *Report, p manifest.Project, dst string, opts Options) {
+func (s *Syncer) syncProjectSchedules(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
 	if len(p.Schedules) == 0 {
 		return
 	}
@@ -115,7 +116,7 @@ func (s *Syncer) syncProjectSchedules(report *Report, p manifest.Project, dst st
 
 	// Fetch existing destination schedules for idempotency.
 	var existing []project.Schedule
-	if scheds, err := s.Projects.ListSchedules(dst); err == nil {
+	if scheds, err := s.Projects.ListSchedules(ctx, dst); err == nil {
 		existing = scheds
 	}
 
@@ -132,7 +133,7 @@ func (s *Syncer) syncProjectSchedules(report *Report, p manifest.Project, dst st
 			continue
 		}
 
-		if err := s.Projects.CreateSchedule(dst, sc.Name, sc.Description, "system", sc.Timetable, sc.Parameters); err != nil {
+		if err := s.Projects.CreateSchedule(ctx, dst, sc.Name, sc.Description, "system", sc.Timetable, sc.Parameters); err != nil {
 			report.add("project-schedule", target, "error", err.Error())
 			continue
 		}
@@ -153,7 +154,7 @@ func hasSchedule(existing []project.Schedule, name string) bool {
 
 // syncProjectOIDCClaims applies the per-project OIDC audience and TTL to the
 // destination when the manifest project has non-empty OIDC fields.
-func (s *Syncer) syncProjectOIDCClaims(report *Report, p manifest.Project, dst, destOrgID, destProjectID string, opts Options) {
+func (s *Syncer) syncProjectOIDCClaims(ctx context.Context, report *Report, p manifest.Project, dst, destOrgID, destProjectID string, opts Options) {
 	if len(p.OIDCAudience) == 0 && p.OIDCTTL == "" {
 		return
 	}
@@ -170,7 +171,7 @@ func (s *Syncer) syncProjectOIDCClaims(report *Report, p manifest.Project, dst, 
 		return
 	}
 
-	if err := s.Projects.SetProjectOIDCClaims(destOrgID, destProjectID, p.OIDCAudience, p.OIDCTTL); err != nil {
+	if err := s.Projects.SetProjectOIDCClaims(ctx, destOrgID, destProjectID, p.OIDCAudience, p.OIDCTTL); err != nil {
 		report.add("project-oidc", target, "error", err.Error())
 		return
 	}
@@ -184,7 +185,7 @@ func (s *Syncer) syncProjectOIDCClaims(report *Report, p manifest.Project, dst, 
 //   - api_trigger_with_config: synced normally (status "set").
 //   - drop_all_build_requests: DANGER flag — skipped with a "manual" warning,
 //     mirroring the org-level danger-flag handling in orgsettings.go.
-func (s *Syncer) syncProjectV11Flags(report *Report, p manifest.Project, dst string, opts Options) {
+func (s *Syncer) syncProjectV11Flags(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
 	if p.Settings == nil {
 		return
 	}
@@ -219,7 +220,7 @@ func (s *Syncer) syncProjectV11Flags(report *Report, p manifest.Project, dst str
 			continue
 		}
 
-		if err := s.Projects.SetV11ProjectFeatureFlags(dst, map[string]bool{flagKey: *val}); err != nil {
+		if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, map[string]bool{flagKey: *val}); err != nil {
 			report.add("project-flag", target, "error", err.Error())
 			continue
 		}

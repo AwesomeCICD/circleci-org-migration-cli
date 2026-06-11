@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -30,7 +31,7 @@ type fakeCIAMWriter struct {
 	projectGroupRoles []string            // "orgID/projID/groupID/role"
 }
 
-func (f *fakeCIAMWriter) ListOrgRoleGrants(orgID string) ([]CIAMRoleGrant, error) {
+func (f *fakeCIAMWriter) ListOrgRoleGrants(_ context.Context, orgID string) ([]CIAMRoleGrant, error) {
 	f.orgRolesCalled = true
 	if f.listOrgRoleGrants != nil {
 		return f.listOrgRoleGrants(orgID)
@@ -38,21 +39,21 @@ func (f *fakeCIAMWriter) ListOrgRoleGrants(orgID string) ([]CIAMRoleGrant, error
 	return nil, nil
 }
 
-func (f *fakeCIAMWriter) SetOrgUserRole(orgID, userID, role string) error {
+func (f *fakeCIAMWriter) SetOrgUserRole(_ context.Context, orgID, userID, role string) error {
 	if f.setOrgUserRole != nil {
 		return f.setOrgUserRole(orgID, userID, role)
 	}
 	return nil
 }
 
-func (f *fakeCIAMWriter) ListGroups(orgID string) ([]CIAMGroupInfo, error) {
+func (f *fakeCIAMWriter) ListGroups(_ context.Context, orgID string) ([]CIAMGroupInfo, error) {
 	if f.listGroups != nil {
 		return f.listGroups(orgID)
 	}
 	return nil, nil
 }
 
-func (f *fakeCIAMWriter) CreateGroup(orgID, name, description string) (string, error) {
+func (f *fakeCIAMWriter) CreateGroup(_ context.Context, orgID, name, description string) (string, error) {
 	f.groupsCreated = append(f.groupsCreated, name)
 	if f.createGroup != nil {
 		return f.createGroup(orgID, name, description)
@@ -60,7 +61,7 @@ func (f *fakeCIAMWriter) CreateGroup(orgID, name, description string) (string, e
 	return "new-group-id-" + name, nil
 }
 
-func (f *fakeCIAMWriter) AddUsersToGroup(orgID, groupID string, userIDs []string) error {
+func (f *fakeCIAMWriter) AddUsersToGroup(_ context.Context, orgID, groupID string, userIDs []string) error {
 	if f.usersAdded == nil {
 		f.usersAdded = map[string][]string{}
 	}
@@ -71,7 +72,7 @@ func (f *fakeCIAMWriter) AddUsersToGroup(orgID, groupID string, userIDs []string
 	return nil
 }
 
-func (f *fakeCIAMWriter) SetProjectUserRole(orgID, projectID, userID, role string) error {
+func (f *fakeCIAMWriter) SetProjectUserRole(_ context.Context, orgID, projectID, userID, role string) error {
 	f.projectRolesSet = append(f.projectRolesSet, fmt.Sprintf("%s/%s/%s/%s", orgID, projectID, userID, role))
 	if f.setProjectUserRole != nil {
 		return f.setProjectUserRole(orgID, projectID, userID, role)
@@ -79,7 +80,7 @@ func (f *fakeCIAMWriter) SetProjectUserRole(orgID, projectID, userID, role strin
 	return nil
 }
 
-func (f *fakeCIAMWriter) AddProjectGroupRole(orgID, projectID string, groupIDs []string, role string) error {
+func (f *fakeCIAMWriter) AddProjectGroupRole(_ context.Context, orgID, projectID string, groupIDs []string, role string) error {
 	for _, gid := range groupIDs {
 		f.projectGroupRoles = append(f.projectGroupRoles, fmt.Sprintf("%s/%s/%s/%s", orgID, projectID, gid, role))
 	}
@@ -168,7 +169,7 @@ func TestSyncCIAM_NilManifestCIAM_NoOp(t *testing.T) {
 		},
 		CIAM: nil,
 	}
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestSyncCIAM_NonCircleCIDestination_EmitsManual(t *testing.T) {
 	ciam := &fakeCIAMWriter{}
 	s := newCIAMTestSyncer(ciam, "github")
 	m := ciamManifest()
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestSyncCIAM_DryRun_NoWrites(t *testing.T) {
 	s := newCIAMTestSyncer(ciam, "circleci")
 	m := ciamManifest()
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: false})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -279,7 +280,7 @@ func TestSyncCIAM_GroupIdempotent_ExistingGroupNotRecreated(t *testing.T) {
 	m.CIAM.ProjectGroupGrants = nil
 	m.CIAM.OrgRoles = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestSyncCIAM_EmailMatchedUsersGetRoles_UnmatchedEmitManual(t *testing.T) {
 	m.CIAM.ProjectUserGrants = nil
 	m.CIAM.ProjectGroupGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestSyncCIAM_ProjectUserGrants_RecordedManual(t *testing.T) {
 	m.CIAM.OrgRoles = nil
 	m.CIAM.ProjectGroupGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestSyncCIAM_NilCIAMWriter_NoOp(t *testing.T) {
 		CIAM: nil,
 	}
 	m := ciamManifest()
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -432,7 +433,7 @@ func TestSyncCIAM_GroupCreateError_RecordsErrorContinues(t *testing.T) {
 	m.CIAM.ProjectGroupGrants = nil
 	m.CIAM.ProjectUserGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected fatal error: %v", err)
 	}
@@ -463,7 +464,7 @@ func TestSyncCIAM_ListOrgRoleGrantsError_ErrorRecorded(t *testing.T) {
 	s := newCIAMTestSyncer(ciam, "circleci")
 	m := ciamManifest()
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected fatal error: %v", err)
 	}
@@ -501,7 +502,7 @@ func TestSyncCIAM_ProjectGroupGrants_RecordedManual(t *testing.T) {
 	m.CIAM.OrgRoles = nil
 	m.CIAM.ProjectUserGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,7 +542,7 @@ func TestSyncCIAM_ProjectUserGrant_ProjectNotFound_EmitsManual(t *testing.T) {
 		{Slug: "circleci/src-org-uuid/proj-uuid-1", Name: "my-project", SourceID: ""},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -573,7 +574,7 @@ func TestSyncCIAM_ProjectGroupGrant_GroupNotFound_EmitsManual(t *testing.T) {
 	m.CIAM.Groups = nil // no groups in dest, no creates planned
 	m.CIAM.ProjectUserGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -606,7 +607,7 @@ func TestSyncCIAM_ListGroupsError_RecordsError(t *testing.T) {
 	m.CIAM.OrgRoles = nil
 	m.CIAM.ProjectUserGrants = nil
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected fatal error: %v", err)
 	}
@@ -651,7 +652,7 @@ func TestSyncCIAM_AddUsersToGroupError_RecordsError(t *testing.T) {
 		},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected fatal error: %v", err)
 	}
@@ -706,7 +707,7 @@ func TestSyncCIAM_SetOrgUserRoleError_RecordsError(t *testing.T) {
 		{Email: "alice@example.com", Role: "org-admin"},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected fatal error: %v", err)
 	}
@@ -748,7 +749,7 @@ func TestSyncCIAM_GroupMembersMatchedAndUnmatched(t *testing.T) {
 		},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -811,7 +812,7 @@ func TestSyncCIAM_EmptyEmail_MatchedByUsername(t *testing.T) {
 		{Email: "", Username: "bob", Role: "org-admin"},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -870,7 +871,7 @@ func TestSyncCIAM_EmptyEmail_NoUsernameMatch_EmitsManual(t *testing.T) {
 		{Email: "", Username: "charlie", Role: "org-viewer"},
 	}
 
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

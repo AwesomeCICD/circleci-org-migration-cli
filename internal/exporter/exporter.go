@@ -5,6 +5,7 @@
 package exporter
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -21,71 +22,71 @@ import (
 
 // OrgAPI is the subset of the org client the exporter needs.
 type OrgAPI interface {
-	GetOrganization(slugOrID string) (*org.Organization, error)
-	GetOrgSettings(vcsType, orgName string) (*org.OrgSettings, error)
-	GetFeatureFlags(vcsType, orgName string) (map[string]bool, error)
-	GetOIDCClaims(orgID string) (audience []string, ttl string, err error)
-	GetURLOrbAllowList(slugOrID string) ([]org.URLOrbAllowEntry, error)
-	GetPolicyBundle(ownerID string) (map[string]string, error)
-	GetPolicyEnforcement(ownerID string) (bool, error)
-	GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error)
-	GetSSOEnforced(orgID string) (bool, error)
-	GetSSOConnection(orgID string) (connection map[string]any, found bool, err error)
-	GetOTelExporters(orgID string) ([]org.OTelExporter, error)
-	GetContacts(orgID string) (primary, security []string, err error)
-	ListGroups(orgID string) ([]org.Group, error)
-	GetStorageRetention(orgUUID string) (*org.StorageRetention, error)
-	GetBudgets(orgUUID string) ([]org.Budget, error)
-	GetBlockUnregisteredUsers(orgUUID string) (bool, error)
-	GetOrgOrbs(orgUUID string) ([]org.OrgOrb, error)
-	GetReleaseTrackerSettings(orgUUID string) (*org.ReleaseTrackerSettings, error)
-	GetEnvironmentHierarchy(orgUUID string) (*org.EnvHierarchyConfig, error)
+	GetOrganization(ctx context.Context, slugOrID string) (*org.Organization, error)
+	GetOrgSettings(ctx context.Context, vcsType, orgName string) (*org.OrgSettings, error)
+	GetFeatureFlags(ctx context.Context, vcsType, orgName string) (map[string]bool, error)
+	GetOIDCClaims(ctx context.Context, orgID string) (audience []string, ttl string, err error)
+	GetURLOrbAllowList(ctx context.Context, slugOrID string) ([]org.URLOrbAllowEntry, error)
+	GetPolicyBundle(ctx context.Context, ownerID string) (map[string]string, error)
+	GetPolicyEnforcement(ctx context.Context, ownerID string) (bool, error)
+	GetAuditLogConfigs(ctx context.Context, orgID string) ([]org.AuditLogConfig, error)
+	GetSSOEnforced(ctx context.Context, orgID string) (bool, error)
+	GetSSOConnection(ctx context.Context, orgID string) (connection map[string]any, found bool, err error)
+	GetOTelExporters(ctx context.Context, orgID string) ([]org.OTelExporter, error)
+	GetContacts(ctx context.Context, orgID string) (primary, security []string, err error)
+	ListGroups(ctx context.Context, orgID string) ([]org.Group, error)
+	GetStorageRetention(ctx context.Context, orgUUID string) (*org.StorageRetention, error)
+	GetBudgets(ctx context.Context, orgUUID string) ([]org.Budget, error)
+	GetBlockUnregisteredUsers(ctx context.Context, orgUUID string) (bool, error)
+	GetOrgOrbs(ctx context.Context, orgUUID string) ([]org.OrgOrb, error)
+	GetReleaseTrackerSettings(ctx context.Context, orgUUID string) (*org.ReleaseTrackerSettings, error)
+	GetEnvironmentHierarchy(ctx context.Context, orgUUID string) (*org.EnvHierarchyConfig, error)
 	// CIAM role/group endpoints (circleci-type orgs only).
-	ListOrgRoleGrants(orgID string) ([]org.OrgRoleGrant, error)
-	ListProjectUserRoleGrants(orgID, projectID string) ([]org.ProjectUserRoleGrant, error)
-	ListProjectGroupRoleGrants(orgID, projectID string) ([]org.ProjectGroupRoleGrant, error)
+	ListOrgRoleGrants(ctx context.Context, orgID string) ([]org.OrgRoleGrant, error)
+	ListProjectUserRoleGrants(ctx context.Context, orgID, projectID string) ([]org.ProjectUserRoleGrant, error)
+	ListProjectGroupRoleGrants(ctx context.Context, orgID, projectID string) ([]org.ProjectGroupRoleGrant, error)
 }
 
 // ContextAPI is the subset of the context client the exporter needs.
 type ContextAPI interface {
-	ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error)
-	ListEnvVars(contextID string) ([]cctx.EnvVar, error)
-	ListRestrictions(contextID string) ([]cctx.Restriction, error)
+	ListContexts(ctx context.Context, ownerID, ownerSlug string) ([]cctx.Context, error)
+	ListEnvVars(ctx context.Context, contextID string) ([]cctx.EnvVar, error)
+	ListRestrictions(ctx context.Context, contextID string) ([]cctx.Restriction, error)
 }
 
 // RunnerAPI is the subset of the runner client the exporter needs.
 // When Runner is nil on the Exporter, runner resource classes are not captured.
 type RunnerAPI interface {
-	GetResourceClassesByNamespace(namespace string) ([]apirunner.ResourceClass, error)
+	GetResourceClassesByNamespace(ctx context.Context, namespace string) ([]apirunner.ResourceClass, error)
 }
 
 // ProjectAPI is the subset of the project client the exporter needs.
 type ProjectAPI interface {
-	GetProject(slug string) (*project.Project, error)
-	GetSettings(provider, org, proj string) (*project.AdvancedSettings, error)
-	ListEnvVars(slug string) ([]project.EnvVar, error)
-	ListCheckoutKeys(slug string) ([]project.CheckoutKey, error)
-	ListWebhooks(projectID string) ([]project.Webhook, error)
-	ListSchedules(slug string) ([]project.Schedule, error)
-	FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error)
-	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
-	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
+	GetProject(ctx context.Context, slug string) (*project.Project, error)
+	GetSettings(ctx context.Context, provider, org, proj string) (*project.AdvancedSettings, error)
+	ListEnvVars(ctx context.Context, slug string) ([]project.EnvVar, error)
+	ListCheckoutKeys(ctx context.Context, slug string) ([]project.CheckoutKey, error)
+	ListWebhooks(ctx context.Context, projectID string) ([]project.Webhook, error)
+	ListSchedules(ctx context.Context, slug string) ([]project.Schedule, error)
+	FollowedProjectsForOrg(ctx context.Context, orgName string) ([]project.FollowedProject, error)
+	GetProjectOIDCClaims(ctx context.Context, orgID, projID string) (audience []string, ttl string, err error)
+	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
 	// ListAdditionalSSHKeys returns the public metadata for every additional
 	// SSH key configured on a project. Private key material is never returned
 	// by the API. On error the caller should record a non-fatal warning.
-	ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error)
+	ListAdditionalSSHKeys(ctx context.Context, slug string) ([]project.SSHKeyMeta, error)
 	// ListOrgProjects returns all projects in an org by org UUID, covering both
 	// GitHub OAuth and GitHub App org types.
-	ListOrgProjects(orgID string) ([]project.OrgProject, error)
+	ListOrgProjects(ctx context.Context, orgID string) ([]project.OrgProject, error)
 	// ListPipelineDefinitions returns all App-pipeline definitions for a project
 	// identified by its UUID.
-	ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error)
+	ListPipelineDefinitions(ctx context.Context, projectID string) ([]project.PipelineDefinition, error)
 	// ListTriggers returns all triggers for the given pipeline definition.
-	ListTriggers(projectID, defID string) ([]project.Trigger, error)
+	ListTriggers(ctx context.Context, projectID, defID string) ([]project.Trigger, error)
 	// ListProjectTokens returns the metadata (ID, label, scope) for every API
 	// token configured on a project. Token values are never returned by the
 	// list API. On error the caller should record a non-fatal warning.
-	ListProjectTokens(slug string) ([]project.ProjectAPIToken, error)
+	ListProjectTokens(ctx context.Context, slug string) ([]project.ProjectAPIToken, error)
 }
 
 // Options configures an export run.
@@ -140,7 +141,7 @@ func (e *Exporter) logf(format string, args ...any) {
 // Export walks the source organization and returns a populated manifest. It
 // fails fast on errors fetching the organization itself; per-resource errors
 // are recorded as warnings so a partial export still completes.
-func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
+func (e *Exporter) Export(ctx context.Context, opts Options) (*manifest.Manifest, error) {
 	m := &manifest.Manifest{
 		SchemaVersion: manifest.SchemaVersion,
 		ToolVersion:   version.UserAgent(),
@@ -148,7 +149,7 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 	}
 
 	e.logf("Resolving organization %q...", opts.OrgSlug)
-	o, err := e.Org.GetOrganization(opts.OrgSlug)
+	o, err := e.Org.GetOrganization(ctx, opts.OrgSlug)
 	if err != nil {
 		return nil, fmt.Errorf("resolving organization %q: %w", opts.OrgSlug, err)
 	}
@@ -158,20 +159,20 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 	// Org settings: best-effort capture. Each sub-read is independent so a
 	// failure in one (e.g. App org 404s on feature flags) does not prevent the
 	// others from being captured.
-	e.exportOrgSettings(m, o, opts.OrgSlug)
+	e.exportOrgSettings(ctx, m, o, opts.OrgSlug)
 
 	if opts.IncludeContexts {
-		if err := e.exportContexts(m, o); err != nil {
+		if err := e.exportContexts(ctx, m, o); err != nil {
 			m.AddWarning("contexts", "contexts_unreadable", fmt.Sprintf("could not list contexts: %v", err))
 		}
 	}
 
 	if opts.IncludeProjects {
-		e.exportProjects(m, opts, o)
+		e.exportProjects(ctx, m, opts, o)
 	}
 
-	e.exportRunnerResourceClasses(m, opts)
-	e.exportCIAM(m, o)
+	e.exportRunnerResourceClasses(ctx, m, opts)
+	e.exportCIAM(ctx, m, o)
 
 	m.SortStable()
 	return m, nil
@@ -182,7 +183,7 @@ func (e *Exporter) Export(opts Options) (*manifest.Manifest, error) {
 // the Runner client is not set, the step is silently skipped. On API error an
 // "org"-scoped warning (code "runner_unreadable") is added and the export
 // continues — runner classes are never a fatal failure.
-func (e *Exporter) exportRunnerResourceClasses(m *manifest.Manifest, opts Options) {
+func (e *Exporter) exportRunnerResourceClasses(ctx context.Context, m *manifest.Manifest, opts Options) {
 	if opts.RunnerNamespace == "" {
 		clog.Debugf("runner_namespace not set; skipping runner resource class capture")
 		return
@@ -195,7 +196,7 @@ func (e *Exporter) exportRunnerResourceClasses(m *manifest.Manifest, opts Option
 	e.logf("Listing runner resource classes for namespace %q...", opts.RunnerNamespace)
 	clog.Debugf("GetResourceClassesByNamespace namespace=%s", opts.RunnerNamespace)
 
-	classes, err := e.Runner.GetResourceClassesByNamespace(opts.RunnerNamespace)
+	classes, err := e.Runner.GetResourceClassesByNamespace(ctx, opts.RunnerNamespace)
 	if err != nil {
 		m.AddWarning("org", "runner_unreadable",
 			fmt.Sprintf("could not list runner resource classes for namespace %q: %v", opts.RunnerNamespace, err))
@@ -218,10 +219,10 @@ func (e *Exporter) exportRunnerResourceClasses(m *manifest.Manifest, opts Option
 	e.logf("  → captured %d runner resource class(es)", len(classes))
 }
 
-func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) error {
+func (e *Exporter) exportContexts(ctx context.Context, m *manifest.Manifest, o *org.Organization) error {
 	e.logf("Listing contexts...")
 	clog.Debugf("ListContexts org_id=%s slug=%s", o.ID, o.Slug)
-	contexts, err := e.Contexts.ListContexts(o.ID, o.Slug)
+	contexts, err := e.Contexts.ListContexts(ctx, o.ID, o.Slug)
 	if err != nil {
 		return err
 	}
@@ -230,7 +231,7 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 	for _, c := range contexts {
 		mc := manifest.Context{Name: c.Name, SourceID: c.ID, CreatedAt: c.CreatedAt}
 
-		if vars, verr := e.Contexts.ListEnvVars(c.ID); verr != nil {
+		if vars, verr := e.Contexts.ListEnvVars(ctx, c.ID); verr != nil {
 			m.AddWarning("context:"+c.Name, "env_vars_unreadable", fmt.Sprintf("could not list env vars: %v", verr))
 		} else {
 			for _, v := range vars {
@@ -244,7 +245,7 @@ func (e *Exporter) exportContexts(m *manifest.Manifest, o *org.Organization) err
 
 		// Restrictions (v2) now return the group name directly, so security
 		// groups are derived from the group-type restrictions — no GraphQL.
-		if rs, rerr := e.Contexts.ListRestrictions(c.ID); rerr != nil {
+		if rs, rerr := e.Contexts.ListRestrictions(ctx, c.ID); rerr != nil {
 			m.AddWarning("context:"+c.Name, "restrictions_unreadable", fmt.Sprintf("could not list restrictions: %v", rerr))
 		} else {
 			for _, r := range rs {
@@ -276,8 +277,8 @@ func restrictionName(r cctx.Restriction) string {
 	return r.Value
 }
 
-func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Organization) {
-	slugs, followedSlugs, followedFallback := e.resolveProjectSlugs(m, opts, o)
+func (e *Exporter) exportProjects(ctx context.Context, m *manifest.Manifest, opts Options, o *org.Organization) {
+	slugs, followedSlugs, followedFallback := e.resolveProjectSlugs(ctx, m, opts, o)
 	e.logf("Exporting %d project(s)...", len(slugs))
 	// Emit the followed-only warning only when discovery actually fell back to
 	// the v1.1 followed-projects list (ListOrgProjects failed or was unavailable).
@@ -298,7 +299,7 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 		}
 
 		clog.Debugf("GetProject slug=%s", slug)
-		p, perr := e.Projects.GetProject(slug)
+		p, perr := e.Projects.GetProject(ctx, slug)
 		if perr != nil {
 			m.AddWarning("project:"+slug, "project_unreadable", fmt.Sprintf("could not read project: %v", perr))
 			m.Projects = append(m.Projects, mp)
@@ -309,14 +310,14 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 		mp.VCS = manifest.ProjectVCS{Provider: p.VCS.Provider, URL: p.VCS.URL, DefaultBranch: p.VCS.DefaultBranch}
 
 		if provider, orgName, projName, serr := project.SplitSlug(slug); serr == nil {
-			if s, gerr := e.Projects.GetSettings(provider, orgName, projName); gerr != nil {
+			if s, gerr := e.Projects.GetSettings(ctx, provider, orgName, projName); gerr != nil {
 				m.AddWarning("project:"+slug, "settings_unreadable", fmt.Sprintf("could not read advanced settings: %v", gerr))
 			} else if s != nil {
 				mp.Settings = mapAdvancedSettings(s)
 			}
 		}
 
-		if vars, verr := e.Projects.ListEnvVars(slug); verr != nil {
+		if vars, verr := e.Projects.ListEnvVars(ctx, slug); verr != nil {
 			m.AddWarning("project:"+slug, "env_vars_unreadable", fmt.Sprintf("could not list env vars: %v", verr))
 		} else {
 			for _, v := range vars {
@@ -329,12 +330,12 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 		}
 
 		if opts.IncludeExtras {
-			e.exportProjectExtras(m, &mp, p)
+			e.exportProjectExtras(ctx, m, &mp, p)
 		}
 
 		// Project OIDC custom claims (best-effort; requires org ID and project UUID).
 		if o.ID != "" && p.ID != "" {
-			if audience, ttl, oerr := e.Projects.GetProjectOIDCClaims(o.ID, p.ID); oerr != nil {
+			if audience, ttl, oerr := e.Projects.GetProjectOIDCClaims(ctx, o.ID, p.ID); oerr != nil {
 				m.AddWarning("project:"+slug, "oidc_claims_unreadable", fmt.Sprintf("could not read project OIDC claims: %v", oerr))
 			} else if len(audience) > 0 || ttl != "" {
 				mp.OIDCAudience = audience
@@ -345,7 +346,7 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 		// Per-project v1.1 feature flags (best-effort). The full map is stored in
 		// V11FeatureFlags; the two well-known keys are also copied into the
 		// existing explicit fields for backward compatibility.
-		if flags, ferr := e.Projects.GetV11ProjectFeatureFlags(slug); ferr != nil {
+		if flags, ferr := e.Projects.GetV11ProjectFeatureFlags(ctx, slug); ferr != nil {
 			m.AddWarning("project:"+slug, "v11_feature_flags_unreadable", fmt.Sprintf("could not read project v1.1 feature flags: %v", ferr))
 		} else if len(flags) > 0 {
 			if mp.Settings == nil {
@@ -372,8 +373,8 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 	}
 }
 
-func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Project, p *project.Project) {
-	if keys, kerr := e.Projects.ListCheckoutKeys(mp.Slug); kerr != nil {
+func (e *Exporter) exportProjectExtras(ctx context.Context, m *manifest.Manifest, mp *manifest.Project, p *project.Project) {
+	if keys, kerr := e.Projects.ListCheckoutKeys(ctx, mp.Slug); kerr != nil {
 		m.AddWarning("project:"+mp.Slug, "checkout_keys_unreadable", fmt.Sprintf("could not list checkout keys: %v", kerr))
 	} else {
 		for _, k := range keys {
@@ -386,7 +387,7 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 	// Additional SSH keys (public metadata only; private key is never returned
 	// by the API). On error a non-fatal warning is recorded and the export
 	// continues — missing SSH key metadata is not a fatal failure.
-	if sshKeys, skerr := e.Projects.ListAdditionalSSHKeys(mp.Slug); skerr != nil {
+	if sshKeys, skerr := e.Projects.ListAdditionalSSHKeys(ctx, mp.Slug); skerr != nil {
 		m.AddWarning("project:"+mp.Slug, "ssh_keys_unreadable",
 			fmt.Sprintf("could not list additional SSH keys: %v", skerr))
 	} else {
@@ -404,7 +405,7 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 	}
 
 	if p.ID != "" {
-		if hooks, herr := e.Projects.ListWebhooks(p.ID); herr != nil {
+		if hooks, herr := e.Projects.ListWebhooks(ctx, p.ID); herr != nil {
 			m.AddWarning("project:"+mp.Slug, "webhooks_unreadable", fmt.Sprintf("could not list webhooks: %v", herr))
 		} else {
 			for _, h := range hooks {
@@ -420,7 +421,7 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 		}
 	}
 
-	if scheds, serr := e.Projects.ListSchedules(mp.Slug); serr != nil {
+	if scheds, serr := e.Projects.ListSchedules(ctx, mp.Slug); serr != nil {
 		m.AddWarning("project:"+mp.Slug, "schedules_unreadable", fmt.Sprintf("could not list schedules: %v", serr))
 	} else {
 		for _, s := range scheds {
@@ -432,13 +433,13 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 	}
 
 	if p.ID != "" {
-		e.exportPipelineDefinitions(m, mp, p.ID)
+		e.exportPipelineDefinitions(ctx, m, mp, p.ID)
 	}
 
 	// Project API tokens (metadata only — label + scope; values are never
 	// returned by the list API). Non-fatal on error: a warning is added and
 	// the export continues so partial data is not silently dropped.
-	if apiTokens, aterr := e.Projects.ListProjectTokens(mp.Slug); aterr != nil {
+	if apiTokens, aterr := e.Projects.ListProjectTokens(ctx, mp.Slug); aterr != nil {
 		m.AddWarning("project:"+mp.Slug, "api_tokens_unreadable",
 			fmt.Sprintf("could not list project API tokens: %v", aterr))
 	} else if len(apiTokens) > 0 {
@@ -457,8 +458,8 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 // for the given project (identified by UUID) and appends them to mp. Each
 // sub-read is best-effort: on error a project-scoped warning is added and the
 // loop continues so a partial capture still completes.
-func (e *Exporter) exportPipelineDefinitions(m *manifest.Manifest, mp *manifest.Project, projectID string) {
-	defs, derr := e.Projects.ListPipelineDefinitions(projectID)
+func (e *Exporter) exportPipelineDefinitions(ctx context.Context, m *manifest.Manifest, mp *manifest.Project, projectID string) {
+	defs, derr := e.Projects.ListPipelineDefinitions(ctx, projectID)
 	if derr != nil {
 		m.AddWarning("project:"+mp.Slug, "pipeline_definitions_unreadable",
 			fmt.Sprintf("could not list pipeline definitions: %v", derr))
@@ -482,7 +483,7 @@ func (e *Exporter) exportPipelineDefinitions(m *manifest.Manifest, mp *manifest.
 			},
 		}
 
-		triggers, terr := e.Projects.ListTriggers(projectID, d.ID)
+		triggers, terr := e.Projects.ListTriggers(ctx, projectID, d.ID)
 		if terr != nil {
 			m.AddWarning("project:"+mp.Slug, "triggers_unreadable",
 				fmt.Sprintf("could not list triggers for definition %q: %v", d.Name, terr))
@@ -548,7 +549,7 @@ func mapTrigger(t project.Trigger) manifest.Trigger {
 //
 // followedSlugs is nil when it could not be determined (no v1.1 form for the
 // org, or ListOrgProjects fell back to FollowedProjectsForOrg as discovery).
-func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, followedSlugs map[string]bool, followedFallback bool) {
+func (e *Exporter) resolveProjectSlugs(ctx context.Context, m *manifest.Manifest, opts Options, o *org.Organization) (slugs []string, followedSlugs map[string]bool, followedFallback bool) {
 	set := map[string]struct{}{}
 	for _, s := range opts.ProjectSlugs {
 		if s = strings.TrimSpace(s); s != "" {
@@ -564,15 +565,15 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 		// discovery (which would otherwise add every project in the org). Still
 		// build the followed cross-reference so the per-project Followed flag is set.
 		e.logf("Exporting %d explicitly requested project(s)...", explicit)
-		followedSlugs = e.buildFollowedSet(m, opts, o)
+		followedSlugs = e.buildFollowedSet(ctx, m, opts, o)
 	case o.ID != "":
 		e.logf("Discovering projects for org %q via private API...", o.ID)
-		orgProjects, oerr := e.Projects.ListOrgProjects(o.ID)
+		orgProjects, oerr := e.Projects.ListOrgProjects(ctx, o.ID)
 		if oerr != nil {
 			// Fall back to followed-projects list (preserves old behavior).
 			m.AddWarning("projects", "discovery_fallback",
 				fmt.Sprintf("private project list unavailable (%v); falling back to followed-projects list (v1.1)", oerr))
-			e.discoverViaFollowed(m, opts, o, set)
+			e.discoverViaFollowed(ctx, m, opts, o, set)
 			usedFollowedFallback = true
 		} else {
 			e.logf("  → %d project(s) found via private API", len(orgProjects))
@@ -581,11 +582,11 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 			}
 			// Build followed-project cross-reference (best-effort; only for orgs
 			// that have a v1.1 slug form).
-			followedSlugs = e.buildFollowedSet(m, opts, o)
+			followedSlugs = e.buildFollowedSet(ctx, m, opts, o)
 		}
 	default:
 		// No org ID available — fall back to followed-projects list.
-		e.discoverViaFollowed(m, opts, o, set)
+		e.discoverViaFollowed(ctx, m, opts, o, set)
 		usedFollowedFallback = true
 	}
 
@@ -602,11 +603,11 @@ func (e *Exporter) resolveProjectSlugs(m *manifest.Manifest, opts Options, o *or
 // discoverViaFollowed adds followed-project slugs to set from FollowedProjectsForOrg.
 // It is the fallback discovery path for orgs without a UUID or when the private
 // project-list API is unavailable.
-func (e *Exporter) discoverViaFollowed(m *manifest.Manifest, opts Options, o *org.Organization, set map[string]struct{}) {
+func (e *Exporter) discoverViaFollowed(ctx context.Context, m *manifest.Manifest, opts Options, o *org.Organization, set map[string]struct{}) {
 	if vcs, name, ok := splitOrgSlug(opts.OrgSlug, o.VCSType); ok {
 		_ = vcs
 		e.logf("Discovering followed projects for %q...", name)
-		if followed, ferr := e.Projects.FollowedProjectsForOrg(name); ferr != nil {
+		if followed, ferr := e.Projects.FollowedProjectsForOrg(ctx, name); ferr != nil {
 			m.AddWarning("projects", "discovery_failed", fmt.Sprintf("could not discover followed projects: %v", ferr))
 		} else {
 			for _, fp := range followed {
@@ -621,12 +622,12 @@ func (e *Exporter) discoverViaFollowed(m *manifest.Manifest, opts Options, o *or
 // on each project.  Returns nil when the org has no v1.1 name form (i.e.
 // circleci/ prefix orgs) or when the call fails (in which case a warning is
 // added).
-func (e *Exporter) buildFollowedSet(m *manifest.Manifest, opts Options, o *org.Organization) map[string]bool {
+func (e *Exporter) buildFollowedSet(ctx context.Context, m *manifest.Manifest, opts Options, o *org.Organization) map[string]bool {
 	_, name, ok := splitOrgSlug(opts.OrgSlug, o.VCSType)
 	if !ok {
 		return nil
 	}
-	followed, ferr := e.Projects.FollowedProjectsForOrg(name)
+	followed, ferr := e.Projects.FollowedProjectsForOrg(ctx, name)
 	if ferr != nil {
 		m.AddWarning("projects", "followed_list_unreadable",
 			fmt.Sprintf("could not fetch followed-projects list to set Followed flag: %v", ferr))
@@ -661,7 +662,7 @@ func mapAdvancedSettings(s *project.AdvancedSettings) *manifest.AdvancedSettings
 // settings. Every sub-read is best-effort: on error a manifest warning is
 // added and the field is left empty. App orgs (circleci/<uuid>) will 404 on
 // the v1.1 feature-flags endpoint — that is normal and treated as empty.
-func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, orgSlug string) {
+func (e *Exporter) exportOrgSettings(ctx context.Context, m *manifest.Manifest, o *org.Organization, orgSlug string) {
 	s := &manifest.OrgSettings{}
 	hasAny := false
 
@@ -676,7 +677,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		}
 	}
 	if ok {
-		if flags, ferr := e.Org.GetFeatureFlags(vcs, name); ferr != nil {
+		if flags, ferr := e.Org.GetFeatureFlags(ctx, vcs, name); ferr != nil {
 			m.AddWarning("org", "feature_flags_unreadable", fmt.Sprintf("could not read feature flags: %v", ferr))
 		} else if len(flags) > 0 {
 			s.FeatureFlags = flags
@@ -691,7 +692,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// Legacy RequireContextGroupRestriction via the old GetOrgSettings path
 		// (belt-and-suspenders; covers orgs where GetFeatureFlags returned empty).
 		if s.RequireContextGroupRestriction == nil {
-			if os, serr := e.Org.GetOrgSettings(vcs, name); serr == nil && os != nil && os.RequireContextGroupRestriction != nil {
+			if os, serr := e.Org.GetOrgSettings(ctx, vcs, name); serr == nil && os != nil && os.RequireContextGroupRestriction != nil {
 				s.RequireContextGroupRestriction = os.RequireContextGroupRestriction
 				hasAny = true
 			}
@@ -700,7 +701,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 
 	// OIDC custom claims (v2; keyed by org UUID).
 	if o.ID != "" {
-		if audience, ttl, oerr := e.Org.GetOIDCClaims(o.ID); oerr != nil {
+		if audience, ttl, oerr := e.Org.GetOIDCClaims(ctx, o.ID); oerr != nil {
 			m.AddWarning("org", "oidc_claims_unreadable", fmt.Sprintf("could not read OIDC claims: %v", oerr))
 		} else if len(audience) > 0 || ttl != "" {
 			s.OIDCAudience = audience
@@ -710,7 +711,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 	}
 
 	// URL-orb allow list (v2; keyed by slug-or-id).
-	if urlList, uerr := e.Org.GetURLOrbAllowList(orgSlug); uerr != nil {
+	if urlList, uerr := e.Org.GetURLOrbAllowList(ctx, orgSlug); uerr != nil {
 		m.AddWarning("org", "url_orb_allow_list_unreadable", fmt.Sprintf("could not read URL-orb allow list: %v", uerr))
 	} else if len(urlList) > 0 {
 		for _, entry := range urlList {
@@ -725,14 +726,14 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 
 	// Config policies (v2; Scale plan only — 404 / 403 treated as empty).
 	if o.ID != "" {
-		if bundle, perr := e.Org.GetPolicyBundle(o.ID); perr != nil {
+		if bundle, perr := e.Org.GetPolicyBundle(ctx, o.ID); perr != nil {
 			m.AddWarning("org", "policy_bundle_unreadable", fmt.Sprintf("could not read config policies (Scale plan required): %v", perr))
 		} else if len(bundle) > 0 {
 			s.ConfigPolicies = bundle
 			hasAny = true
 		}
 
-		if enabled, eerr := e.Org.GetPolicyEnforcement(o.ID); eerr != nil {
+		if enabled, eerr := e.Org.GetPolicyEnforcement(ctx, o.ID); eerr != nil {
 			m.AddWarning("org", "policy_enforcement_unreadable", fmt.Sprintf("could not read policy enforcement setting: %v", eerr))
 		} else {
 			s.PolicyEnforcementEnabled = &enabled
@@ -742,7 +743,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// Audit-log streaming configs (v2; org-scoped). Captured for the record
 		// only — never auto-synced (their S3 ARN/region/bucket/endpoint are
 		// environment-specific to the source org's AWS account).
-		if configs, aerr := e.Org.GetAuditLogConfigs(o.ID); aerr != nil {
+		if configs, aerr := e.Org.GetAuditLogConfigs(ctx, o.ID); aerr != nil {
 			m.AddWarning("org", "audit_log_configs_unreadable", fmt.Sprintf("could not read audit-log configs: %v", aerr))
 		} else if len(configs) > 0 {
 			for _, cfg := range configs {
@@ -766,7 +767,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// SSO (SAML): best-effort, reference-only capture. SSO cannot be
 		// auto-synced (recreation needs DNS domain verification + IdP setup), so
 		// it is recorded for the operator and surfaced as a manual sync action.
-		if e.exportSSO(m, o.ID, s) {
+		if e.exportSSO(ctx, m, o.ID, s) {
 			hasAny = true
 		}
 
@@ -774,7 +775,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// contain auth tokens (e.g. "Authorization: Bearer <token>") and are
 		// redacted client-side before being written to the manifest. Key names
 		// are preserved so the operator knows which headers were configured.
-		if exporters, oerr := e.Org.GetOTelExporters(o.ID); oerr != nil {
+		if exporters, oerr := e.Org.GetOTelExporters(ctx, o.ID); oerr != nil {
 			m.AddWarning("org", "otel_exporters_unreadable", fmt.Sprintf("could not read OTel exporters: %v", oerr))
 		} else if len(exporters) > 0 {
 			for _, ex := range exporters {
@@ -796,7 +797,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		}
 
 		// Org contacts (primary/security email lists).
-		if primary, security, cerr := e.Org.GetContacts(o.ID); cerr != nil {
+		if primary, security, cerr := e.Org.GetContacts(ctx, o.ID); cerr != nil {
 			m.AddWarning("org", "contacts_unreadable", fmt.Sprintf("could not read org contacts: %v", cerr))
 		} else if len(primary) > 0 || len(security) > 0 {
 			s.Contacts = &manifest.OrgContacts{Primary: primary, Security: security}
@@ -808,7 +809,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// context group-restriction sync resolves destination groups by name. The
 		// default "All members" group (ID == org ID) is auto-created on every org,
 		// so it is excluded. Group MEMBERSHIP is never captured (managed via IdP).
-		if groups, gerr := e.Org.ListGroups(o.ID); gerr != nil {
+		if groups, gerr := e.Org.ListGroups(ctx, o.ID); gerr != nil {
 			m.AddWarning("org", "groups_unreadable", fmt.Sprintf("could not read org groups: %v", gerr))
 		} else {
 			var captured []manifest.OrgGroup
@@ -827,7 +828,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 
 		// Storage-retention controls (best-effort; on error warn and continue).
 		clog.Debugf("GetStorageRetention org_id=%s", o.ID)
-		if sr, serr := e.Org.GetStorageRetention(o.ID); serr != nil {
+		if sr, serr := e.Org.GetStorageRetention(ctx, o.ID); serr != nil {
 			m.AddWarning("org", "retention_unreadable",
 				fmt.Sprintf("could not read storage-retention controls: %v", serr))
 		} else if sr != nil {
@@ -855,7 +856,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 
 		// Spend budgets (best-effort; on error warn and continue).
 		clog.Debugf("GetBudgets org_id=%s", o.ID)
-		if budgets, berr := e.Org.GetBudgets(o.ID); berr != nil {
+		if budgets, berr := e.Org.GetBudgets(ctx, o.ID); berr != nil {
 			m.AddWarning("org", "budgets_unreadable",
 				fmt.Sprintf("could not read spend budgets: %v", berr))
 		} else if len(budgets) > 0 {
@@ -895,7 +896,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 
 		// Block-unregistered-users feature flag (best-effort; on error warn and continue).
 		clog.Debugf("GetBlockUnregisteredUsers org_id=%s", o.ID)
-		if blockEnabled, buerr := e.Org.GetBlockUnregisteredUsers(o.ID); buerr != nil {
+		if blockEnabled, buerr := e.Org.GetBlockUnregisteredUsers(ctx, o.ID); buerr != nil {
 			m.AddWarning("org", "block_unregistered_users_unreadable",
 				fmt.Sprintf("could not read block-unregistered-users setting: %v", buerr))
 		} else {
@@ -909,7 +910,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// source is only available via GraphQL/republish — so they are surfaced as
 		// manual actions in sync.
 		clog.Debugf("GetOrgOrbs org_id=%s", o.ID)
-		if orbs, oerr := e.Org.GetOrgOrbs(o.ID); oerr != nil {
+		if orbs, oerr := e.Org.GetOrgOrbs(ctx, o.ID); oerr != nil {
 			m.AddWarning("org", "orbs_unreadable",
 				fmt.Sprintf("could not read org orb list: %v", oerr))
 		} else if len(orbs) > 0 {
@@ -948,7 +949,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// Release-tracker org settings (best-effort; on error warn and continue).
 		// When configured, sync transfers the TTL to the destination via PATCH.
 		clog.Debugf("GetReleaseTrackerSettings org_id=%s", o.ID)
-		if rtSettings, rterr := e.Org.GetReleaseTrackerSettings(o.ID); rterr != nil {
+		if rtSettings, rterr := e.Org.GetReleaseTrackerSettings(ctx, o.ID); rterr != nil {
 			m.AddWarning("org", "release_tracker_unreadable",
 				fmt.Sprintf("could not read release-tracker settings: %v", rterr))
 		} else if rtSettings != nil {
@@ -964,7 +965,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 		// deploy-integration IDs), so it is recorded for reference and surfaced as
 		// a manual action in sync.
 		clog.Debugf("GetEnvironmentHierarchy org_id=%s", o.ID)
-		if envH, hierr := e.Org.GetEnvironmentHierarchy(o.ID); hierr != nil {
+		if envH, hierr := e.Org.GetEnvironmentHierarchy(ctx, o.ID); hierr != nil {
 			m.AddWarning("org", "environment_hierarchy_unreadable",
 				fmt.Sprintf("could not read environment hierarchy: %v", hierr))
 		} else if envH != nil {
@@ -994,13 +995,13 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 // connection present); the all-empty case (enforcement off + no connection) is
 // skipped so it does not appear in the manifest. Read failures add an "org"
 // warning and never fail the export.
-func (e *Exporter) exportSSO(m *manifest.Manifest, orgID string, s *manifest.OrgSettings) bool {
-	enforced, eerr := e.Org.GetSSOEnforced(orgID)
+func (e *Exporter) exportSSO(ctx context.Context, m *manifest.Manifest, orgID string, s *manifest.OrgSettings) bool {
+	enforced, eerr := e.Org.GetSSOEnforced(ctx, orgID)
 	if eerr != nil {
 		m.AddWarning("org", "sso_unreadable", fmt.Sprintf("could not read SSO enforcement: %v", eerr))
 	}
 
-	connection, found, cerr := e.Org.GetSSOConnection(orgID)
+	connection, found, cerr := e.Org.GetSSOConnection(ctx, orgID)
 	if cerr != nil {
 		m.AddWarning("org", "sso_unreadable", fmt.Sprintf("could not read SSO connection: %v", cerr))
 	}
@@ -1155,7 +1156,7 @@ func redactURLOrbAuth(auth string) string {
 // For VCS-type orgs (GitHub OAuth, Bitbucket) CIAM roles are managed by the VCS
 // provider and are not migratable via this tool; we emit a single info note.
 // All reads are best-effort: failures add warnings and never abort the export.
-func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
+func (e *Exporter) exportCIAM(ctx context.Context, m *manifest.Manifest, o *org.Organization) {
 	if strings.ToLower(o.VCSType) != "circleci" {
 		// VCS-type orgs: roles come from the VCS and are not managed here.
 		clog.Debugf("exportCIAM: org %s has vcs_type=%q; CIAM roles come from VCS — not captured", o.ID, o.VCSType)
@@ -1171,7 +1172,7 @@ func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
 	hasAny := false
 
 	// ── Org-level role grants ────────────────────────────────────────────────
-	orgGrants, err := e.Org.ListOrgRoleGrants(o.ID)
+	orgGrants, err := e.Org.ListOrgRoleGrants(ctx, o.ID)
 	if err != nil {
 		m.AddWarning("ciam", "org_role_grants_unreadable",
 			fmt.Sprintf("could not read org CIAM role grants: %v", err))
@@ -1194,7 +1195,7 @@ func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
 		e.logf("  → %d org role grant(s)", len(orgGrants))
 
 		// ── Groups ────────────────────────────────────────────────────────────
-		groups, gerr := e.Org.ListGroups(o.ID)
+		groups, gerr := e.Org.ListGroups(ctx, o.ID)
 		if gerr != nil {
 			m.AddWarning("ciam", "groups_unreadable",
 				fmt.Sprintf("could not read org CIAM groups: %v", gerr))
@@ -1232,7 +1233,7 @@ func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
 		}
 
 		// Per-project user role grants.
-		userGrants, uerr := e.Org.ListProjectUserRoleGrants(o.ID, p.SourceID)
+		userGrants, uerr := e.Org.ListProjectUserRoleGrants(ctx, o.ID, p.SourceID)
 		if uerr != nil {
 			m.AddWarning("ciam", "project_user_role_grants_unreadable",
 				fmt.Sprintf("project %q: could not read project user CIAM role grants: %v", projName, uerr))
@@ -1252,7 +1253,7 @@ func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
 		}
 
 		// Per-project group role grants.
-		groupGrants, egerr := e.Org.ListProjectGroupRoleGrants(o.ID, p.SourceID)
+		groupGrants, egerr := e.Org.ListProjectGroupRoleGrants(ctx, o.ID, p.SourceID)
 		if egerr != nil {
 			m.AddWarning("ciam", "project_group_role_grants_unreadable",
 				fmt.Sprintf("project %q: could not read project group CIAM role grants: %v", projName, egerr))
@@ -1262,7 +1263,7 @@ func (e *Exporter) exportCIAM(m *manifest.Manifest, o *org.Organization) {
 			// Also include the "All members" group mapping.
 			groupIDToName[o.ID] = "All members"
 			// We need to re-fetch the raw group list to get IDs (ciam.Groups has names only).
-			rawGroups, rgerr := e.Org.ListGroups(o.ID)
+			rawGroups, rgerr := e.Org.ListGroups(ctx, o.ID)
 			if rgerr == nil {
 				for _, rg := range rawGroups {
 					groupIDToName[rg.ID] = rg.Name

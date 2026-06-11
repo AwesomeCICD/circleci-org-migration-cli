@@ -5,6 +5,7 @@ package exporter_test
 // are stored in the manifest.
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestAPITokens_CapturedIntoManifest(t *testing.T) {
 		}, nil
 	})
 
-	m, err := ex.Export(tokenOpts)
+	m, err := ex.Export(context.Background(), tokenOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestAPITokens_EmptyList(t *testing.T) {
 		return nil, nil
 	})
 
-	m, err := ex.Export(tokenOpts)
+	m, err := ex.Export(context.Background(), tokenOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestAPITokens_ReadError(t *testing.T) {
 		return nil, errors.New("forbidden")
 	})
 
-	m, err := ex.Export(tokenOpts)
+	m, err := ex.Export(context.Background(), tokenOpts)
 	if err != nil {
 		t.Fatalf("export should not fail on token read error: %v", err)
 	}

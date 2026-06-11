@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -38,13 +39,13 @@ type orgSettingsResponse struct {
 //
 // If the require_context_group_restriction flag is absent from the response,
 // OrgSettings.RequireContextGroupRestriction will be nil.
-func (c *Client) GetOrgSettings(vcsType, orgName string) (*OrgSettings, error) {
+func (c *Client) GetOrgSettings(ctx context.Context, vcsType, orgName string) (*OrgSettings, error) {
 	// Both path segments are user-supplied; encode them individually so that
 	// internal slashes (unlikely but defensive) don't corrupt the path.
 	path := "organization/" + url.PathEscape(vcsType) + "/" + url.PathEscape(orgName) + "/settings"
 	u := &url.URL{Path: path}
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrgSettings: build request: %w", err)
 	}

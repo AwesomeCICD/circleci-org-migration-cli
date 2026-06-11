@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,7 +36,7 @@ func TestDownloadUsageFile_HappyPath(t *testing.T) {
 
 	outDir := t.TempDir()
 	rawURL := srv.URL + "/usage/usage-2026-05.csv.gz"
-	got, err := downloadUsageFile(rawURL, outDir)
+	got, err := downloadUsageFile(context.Background(), rawURL, outDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestDownloadUsageFile_WithQueryString_StripsSigFromFilename(t *testing.T) {
 
 	outDir := t.TempDir()
 	rawURL := srv.URL + "/reports/usage-q1.csv.gz?X-Amz-Signature=abc&X-Amz-Expires=3600"
-	got, err := downloadUsageFile(rawURL, outDir)
+	got, err := downloadUsageFile(context.Background(), rawURL, outDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestDownloadUsageFile_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	outDir := t.TempDir()
-	_, err := downloadUsageFile(srv.URL+"/usage.csv.gz", outDir)
+	_, err := downloadUsageFile(context.Background(), srv.URL+"/usage.csv.gz", outDir)
 	if err == nil {
 		t.Fatal("expected error for non-2xx response, got nil")
 	}
@@ -201,7 +202,7 @@ func TestRunUsageExport_HappyPath(t *testing.T) {
 	orgClient := newUsageTestOrgClient(t, apiSrv)
 	outDir := t.TempDir()
 	var errBuf bytes.Buffer
-	runUsageExport(orgClient, orgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, 30*time.Second, &errBuf)
+	runUsageExport(context.Background(), orgClient, orgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, 30*time.Second, &errBuf)
 
 	errOut := errBuf.String()
 
@@ -248,7 +249,7 @@ func TestRunUsageExport_CreateFails_Warns(t *testing.T) {
 	orgClient := newUsageTestOrgClient(t, srv)
 	outDir := t.TempDir()
 	var errBuf bytes.Buffer
-	runUsageExport(orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Second, &errBuf)
+	runUsageExport(context.Background(), orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Second, &errBuf)
 
 	errOut := errBuf.String()
 	if !strings.Contains(errOut, "Warning: usage export job creation failed") {
@@ -277,7 +278,7 @@ func TestRunUsageExport_JobFailed_Warns(t *testing.T) {
 	orgClient := newUsageTestOrgClient(t, srv)
 	outDir := t.TempDir()
 	var errBuf bytes.Buffer
-	runUsageExport(orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Second, &errBuf)
+	runUsageExport(context.Background(), orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Second, &errBuf)
 
 	errOut := errBuf.String()
 	if !strings.Contains(errOut, "state \"failed\"") {
@@ -307,7 +308,7 @@ func TestRunUsageExport_Timeout_Warns(t *testing.T) {
 	outDir := t.TempDir()
 	var errBuf bytes.Buffer
 	// 1-nanosecond timeout: guaranteed to expire after the first poll.
-	runUsageExport(orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Nanosecond, &errBuf)
+	runUsageExport(context.Background(), orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, time.Nanosecond, &errBuf)
 
 	errOut := errBuf.String()
 	if !strings.Contains(errOut, "did not complete within") {
@@ -338,7 +339,7 @@ func TestRunUsageExport_NoDownloadURLs_Warns(t *testing.T) {
 	orgClient := newUsageTestOrgClient(t, srv)
 	outDir := t.TempDir()
 	var errBuf bytes.Buffer
-	runUsageExport(orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, 5*time.Second, &errBuf)
+	runUsageExport(context.Background(), orgClient, "org-id", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z", outDir, 5*time.Second, &errBuf)
 
 	errOut := errBuf.String()
 	if !strings.Contains(errOut, "no download URLs") {

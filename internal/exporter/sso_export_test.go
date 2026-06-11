@@ -9,6 +9,7 @@ package exporter_test
 // reused here unchanged.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestSSO_Enforced_WithConnection(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestSSO_NotEnforced_NoConnection(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestSSO_ConnectionSubFields_Redacted(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestSSO_RealmExtraction_NoRealmKey(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestSSO_RealmExtraction_NonStringRealm(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestSSO_ConnectionOnly_NoEnforcement(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestSSO_GetSSOEnforced_Error_AddsWarning(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("Export must not fail when GetSSOEnforced errors, got: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestSSO_GetSSOConnection_NonNotFoundError_AddsWarning(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, connErr },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("Export must not fail when GetSSOConnection errors, got: %v", err)
 	}
@@ -377,7 +378,7 @@ func TestSSO_BothAPIsError_TwoWarnings(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, errors.New("connection API down") },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("Export must not fail on SSO errors, got: %v", err)
 	}
@@ -402,7 +403,7 @@ func TestSSO_GetSSOEnforced_Error_ConnectionNotFound_NilSSO(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestSSO_NotCalledWhenOrgIDEmpty(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	_, err := ex.Export(ssoOpts)
+	_, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -480,7 +481,7 @@ func TestSSO_EnforcedOnly_NoConnection(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return nil, false, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -536,7 +537,7 @@ func TestSSO_FullSAMLConnectionBody(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -588,7 +589,7 @@ func TestSSO_OrgIDPassedCorrectly(t *testing.T) {
 		},
 	)
 
-	_, err := ex.Export(ssoOpts)
+	_, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -4,6 +4,7 @@ package runner_test
 // to raise coverage above 80%.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestGetResourceClassesByNamespace_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetResourceClassesByNamespace("broken-ns")
+	_, err := c.GetResourceClassesByNamespace(context.Background(), "broken-ns")
 	if err == nil {
 		t.Fatal("expected error for server error, got nil")
 	}
@@ -76,7 +77,7 @@ func TestGetResourceClassesByNamespace_Unauthorized(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetResourceClassesByNamespace("ns")
+	_, err := c.GetResourceClassesByNamespace(context.Background(), "ns")
 	if err == nil {
 		t.Fatal("expected error for unauthorized, got nil")
 	}
@@ -93,7 +94,7 @@ func TestCreateResourceClass_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateResourceClass("acme/dup-runner", "duplicate")
+	_, err := c.CreateResourceClass(context.Background(), "acme/dup-runner", "duplicate")
 	if err == nil {
 		t.Fatal("expected error for conflict, got nil")
 	}
@@ -120,7 +121,7 @@ func TestCreateResourceClass_EmptyDescription(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	rc, err := c.CreateResourceClass("acme/no-desc", "")
+	rc, err := c.CreateResourceClass(context.Background(), "acme/no-desc", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestDeleteResourceClass_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.DeleteResourceClass("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	err := c.DeleteResourceClass(context.Background(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	if err == nil {
 		t.Fatal("expected error for not found, got nil")
 	}
@@ -182,7 +183,7 @@ func TestGetResourceClassesByNamespace_NamespaceQueryParam(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	items, err := c.GetResourceClassesByNamespace(wantNS)
+	items, err := c.GetResourceClassesByNamespace(context.Background(), wantNS)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

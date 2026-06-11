@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -22,7 +23,7 @@ type listEnvVarsResponse struct {
 
 // ListEnvVars returns all environment variable names stored in a context.
 // Values are never returned by the API and are not present in EnvVar.
-func (c *Client) ListEnvVars(contextID string) ([]EnvVar, error) {
+func (c *Client) ListEnvVars(ctx context.Context, contextID string) ([]EnvVar, error) {
 	if contextID == "" {
 		return nil, fmt.Errorf("context: ListEnvVars requires contextID")
 	}
@@ -42,7 +43,7 @@ func (c *Client) ListEnvVars(contextID string) ([]EnvVar, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.rest.NewRequest("GET", u, nil)
+		req, err := c.rest.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
 		}

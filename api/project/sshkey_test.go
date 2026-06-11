@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func TestListAdditionalSSHKeys_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	keys, err := c.ListAdditionalSSHKeys(slug)
+	keys, err := c.ListAdditionalSSHKeys(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestListAdditionalSSHKeys_EmptyList(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	keys, err := c.ListAdditionalSSHKeys("gh/acme/web")
+	keys, err := c.ListAdditionalSSHKeys(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestListAdditionalSSHKeys_MissingSSHKeysField(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	keys, err := c.ListAdditionalSSHKeys("gh/acme/web")
+	keys, err := c.ListAdditionalSSHKeys(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestListAdditionalSSHKeys_StandaloneSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	keys, err := c.ListAdditionalSSHKeys(slug)
+	keys, err := c.ListAdditionalSSHKeys(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestListAdditionalSSHKeys_APIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListAdditionalSSHKeys("gh/acme/web")
+	_, err := c.ListAdditionalSSHKeys(context.Background(), "gh/acme/web")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -168,7 +169,7 @@ func TestListAdditionalSSHKeys_SlugEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListAdditionalSSHKeys("gh/my org/my repo")
+	_, err := c.ListAdditionalSSHKeys(context.Background(), "gh/my org/my repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestAddAdditionalSSHKey_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.AddAdditionalSSHKey(slug, hostname, privateKey); err != nil {
+	if err := c.AddAdditionalSSHKey(context.Background(), slug, hostname, privateKey); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -229,7 +230,7 @@ func TestAddAdditionalSSHKey_EmptyHostname(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.AddAdditionalSSHKey("gh/acme/web", "", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
+	if err := c.AddAdditionalSSHKey(context.Background(), "gh/acme/web", "", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -247,7 +248,7 @@ func TestAddAdditionalSSHKey_APIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.AddAdditionalSSHKey("gh/acme/web", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+	err := c.AddAdditionalSSHKey(context.Background(), "gh/acme/web", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -257,7 +258,7 @@ func TestAddAdditionalSSHKey_APIError(t *testing.T) {
 // before making any HTTP request.
 func TestAddAdditionalSSHKey_EmptySlug(t *testing.T) {
 	c := &Client{}
-	err := c.AddAdditionalSSHKey("", "github.com", "private-key")
+	err := c.AddAdditionalSSHKey(context.Background(), "", "github.com", "private-key")
 	if err == nil {
 		t.Fatal("expected error for empty slug, got nil")
 	}
@@ -267,7 +268,7 @@ func TestAddAdditionalSSHKey_EmptySlug(t *testing.T) {
 // returns an error before making any HTTP request.
 func TestAddAdditionalSSHKey_EmptyPrivateKey(t *testing.T) {
 	c := &Client{}
-	err := c.AddAdditionalSSHKey("gh/acme/web", "github.com", "")
+	err := c.AddAdditionalSSHKey(context.Background(), "gh/acme/web", "github.com", "")
 	if err == nil {
 		t.Fatal("expected error for empty private key, got nil")
 	}
@@ -286,7 +287,7 @@ func TestAddAdditionalSSHKey_SlugEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.AddAdditionalSSHKey("gh/my org/my repo", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+	err := c.AddAdditionalSSHKey(context.Background(), "gh/my org/my repo", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestAddAdditionalSSHKey_StandaloneSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.AddAdditionalSSHKey(slug, "bitbucket.org", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
+	if err := c.AddAdditionalSSHKey(context.Background(), slug, "bitbucket.org", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,7 +97,7 @@ var usagePollInterval = 10 * time.Second
 // downloadUsageFile fetches a single pre-signed URL and saves it to outDir,
 // using the last path segment of the URL (before the query string) as the
 // filename.  Returns the written path on success.
-func downloadUsageFile(rawURL, outDir string) (string, error) {
+func downloadUsageFile(ctx context.Context, rawURL, outDir string) (string, error) {
 	// Derive the local filename from the URL path component.  Pre-signed S3 URLs
 	// look like "…/usage-123.csv.gz?X-Amz-…".  We parse the URL properly to
 	// extract just the path, then take its base (last segment).
@@ -104,7 +105,11 @@ func downloadUsageFile(rawURL, outDir string) (string, error) {
 	dest := filepath.Join(outDir, base)
 
 	// #nosec G107 -- URL comes from the CircleCI API; not user-controlled
-	resp, err := http.Get(rawURL) //nolint:noctx
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("download %s: build request: %w", rawURL, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", rawURL, err)
 	}
@@ -141,10 +146,10 @@ func usageFileBase(rawURL string) string {
 // runUsageExport orchestrates the full async usage-export flow: submit the job,
 // poll until completed (or timeout), then download all CSVs to outDir.
 // Errors are non-fatal: they are written to errOut and the function returns.
-func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, timeout time.Duration, errOut io.Writer) {
+func runUsageExport(ctx context.Context, orgClient *org.Client, orgID, start, end, outDir string, timeout time.Duration, errOut io.Writer) {
 	fmt.Fprintf(errOut, "\nNote: usage data is a local baseline snapshot — it does NOT transfer to the destination org.\n")
 
-	jobID, err := orgClient.CreateUsageExportJob(orgID, start, end)
+	jobID, err := orgClient.CreateUsageExportJob(ctx, orgID, start, end)
 	if err != nil {
 		fmt.Fprintf(errOut, "Warning: usage export job creation failed: %v\n", err)
 		return
@@ -154,7 +159,7 @@ func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, tim
 	deadline := time.Now().Add(timeout)
 	var downloadURLs []string
 	for completed := false; !completed; {
-		state, urls, pollErr := orgClient.GetUsageExportJob(orgID, jobID)
+		state, urls, pollErr := orgClient.GetUsageExportJob(ctx, orgID, jobID)
 		if pollErr != nil {
 			fmt.Fprintf(errOut, "Warning: usage export poll failed: %v\n", pollErr)
 			return
@@ -186,7 +191,7 @@ func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, tim
 	}
 
 	for _, u := range downloadURLs {
-		path, dlErr := downloadUsageFile(u, outDir)
+		path, dlErr := downloadUsageFile(ctx, u, outDir)
 		if dlErr != nil {
 			fmt.Fprintf(errOut, "Warning: usage download failed: %v\n", dlErr)
 			continue
@@ -253,6 +258,7 @@ Examples:
   circleci-migrate export --source-org gh/acme --include-usage
   circleci-migrate export --source-org gh/acme --include-usage --usage-start 2026-01-01T00:00:00Z --usage-end 2026-01-31T23:59:59Z`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			// Merge values from hidden alias --projects (StringSlice, comma-or-repeat)
 			// into the canonical --project list.
 			projectSlugs = append(projectSlugs, projectsAlias...)
@@ -293,7 +299,7 @@ Examples:
 				ex.Runner = runnerClient
 			}
 
-			m, err := ex.Export(exporter.Options{
+			m, err := ex.Export(ctx, exporter.Options{
 				Host:            rootOptions.Host,
 				OrgSlug:         orgSlug,
 				ProjectSlugs:    projectSlugs,
@@ -317,7 +323,7 @@ Examples:
 			// ── Optional usage export (opt-in; does NOT transfer to dest) ────────
 			if includeUsage {
 				// Resolve the org ID needed by the usage export API.
-				orgID, idErr := orgClient.ResolveOrgID(orgSlug)
+				orgID, idErr := orgClient.ResolveOrgID(ctx, orgSlug)
 				if idErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not resolve org ID for usage export: %v\n", idErr)
 				} else {
@@ -342,6 +348,7 @@ Examples:
 
 					usageDir := filepath.Join(filepath.Dir(output), "usage")
 					runUsageExport(
+						ctx,
 						orgClient,
 						orgID,
 						start.Format(time.RFC3339),

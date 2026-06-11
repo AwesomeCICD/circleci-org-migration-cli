@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -49,7 +50,7 @@ func TestListTriggers_GithubApp(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListTriggers(projectID, defID)
+	got, err := c.ListTriggers(context.Background(), projectID, defID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestListTriggers_Webhook(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListTriggers("proj-id", "def-id")
+	got, err := c.ListTriggers(context.Background(), "proj-id", "def-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestListTriggers_Schedule(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListTriggers("proj-id", "def-id")
+	got, err := c.ListTriggers(context.Background(), "proj-id", "def-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestListTriggers_Disabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListTriggers("p", "d")
+	got, err := c.ListTriggers(context.Background(), "p", "d")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestListTriggers_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListTriggers("proj-id", "def-id")
+	got, err := c.ListTriggers(context.Background(), "proj-id", "def-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestListTriggers_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListTriggers("proj-id", "def-id")
+	_, err := c.ListTriggers(context.Background(), "proj-id", "def-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,7 +45,7 @@ func TestGetSSOEnforced(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClientWithAppServer(t, srv)
-			got, err := c.GetSSOEnforced(orgID)
+			got, err := c.GetSSOEnforced(context.Background(), orgID)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -62,7 +63,7 @@ func TestGetSSOEnforced_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if _, err := c.GetSSOEnforced("some-org"); err == nil {
+	if _, err := c.GetSSOEnforced(context.Background(), "some-org"); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -91,7 +92,7 @@ func TestGetSSOConnection_Found(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	conn, found, err := c.GetSSOConnection(orgID)
+	conn, found, err := c.GetSSOConnection(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestGetSSOConnection_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	conn, found, err := c.GetSSOConnection("some-org")
+	conn, found, err := c.GetSSOConnection(context.Background(), "some-org")
 	if err != nil {
 		t.Fatalf("404 must not be an error, got: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestGetSSOConnection_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, found, err := c.GetSSOConnection("some-org")
+	_, found, err := c.GetSSOConnection(context.Background(), "some-org")
 	if err == nil {
 		t.Fatal("expected error for non-404 failure, got nil")
 	}

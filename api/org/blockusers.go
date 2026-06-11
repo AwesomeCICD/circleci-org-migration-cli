@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -24,13 +25,13 @@ func blockUnregisteredUsersPath(orgUUID string) (*url.URL, error) {
 // "block unregistered user spend" feature.
 //
 // Endpoint: GET https://app.circleci.com/private/orgs/{orgUUID}/features/block-unregistered-users
-func (c *Client) GetBlockUnregisteredUsers(orgUUID string) (bool, error) {
+func (c *Client) GetBlockUnregisteredUsers(ctx context.Context, orgUUID string) (bool, error) {
 	u, err := blockUnregisteredUsersPath(orgUUID)
 	if err != nil {
 		return false, fmt.Errorf("GetBlockUnregisteredUsers: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return false, fmt.Errorf("GetBlockUnregisteredUsers: build request: %w", err)
 	}
@@ -46,14 +47,14 @@ func (c *Client) GetBlockUnregisteredUsers(orgUUID string) (bool, error) {
 // spend" feature for the org.
 //
 // Endpoint: PUT https://app.circleci.com/private/orgs/{orgUUID}/features/block-unregistered-users
-func (c *Client) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
+func (c *Client) SetBlockUnregisteredUsers(ctx context.Context, orgUUID string, enabled bool) error {
 	u, err := blockUnregisteredUsersPath(orgUUID)
 	if err != nil {
 		return fmt.Errorf("SetBlockUnregisteredUsers: build URL: %w", err)
 	}
 
 	body := blockUnregisteredUsersResponse{Enabled: enabled}
-	req, err := c.app.NewRequest("PUT", u, body)
+	req, err := c.app.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetBlockUnregisteredUsers: build request: %w", err)
 	}

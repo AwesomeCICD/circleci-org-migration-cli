@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -49,14 +50,14 @@ type envHierarchyResponse struct {
 // returns nil without error.
 //
 // Endpoint: GET https://app.circleci.com/private/release-tracker/v1/environment-hierarchy/resolve?org-id={orgUUID}
-func (c *Client) GetEnvironmentHierarchy(orgUUID string) (*EnvHierarchyConfig, error) {
+func (c *Client) GetEnvironmentHierarchy(ctx context.Context, orgUUID string) (*EnvHierarchyConfig, error) {
 	rawPath := "private/release-tracker/v1/environment-hierarchy/resolve?org-id=" + url.QueryEscape(orgUUID)
 	u, err := url.Parse(rawPath)
 	if err != nil {
 		return nil, fmt.Errorf("GetEnvironmentHierarchy: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetEnvironmentHierarchy: build request: %w", err)
 	}

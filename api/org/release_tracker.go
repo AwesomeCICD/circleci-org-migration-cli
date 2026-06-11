@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -24,13 +25,13 @@ func releaseTrackerPath(orgUUID string) (*url.URL, error) {
 // returns nil (not an error).
 //
 // Endpoint: GET https://app.circleci.com/private/release-tracker/v1/organization/{orgUUID}/settings
-func (c *Client) GetReleaseTrackerSettings(orgUUID string) (*ReleaseTrackerSettings, error) {
+func (c *Client) GetReleaseTrackerSettings(ctx context.Context, orgUUID string) (*ReleaseTrackerSettings, error) {
 	u, err := releaseTrackerPath(orgUUID)
 	if err != nil {
 		return nil, fmt.Errorf("GetReleaseTrackerSettings: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetReleaseTrackerSettings: build request: %w", err)
 	}
@@ -51,13 +52,13 @@ func (c *Client) GetReleaseTrackerSettings(orgUUID string) (*ReleaseTrackerSetti
 // PATCH.
 //
 // Endpoint: PATCH https://app.circleci.com/private/release-tracker/v1/organization/{orgUUID}/settings
-func (c *Client) SetReleaseTrackerSettings(orgUUID string, settings ReleaseTrackerSettings) error {
+func (c *Client) SetReleaseTrackerSettings(ctx context.Context, orgUUID string, settings ReleaseTrackerSettings) error {
 	u, err := releaseTrackerPath(orgUUID)
 	if err != nil {
 		return fmt.Errorf("SetReleaseTrackerSettings: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("PATCH", u, settings)
+	req, err := c.app.NewRequest(ctx, "PATCH", u, settings)
 	if err != nil {
 		return fmt.Errorf("SetReleaseTrackerSettings: build request: %w", err)
 	}

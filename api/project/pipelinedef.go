@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -54,7 +55,7 @@ type listPipelineDefinitionsResponse struct {
 // Endpoint: GET /api/v2/projects/{projectID}/pipeline-definitions
 //
 // projectID must be the UUID of the project (not the slug).
-func (c *Client) ListPipelineDefinitions(projectID string) ([]PipelineDefinition, error) {
+func (c *Client) ListPipelineDefinitions(ctx context.Context, projectID string) ([]PipelineDefinition, error) {
 	var all []PipelineDefinition
 	pageToken := ""
 
@@ -70,7 +71,7 @@ func (c *Client) ListPipelineDefinitions(projectID string) ([]PipelineDefinition
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListPipelineDefinitions: build request: %w", err)
 		}

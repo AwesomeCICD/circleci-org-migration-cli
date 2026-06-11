@@ -4,10 +4,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
@@ -21,9 +24,17 @@ import (
 var rootOptions *settings.Config
 
 // Execute is the entry point called by main.  It builds the command tree,
-// then delegates to cobra's Execute method.
+// installs a SIGINT/SIGTERM-cancellable context, and delegates to cobra's
+// ExecuteContext method so that Ctrl-C (or a TERM signal) cancels the context
+// threaded through every command — aborting in-flight HTTP requests instead of
+// waiting out each per-request timeout.
+//
+// On the second interrupt the signal handler is reset so a repeated Ctrl-C
+// performs the default hard kill, matching the behaviour operators expect.
 func Execute() error {
-	return MakeCommands().Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return MakeCommands().ExecuteContext(ctx)
 }
 
 // resolveHost returns the best available CircleCI host from the environment.

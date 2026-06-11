@@ -1,6 +1,7 @@
 package exporter_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -41,154 +42,154 @@ type fakeOrgAPI struct {
 	listProjectGroupRoleGrants func(orgID, projectID string) ([]org.ProjectGroupRoleGrant, error)
 }
 
-func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
+func (f *fakeOrgAPI) GetOrganization(_ context.Context, slugOrID string) (*org.Organization, error) {
 	if f.getOrganization != nil {
 		return f.getOrganization(slugOrID)
 	}
 	return nil, errors.New("fakeOrgAPI: GetOrganization not configured")
 }
 
-func (f *fakeOrgAPI) GetOrgSettings(vcsType, orgName string) (*org.OrgSettings, error) {
+func (f *fakeOrgAPI) GetOrgSettings(_ context.Context, vcsType, orgName string) (*org.OrgSettings, error) {
 	if f.getOrgSettings != nil {
 		return f.getOrgSettings(vcsType, orgName)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetFeatureFlags(vcsType, orgName string) (map[string]bool, error) {
+func (f *fakeOrgAPI) GetFeatureFlags(_ context.Context, vcsType, orgName string) (map[string]bool, error) {
 	if f.getFeatureFlags != nil {
 		return f.getFeatureFlags(vcsType, orgName)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetOIDCClaims(orgID string) ([]string, string, error) {
+func (f *fakeOrgAPI) GetOIDCClaims(_ context.Context, orgID string) ([]string, string, error) {
 	if f.getOIDCClaims != nil {
 		return f.getOIDCClaims(orgID)
 	}
 	return nil, "", nil
 }
 
-func (f *fakeOrgAPI) GetURLOrbAllowList(slugOrID string) ([]org.URLOrbAllowEntry, error) {
+func (f *fakeOrgAPI) GetURLOrbAllowList(_ context.Context, slugOrID string) ([]org.URLOrbAllowEntry, error) {
 	if f.getURLOrbAllowList != nil {
 		return f.getURLOrbAllowList(slugOrID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetPolicyBundle(ownerID string) (map[string]string, error) {
+func (f *fakeOrgAPI) GetPolicyBundle(_ context.Context, ownerID string) (map[string]string, error) {
 	if f.getPolicyBundle != nil {
 		return f.getPolicyBundle(ownerID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetPolicyEnforcement(ownerID string) (bool, error) {
+func (f *fakeOrgAPI) GetPolicyEnforcement(_ context.Context, ownerID string) (bool, error) {
 	if f.getPolicyEnf != nil {
 		return f.getPolicyEnf(ownerID)
 	}
 	return false, nil
 }
 
-func (f *fakeOrgAPI) GetAuditLogConfigs(orgID string) ([]org.AuditLogConfig, error) {
+func (f *fakeOrgAPI) GetAuditLogConfigs(_ context.Context, orgID string) ([]org.AuditLogConfig, error) {
 	if f.getAuditLogConfigs != nil {
 		return f.getAuditLogConfigs(orgID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetSSOEnforced(orgID string) (bool, error) {
+func (f *fakeOrgAPI) GetSSOEnforced(_ context.Context, orgID string) (bool, error) {
 	if f.getSSOEnforced != nil {
 		return f.getSSOEnforced(orgID)
 	}
 	return false, nil
 }
 
-func (f *fakeOrgAPI) GetSSOConnection(orgID string) (map[string]any, bool, error) {
+func (f *fakeOrgAPI) GetSSOConnection(_ context.Context, orgID string) (map[string]any, bool, error) {
 	if f.getSSOConnection != nil {
 		return f.getSSOConnection(orgID)
 	}
 	return nil, false, nil
 }
 
-func (f *fakeOrgAPI) GetOTelExporters(orgID string) ([]org.OTelExporter, error) {
+func (f *fakeOrgAPI) GetOTelExporters(_ context.Context, orgID string) ([]org.OTelExporter, error) {
 	if f.getOTelExporters != nil {
 		return f.getOTelExporters(orgID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetContacts(orgID string) ([]string, []string, error) {
+func (f *fakeOrgAPI) GetContacts(_ context.Context, orgID string) ([]string, []string, error) {
 	if f.getContacts != nil {
 		return f.getContacts(orgID)
 	}
 	return nil, nil, nil
 }
 
-func (f *fakeOrgAPI) ListGroups(orgID string) ([]org.Group, error) {
+func (f *fakeOrgAPI) ListGroups(_ context.Context, orgID string) ([]org.Group, error) {
 	if f.listGroups != nil {
 		return f.listGroups(orgID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetStorageRetention(orgUUID string) (*org.StorageRetention, error) {
+func (f *fakeOrgAPI) GetStorageRetention(_ context.Context, orgUUID string) (*org.StorageRetention, error) {
 	if f.getStorageRetention != nil {
 		return f.getStorageRetention(orgUUID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetBudgets(orgUUID string) ([]org.Budget, error) {
+func (f *fakeOrgAPI) GetBudgets(_ context.Context, orgUUID string) ([]org.Budget, error) {
 	if f.getBudgets != nil {
 		return f.getBudgets(orgUUID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetBlockUnregisteredUsers(orgUUID string) (bool, error) {
+func (f *fakeOrgAPI) GetBlockUnregisteredUsers(_ context.Context, orgUUID string) (bool, error) {
 	if f.getBlockUnregisteredUsers != nil {
 		return f.getBlockUnregisteredUsers(orgUUID)
 	}
 	return false, nil
 }
 
-func (f *fakeOrgAPI) GetOrgOrbs(orgUUID string) ([]org.OrgOrb, error) {
+func (f *fakeOrgAPI) GetOrgOrbs(_ context.Context, orgUUID string) ([]org.OrgOrb, error) {
 	if f.getOrgOrbs != nil {
 		return f.getOrgOrbs(orgUUID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetReleaseTrackerSettings(orgUUID string) (*org.ReleaseTrackerSettings, error) {
+func (f *fakeOrgAPI) GetReleaseTrackerSettings(_ context.Context, orgUUID string) (*org.ReleaseTrackerSettings, error) {
 	if f.getReleaseTrackerSettings != nil {
 		return f.getReleaseTrackerSettings(orgUUID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) GetEnvironmentHierarchy(orgUUID string) (*org.EnvHierarchyConfig, error) {
+func (f *fakeOrgAPI) GetEnvironmentHierarchy(_ context.Context, orgUUID string) (*org.EnvHierarchyConfig, error) {
 	if f.getEnvironmentHierarchy != nil {
 		return f.getEnvironmentHierarchy(orgUUID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) ListOrgRoleGrants(orgID string) ([]org.OrgRoleGrant, error) {
+func (f *fakeOrgAPI) ListOrgRoleGrants(_ context.Context, orgID string) ([]org.OrgRoleGrant, error) {
 	if f.listOrgRoleGrants != nil {
 		return f.listOrgRoleGrants(orgID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) ListProjectUserRoleGrants(orgID, projectID string) ([]org.ProjectUserRoleGrant, error) {
+func (f *fakeOrgAPI) ListProjectUserRoleGrants(_ context.Context, orgID, projectID string) ([]org.ProjectUserRoleGrant, error) {
 	if f.listProjectUserRoleGrants != nil {
 		return f.listProjectUserRoleGrants(orgID, projectID)
 	}
 	return nil, nil
 }
 
-func (f *fakeOrgAPI) ListProjectGroupRoleGrants(orgID, projectID string) ([]org.ProjectGroupRoleGrant, error) {
+func (f *fakeOrgAPI) ListProjectGroupRoleGrants(_ context.Context, orgID, projectID string) ([]org.ProjectGroupRoleGrant, error) {
 	if f.listProjectGroupRoleGrants != nil {
 		return f.listProjectGroupRoleGrants(orgID, projectID)
 	}
@@ -201,21 +202,21 @@ type fakeContextAPI struct {
 	listRestrictions func(contextID string) ([]cctx.Restriction, error)
 }
 
-func (f *fakeContextAPI) ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error) {
+func (f *fakeContextAPI) ListContexts(_ context.Context, ownerID, ownerSlug string) ([]cctx.Context, error) {
 	if f.listContexts != nil {
 		return f.listContexts(ownerID, ownerSlug)
 	}
 	return nil, nil
 }
 
-func (f *fakeContextAPI) ListEnvVars(contextID string) ([]cctx.EnvVar, error) {
+func (f *fakeContextAPI) ListEnvVars(_ context.Context, contextID string) ([]cctx.EnvVar, error) {
 	if f.listEnvVars != nil {
 		return f.listEnvVars(contextID)
 	}
 	return nil, nil
 }
 
-func (f *fakeContextAPI) ListRestrictions(contextID string) ([]cctx.Restriction, error) {
+func (f *fakeContextAPI) ListRestrictions(_ context.Context, contextID string) ([]cctx.Restriction, error) {
 	if f.listRestrictions != nil {
 		return f.listRestrictions(contextID)
 	}
@@ -239,77 +240,77 @@ type fakeProjectAPI struct {
 	listProjectTokens         func(slug string) ([]project.ProjectAPIToken, error)
 }
 
-func (f *fakeProjectAPI) GetProject(slug string) (*project.Project, error) {
+func (f *fakeProjectAPI) GetProject(_ context.Context, slug string) (*project.Project, error) {
 	if f.getProject != nil {
 		return f.getProject(slug)
 	}
 	return &project.Project{Slug: slug, ID: "proj-id", Name: slug}, nil
 }
 
-func (f *fakeProjectAPI) GetSettings(provider, orgName, proj string) (*project.AdvancedSettings, error) {
+func (f *fakeProjectAPI) GetSettings(_ context.Context, provider, orgName, proj string) (*project.AdvancedSettings, error) {
 	if f.getSettings != nil {
 		return f.getSettings(provider, orgName, proj)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListEnvVars(slug string) ([]project.EnvVar, error) {
+func (f *fakeProjectAPI) ListEnvVars(_ context.Context, slug string) ([]project.EnvVar, error) {
 	if f.listEnvVars != nil {
 		return f.listEnvVars(slug)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListCheckoutKeys(slug string) ([]project.CheckoutKey, error) {
+func (f *fakeProjectAPI) ListCheckoutKeys(_ context.Context, slug string) ([]project.CheckoutKey, error) {
 	if f.listCheckoutKeys != nil {
 		return f.listCheckoutKeys(slug)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error) {
+func (f *fakeProjectAPI) ListAdditionalSSHKeys(_ context.Context, slug string) ([]project.SSHKeyMeta, error) {
 	if f.listAdditionalSSHKeys != nil {
 		return f.listAdditionalSSHKeys(slug)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListWebhooks(projectID string) ([]project.Webhook, error) {
+func (f *fakeProjectAPI) ListWebhooks(_ context.Context, projectID string) ([]project.Webhook, error) {
 	if f.listWebhooks != nil {
 		return f.listWebhooks(projectID)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListSchedules(slug string) ([]project.Schedule, error) {
+func (f *fakeProjectAPI) ListSchedules(_ context.Context, slug string) ([]project.Schedule, error) {
 	if f.listSchedules != nil {
 		return f.listSchedules(slug)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error) {
+func (f *fakeProjectAPI) FollowedProjectsForOrg(_ context.Context, orgName string) ([]project.FollowedProject, error) {
 	if f.followedProjectsForOrg != nil {
 		return f.followedProjectsForOrg(orgName)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) GetProjectOIDCClaims(orgID, projID string) ([]string, string, error) {
+func (f *fakeProjectAPI) GetProjectOIDCClaims(_ context.Context, orgID, projID string) ([]string, string, error) {
 	if f.getProjectOIDCClaims != nil {
 		return f.getProjectOIDCClaims(orgID, projID)
 	}
 	return nil, "", nil
 }
 
-func (f *fakeProjectAPI) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
+func (f *fakeProjectAPI) GetV11ProjectFeatureFlags(_ context.Context, slug string) (map[string]bool, error) {
 	if f.getV11ProjectFeatureFlags != nil {
 		return f.getV11ProjectFeatureFlags(slug)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListOrgProjects(orgID string) ([]project.OrgProject, error) {
+func (f *fakeProjectAPI) ListOrgProjects(_ context.Context, orgID string) ([]project.OrgProject, error) {
 	if f.listOrgProjects != nil {
 		return f.listOrgProjects(orgID)
 	}
@@ -317,21 +318,21 @@ func (f *fakeProjectAPI) ListOrgProjects(orgID string) ([]project.OrgProject, er
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error) {
+func (f *fakeProjectAPI) ListPipelineDefinitions(_ context.Context, projectID string) ([]project.PipelineDefinition, error) {
 	if f.listPipelineDefinitions != nil {
 		return f.listPipelineDefinitions(projectID)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListTriggers(projectID, defID string) ([]project.Trigger, error) {
+func (f *fakeProjectAPI) ListTriggers(_ context.Context, projectID, defID string) ([]project.Trigger, error) {
 	if f.listTriggers != nil {
 		return f.listTriggers(projectID, defID)
 	}
 	return nil, nil
 }
 
-func (f *fakeProjectAPI) ListProjectTokens(slug string) ([]project.ProjectAPIToken, error) {
+func (f *fakeProjectAPI) ListProjectTokens(_ context.Context, slug string) ([]project.ProjectAPIToken, error) {
 	if f.listProjectTokens != nil {
 		return f.listProjectTokens(slug)
 	}
@@ -369,7 +370,7 @@ func minimalExporter() *exporter.Exporter {
 
 func TestExport_OrgResolution(t *testing.T) {
 	ex := minimalExporter()
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		Host:    "https://circleci.com",
 		OrgSlug: "gh/myorg",
 	})
@@ -400,7 +401,7 @@ func TestExport_OrgResolution(t *testing.T) {
 
 func TestExport_SourceHost(t *testing.T) {
 	ex := minimalExporter()
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		Host:    "https://custom.example.com",
 		OrgSlug: "gh/myorg",
 	})
@@ -435,7 +436,7 @@ func TestExport_OrgSettingsCaptured_GHSlug(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -479,7 +480,7 @@ func TestExport_OrgFeatureFlags_CircleCISlug(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/some-uuid"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "circleci/some-uuid"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -502,7 +503,7 @@ func TestExport_GetOrganizationError_ReturnsError(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	_, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	_, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -536,7 +537,7 @@ func TestExport_Contexts_EnvVarNames(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeContexts: true,
 	})
@@ -578,7 +579,7 @@ func TestExport_Contexts_ContextValuesExcludedWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -612,7 +613,7 @@ func TestExport_Contexts_Restrictions(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -643,7 +644,7 @@ func TestExport_Contexts_GroupRestriction_ResolvedName(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -678,7 +679,7 @@ func TestExport_Contexts_GroupRestriction_ManualWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -715,7 +716,7 @@ func TestExport_Contexts_GroupRestriction_AllMembersNoWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -750,7 +751,7 @@ func TestExport_Contexts_GroupRestriction_NonAllMembersWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -783,7 +784,7 @@ func TestExport_Contexts_SecurityGroups(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -815,7 +816,7 @@ func TestExport_Contexts_EnvVarError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("per-resource error should not fail Export, got: %v", err)
 	}
@@ -843,7 +844,7 @@ func TestExport_Contexts_ListContextsError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("contexts list error should not fail Export, got: %v", err)
 	}
@@ -875,7 +876,7 @@ func TestExport_Contexts_Sorted(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -902,7 +903,7 @@ func TestExport_IncludeContextsFalse_SkipsContexts(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: false})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeContexts: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -942,7 +943,7 @@ func TestExport_Projects_DiscoveryFromOrgProjectsList(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -982,7 +983,7 @@ func TestExport_Projects_DiscoveryFallbackToFollowed(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1015,7 +1016,7 @@ func TestExport_Projects_DiscoveryFollowedOnly_Warning_NotOnPrivateAPISuccess(t 
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1046,7 +1047,7 @@ func TestExport_Projects_DiscoveryFollowedOnly_Warning_OnFallback(t *testing.T) 
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1079,7 +1080,7 @@ func TestExport_Projects_DiscoveryFollowedOnly_Warning_NotWhenExplicitSlugs(t *t
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1103,7 +1104,7 @@ func TestExport_Projects_ExplicitSlugs_NoDiscoveryOnlyWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1139,7 +1140,7 @@ func TestExport_Projects_ExplicitSlugs_SkipOrgWideDiscovery(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web", "gh/myorg/api"},
@@ -1171,7 +1172,7 @@ func TestExport_Projects_Sorted(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/zebra", "gh/myorg/alpha", "gh/myorg/mango"},
@@ -1212,7 +1213,7 @@ func TestExport_Projects_Settings_MappedCorrectly(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1259,7 +1260,7 @@ func TestExport_Projects_EnvVars(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1299,7 +1300,7 @@ func TestExport_Projects_EnvVarError_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1331,7 +1332,7 @@ func TestExport_Projects_GetProjectError_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1372,7 +1373,7 @@ func TestExport_Projects_IncludeExtras_CheckoutKeys(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -1411,7 +1412,7 @@ func TestExport_Projects_IncludeExtras_Webhooks(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -1447,7 +1448,7 @@ func TestExport_Projects_IncludeExtras_Schedules(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -1482,7 +1483,7 @@ func TestExport_Projects_IncludeExtrasFalse_NoExtras(t *testing.T) {
 		},
 	}
 
-	_, err := ex.Export(exporter.Options{
+	_, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   false,
@@ -1511,7 +1512,7 @@ func TestExport_IncludeProjectsFalse_SkipsProjects(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: false})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1534,7 +1535,7 @@ func TestExport_OutputWriter_ReceivesProgress(t *testing.T) {
 		Out:      &buf,
 	}
 
-	_, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	_, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1544,7 +1545,7 @@ func TestExport_OutputWriter_ReceivesProgress(t *testing.T) {
 }
 
 func TestExport_SchemaVersion(t *testing.T) {
-	m, err := minimalExporter().Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := minimalExporter().Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1575,7 +1576,7 @@ func TestExport_Projects_VCSFieldsMapped(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1627,7 +1628,7 @@ func TestExport_OrgSettings_AuditLogConfigsCaptured(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1662,7 +1663,7 @@ func TestExport_OrgSettings_AuditLogConfigsError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("audit-log error should not fail Export, got: %v", err)
 	}
@@ -1689,7 +1690,7 @@ func TestExport_OrgSettings_FeatureFlagsError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("feature flags error should not fail Export, got: %v", err)
 	}
@@ -1716,7 +1717,7 @@ func TestExport_OrgSettings_OIDCError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("OIDC error should not fail Export, got: %v", err)
 	}
@@ -1752,7 +1753,7 @@ func TestExport_OrgSettings_SSOCaptured(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1788,7 +1789,7 @@ func TestExport_OrgSettings_SSOEnforcedOnlyCaptured(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1816,7 +1817,7 @@ func TestExport_OrgSettings_NoSSO_NilWhenOffAndNoConnection(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1840,7 +1841,7 @@ func TestExport_OrgSettings_SSOError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("SSO error should not fail Export, got: %v", err)
 	}
@@ -1886,7 +1887,7 @@ func TestExport_OrgSettings_FullCapture(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1942,7 +1943,7 @@ func TestExport_Projects_OIDCCaptured(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -1978,7 +1979,7 @@ func TestExport_Projects_OIDCError_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -2014,7 +2015,7 @@ func TestExport_Projects_OIDCEmpty_NotSet(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -2057,7 +2058,7 @@ func TestExport_Projects_V11FlagsCaptured(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -2097,7 +2098,7 @@ func TestExport_Projects_V11FlagsError_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -2138,7 +2139,7 @@ func TestExport_Projects_V11Flags_DoNotClobberV2Settings(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		ProjectSlugs:    []string{"gh/myorg/web"},
@@ -2197,7 +2198,7 @@ func TestExport_OrgSettings_OTelExportersCaptured(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2243,7 +2244,7 @@ func TestExport_OrgSettings_OTelExportersEmpty_NotSet(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2264,7 +2265,7 @@ func TestExport_OrgSettings_OTelExportersError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("OTel error should not fail Export, got: %v", err)
 	}
@@ -2298,7 +2299,7 @@ func TestExport_OrgSettings_ContactsCaptured(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2331,7 +2332,7 @@ func TestExport_OrgSettings_ContactsEmpty_NilWhenBothEmpty(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2352,7 +2353,7 @@ func TestExport_OrgSettings_ContactsError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("contacts error should not fail Export, got: %v", err)
 	}
@@ -2393,7 +2394,7 @@ func TestExport_OrgSettings_GroupsCaptured_ExcludesAllMembers(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2431,7 +2432,7 @@ func TestExport_OrgSettings_GroupsNil_WhenOnlyAllMembers(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2453,7 +2454,7 @@ func TestExport_OrgSettings_GroupsNil_WhenEmpty(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2474,7 +2475,7 @@ func TestExport_OrgSettings_GroupsError_IsWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("groups error should not fail Export, got: %v", err)
 	}
@@ -2509,7 +2510,7 @@ func TestExport_Projects_ListOrgProjectsCalled_WithOrgID(t *testing.T) {
 		},
 	}
 
-	_, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	_, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2546,7 +2547,7 @@ func TestExport_Projects_ListOrgProjects_AppOrgSlug(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2584,7 +2585,7 @@ func TestExport_Projects_FollowedFlag_SetForFollowedProject(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2630,7 +2631,7 @@ func TestExport_Projects_FollowedFlag_NilForAppOrg(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "circleci/app-org-uuid", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2665,7 +2666,7 @@ func TestExport_Projects_FollowedListError_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2724,7 +2725,7 @@ func TestExport_Projects_PipelineDefinitions_Captured(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -2798,7 +2799,7 @@ func TestExport_Projects_PipelineDefinitions_Triggers_GithubApp(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -2869,7 +2870,7 @@ func TestExport_Projects_PipelineDefinitions_Triggers_Webhook(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -2930,7 +2931,7 @@ func TestExport_Projects_PipelineDefinitions_Triggers_Schedule(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -2968,7 +2969,7 @@ func TestExport_Projects_PipelineDefinitions_Unreadable_IsWarning(t *testing.T) 
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -3019,7 +3020,7 @@ func TestExport_Projects_Triggers_Unreadable_IsWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -3068,7 +3069,7 @@ func TestExport_Projects_PipelineDefinitions_SkippedWhenNoExtras(t *testing.T) {
 		},
 	}
 
-	_, err := ex.Export(exporter.Options{
+	_, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   false,
@@ -3114,7 +3115,7 @@ func TestExport_Projects_PipelineDefinitions_SortStable(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -3182,7 +3183,7 @@ func TestExport_Projects_ProgressLog_FriendlyName(t *testing.T) {
 		Out: &logOutput,
 	}
 
-	_, err := ex.Export(exporter.Options{
+	_, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "circleci/org-uuid",
 		IncludeProjects: true,
 	})
@@ -3233,7 +3234,7 @@ func TestExport_Projects_ProgressLog_NoName_FallsBackToSlug(t *testing.T) {
 		Out: &logOutput,
 	}
 
-	_, err := ex.Export(exporter.Options{
+	_, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 	})
@@ -3274,7 +3275,7 @@ func TestExport_Projects_IncludeExtras_AdditionalSSHKeys(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -3335,7 +3336,7 @@ func TestExport_Projects_IncludeExtras_SSHKeysError(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -3384,7 +3385,7 @@ func TestExport_Projects_SSHKeysNotCalledWithoutExtras(t *testing.T) {
 		},
 	}
 
-	_, err := ex.Export(exporter.Options{
+	_, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   false,
@@ -3417,7 +3418,7 @@ func TestExport_Projects_SSHKeysEmpty_NoWarning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,

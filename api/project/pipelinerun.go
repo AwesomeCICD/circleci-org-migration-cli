@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,7 +56,7 @@ type triggerPipelineRunResponse struct {
 // Returns the pipeline UUID on HTTP 201. On HTTP 200 the API reports a skipped
 // run; TriggerPipelineRun returns ("", nil) with an ErrPipelineSkipped sentinel.
 // params may be nil.
-func (c *Client) TriggerPipelineRun(slug, definitionID, branch, configYAML string, params map[string]any) (string, error) {
+func (c *Client) TriggerPipelineRun(ctx context.Context, slug, definitionID, branch, configYAML string, params map[string]any) (string, error) {
 	u, err := slugSubresource(slug, "pipeline/run")
 	if err != nil {
 		return "", fmt.Errorf("TriggerPipelineRun: %w", err)
@@ -73,7 +74,7 @@ func (c *Client) TriggerPipelineRun(slug, definitionID, branch, configYAML strin
 		body.Parameters = params
 	}
 
-	req, err := c.v2.NewRequest("POST", u, body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return "", fmt.Errorf("TriggerPipelineRun: build request: %w", err)
 	}
@@ -131,7 +132,7 @@ type listWorkflowsResponse struct {
 //
 // Terminal statuses are: success | failed | error | canceled.
 // The poll loop in internal/extract uses those to detect completion.
-func (c *Client) GetPipelineWorkflows(pipelineID string) ([]Workflow, error) {
+func (c *Client) GetPipelineWorkflows(ctx context.Context, pipelineID string) ([]Workflow, error) {
 	var all []Workflow
 	pageToken := ""
 
@@ -147,7 +148,7 @@ func (c *Client) GetPipelineWorkflows(pipelineID string) ([]Workflow, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("GetPipelineWorkflows: build request: %w", err)
 		}
@@ -192,7 +193,7 @@ type listJobsResponse struct {
 // GetWorkflowJobs returns all jobs for a given workflow UUID.
 //
 // Endpoint: GET /api/v2/workflow/{workflow-id}/job
-func (c *Client) GetWorkflowJobs(workflowID string) ([]Job, error) {
+func (c *Client) GetWorkflowJobs(ctx context.Context, workflowID string) ([]Job, error) {
 	var all []Job
 	pageToken := ""
 
@@ -208,7 +209,7 @@ func (c *Client) GetWorkflowJobs(workflowID string) ([]Job, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("GetWorkflowJobs: build request: %w", err)
 		}
@@ -254,7 +255,7 @@ type listArtifactsResponse struct {
 // and job number, fetching all pages automatically.
 //
 // Endpoint: GET /api/v2/project/{project-slug}/{job-number}/artifacts
-func (c *Client) ListJobArtifacts(slug string, jobNumber int) ([]Artifact, error) {
+func (c *Client) ListJobArtifacts(ctx context.Context, slug string, jobNumber int) ([]Artifact, error) {
 	var all []Artifact
 	pageToken := ""
 
@@ -269,7 +270,7 @@ func (c *Client) ListJobArtifacts(slug string, jobNumber int) ([]Artifact, error
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListJobArtifacts: build request: %w", err)
 		}
@@ -296,8 +297,8 @@ func (c *Client) ListJobArtifacts(slug string, jobNumber int) ([]Artifact, error
 // (the http.Client used by the rest client does so by default).
 //
 // The returned bytes are the raw artifact body (e.g. JSON).
-func (c *Client) DownloadArtifact(artifactURL string) ([]byte, error) {
-	req, err := http.NewRequest("GET", artifactURL, nil) //nolint:noctx
+func (c *Client) DownloadArtifact(ctx context.Context, artifactURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", artifactURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("DownloadArtifact: build request: %w", err)
 	}

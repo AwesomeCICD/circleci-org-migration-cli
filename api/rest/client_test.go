@@ -1,13 +1,16 @@
 package rest_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
@@ -106,7 +109,7 @@ func TestNewFromConfig_ExplicitTokenIsUsed(t *testing.T) {
 	}
 
 	base := mustParseURL(t, "https://circleci.com/")
-	req, err := c.NewRequest(http.MethodGet, base, nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, base, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -156,7 +159,7 @@ func TestNewFromConfig_NilHTTPClientIsHandled(t *testing.T) {
 
 func TestNewRequest_CircleTokenSetWhenNonEmpty(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "mytoken", &http.Client{})
-	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("me"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -167,7 +170,7 @@ func TestNewRequest_CircleTokenSetWhenNonEmpty(t *testing.T) {
 
 func TestNewRequest_CircleTokenNotSetWhenEmpty(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "", &http.Client{})
-	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("me"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -178,7 +181,7 @@ func TestNewRequest_CircleTokenNotSetWhenEmpty(t *testing.T) {
 
 func TestNewRequest_AcceptHeaderIsJSON(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "tok", &http.Client{})
-	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("me"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -189,7 +192,7 @@ func TestNewRequest_AcceptHeaderIsJSON(t *testing.T) {
 
 func TestNewRequest_UserAgentIsSet(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "tok", &http.Client{})
-	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("me"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -202,7 +205,7 @@ func TestNewRequest_UserAgentIsSet(t *testing.T) {
 func TestNewRequest_ContentTypeSetWhenPayloadProvided(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "tok", &http.Client{})
 	payload := map[string]string{"key": "value"}
-	req, err := c.NewRequest(http.MethodPost, relURL("resource"), payload)
+	req, err := c.NewRequest(context.Background(), http.MethodPost, relURL("resource"), payload)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -213,7 +216,7 @@ func TestNewRequest_ContentTypeSetWhenPayloadProvided(t *testing.T) {
 
 func TestNewRequest_ContentTypeNotSetWhenNoPayload(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "tok", &http.Client{})
-	req, err := c.NewRequest(http.MethodGet, relURL("resource"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("resource"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -225,7 +228,7 @@ func TestNewRequest_ContentTypeNotSetWhenNoPayload(t *testing.T) {
 func TestNewRequest_JSONBodyEncoding(t *testing.T) {
 	c := rest.New(mustParseURL(t, "https://circleci.com/api/v2/"), "tok", &http.Client{})
 	payload := map[string]string{"name": "hello"}
-	req, err := c.NewRequest(http.MethodPost, relURL("resource"), payload)
+	req, err := c.NewRequest(context.Background(), http.MethodPost, relURL("resource"), payload)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -269,7 +272,7 @@ func TestDoRequest_200DecodesJSON(t *testing.T) {
 		fmt.Fprintln(w, `{"id":"abc","name":"project"}`)
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("project/x"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("project/x"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -294,7 +297,7 @@ func TestDoRequest_400WithJSONMessageReturnsHTTPError(t *testing.T) {
 		fmt.Fprintln(w, `{"message":"bad request param"}`)
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("anything"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("anything"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -327,7 +330,7 @@ func TestDoRequest_404WithNonJSONBodyReturnsRawBody(t *testing.T) {
 		fmt.Fprint(w, "not found here")
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("missing"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("missing"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -355,7 +358,7 @@ func TestDoRequest_NonJSONContentTypeOnSuccessReturnsError(t *testing.T) {
 		fmt.Fprint(w, "plain text response")
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("plain"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("plain"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -374,7 +377,7 @@ func TestDoRequest_NilRespPointerIsOK(t *testing.T) {
 		fmt.Fprintln(w, `{}`)
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("resource"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("resource"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -431,7 +434,7 @@ func TestHTTPError_RequestIDAndPath_CapturedFrom4xx(t *testing.T) {
 		fmt.Fprintln(w, `{"message":"Unauthorized"}`)
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("me"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("me"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -520,7 +523,7 @@ func TestDoRequest_DebugLogging_DoesNotAffectResult(t *testing.T) {
 		fmt.Fprintln(w, `{"id":"x","name":"y"}`)
 	}))
 
-	req, err := c.NewRequest(http.MethodGet, relURL("project/x"), nil)
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("project/x"), nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -531,5 +534,62 @@ func TestDoRequest_DebugLogging_DoesNotAffectResult(t *testing.T) {
 	}
 	if code != http.StatusOK {
 		t.Errorf("code = %d; want 200", code)
+	}
+}
+
+// TestDoRequest_ContextCancellationAborts verifies that a cancelled context
+// (e.g. the operator hitting Ctrl-C) aborts an in-flight request promptly with
+// a context error, rather than blocking until the per-request timeout. The
+// httptest server blocks until the client disconnects, so the only way the
+// request returns is via context cancellation.
+func TestDoRequest_ContextCancellationAborts(t *testing.T) {
+	// Server that blocks until the request's context is done (i.e. the client
+	// cancels). It never writes a response on its own.
+	blocked := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(blocked)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	base := mustParseURL(t, srv.URL+"/")
+	// Generous client timeout so the test fails (hangs → -timeout) if cancellation
+	// is NOT respected, instead of passing for the wrong reason.
+	c := rest.New(base, "tok", &http.Client{Timeout: 30 * time.Second})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	req, err := c.NewRequest(ctx, http.MethodGet, relURL("anything"), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	// Cancel as soon as the server has received the request.
+	go func() {
+		<-blocked
+		cancel()
+	}()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, derr := c.DoRequest(req, nil)
+		done <- derr
+	}()
+
+	select {
+	case derr := <-done:
+		if derr == nil {
+			t.Fatal("DoRequest returned nil error; want a context cancellation error")
+		}
+		// The error chain (or the request context) must reflect cancellation.
+		if !errors.Is(derr, context.Canceled) && !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("DoRequest error = %v; want context.Canceled", derr)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("DoRequest took %s to return after cancellation; want prompt return", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("DoRequest did not return within 10s after context cancellation")
 	}
 }

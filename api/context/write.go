@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -24,7 +25,7 @@ type createContextOwner struct {
 // Endpoint: POST /api/v2/context
 // Request body: {"name": "<name>", "owner": {"id": "<ownerID>", "type": "organization"}}
 // Response: {id, name, created_at} — the same Context struct used by ListContexts.
-func (c *Client) CreateContext(name, ownerID string) (*Context, error) {
+func (c *Client) CreateContext(ctx context.Context, name, ownerID string) (*Context, error) {
 	if name == "" {
 		return nil, fmt.Errorf("context: CreateContext requires name")
 	}
@@ -45,16 +46,16 @@ func (c *Client) CreateContext(name, ownerID string) (*Context, error) {
 		},
 	}
 
-	req, err := c.rest.NewRequest("POST", u, &body)
+	req, err := c.rest.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return nil, fmt.Errorf("context: CreateContext: build request: %w", err)
 	}
 
-	var ctx Context
-	if _, err := c.rest.DoRequest(req, &ctx); err != nil {
+	var created Context
+	if _, err := c.rest.DoRequest(req, &created); err != nil {
 		return nil, fmt.Errorf("context: CreateContext %q: %w", name, err)
 	}
-	return &ctx, nil
+	return &created, nil
 }
 
 // upsertEnvVarRequest is the wire format for PUT /context/{id}/environment-variable/{name}.
@@ -71,7 +72,7 @@ type upsertEnvVarRequest struct {
 //
 // Endpoint: PUT /api/v2/context/{id}/environment-variable/{name}
 // Request body: {"value": "<value>"}
-func (c *Client) UpsertEnvVar(contextID, name, value string) error {
+func (c *Client) UpsertEnvVar(ctx context.Context, contextID, name, value string) error {
 	if contextID == "" {
 		return fmt.Errorf("context: UpsertEnvVar requires contextID")
 	}
@@ -86,7 +87,7 @@ func (c *Client) UpsertEnvVar(contextID, name, value string) error {
 	}
 
 	body := upsertEnvVarRequest{Value: value}
-	req, err := c.rest.NewRequest("PUT", u, &body)
+	req, err := c.rest.NewRequest(ctx, "PUT", u, &body)
 	if err != nil {
 		return fmt.Errorf("context: UpsertEnvVar: build request: %w", err)
 	}
@@ -119,7 +120,7 @@ type createRestrictionRequest struct {
 // NOTE: Project and expression restrictions are GA (March 2025). Group-type
 // restriction writes are NOT yet GA — calls with restriction_type="group" may
 // return 4xx until the feature is generally available.
-func (c *Client) CreateRestriction(contextID, restrictionType, restrictionValue string) error {
+func (c *Client) CreateRestriction(ctx context.Context, contextID, restrictionType, restrictionValue string) error {
 	if contextID == "" {
 		return fmt.Errorf("context: CreateRestriction requires contextID")
 	}
@@ -137,7 +138,7 @@ func (c *Client) CreateRestriction(contextID, restrictionType, restrictionValue 
 		Type:  restrictionType,
 		Value: restrictionValue,
 	}
-	req, err := c.rest.NewRequest("POST", u, &body)
+	req, err := c.rest.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return fmt.Errorf("context: CreateRestriction: build request: %w", err)
 	}
@@ -152,7 +153,7 @@ func (c *Client) CreateRestriction(contextID, restrictionType, restrictionValue 
 // DeleteRestriction removes a single restriction from a context.
 //
 // Endpoint: DELETE /api/v2/context/{contextID}/restrictions/{restrictionID}
-func (c *Client) DeleteRestriction(contextID, restrictionID string) error {
+func (c *Client) DeleteRestriction(ctx context.Context, contextID, restrictionID string) error {
 	if contextID == "" {
 		return fmt.Errorf("context: DeleteRestriction requires contextID")
 	}
@@ -166,7 +167,7 @@ func (c *Client) DeleteRestriction(contextID, restrictionID string) error {
 		return fmt.Errorf("context: DeleteRestriction: build URL: %w", err)
 	}
 
-	req, err := c.rest.NewRequest("DELETE", u, nil)
+	req, err := c.rest.NewRequest(ctx, "DELETE", u, nil)
 	if err != nil {
 		return fmt.Errorf("context: DeleteRestriction: build request: %w", err)
 	}

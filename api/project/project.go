@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -38,13 +39,13 @@ type ProjectVCS struct {
 // percent-encoded individually via slugPath so that names containing spaces or
 // other special characters are safe on the wire.  The literal '/' separators are
 // preserved because the API accepts them unescaped.
-func (c *Client) GetProject(slug string) (*Project, error) {
+func (c *Client) GetProject(ctx context.Context, slug string) (*Project, error) {
 	u, err := slugPath("project/", slug)
 	if err != nil {
 		return nil, fmt.Errorf("GetProject: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetProject: build request: %w", err)
 	}
@@ -88,7 +89,7 @@ type advancedSettingsResponse struct {
 // The path uses the three components decomposed (not a pre-joined slug) so that
 // each segment is encoded individually.  This is the same decomposed form used
 // by the API spec parameter list for this endpoint.
-func (c *Client) GetSettings(provider, org, proj string) (*AdvancedSettings, error) {
+func (c *Client) GetSettings(ctx context.Context, provider, org, proj string) (*AdvancedSettings, error) {
 	path := "project/" +
 		url.PathEscape(provider) + "/" +
 		url.PathEscape(org) + "/" +
@@ -99,7 +100,7 @@ func (c *Client) GetSettings(provider, org, proj string) (*AdvancedSettings, err
 		return nil, fmt.Errorf("GetSettings: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetSettings: build request: %w", err)
 	}

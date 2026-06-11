@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -49,7 +50,7 @@ func TestListOrgProjects_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivate(t, srv)
-	got, err := c.ListOrgProjects("org-uuid-abc")
+	got, err := c.ListOrgProjects(context.Background(), "org-uuid-abc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestListOrgProjects_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivate(t, srv)
-	got, err := c.ListOrgProjects("org-id")
+	got, err := c.ListOrgProjects(context.Background(), "org-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestListOrgProjects_OAuthSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivate(t, srv)
-	got, err := c.ListOrgProjects("oauth-org-id")
+	got, err := c.ListOrgProjects(context.Background(), "oauth-org-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestListOrgProjects_AppSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivate(t, srv)
-	got, err := c.ListOrgProjects("aaaa-1111")
+	got, err := c.ListOrgProjects(context.Background(), "aaaa-1111")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestListOrgProjects_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithPrivate(t, srv)
-	_, err := c.ListOrgProjects("some-org")
+	_, err := c.ListOrgProjects(context.Background(), "some-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

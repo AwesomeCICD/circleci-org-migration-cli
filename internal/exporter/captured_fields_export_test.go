@@ -5,6 +5,7 @@ package exporter_test
 // V11FeatureFlags map, schedule actor login, and org namespace.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
@@ -35,7 +36,7 @@ func TestStorageRetentionLimits_CapturedIntoManifest(t *testing.T) {
 		}, nil
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestStorageRetentionLimits_NilWhenAllZero(t *testing.T) {
 		}, nil
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestV11FeatureFlags_FullMapCaptured(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 	})
@@ -167,7 +168,7 @@ func TestV11FeatureFlags_EmptyMapProducesNilField(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 	})
@@ -215,7 +216,7 @@ func TestScheduleActorLogin_CapturedIntoManifest(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -258,7 +259,7 @@ func TestScheduleActorLogin_EmptyWhenAbsent(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/myorg",
 		IncludeProjects: true,
 		IncludeExtras:   true,
@@ -296,7 +297,7 @@ func TestOrbNamespace_DerivedFromOrgName(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/acme-corp"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/acme-corp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

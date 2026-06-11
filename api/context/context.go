@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -22,7 +23,7 @@ type listContextsResponse struct {
 // Exactly one of ownerID or ownerSlug must be non-empty; ownerID is preferred.
 // ownerSlug has the form "<vcs>/<org>" (e.g. "github/myorg").
 // All pages are fetched automatically.
-func (c *Client) ListContexts(ownerID, ownerSlug string) ([]Context, error) {
+func (c *Client) ListContexts(ctx context.Context, ownerID, ownerSlug string) ([]Context, error) {
 	if ownerID == "" && ownerSlug == "" {
 		return nil, fmt.Errorf("context: ListContexts requires ownerID or ownerSlug")
 	}
@@ -46,7 +47,7 @@ func (c *Client) ListContexts(ownerID, ownerSlug string) ([]Context, error) {
 		}
 		u.RawQuery = q.Encode()
 
-		req, err := c.rest.NewRequest("GET", u, nil)
+		req, err := c.rest.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
 		}

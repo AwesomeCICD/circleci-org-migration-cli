@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -22,11 +23,11 @@ import (
 // only the nested shape was parsed, so standalone orgs captured ZERO flags.)
 //
 // Endpoint: GET /api/v1.1/organization/{vcsType}/{orgName}/settings
-func (c *Client) GetFeatureFlags(vcsType, orgName string) (map[string]bool, error) {
+func (c *Client) GetFeatureFlags(ctx context.Context, vcsType, orgName string) (map[string]bool, error) {
 	path := "organization/" + url.PathEscape(vcsType) + "/" + url.PathEscape(orgName) + "/settings"
 	u := &url.URL{Path: path}
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetFeatureFlags: build request: %w", err)
 	}
@@ -64,7 +65,7 @@ func (c *Client) GetFeatureFlags(vcsType, orgName string) (map[string]bool, erro
 // The v1.1 API reads keys in snake_case but expects writes in kebab-case
 // (e.g. "allow_certified_public_orbs" → "allow-certified-public-orbs").
 // This is confirmed by the web-ui useUpdateAllowCertifiedPublicOrbs hook.
-func (c *Client) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
+func (c *Client) UpdateFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error {
 	path := "organization/" + url.PathEscape(vcsType) + "/" + url.PathEscape(orgName) + "/settings"
 	u := &url.URL{Path: path}
 
@@ -75,7 +76,7 @@ func (c *Client) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bo
 	}
 
 	body := map[string]any{"feature_flags": kebab}
-	req, err := c.v11.NewRequest("PUT", u, body)
+	req, err := c.v11.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("UpdateFeatureFlags: build request: %w", err)
 	}
@@ -109,12 +110,12 @@ type oidcClaimsResponse struct {
 // GetOIDCClaims retrieves the org's OIDC custom claims.
 //
 // Endpoint: GET /api/v2/org/{orgID}/oidc-custom-claims
-func (c *Client) GetOIDCClaims(orgID string) (audience []string, ttl string, err error) {
+func (c *Client) GetOIDCClaims(ctx context.Context, orgID string) (audience []string, ttl string, err error) {
 	// orgID is always a bare UUID — no slash, no encoding needed; use url.URL{Path}
 	// which is safe for plain UUIDs.
 	u := &url.URL{Path: "org/" + url.PathEscape(orgID) + "/oidc-custom-claims"}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("GetOIDCClaims: build request: %w", err)
 	}
@@ -131,7 +132,7 @@ func (c *Client) GetOIDCClaims(orgID string) (audience []string, ttl string, err
 // Endpoint: PATCH /api/v2/org/{orgID}/oidc-custom-claims
 //
 // Confirmed by oidc-tasks-service openapi.yaml: PATCH with {"audience":[...],"ttl":"..."}.
-func (c *Client) SetOIDCClaims(orgID string, audience []string, ttl string) error {
+func (c *Client) SetOIDCClaims(ctx context.Context, orgID string, audience []string, ttl string) error {
 	u := &url.URL{Path: "org/" + url.PathEscape(orgID) + "/oidc-custom-claims"}
 
 	body := map[string]any{}
@@ -145,7 +146,7 @@ func (c *Client) SetOIDCClaims(orgID string, audience []string, ttl string) erro
 		return nil // nothing to set
 	}
 
-	req, err := c.v2.NewRequest("PATCH", u, body)
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, body)
 	if err != nil {
 		return fmt.Errorf("SetOIDCClaims: build request: %w", err)
 	}
@@ -177,7 +178,7 @@ type urlOrbAllowListResponse struct {
 // GetURLOrbAllowList retrieves the org's URL-orb allow list.
 //
 // Endpoint: GET /api/v2/organization/{slug-or-id}/url-orb-allow-list
-func (c *Client) GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error) {
+func (c *Client) GetURLOrbAllowList(ctx context.Context, slugOrID string) ([]URLOrbAllowEntry, error) {
 	// slugOrID may contain a slash (e.g. "gh/acme") — use url.Parse on the
 	// pre-escaped string to avoid double-encoding, matching the pattern in org.go.
 	u, err := url.Parse("organization/" + url.PathEscape(slugOrID) + "/url-orb-allow-list")
@@ -185,7 +186,7 @@ func (c *Client) GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error)
 		return nil, fmt.Errorf("GetURLOrbAllowList: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetURLOrbAllowList: build request: %w", err)
 	}
@@ -203,14 +204,14 @@ func (c *Client) GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error)
 //
 // Confirmed by circle.clj and useCreateURLOrbAllowListEntry.ts:
 // body {"name":"...","prefix":"...","auth":"..."}.
-func (c *Client) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error {
+func (c *Client) CreateURLOrbAllowEntry(ctx context.Context, slugOrID, name, prefix, auth string) error {
 	u, err := url.Parse("organization/" + url.PathEscape(slugOrID) + "/url-orb-allow-list")
 	if err != nil {
 		return fmt.Errorf("CreateURLOrbAllowEntry: build URL: %w", err)
 	}
 
 	body := map[string]string{"name": name, "prefix": prefix, "auth": auth}
-	req, err := c.v2.NewRequest("POST", u, body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return fmt.Errorf("CreateURLOrbAllowEntry: build request: %w", err)
 	}
@@ -254,13 +255,13 @@ type auditLogConfigsResponse struct {
 // GetAuditLogConfigs retrieves the org's audit-log streaming configurations.
 //
 // Endpoint: GET /api/v2/organizations/{orgID}/audit-log/configs
-func (c *Client) GetAuditLogConfigs(orgID string) ([]AuditLogConfig, error) {
+func (c *Client) GetAuditLogConfigs(ctx context.Context, orgID string) ([]AuditLogConfig, error) {
 	u, err := url.Parse("organizations/" + url.PathEscape(orgID) + "/audit-log/configs")
 	if err != nil {
 		return nil, fmt.Errorf("GetAuditLogConfigs: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetAuditLogConfigs: build request: %w", err)
 	}
@@ -287,13 +288,13 @@ type policyEnforcementResponse struct {
 //
 // Returns a map of policyName → Rego content.  Returns an empty map if the
 // org has no bundle or is not on Scale.
-func (c *Client) GetPolicyBundle(ownerID string) (map[string]string, error) {
+func (c *Client) GetPolicyBundle(ctx context.Context, ownerID string) (map[string]string, error) {
 	u, err := url.Parse("owner/" + url.PathEscape(ownerID) + "/context/config/policy-bundle")
 	if err != nil {
 		return nil, fmt.Errorf("GetPolicyBundle: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetPolicyBundle: build request: %w", err)
 	}
@@ -314,14 +315,14 @@ func (c *Client) GetPolicyBundle(ownerID string) (map[string]string, error) {
 //
 // Confirmed by circleci-cli api/policy/policy.go:
 // POST with {"policies": {name: rego}}.
-func (c *Client) PutPolicyBundle(ownerID string, policies map[string]string) error {
+func (c *Client) PutPolicyBundle(ctx context.Context, ownerID string, policies map[string]string) error {
 	u, err := url.Parse("owner/" + url.PathEscape(ownerID) + "/context/config/policy-bundle")
 	if err != nil {
 		return fmt.Errorf("PutPolicyBundle: build URL: %w", err)
 	}
 
 	body := map[string]any{"policies": policies}
-	req, err := c.v2.NewRequest("POST", u, body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return fmt.Errorf("PutPolicyBundle: build request: %w", err)
 	}
@@ -336,13 +337,13 @@ func (c *Client) PutPolicyBundle(ownerID string, policies map[string]string) err
 // GetPolicyEnforcement retrieves whether config-policy enforcement is enabled.
 //
 // Endpoint: GET /api/v2/owner/{ownerID}/context/config/decision/settings
-func (c *Client) GetPolicyEnforcement(ownerID string) (bool, error) {
+func (c *Client) GetPolicyEnforcement(ctx context.Context, ownerID string) (bool, error) {
 	u, err := url.Parse("owner/" + url.PathEscape(ownerID) + "/context/config/decision/settings")
 	if err != nil {
 		return false, fmt.Errorf("GetPolicyEnforcement: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return false, fmt.Errorf("GetPolicyEnforcement: build request: %w", err)
 	}
@@ -360,14 +361,14 @@ func (c *Client) GetPolicyEnforcement(ownerID string) (bool, error) {
 //
 // Confirmed by circleci-cli cmd/policy/policy_test.go:
 // PATCH with {"enabled": bool}.
-func (c *Client) SetPolicyEnforcement(ownerID string, enabled bool) error {
+func (c *Client) SetPolicyEnforcement(ctx context.Context, ownerID string, enabled bool) error {
 	u, err := url.Parse("owner/" + url.PathEscape(ownerID) + "/context/config/decision/settings")
 	if err != nil {
 		return fmt.Errorf("SetPolicyEnforcement: build URL: %w", err)
 	}
 
 	body := map[string]any{"enabled": enabled}
-	req, err := c.v2.NewRequest("PATCH", u, body)
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, body)
 	if err != nil {
 		return fmt.Errorf("SetPolicyEnforcement: build request: %w", err)
 	}

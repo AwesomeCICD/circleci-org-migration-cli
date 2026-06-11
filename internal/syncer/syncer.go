@@ -5,6 +5,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,8 +27,8 @@ var resolveRepoID = github.ResolveRepoID
 // RunnerWriter is the subset of the runner client the syncer needs.
 // When Runner is nil on the Syncer, runner resource classes are never written.
 type RunnerWriter interface {
-	GetResourceClassesByNamespace(namespace string) ([]apirunner.ResourceClass, error)
-	CreateResourceClass(resourceClass, description string) (*apirunner.ResourceClass, error)
+	GetResourceClassesByNamespace(ctx context.Context, namespace string) ([]apirunner.ResourceClass, error)
+	CreateResourceClass(ctx context.Context, resourceClass, description string) (*apirunner.ResourceClass, error)
 }
 
 // DefaultPlaceholder is the value used for variables whose real value was not
@@ -43,10 +44,10 @@ const (
 // OrgResolver resolves a destination org slug to its UUID and retrieves org
 // metadata needed to decide which project-creation path to take.
 type OrgResolver interface {
-	ResolveOrgID(slug string) (string, error)
+	ResolveOrgID(ctx context.Context, slug string) (string, error)
 	// GetOrganization returns the full organization record (id, name, vcs_type, …)
 	// for the given slug or bare UUID.
-	GetOrganization(slug string) (*org.Organization, error)
+	GetOrganization(ctx context.Context, slug string) (*org.Organization, error)
 }
 
 // Group is a destination CIAM group (id + name) used to resolve group-type
@@ -59,49 +60,49 @@ type Group struct {
 // GroupLister lists the destination org's CIAM groups so the syncer can resolve
 // a source group restriction (captured by name) to the destination group UUID.
 type GroupLister interface {
-	ListGroups(orgID string) ([]Group, error)
+	ListGroups(ctx context.Context, orgID string) ([]Group, error)
 }
 
 // ContextWriter is the destination context API the syncer needs.
 type ContextWriter interface {
-	ListContexts(ownerID, ownerSlug string) ([]cctx.Context, error)
-	CreateContext(name, ownerID string) (*cctx.Context, error)
-	UpsertEnvVar(contextID, name, value string) error
-	ListRestrictions(contextID string) ([]cctx.Restriction, error)
-	CreateRestriction(contextID, restrictionType, restrictionValue string) error
+	ListContexts(ctx context.Context, ownerID, ownerSlug string) ([]cctx.Context, error)
+	CreateContext(ctx context.Context, name, ownerID string) (*cctx.Context, error)
+	UpsertEnvVar(ctx context.Context, contextID, name, value string) error
+	ListRestrictions(ctx context.Context, contextID string) ([]cctx.Restriction, error)
+	CreateRestriction(ctx context.Context, contextID, restrictionType, restrictionValue string) error
 }
 
 // ProjectWriter is the destination project API the syncer needs.
 type ProjectWriter interface {
-	GetProject(slug string) (*project.Project, error)
-	CreateProjectShell(provider, org, name string) (*project.Project, error)
-	FollowProject(vcsType, org, repo string) (*project.FollowResult, error)
-	ListEnvVars(slug string) ([]project.EnvVar, error)
-	CreateEnvVar(slug, name, value string) error
-	UpdateSettings(provider, org, proj string, s *project.AdvancedSettings) error
-	ListWebhooks(projectID string) ([]project.Webhook, error)
-	CreateWebhook(destProjectID string, w project.Webhook) error
-	ListSchedules(slug string) ([]project.Schedule, error)
-	CreateSchedule(destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error
-	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
-	SetProjectOIDCClaims(orgID, projID string, audience []string, ttl string) error
-	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
-	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
+	GetProject(ctx context.Context, slug string) (*project.Project, error)
+	CreateProjectShell(ctx context.Context, provider, org, name string) (*project.Project, error)
+	FollowProject(ctx context.Context, vcsType, org, repo string) (*project.FollowResult, error)
+	ListEnvVars(ctx context.Context, slug string) ([]project.EnvVar, error)
+	CreateEnvVar(ctx context.Context, slug, name, value string) error
+	UpdateSettings(ctx context.Context, provider, org, proj string, s *project.AdvancedSettings) error
+	ListWebhooks(ctx context.Context, projectID string) ([]project.Webhook, error)
+	CreateWebhook(ctx context.Context, destProjectID string, w project.Webhook) error
+	ListSchedules(ctx context.Context, slug string) ([]project.Schedule, error)
+	CreateSchedule(ctx context.Context, destSlug, name, description, attributionActor string, timetable, parameters map[string]any) error
+	GetProjectOIDCClaims(ctx context.Context, orgID, projID string) (audience []string, ttl string, err error)
+	SetProjectOIDCClaims(ctx context.Context, orgID, projID string, audience []string, ttl string) error
+	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
+	SetV11ProjectFeatureFlags(ctx context.Context, slug string, flags map[string]bool) error
 
 	// SSH key management (additional SSH keys, not checkout keys).
-	ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error)
-	AddAdditionalSSHKey(slug, hostname, privateKey string) error
+	ListAdditionalSSHKeys(ctx context.Context, slug string) ([]project.SSHKeyMeta, error)
+	AddAdditionalSSHKey(ctx context.Context, slug, hostname, privateKey string) error
 
 	// Project API token management (optional auto-create path).
-	ListProjectTokens(slug string) ([]project.ProjectAPIToken, error)
-	CreateProjectToken(slug, scope, label string) (string, error)
+	ListProjectTokens(ctx context.Context, slug string) ([]project.ProjectAPIToken, error)
+	CreateProjectToken(ctx context.Context, slug, scope, label string) (string, error)
 
 	// App-org (circleci/ vcs_type) project management.
-	CreateAppProject(orgID, name string) (*project.Project, error)
-	CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error)
-	CreateTrigger(projectID, defID string, spec project.TriggerSpec) (string, error)
-	EnableTrigger(projectID, triggerID string) error
-	ListOrgProjects(orgID string) ([]project.OrgProject, error)
+	CreateAppProject(ctx context.Context, orgID, name string) (*project.Project, error)
+	CreatePipelineDefinition(ctx context.Context, projectID string, spec project.PipelineDefinitionSpec) (string, error)
+	CreateTrigger(ctx context.Context, projectID, defID string, spec project.TriggerSpec) (string, error)
+	EnableTrigger(ctx context.Context, projectID, triggerID string) error
+	ListOrgProjects(ctx context.Context, orgID string) ([]project.OrgProject, error)
 }
 
 // EnableTarget holds the coordinates needed to enable builds for a
@@ -233,7 +234,7 @@ func (r *Report) Counts() map[string]int {
 // SyncContexts recreates the manifest's contexts (and their captured variable
 // values and restrictions) in the destination org. The destination org slug is
 // mapping.Org.To.
-func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
+func (s *Syncer) SyncContexts(ctx context.Context, m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
 	}
@@ -243,7 +244,7 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 	}
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
 
-	destOrgID, err := s.Org.ResolveOrgID(destSlug)
+	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
 	if err != nil {
 		return nil, fmt.Errorf("resolving destination org %q: %w", destSlug, err)
 	}
@@ -251,7 +252,7 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 	s.logf("Destination org: %s (id %s)%s", destSlug, destOrgID, dryRunSuffix(opts.Apply))
 
 	clog.Debugf("ListContexts dest_org_id=%s", destOrgID)
-	existing, err := s.Contexts.ListContexts(destOrgID, "")
+	existing, err := s.Contexts.ListContexts(ctx, destOrgID, "")
 	if err != nil {
 		return nil, fmt.Errorf("listing destination contexts: %w", err)
 	}
@@ -267,20 +268,20 @@ func (s *Syncer) SyncContexts(m *manifest.Manifest, bundle *manifest.SecretBundl
 	groupCacheLoaded := false
 
 	for _, c := range m.Contexts {
-		ctxID, err := s.ensureContext(report, c.Name, destOrgID, byName, opts)
+		ctxID, err := s.ensureContext(ctx, report, c.Name, destOrgID, byName, opts)
 		if err != nil {
 			report.add("context", c.Name, "error", err.Error())
 			continue
 		}
-		s.syncContextVars(report, c, bundle, ctxID, opts)
-		s.syncContextRestrictions(report, c, ctxID, destOrgID, &groupCache, &groupCacheLoaded, opts)
+		s.syncContextVars(ctx, report, c, bundle, ctxID, opts)
+		s.syncContextRestrictions(ctx, report, c, ctxID, destOrgID, &groupCache, &groupCacheLoaded, opts)
 	}
 	return report, nil
 }
 
 // ensureContext returns the destination context ID, creating it if absent.
 // In dry-run mode a missing context yields an empty ID (nothing to write into).
-func (s *Syncer) ensureContext(report *Report, name, destOrgID string, byName map[string]cctx.Context, opts Options) (string, error) {
+func (s *Syncer) ensureContext(ctx context.Context, report *Report, name, destOrgID string, byName map[string]cctx.Context, opts Options) (string, error) {
 	if c, ok := byName[name]; ok {
 		report.add("context", name, "exists", "reusing existing context")
 		return c.ID, nil
@@ -289,7 +290,7 @@ func (s *Syncer) ensureContext(report *Report, name, destOrgID string, byName ma
 		report.add("context", name, "created", "would create context")
 		return "", nil
 	}
-	created, err := s.Contexts.CreateContext(name, destOrgID)
+	created, err := s.Contexts.CreateContext(ctx, name, destOrgID)
 	if err != nil {
 		return "", err
 	}
@@ -298,7 +299,7 @@ func (s *Syncer) ensureContext(report *Report, name, destOrgID string, byName ma
 	return created.ID, nil
 }
 
-func (s *Syncer) syncContextVars(report *Report, c manifest.Context, bundle *manifest.SecretBundle, ctxID string, opts Options) {
+func (s *Syncer) syncContextVars(ctx context.Context, report *Report, c manifest.Context, bundle *manifest.SecretBundle, ctxID string, opts Options) {
 	values := map[string]string{}
 	if bundle != nil {
 		values = bundle.ContextSecrets[c.Name]
@@ -308,7 +309,7 @@ func (s *Syncer) syncContextVars(report *Report, c manifest.Context, bundle *man
 		val, ok := values[v.Name]
 		if !ok {
 			if opts.MissingSecrets == MissingPlaceholder {
-				if err := s.writeVar(ctxID, v.Name, opts.placeholder(), opts.Apply); err != nil {
+				if err := s.writeVar(ctx, ctxID, v.Name, opts.placeholder(), opts.Apply); err != nil {
 					report.add("context-var", target, "error", err.Error())
 					continue
 				}
@@ -318,7 +319,7 @@ func (s *Syncer) syncContextVars(report *Report, c manifest.Context, bundle *man
 			}
 			continue
 		}
-		if err := s.writeVar(ctxID, v.Name, val, opts.Apply); err != nil {
+		if err := s.writeVar(ctx, ctxID, v.Name, val, opts.Apply); err != nil {
 			report.add("context-var", target, "error", err.Error())
 			continue
 		}
@@ -326,17 +327,17 @@ func (s *Syncer) syncContextVars(report *Report, c manifest.Context, bundle *man
 	}
 }
 
-func (s *Syncer) writeVar(ctxID, name, value string, apply bool) error {
+func (s *Syncer) writeVar(ctx context.Context, ctxID, name, value string, apply bool) error {
 	if !apply || ctxID == "" {
 		return nil // dry run, or context that would be created
 	}
-	return s.Contexts.UpsertEnvVar(ctxID, name, value)
+	return s.Contexts.UpsertEnvVar(ctx, ctxID, name, value)
 }
 
-func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
+func (s *Syncer) syncContextRestrictions(ctx context.Context, report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
 	var existing []cctx.Restriction
 	if opts.Apply && ctxID != "" {
-		rs, err := s.Contexts.ListRestrictions(ctxID)
+		rs, err := s.Contexts.ListRestrictions(ctx, ctxID)
 		if err != nil {
 			for _, r := range c.Restrictions {
 				target := c.Name + " [" + r.Type + "]"
@@ -350,9 +351,9 @@ func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctx
 		target := c.Name + " [" + r.Type + "]"
 		switch r.Type {
 		case "expression":
-			s.syncExpressionRestriction(report, target, ctxID, existing, r, opts)
+			s.syncExpressionRestriction(ctx, report, target, ctxID, existing, r, opts)
 		case "group":
-			s.syncGroupRestriction(report, target, ctxID, destOrgID, existing, r, groupCache, groupCacheLoaded, opts)
+			s.syncGroupRestriction(ctx, report, target, ctxID, destOrgID, existing, r, groupCache, groupCacheLoaded, opts)
 		default:
 			// project-type values are source-org UUIDs (need remap) and have no
 			// name-based equivalent in the destination — manual handling.
@@ -361,7 +362,7 @@ func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctx
 	}
 }
 
-func (s *Syncer) syncExpressionRestriction(report *Report, target, ctxID string, existing []cctx.Restriction, r manifest.Restriction, opts Options) {
+func (s *Syncer) syncExpressionRestriction(ctx context.Context, report *Report, target, ctxID string, existing []cctx.Restriction, r manifest.Restriction, opts Options) {
 	if hasExpressionRestriction(existing, r.Value) {
 		report.add("restriction", target, "exists", "expression restriction already present")
 		return
@@ -370,7 +371,7 @@ func (s *Syncer) syncExpressionRestriction(report *Report, target, ctxID string,
 		report.add("restriction", target, "set", "would add expression restriction")
 		return
 	}
-	if err := s.Contexts.CreateRestriction(ctxID, "expression", r.Value); err != nil {
+	if err := s.Contexts.CreateRestriction(ctx, ctxID, "expression", r.Value); err != nil {
 		report.add("restriction", target, "error", err.Error())
 		return
 	}
@@ -382,7 +383,7 @@ func (s *Syncer) syncExpressionRestriction(report *Report, target, ctxID string,
 // UUID equals the destination org id; other groups are matched by name against
 // the destination group list. When no GroupLister is wired (s.Groups == nil) the
 // restriction falls back to "manual", preserving the previous behaviour.
-func (s *Syncer) syncGroupRestriction(report *Report, target, ctxID, destOrgID string, existing []cctx.Restriction, r manifest.Restriction, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
+func (s *Syncer) syncGroupRestriction(ctx context.Context, report *Report, target, ctxID, destOrgID string, existing []cctx.Restriction, r manifest.Restriction, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
 	name := restrictionLabel(r)
 
 	if s.Groups == nil {
@@ -390,7 +391,7 @@ func (s *Syncer) syncGroupRestriction(report *Report, target, ctxID, destOrgID s
 		return
 	}
 
-	destUUID, resolved := s.resolveDestGroup(name, destOrgID, groupCache, groupCacheLoaded)
+	destUUID, resolved := s.resolveDestGroup(ctx, name, destOrgID, groupCache, groupCacheLoaded)
 	if !resolved {
 		report.add("restriction", target, "manual", fmt.Sprintf("group %q not found in destination — create it, then re-run", name))
 		return
@@ -404,7 +405,7 @@ func (s *Syncer) syncGroupRestriction(report *Report, target, ctxID, destOrgID s
 		report.add("restriction", target, "set", fmt.Sprintf("would add group restriction %q", name))
 		return
 	}
-	if err := s.Contexts.CreateRestriction(ctxID, "group", destUUID); err != nil {
+	if err := s.Contexts.CreateRestriction(ctx, ctxID, "group", destUUID); err != nil {
 		report.add("restriction", target, "error", err.Error())
 		return
 	}
@@ -414,14 +415,14 @@ func (s *Syncer) syncGroupRestriction(report *Report, target, ctxID, destOrgID s
 // resolveDestGroup returns the destination UUID for a group named name. The
 // "All members" group resolves to the destination org id; other names are looked
 // up in the destination group list (loaded once and cached for the run).
-func (s *Syncer) resolveDestGroup(name, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool) (string, bool) {
+func (s *Syncer) resolveDestGroup(ctx context.Context, name, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool) (string, bool) {
 	if name == "All members" {
 		return destOrgID, true
 	}
 	if !*groupCacheLoaded {
 		*groupCacheLoaded = true
 		*groupCache = map[string]string{}
-		if groups, err := s.Groups.ListGroups(destOrgID); err == nil {
+		if groups, err := s.Groups.ListGroups(ctx, destOrgID); err == nil {
 			for _, g := range groups {
 				(*groupCache)[g.Name] = g.ID
 			}
@@ -442,7 +443,7 @@ func (s *Syncer) resolveDestGroup(name, destOrgID string, groupCache *map[string
 // found reuse the existing project; if not found create it with CreateAppProject,
 // then create pipeline definitions and (disabled) triggers, queuing each trigger
 // as an App EnableTarget for the enable-builds step.
-func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
+func (s *Syncer) SyncProjects(ctx context.Context, m *manifest.Manifest, bundle *manifest.SecretBundle, mapping *manifest.Mapping, opts Options) (*Report, error) {
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
 	}
@@ -453,7 +454,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
 
 	// Resolve the destination org ID once — needed for OIDC PATCH calls.
-	destOrgID, err := s.Org.ResolveOrgID(destSlug)
+	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
 	if err != nil {
 		return nil, fmt.Errorf("resolving destination org %q: %w", destSlug, err)
 	}
@@ -476,7 +477,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			return nil
 		}
 		destTypeLoaded = true
-		o, err := s.Org.GetOrganization(destSlug)
+		o, err := s.Org.GetOrganization(ctx, destSlug)
 		if err != nil {
 			return fmt.Errorf("get destination org %q: %w", destSlug, err)
 		}
@@ -489,7 +490,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			return nil
 		}
 		destOrgProjectsLoaded = true
-		projs, err := s.Projects.ListOrgProjects(destOrgID)
+		projs, err := s.Projects.ListOrgProjects(ctx, destOrgID)
 		if err != nil {
 			return fmt.Errorf("list destination org projects: %w", err)
 		}
@@ -511,7 +512,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			}
 			if destVCSType == "circleci" {
 				// App org: route through App path (dst will be derived after create).
-				s.syncAppProject(report, p, destOrgID, destSlug, bundle, mapping, opts,
+				s.syncAppProject(ctx, report, p, destOrgID, destSlug, bundle, mapping, opts,
 					loadDestOrgProjects, &destOrgProjectsByName)
 				continue
 			}
@@ -528,13 +529,13 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 
 		if destVCSType == "circleci" {
 			// App org with explicit mapping: still go through App path.
-			s.syncAppProject(report, p, destOrgID, destSlug, bundle, mapping, opts,
+			s.syncAppProject(ctx, report, p, destOrgID, destSlug, bundle, mapping, opts,
 				loadDestOrgProjects, &destOrgProjectsByName)
 			continue
 		}
 
 		// --- OAuth / Bitbucket path (existing behaviour) ---
-		destProj, err := s.Projects.GetProject(dst)
+		destProj, err := s.Projects.GetProject(ctx, dst)
 		if err != nil {
 			provider, orgName, repo, splitErr := project.SplitSlug(dst)
 			if splitErr != nil {
@@ -552,7 +553,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			if !opts.Apply {
 				report.add("project", dst, "created", "would create project (paused — not followed)")
 			} else {
-				created, createErr := s.Projects.CreateProjectShell(provider, orgName, repo)
+				created, createErr := s.Projects.CreateProjectShell(ctx, provider, orgName, repo)
 				if createErr != nil {
 					report.add("project", dst, "error", fmt.Sprintf("create project shell: %v", createErr))
 					continue
@@ -572,7 +573,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 
 			// For apply mode, re-fetch so we have a real project ID.
 			if opts.Apply && (destProj == nil || destProj.ID == "") {
-				if fetched, fetchErr := s.Projects.GetProject(dst); fetchErr == nil {
+				if fetched, fetchErr := s.Projects.GetProject(ctx, dst); fetchErr == nil {
 					destProj = fetched
 				} else {
 					s.logf("warning: could not re-fetch %q after create (webhooks skipped): %v", dst, fetchErr)
@@ -588,14 +589,14 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			report.add("project", dst, "exists", "reusing existing project")
 		}
 
-		s.syncProjectSettings(report, p, dst, opts)
-		s.syncProjectVars(report, p, bundle, dst, opts)
-		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
-		s.syncProjectWebhooks(report, p, dst, destProj.ID, opts)
-		s.syncProjectSchedules(report, p, dst, opts)
-		s.syncProjectOIDCClaims(report, p, dst, destOrgID, destProj.ID, opts)
-		s.syncProjectV11Flags(report, p, dst, opts)
-		s.syncProjectAPITokens(report, p, dst, opts)
+		s.syncProjectSettings(ctx, report, p, dst, opts)
+		s.syncProjectVars(ctx, report, p, bundle, dst, opts)
+		s.syncProjectSSHKeys(ctx, report, p, bundle, dst, opts)
+		s.syncProjectWebhooks(ctx, report, p, dst, destProj.ID, opts)
+		s.syncProjectSchedules(ctx, report, p, dst, opts)
+		s.syncProjectOIDCClaims(ctx, report, p, dst, destOrgID, destProj.ID, opts)
+		s.syncProjectV11Flags(ctx, report, p, dst, opts)
+		s.syncProjectAPITokens(ctx, report, p, dst, opts)
 	}
 	return report, nil
 }
@@ -604,6 +605,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 // (GitHub App) org. It finds or creates the project by name, then creates pipeline
 // definitions and disabled triggers, queuing enable targets.
 func (s *Syncer) syncAppProject(
+	ctx context.Context,
 	report *Report,
 	p manifest.Project,
 	destOrgID, destSlug string,
@@ -637,14 +639,14 @@ func (s *Syncer) syncAppProject(
 		// report summary, then configure settings/vars with the real slug.
 		dst := existing.Slug
 		report.add("project", dst, "exists", "reusing existing project")
-		s.syncProjectSettings(report, p, dst, opts)
-		s.syncProjectVars(report, p, bundle, dst, opts)
-		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
-		s.syncProjectWebhooks(report, p, dst, existing.ID, opts)
-		s.syncProjectSchedules(report, p, dst, opts)
-		s.syncProjectOIDCClaims(report, p, dst, destOrgID, existing.ID, opts)
-		s.syncProjectV11Flags(report, p, dst, opts)
-		s.syncProjectAPITokens(report, p, dst, opts)
+		s.syncProjectSettings(ctx, report, p, dst, opts)
+		s.syncProjectVars(ctx, report, p, bundle, dst, opts)
+		s.syncProjectSSHKeys(ctx, report, p, bundle, dst, opts)
+		s.syncProjectWebhooks(ctx, report, p, dst, existing.ID, opts)
+		s.syncProjectSchedules(ctx, report, p, dst, opts)
+		s.syncProjectOIDCClaims(ctx, report, p, dst, destOrgID, existing.ID, opts)
+		s.syncProjectV11Flags(ctx, report, p, dst, opts)
+		s.syncProjectAPITokens(ctx, report, p, dst, opts)
 		return
 	}
 
@@ -669,25 +671,25 @@ func (s *Syncer) syncAppProject(
 		// syncAppPipelineDefinition is read-only at resolve time (no API writes).
 		drySlug := "circleci/" + destOrgID + "/<new>"
 		if synthesize {
-			s.synthesizeOAuthPipelineDefinition(report, name, "", p, mapping, opts)
+			s.synthesizeOAuthPipelineDefinition(ctx, report, name, "", p, mapping, opts)
 		}
 		for _, def := range p.PipelineDefinitions {
-			s.syncAppPipelineDefinition(report, name, "", def, destSlug, mapping, opts)
+			s.syncAppPipelineDefinition(ctx, report, name, "", def, destSlug, mapping, opts)
 		}
-		s.syncProjectSettings(report, p, drySlug, opts)
-		s.syncProjectVars(report, p, bundle, drySlug, opts)
-		s.syncProjectSSHKeys(report, p, bundle, drySlug, opts)
-		s.syncProjectWebhooks(report, p, drySlug, "", opts)
-		s.syncProjectSchedules(report, p, drySlug, opts)
-		s.syncProjectOIDCClaims(report, p, drySlug, destOrgID, "", opts)
-		s.syncProjectV11Flags(report, p, drySlug, opts)
-		s.syncProjectAPITokens(report, p, drySlug, opts)
+		s.syncProjectSettings(ctx, report, p, drySlug, opts)
+		s.syncProjectVars(ctx, report, p, bundle, drySlug, opts)
+		s.syncProjectSSHKeys(ctx, report, p, bundle, drySlug, opts)
+		s.syncProjectWebhooks(ctx, report, p, drySlug, "", opts)
+		s.syncProjectSchedules(ctx, report, p, drySlug, opts)
+		s.syncProjectOIDCClaims(ctx, report, p, drySlug, destOrgID, "", opts)
+		s.syncProjectV11Flags(ctx, report, p, drySlug, opts)
+		s.syncProjectAPITokens(ctx, report, p, drySlug, opts)
 		return
 	}
 
 	// Apply: create the project.
 	clog.Debugf("CreateAppProject dest_org_id=%s name=%s", destOrgID, name)
-	created, err := s.Projects.CreateAppProject(destOrgID, name)
+	created, err := s.Projects.CreateAppProject(ctx, destOrgID, name)
 	if err != nil {
 		report.add("project", name, "error", fmt.Sprintf("create App project: %v", err))
 		return
@@ -707,26 +709,27 @@ func (s *Syncer) syncAppProject(
 	// captured definitions) get one synthesized App pipeline-def + trigger;
 	// App-source projects recreate their captured definitions.
 	if synthesize {
-		s.synthesizeOAuthPipelineDefinition(report, name, newProjectID, p, mapping, opts)
+		s.synthesizeOAuthPipelineDefinition(ctx, report, name, newProjectID, p, mapping, opts)
 	}
 	for _, def := range p.PipelineDefinitions {
-		s.syncAppPipelineDefinition(report, name, newProjectID, def, destSlug, mapping, opts)
+		s.syncAppPipelineDefinition(ctx, report, name, newProjectID, def, destSlug, mapping, opts)
 	}
 
 	// Configure settings, vars, etc. on the new slug.
-	s.syncProjectSettings(report, p, newSlug, opts)
-	s.syncProjectVars(report, p, bundle, newSlug, opts)
-	s.syncProjectSSHKeys(report, p, bundle, newSlug, opts)
-	s.syncProjectWebhooks(report, p, newSlug, newProjectID, opts)
-	s.syncProjectSchedules(report, p, newSlug, opts)
-	s.syncProjectOIDCClaims(report, p, newSlug, destOrgID, newProjectID, opts)
-	s.syncProjectV11Flags(report, p, newSlug, opts)
-	s.syncProjectAPITokens(report, p, newSlug, opts)
+	s.syncProjectSettings(ctx, report, p, newSlug, opts)
+	s.syncProjectVars(ctx, report, p, bundle, newSlug, opts)
+	s.syncProjectSSHKeys(ctx, report, p, bundle, newSlug, opts)
+	s.syncProjectWebhooks(ctx, report, p, newSlug, newProjectID, opts)
+	s.syncProjectSchedules(ctx, report, p, newSlug, opts)
+	s.syncProjectOIDCClaims(ctx, report, p, newSlug, destOrgID, newProjectID, opts)
+	s.syncProjectV11Flags(ctx, report, p, newSlug, opts)
+	s.syncProjectAPITokens(ctx, report, p, newSlug, opts)
 }
 
 // syncAppPipelineDefinition creates one pipeline definition plus its triggers
 // for a freshly-created App project.
 func (s *Syncer) syncAppPipelineDefinition(
+	ctx context.Context,
 	report *Report,
 	projectName, projectID string,
 	def manifest.PipelineDefinition,
@@ -735,12 +738,12 @@ func (s *Syncer) syncAppPipelineDefinition(
 	opts Options,
 ) {
 	// Resolve the external_id for config and checkout sources.
-	configExtID, configOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/config",
+	configExtID, configOK := s.resolveExternalID(ctx, report, projectName+"/def:"+def.Name+"/config",
 		def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID, mapping, opts)
 	if !configOK {
 		return
 	}
-	checkoutExtID, checkoutOK := s.resolveExternalID(report, projectName+"/def:"+def.Name+"/checkout",
+	checkoutExtID, checkoutOK := s.resolveExternalID(ctx, report, projectName+"/def:"+def.Name+"/checkout",
 		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID, mapping, opts)
 	if !checkoutOK {
 		return
@@ -775,12 +778,12 @@ func (s *Syncer) syncAppPipelineDefinition(
 			fmt.Sprintf("would create pipeline definition (config ext-id %s, checkout ext-id %s)", configExtID, checkoutExtID))
 		// Still preview trigger actions.
 		for _, trig := range def.Triggers {
-			s.syncAppTrigger(report, projectName, projectID, def.Name, "", trig, mapping, opts)
+			s.syncAppTrigger(ctx, report, projectName, projectID, def.Name, "", trig, mapping, opts)
 		}
 		return
 	}
 
-	defID, err := s.Projects.CreatePipelineDefinition(projectID, spec)
+	defID, err := s.Projects.CreatePipelineDefinition(ctx, projectID, spec)
 	if err != nil {
 		// "Installation does not have access to repository" (and similar
 		// access/installation errors) mean the dest GitHub App installation
@@ -803,13 +806,14 @@ func (s *Syncer) syncAppPipelineDefinition(
 
 	// Create triggers.
 	for _, trig := range def.Triggers {
-		s.syncAppTrigger(report, projectName, projectID, def.Name, defID, trig, mapping, opts)
+		s.syncAppTrigger(ctx, report, projectName, projectID, def.Name, defID, trig, mapping, opts)
 	}
 }
 
 // syncAppTrigger creates one trigger (disabled) on a pipeline definition and
 // queues an App EnableTarget for later enablement.
 func (s *Syncer) syncAppTrigger(
+	ctx context.Context,
 	report *Report,
 	projectName, projectID, defName, defID string,
 	trig manifest.Trigger,
@@ -838,7 +842,7 @@ func (s *Syncer) syncAppTrigger(
 		return
 	}
 
-	extID, ok := s.resolveExternalID(report, target,
+	extID, ok := s.resolveExternalID(ctx, report, target,
 		trig.EventSource.RepoFullName, trig.EventSource.RepoExternalID, mapping, opts)
 	if !ok {
 		return
@@ -857,7 +861,7 @@ func (s *Syncer) syncAppTrigger(
 		Disabled:    true,
 	}
 
-	trigID, err := s.Projects.CreateTrigger(projectID, defID, trigSpec)
+	trigID, err := s.Projects.CreateTrigger(ctx, projectID, defID, trigSpec)
 	if err != nil {
 		report.add("project-trigger", target, "error",
 			fmt.Sprintf("create trigger: %v", err))
@@ -894,13 +898,13 @@ func (s *Syncer) syncAppTrigger(
 //  4. If capturedID is non-empty and no name to resolve → reuse capturedID.
 //
 //  5. No external_id at all → emit "manual"; return ok=false.
-func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID string, mapping *manifest.Mapping, opts Options) (string, bool) {
+func (s *Syncer) resolveExternalID(ctx context.Context, report *Report, target, fullName, capturedID string, mapping *manifest.Mapping, opts Options) (string, bool) {
 	// Step 1: compute destination full-name by applying the GH-org mapping.
-	destFullName := s.mapRepoFullName(fullName, mapping, opts)
+	destFullName := s.mapRepoFullName(ctx, fullName, mapping, opts)
 
 	if opts.GitHubToken != "" && destFullName != "" {
 		// Step 2: token available — call the GitHub API.
-		id, err := resolveRepoID(destFullName, opts.GitHubToken, "")
+		id, err := resolveRepoID(ctx, destFullName, opts.GitHubToken, "")
 		if err != nil {
 			if isNotFound(err) {
 				// Repo missing in dest GH org → skip onboarding, emit manual.
@@ -943,7 +947,7 @@ func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID 
 
 // mapRepoFullName applies the GH-org mapping to a source repo full-name.
 // Precedence: Mapping.GitHubOrg > opts.DestGitHubOrg > unchanged.
-func (s *Syncer) mapRepoFullName(sourceFullName string, mapping *manifest.Mapping, opts Options) string {
+func (s *Syncer) mapRepoFullName(ctx context.Context, sourceFullName string, mapping *manifest.Mapping, opts Options) string {
 	if sourceFullName == "" {
 		return sourceFullName
 	}
@@ -978,7 +982,7 @@ func isNotFound(err error) bool {
 // In dry-run mode (apply=false) no API call is made and the returned Action has
 // status "manual" with a detail explaining what would happen.  In apply mode the
 // appropriate API is called and the Action status reflects the result.
-func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
+func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (Action, error) {
 	switch t.Kind {
 	case "trigger":
 		target := t.ProjectID + "/trigger/" + t.TriggerID
@@ -990,7 +994,7 @@ func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
 				Detail: "would enable trigger (set disabled=false)",
 			}, nil
 		}
-		if err := s.Projects.EnableTrigger(t.ProjectID, t.TriggerID); err != nil {
+		if err := s.Projects.EnableTrigger(ctx, t.ProjectID, t.TriggerID); err != nil {
 			return Action{
 				Kind:   "project",
 				Target: target,
@@ -1013,7 +1017,7 @@ func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
 				Detail: "would enable builds (follow)",
 			}, nil
 		}
-		_, err := s.Projects.FollowProject(t.VCSType, t.Org, t.Repo)
+		_, err := s.Projects.FollowProject(ctx, t.VCSType, t.Org, t.Repo)
 		if err != nil {
 			return Action{
 				Kind:   "project",
@@ -1031,7 +1035,7 @@ func (s *Syncer) EnableBuilds(t EnableTarget, apply bool) (Action, error) {
 	}
 }
 
-func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst string, opts Options) {
+func (s *Syncer) syncProjectSettings(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
 	if p.Settings == nil {
 		return
 	}
@@ -1055,14 +1059,14 @@ func (s *Syncer) syncProjectSettings(report *Report, p manifest.Project, dst str
 		settings = stripOAuthOnlySettings(settings)
 	}
 
-	if err := s.Projects.UpdateSettings(provider, org, proj, settings); err != nil {
+	if err := s.Projects.UpdateSettings(ctx, provider, org, proj, settings); err != nil {
 		report.add("project-settings", dst, "error", err.Error())
 		return
 	}
 	report.add("project-settings", dst, "set", "updated advanced settings")
 }
 
-func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
+func (s *Syncer) syncProjectVars(ctx context.Context, report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
 	values := map[string]string{}
 	if bundle != nil {
 		values = bundle.ProjectSecrets[p.Slug] // keyed by the SOURCE slug
@@ -1073,7 +1077,7 @@ func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *man
 	// (e.g. "circleci/<org-id>/<new>") that would cause a doomed HTTP call.
 	existing := map[string]bool{}
 	if opts.Apply {
-		if vars, err := s.Projects.ListEnvVars(dst); err == nil {
+		if vars, err := s.Projects.ListEnvVars(ctx, dst); err == nil {
 			for _, v := range vars {
 				existing[v.Name] = true
 			}
@@ -1088,7 +1092,7 @@ func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *man
 		val, ok := values[v.Name]
 		if !ok {
 			if opts.MissingSecrets == MissingPlaceholder {
-				if err := s.createVar(dst, v.Name, opts.placeholder(), opts.Apply); err != nil {
+				if err := s.createVar(ctx, dst, v.Name, opts.placeholder(), opts.Apply); err != nil {
 					report.add("project-var", target, "error", err.Error())
 					continue
 				}
@@ -1098,7 +1102,7 @@ func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *man
 			}
 			continue
 		}
-		if err := s.createVar(dst, v.Name, val, opts.Apply); err != nil {
+		if err := s.createVar(ctx, dst, v.Name, val, opts.Apply); err != nil {
 			report.add("project-var", target, "error", err.Error())
 			continue
 		}
@@ -1106,11 +1110,11 @@ func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *man
 	}
 }
 
-func (s *Syncer) createVar(slug, name, value string, apply bool) error {
+func (s *Syncer) createVar(ctx context.Context, slug, name, value string, apply bool) error {
 	if !apply {
 		return nil
 	}
-	return s.Projects.CreateEnvVar(slug, name, value)
+	return s.Projects.CreateEnvVar(ctx, slug, name, value)
 }
 
 func toProjectSettings(s *manifest.AdvancedSettings) *project.AdvancedSettings {
@@ -1193,7 +1197,7 @@ func isRepoAccessError(err error) bool {
 // CreateProjectToken and print the NEW plaintext value to s.Out (stderr) with a
 // "save these now" header. Values are NEVER written to any log, stdout, or JSON
 // output stream.
-func (s *Syncer) syncProjectAPITokens(report *Report, p manifest.Project, dst string, opts Options) {
+func (s *Syncer) syncProjectAPITokens(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
 	if len(p.APITokens) == 0 {
 		return
 	}
@@ -1212,7 +1216,7 @@ func (s *Syncer) syncProjectAPITokens(report *Report, p manifest.Project, dst st
 	// Check which tokens already exist on the destination (idempotent).
 	existingByLabelScope := map[string]bool{}
 	if opts.Apply {
-		existing, lerr := s.Projects.ListProjectTokens(dst)
+		existing, lerr := s.Projects.ListProjectTokens(ctx, dst)
 		if lerr != nil {
 			clog.Debugf("could not list existing project tokens on %s: %v", dst, lerr)
 			// Do not abort — proceed and let create calls fail/succeed individually.
@@ -1241,7 +1245,7 @@ func (s *Syncer) syncProjectAPITokens(report *Report, p manifest.Project, dst st
 			continue
 		}
 
-		plaintext, cerr := s.Projects.CreateProjectToken(dst, t.Scope, t.Label)
+		plaintext, cerr := s.Projects.CreateProjectToken(ctx, dst, t.Scope, t.Label)
 		if cerr != nil {
 			report.add("project-api-token", target, "error",
 				fmt.Sprintf("create API token %q (scope %s): %v", t.Label, t.Scope, cerr))
@@ -1282,7 +1286,7 @@ func dryRunSuffix(apply bool) string {
 //     treated as "exists" rather than an error.
 //   - Dry-run aware: when opts.Apply is false, planned creations are reported
 //     without making any API calls.
-func (s *Syncer) SyncRunnerResourceClasses(m *manifest.Manifest, opts Options) (*Report, error) {
+func (s *Syncer) SyncRunnerResourceClasses(ctx context.Context, m *manifest.Manifest, opts Options) (*Report, error) {
 	report := &Report{Applied: opts.Apply}
 
 	if len(m.RunnerResourceClasses) == 0 {
@@ -1307,7 +1311,7 @@ func (s *Syncer) SyncRunnerResourceClasses(m *manifest.Manifest, opts Options) (
 	// listing fails we still attempt creation and let the API return 409/conflict).
 	existingByName := map[string]bool{}
 	if s.Runner != nil && opts.Apply {
-		existing, lerr := s.Runner.GetResourceClassesByNamespace(opts.DestRunnerNamespace)
+		existing, lerr := s.Runner.GetResourceClassesByNamespace(ctx, opts.DestRunnerNamespace)
 		if lerr != nil {
 			clog.Debugf("could not pre-fetch existing runner classes in %s: %v", opts.DestRunnerNamespace, lerr)
 		} else {
@@ -1343,7 +1347,7 @@ func (s *Syncer) SyncRunnerResourceClasses(m *manifest.Manifest, opts Options) (
 		}
 
 		clog.Debugf("CreateResourceClass resource_class=%s", destName)
-		_, err := s.Runner.CreateResourceClass(destName, rc.Description)
+		_, err := s.Runner.CreateResourceClass(ctx, destName, rc.Description)
 		if err != nil {
 			// Treat "already exists" / conflict responses as idempotent success.
 			if isAlreadyExists(err) {
