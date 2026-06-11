@@ -9,7 +9,10 @@ import (
 // The portable identity is Email (keyed) and Username (display); UserID is the
 // server-assigned UUID required for write operations.
 type OrgRoleGrant struct {
-	UserID   string `json:"userId"`
+	// The CIAM role-grants API returns this field as snake_case "user_id"
+	// (matching the project-level grant shape); a "userId" tag silently decodes
+	// to empty, which breaks destination user resolution during sync (#176).
+	UserID   string `json:"user_id"`
 	Email    string `json:"email"`
 	Username string `json:"username"`
 	Role     string `json:"role"` // org-admin | org-contributor | org-viewer

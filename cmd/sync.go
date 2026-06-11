@@ -121,6 +121,7 @@ func newSyncCommand() *cobra.Command {
 		skipProjects        bool
 		skipOrgSettings     bool
 		skipRunner          bool
+		skipCIAM            bool
 		githubToken         string
 		destGitHubOrg       string
 		destRunnerNamespace string
@@ -287,6 +288,7 @@ Examples:
 				Projects:    projClient,
 				OrgSettings: orgSettingsAdapter{orgClient},
 				Groups:      orgGroupLister{orgClient},
+				CIAM:        ciamWriterAdapter{orgClient},
 				Out:         cmd.ErrOrStderr(),
 			}
 			opts := syncer.Options{
@@ -360,6 +362,20 @@ Examples:
 				}
 			}
 
+			// CIAM roles and groups (standalone circleci-type orgs only; SyncCIAM
+			// self-gates on the destination org type and on the manifest having
+			// CIAM data, so it is safe to always attempt unless --skip-ciam).
+			if !skipCIAM && m.CIAM != nil {
+				rep, err := sy.SyncCIAM(m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["CIAM"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "CIAM", rep, m)
+				}
+			}
+
 			// Emit a warning when no bundle was loaded but the manifest contains
 			// context or project env vars that needed values.
 			if bundle == nil {
@@ -404,6 +420,7 @@ Examples:
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 	f.BoolVar(&skipRunner, "skip-runner", false, "Skip syncing self-hosted runner resource classes")
+	f.BoolVar(&skipCIAM, "skip-ciam", false, "Skip syncing CIAM roles and groups (standalone circleci-type orgs only)")
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",
@@ -602,6 +619,60 @@ func (g orgGroupLister) ListGroups(orgID string) ([]syncer.Group, error) {
 	}
 	return out, nil
 }
+
+// ciamWriterAdapter wraps *org.Client and adapts it to syncer.CIAMWriter.
+// Two methods need shape conversion (ListOrgRoleGrants returns []org.OrgRoleGrant
+// → []syncer.CIAMRoleGrant; CreateGroup returns *org.Group → its ID); the rest
+// forward directly. Wiring this enables CIAM apply (#176); SyncCIAM self-gates on
+// the destination being a circleci-type org and on the manifest having CIAM data.
+type ciamWriterAdapter struct {
+	c *org.Client
+}
+
+func (a ciamWriterAdapter) ListOrgRoleGrants(orgID string) ([]syncer.CIAMRoleGrant, error) {
+	grants, err := a.c.ListOrgRoleGrants(orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]syncer.CIAMRoleGrant, len(grants))
+	for i, g := range grants {
+		out[i] = syncer.CIAMRoleGrant{UserID: g.UserID, Email: g.Email, Username: g.Username}
+	}
+	return out, nil
+}
+func (a ciamWriterAdapter) SetOrgUserRole(orgID, userID, role string) error {
+	return a.c.SetOrgUserRole(orgID, userID, role)
+}
+func (a ciamWriterAdapter) ListGroups(orgID string) ([]syncer.CIAMGroupInfo, error) {
+	groups, err := a.c.ListGroups(orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]syncer.CIAMGroupInfo, len(groups))
+	for i, g := range groups {
+		out[i] = syncer.CIAMGroupInfo{ID: g.ID, Name: g.Name}
+	}
+	return out, nil
+}
+func (a ciamWriterAdapter) CreateGroup(orgID, name, description string) (string, error) {
+	g, err := a.c.CreateGroup(orgID, name, description)
+	if err != nil {
+		return "", err
+	}
+	return g.ID, nil
+}
+func (a ciamWriterAdapter) AddUsersToGroup(orgID, groupID string, userIDs []string) error {
+	return a.c.AddUsersToGroup(orgID, groupID, userIDs)
+}
+func (a ciamWriterAdapter) SetProjectUserRole(orgID, projectID, userID, role string) error {
+	return a.c.SetProjectUserRole(orgID, projectID, userID, role)
+}
+func (a ciamWriterAdapter) AddProjectGroupRole(orgID, projectID string, groupIDs []string, role string) error {
+	return a.c.AddProjectGroupRole(orgID, projectID, groupIDs, role)
+}
+
+// Compile-time assertion that the adapter satisfies the syncer interface.
+var _ syncer.CIAMWriter = ciamWriterAdapter{}
 
 // loadBundleIfPresent loads the secret bundle at path if it exists; a missing
 // file is not an error (sync then reports all values as needing manual entry).

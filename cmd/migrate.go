@@ -34,6 +34,7 @@ func newMigrateCommand() *cobra.Command {
 		skipOrgSettings     bool
 		skipExtras          bool
 		skipRunner          bool
+		skipCIAM            bool
 		output              string
 		reportPath          string
 		runnerNamespace     string
@@ -263,6 +264,7 @@ Examples:
 				Projects:    dstProjClient,
 				OrgSettings: orgSettingsAdapter{dstOrgClient},
 				Groups:      orgGroupLister{dstOrgClient},
+				CIAM:        ciamWriterAdapter{dstOrgClient},
 				Out:         cmd.ErrOrStderr(),
 			}
 			opts := syncer.Options{
@@ -333,6 +335,18 @@ Examples:
 				}
 			}
 
+			// CIAM roles and groups (standalone circleci-type orgs only; self-gated).
+			if !skipCIAM && m.CIAM != nil {
+				rep, syncErr := sy.SyncCIAM(m, mapping, opts)
+				if syncErr != nil {
+					return syncErr
+				}
+				repsBySection["CIAM"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "CIAM", rep, m)
+				}
+			}
+
 			if jsonOutput {
 				exportSummary := buildExportSummary(m, output, reportPath)
 				syncSummary := buildSyncSummary(apply, repsBySection)
@@ -382,6 +396,8 @@ Examples:
 		"Skip checkout keys, webhooks, and schedules")
 	f.BoolVar(&skipRunner, "skip-runner", false,
 		"Skip exporting and syncing self-hosted runner resource classes")
+	f.BoolVar(&skipCIAM, "skip-ciam", false,
+		"Skip syncing CIAM roles and groups (standalone circleci-type orgs only)")
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable output; progress is written to stderr")
 	f.StringVarP(&output, "output", "o", "",

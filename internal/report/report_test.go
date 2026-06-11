@@ -1935,26 +1935,30 @@ func TestMarkdown_CIAMSection_ProjectUserGrantsRendered(t *testing.T) {
 	}
 }
 
-// TestMarkdown_CIAM_NotClaimedAutomated guards #176: CIAM role grants are NOT
-// applied by `sync --apply` (the path is not wired into the CLI), so the report
-// must not list them under "Automated by sync --apply" and must instead flag
-// them as a manual step.
-func TestMarkdown_CIAM_NotClaimedAutomated(t *testing.T) {
+// TestMarkdown_CIAM_OrgAutomated_ProjectManual guards #176/#179: org-level CIAM
+// role grants ARE applied by `sync --apply` (so they belong in the automated
+// section), but per-project grants are NOT (the destination project UUID is not
+// reliably mappable) and must be flagged as a manual step.
+func TestMarkdown_CIAM_OrgAutomated_ProjectManual(t *testing.T) {
 	m := &manifest.Manifest{
 		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
 		CIAM: &manifest.CIAMData{
 			OrgRoles: []manifest.CIAMOrgRole{
 				{Username: "Alice", Role: "org-admin"},
 			},
+			ProjectUserGrants: []manifest.CIAMProjectUserGrant{
+				{ProjectName: "p", Username: "Alice", Role: "project-admin"},
+			},
 		},
 	}
 	md := report.Markdown(m)
 	automated := md[strings.Index(md, "### 2. Automated by"):strings.Index(md, "### 3. Manual steps")]
-	if strings.Contains(automated, "CIAM roles, groups, and per-project role grants") {
-		t.Error("CIAM must not be listed as automated by sync --apply (#176)")
+	manual := md[strings.Index(md, "### 3. Manual steps"):]
+	if !strings.Contains(automated, "CIAM **org-level** role grants") {
+		t.Error("org-level CIAM roles must be listed as automated by sync --apply")
 	}
-	if !strings.Contains(md, "not yet "+"applied automatically by `sync`") {
-		t.Error("report must flag CIAM as a manual step until sync wiring lands (#176)")
+	if !strings.Contains(manual, "CIAM per-project role grants") {
+		t.Error("per-project CIAM grants must be flagged as a manual step (#179)")
 	}
 }
 

@@ -914,3 +914,74 @@ func TestPrintSyncReport_ManualLineContainsFriendlyName(t *testing.T) {
 		t.Errorf("expected circleci settings URL in output, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ciamWriterAdapter — converts *org.Client results to the syncer.CIAMWriter
+// shapes (#176). Backed by httptest via newOrgClientForTest.
+// ---------------------------------------------------------------------------
+
+func TestCIAMWriterAdapter_ListOrgRoleGrants_ConvertsAndMapsUserID(t *testing.T) {
+	// The CIAM role-grants API returns snake_case "user_id"; the adapter must
+	// surface it (and username) on the syncer type so dest user resolution works.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/role-grants") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{"user_id": "uid-1", "email": "", "username": "Jim Crowley", "role": "org-admin"},
+				},
+			})
+			return
+		}
+		http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	got, err := a.ListOrgRoleGrants("org-uuid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 grant, got %d", len(got))
+	}
+	if got[0].UserID != "uid-1" || got[0].Username != "Jim Crowley" || got[0].Email != "" {
+		t.Errorf("conversion wrong: %+v", got[0])
+	}
+}
+
+func TestCIAMWriterAdapter_ListGroups_And_CreateGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/groups") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "g-new", "name": "platform"})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/groups") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{{"id": "g-1", "name": "backend"}},
+			})
+			return
+		}
+		http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+
+	groups, err := a.ListGroups("org-uuid")
+	if err != nil {
+		t.Fatalf("ListGroups error: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID != "g-1" || groups[0].Name != "backend" {
+		t.Errorf("ListGroups conversion wrong: %+v", groups)
+	}
+
+	id, err := a.CreateGroup("org-uuid", "platform", "desc")
+	if err != nil {
+		t.Fatalf("CreateGroup error: %v", err)
+	}
+	if id != "g-new" {
+		t.Errorf("CreateGroup returned id %q, want g-new", id)
+	}
+}
