@@ -2688,3 +2688,121 @@ func TestIssue156_SummaryTableLegendExplainsCapturedSeparately(t *testing.T) {
 		t.Errorf("summary legend should mention 'circleci-migrate secrets capture'")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #167 — CIAM user columns fall back to username when email is empty
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue167_CIAMOrgRole_EmptyEmail_RendersUsername verifies the org-role
+// table renders the username (not a blank cell) when the captured email is
+// empty, and that the user column header reflects "User (email or username)".
+func TestIssue167_CIAMOrgRole_EmptyEmail_RendersUsername(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			OrgRoles: []manifest.CIAMOrgRole{
+				{Email: "", Username: "bob", Role: "org-admin"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "| User (email or username) | Username | Role |") {
+		t.Errorf("org-role table header should be 'User (email or username)'; got:\n%s", md)
+	}
+	// The user cell must show the username, not an empty backtick pair.
+	if !strings.Contains(md, "| `bob` | `bob` | `org-admin` |") {
+		t.Errorf("empty-email org role should render username in user cell; got:\n%s", md)
+	}
+	if strings.Contains(md, "| `` |") {
+		t.Errorf("empty cell rendered for empty-email org role; got:\n%s", md)
+	}
+	// Legend should mention the username fallback.
+	if !strings.Contains(md, "otherwise by username") {
+		t.Errorf("CIAM legend should mention username fallback; got:\n%s", md)
+	}
+}
+
+// TestIssue167_CIAMProjectUserGrant_EmptyEmail_RendersUsername verifies the
+// per-project user-grant table renders the username when email is empty.
+func TestIssue167_CIAMProjectUserGrant_EmptyEmail_RendersUsername(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			ProjectUserGrants: []manifest.CIAMProjectUserGrant{
+				{ProjectName: "my-project", Email: "", Username: "carol", Role: "project-admin"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "| Project | User (email or username) | Role |") {
+		t.Errorf("project-user-grant table header should be 'User (email or username)'; got:\n%s", md)
+	}
+	if !strings.Contains(md, "| `my-project` | `carol` | `project-admin` |") {
+		t.Errorf("empty-email project user grant should render username; got:\n%s", md)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #168 — report polish: unnamed pipeline + cutover footnote
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue168_UnnamedPipeline_RendersFallback verifies a pipeline definition
+// with an empty name renders "(unnamed pipeline)" instead of empty backticks.
+func TestIssue168_UnnamedPipeline_RendersFallback(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "circleci/org-uuid"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/org-uuid/proj-uuid",
+				Name: "MyService",
+				PipelineDefinitions: []manifest.PipelineDefinition{
+					{Name: "", Description: "the unnamed one"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "**`(unnamed pipeline)`**") {
+		t.Errorf("empty pipeline name should render '(unnamed pipeline)'; got:\n%s", md)
+	}
+	if strings.Contains(md, "**``**") {
+		t.Errorf("empty bold backticks should not be rendered for an unnamed pipeline; got:\n%s", md)
+	}
+}
+
+// TestIssue168_CutoverFootnote_NoPlaceholderSentenceWhenSlugPresent verifies the
+// "Replace `<source-org-slug>`" sentence is omitted when a real slug is used.
+func TestIssue168_CutoverFootnote_NoPlaceholderSentenceWhenSlugPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "circleci/org-uuid"}},
+	}
+	md := report.Markdown(m)
+
+	// The real slug is substituted into the command.
+	if !strings.Contains(md, "circleci-migrate export --source-org circleci/org-uuid") {
+		t.Errorf("expected real source slug in command; got:\n%s", md)
+	}
+	// The placeholder-replacement sentence must be absent.
+	if strings.Contains(md, "Replace `<source-org-slug>`") {
+		t.Errorf("placeholder-replacement sentence should be omitted when slug is present; got:\n%s", md)
+	}
+}
+
+// TestIssue168_CutoverFootnote_PlaceholderSentenceWhenSlugMissing verifies the
+// replacement sentence IS emitted only when the literal placeholder was used.
+func TestIssue168_CutoverFootnote_PlaceholderSentenceWhenSlugMissing(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: ""}},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "circleci-migrate export --source-org <source-org-slug>") {
+		t.Errorf("expected placeholder slug in command when slug missing; got:\n%s", md)
+	}
+	if !strings.Contains(md, "Replace `<source-org-slug>`") {
+		t.Errorf("placeholder-replacement sentence should be present when placeholder used; got:\n%s", md)
+	}
+}
