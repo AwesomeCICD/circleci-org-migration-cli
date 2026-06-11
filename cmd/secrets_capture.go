@@ -1256,6 +1256,7 @@ func writeSecretFile(path, data string) error {
 
 // writeFile writes data to path with 0644 permissions (public key / recipient).
 func writeFile(path, data string) error {
+	// #nosec G306 -- recipient file is a PUBLIC age key; world-readable (0644) is intentional
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 

@@ -212,8 +212,7 @@ jobs:
           destination: gitleaks.sarif
 
   # Filesystem vuln/secret/misconfig scan via the cci-labs Trivy orb.
-  # Warn-only for now (no exit-code); flip exit-code to "1" to make it blocking
-  # once a clean baseline is established.
+  # Blocking: exit-code 1 on any HIGH or CRITICAL finding (clean baseline verified).
   security-trivy:
     executor: base
     steps:
@@ -235,6 +234,7 @@ jobs:
           scan-ref: "."
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
+          exit-code: "1"
           format: table
           hide-progress: true
 
