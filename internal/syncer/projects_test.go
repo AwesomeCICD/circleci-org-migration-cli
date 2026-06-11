@@ -37,6 +37,8 @@ type fakeProjectWriter struct {
 	setProjectOIDCClaims      func(orgID, projID string, audience []string, ttl string) error
 	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
 	setV11ProjectFeatureFlags func(slug string, flags map[string]bool) error
+	listAdditionalSSHKeys     func(slug string) ([]project.SSHKey, error)
+	addAdditionalSSHKey       func(slug, hostname, privateKey string) error
 
 	// App-org methods
 	createAppProject         func(orgID, name string) (*project.Project, error)
@@ -163,6 +165,22 @@ func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(slug string, flags map[str
 	f.calls = append(f.calls, projectCall{"SetV11ProjectFeatureFlags", append([]string{slug}, keys...)})
 	if f.setV11ProjectFeatureFlags != nil {
 		return f.setV11ProjectFeatureFlags(slug, flags)
+	}
+	return nil
+}
+
+func (f *fakeProjectWriter) ListAdditionalSSHKeys(slug string) ([]project.SSHKey, error) {
+	f.calls = append(f.calls, projectCall{"ListAdditionalSSHKeys", []string{slug}})
+	if f.listAdditionalSSHKeys != nil {
+		return f.listAdditionalSSHKeys(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
+	f.calls = append(f.calls, projectCall{"AddAdditionalSSHKey", []string{slug, hostname, privateKey}})
+	if f.addAdditionalSSHKey != nil {
+		return f.addAdditionalSSHKey(slug, hostname, privateKey)
 	}
 	return nil
 }

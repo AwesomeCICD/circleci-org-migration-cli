@@ -394,6 +394,32 @@ type Project struct {
 
 	// Followed records whether the source token's user follows this project.
 	Followed *bool `json:"followed,omitempty"`
+
+	// SSHKeys lists the additional (user-added) SSH deploy keys on this project.
+	// These are distinct from the auto-generated checkout key: they are added via
+	// Project Settings → SSH Keys and are used to check out external repos or
+	// access private dependencies. The public key and fingerprint are captured
+	// here; the private key is NOT available via API (CircleCI never returns it)
+	// and must be sourced from the SecretBundle.SSHKeys section at sync time.
+	// Nil/empty when none are configured or when the export lacked permission.
+	SSHKeys []ProjectSSHKey `json:"ssh_keys,omitempty"`
+}
+
+// ProjectSSHKey is an additional (user-added) SSH key on a project.
+// CircleCI calls these "Additional SSH Keys" in the project settings UI.
+// They differ from checkout/deploy keys: they are used to authenticate with
+// external services (e.g. private git submodules, package repos) during builds.
+type ProjectSSHKey struct {
+	// Hostname is the hostname this key is scoped to (e.g. "github.com").
+	// May be empty when the key is not scoped to a specific host.
+	Hostname string `json:"hostname,omitempty"`
+	// PublicKey is the public half of the SSH key (informational only — CircleCI
+	// returns it but it is not needed to re-add the key at the destination).
+	PublicKey string `json:"public_key,omitempty"`
+	// Fingerprint is the SHA256 fingerprint of the key (e.g.
+	// "SHA256:abc123…"). Used to detect whether the key already exists on the
+	// destination, achieving idempotency without comparing private key material.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // ProjectVCS holds version-control details for a project.

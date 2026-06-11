@@ -88,6 +88,10 @@ type ProjectWriter interface {
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
 
+	// SSH key management (v1.1).
+	ListAdditionalSSHKeys(slug string) ([]project.SSHKey, error)
+	AddAdditionalSSHKey(slug, hostname, privateKey string) error
+
 	// App-org (circleci/ vcs_type) project management.
 	CreateAppProject(orgID, name string) (*project.Project, error)
 	CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error)
@@ -563,6 +567,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, destProj.ID, opts)
 		s.syncProjectV11Flags(report, p, dst, opts)
+		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
 	}
 	return report, nil
 }
@@ -608,6 +613,7 @@ func (s *Syncer) syncAppProject(
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, existing.ID, opts)
 		s.syncProjectV11Flags(report, p, dst, opts)
+		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
 		return
 	}
 
@@ -643,6 +649,7 @@ func (s *Syncer) syncAppProject(
 		s.syncProjectSchedules(report, p, drySlug, opts)
 		s.syncProjectOIDCClaims(report, p, drySlug, destOrgID, "", opts)
 		s.syncProjectV11Flags(report, p, drySlug, opts)
+		s.syncProjectSSHKeys(report, p, bundle, drySlug, opts)
 		return
 	}
 
@@ -681,6 +688,7 @@ func (s *Syncer) syncAppProject(
 	s.syncProjectSchedules(report, p, newSlug, opts)
 	s.syncProjectOIDCClaims(report, p, newSlug, destOrgID, newProjectID, opts)
 	s.syncProjectV11Flags(report, p, newSlug, opts)
+	s.syncProjectSSHKeys(report, p, bundle, newSlug, opts)
 }
 
 // syncAppPipelineDefinition creates one pipeline definition plus its triggers
