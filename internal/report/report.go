@@ -133,6 +133,17 @@ func Markdown(m *manifest.Manifest) string {
 		if len(p.CheckoutKeys) > 0 {
 			fmt.Fprintf(&b, "- Checkout keys: %d\n", len(p.CheckoutKeys))
 		}
+		if len(p.SSHKeys) > 0 {
+			fmt.Fprintf(&b, "- Additional SSH keys (%d):\n", len(p.SSHKeys))
+			for _, k := range p.SSHKeys {
+				host := k.Hostname
+				if host == "" {
+					host = "(global)"
+				}
+				pubKeyPreview := sshPublicKeyPreview(k.PublicKey)
+				fmt.Fprintf(&b, "  - host: `%s`, fingerprint: `%s`, key: `%s`\n", host, orDash(k.Fingerprint), pubKeyPreview)
+			}
+		}
 		if len(p.Webhooks) > 0 {
 			fmt.Fprintf(&b, "- Webhooks: %d\n", len(p.Webhooks))
 		}
@@ -374,6 +385,16 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// Always: checkout / SSH keys cannot be transferred.
 	items = append(items, "**Checkout & SSH keys** — private key material is never exported. "+
 		"Regenerate deploy/checkout and user keys on the destination and update any VCS-side deploy keys.")
+
+	// Additional SSH keys — only when at least one project captured SSH key metadata.
+	if hasAdditionalSSHKeys(m) {
+		items = append(items, "**Additional SSH keys (private keys not exported)** — "+
+			"additional SSH key public metadata is captured in this manifest (hostname, fingerprint, public key), "+
+			"but the corresponding PRIVATE keys are never returned by the CircleCI API. "+
+			"Use the SSH-key extraction step to capture and transfer private key material, "+
+			"then re-add each key on the destination project under Project Settings → SSH Keys → Additional SSH Keys."+
+			warningSuffix(m, "ssh_keys_private_excluded"))
+	}
 
 	// Always: webhook signing secrets.
 	items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are not exported; "+
@@ -621,10 +642,37 @@ func hasPipelineDefinitions(m *manifest.Manifest) bool {
 	return false
 }
 
+// hasAdditionalSSHKeys reports whether any project in the manifest has at
+// least one additional SSH key entry captured.
+func hasAdditionalSSHKeys(m *manifest.Manifest) bool {
+	for _, p := range m.Projects {
+		if len(p.SSHKeys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // isOAuthSource reports whether the source org is a GitHub OAuth org, inferred
 // from the "gh/" slug prefix (App / GitLab orgs use "circleci/").
 func isOAuthSource(m *manifest.Manifest) bool {
 	return strings.HasPrefix(m.Source.Org.Slug, "gh/")
+}
+
+// sshPublicKeyPreview returns a short preview of an SSH public-key string for
+// display in reports (e.g. "ssh-rsa AAAAB3... [truncated]"). The preview shows
+// the key type and the first 12 characters of the key body, followed by "..."
+// when the full key is longer. This gives the operator enough to visually
+// recognise a key without bloating the report.
+func sshPublicKeyPreview(pub string) string {
+	if pub == "" {
+		return "—"
+	}
+	const maxLen = 32
+	if len(pub) <= maxLen {
+		return pub
+	}
+	return pub[:maxLen] + "..."
 }
 
 // projectRepoLine returns the "Repository" value for a project's VCS entry, or

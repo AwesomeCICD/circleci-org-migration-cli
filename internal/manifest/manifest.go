@@ -382,6 +382,14 @@ type Project struct {
 	Webhooks     []Webhook     `json:"webhooks,omitempty"`
 	Schedules    []Schedule    `json:"schedules,omitempty"`
 
+	// SSHKeys captures the PUBLIC metadata for each additional SSH key
+	// configured on the project (Project Settings → SSH Keys → Additional SSH
+	// Keys).  The PRIVATE key is intentionally excluded — it is never returned
+	// by the CircleCI API.  Private-key material must be captured separately
+	// (e.g. via the secrets-extraction step) and re-added manually on the
+	// destination.
+	SSHKeys []ProjectSSHKey `json:"ssh_keys,omitempty"`
+
 	// PipelineDefinitions captures the App-pipeline definitions for this project,
 	// including their config/checkout sources and all attached triggers.
 	PipelineDefinitions []PipelineDefinition `json:"pipeline_definitions,omitempty"`
@@ -394,6 +402,21 @@ type Project struct {
 
 	// Followed records whether the source token's user follows this project.
 	Followed *bool `json:"followed,omitempty"`
+}
+
+// ProjectSSHKey is the PUBLIC metadata for one additional SSH key on a project.
+// The private key is intentionally excluded — it is NEVER returned by the
+// CircleCI API.  Private-key material must be captured separately (via the
+// ssh-key extraction step) and re-added on the destination after migration.
+type ProjectSSHKey struct {
+	// Hostname is the target host this key is scoped to (e.g. "github.com").
+	// May be empty for globally-scoped additional SSH keys.
+	Hostname string `json:"hostname,omitempty"`
+	// PublicKey is the SSH public-key material (e.g. "ssh-rsa AAAA... user@host").
+	PublicKey string `json:"public_key,omitempty"`
+	// Fingerprint is the SHA256 fingerprint without the "SHA256:" prefix
+	// (e.g. "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=").
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // ProjectVCS holds version-control details for a project.

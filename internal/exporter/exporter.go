@@ -66,6 +66,10 @@ type ProjectAPI interface {
 	FollowedProjectsForOrg(orgName string) ([]project.FollowedProject, error)
 	GetProjectOIDCClaims(orgID, projID string) (audience []string, ttl string, err error)
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
+	// ListAdditionalSSHKeys returns the public metadata for every additional
+	// SSH key configured on a project. Private key material is never returned
+	// by the API. On error the caller should record a non-fatal warning.
+	ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error)
 	// ListOrgProjects returns all projects in an org by org UUID, covering both
 	// GitHub OAuth and GitHub App org types.
 	ListOrgProjects(orgID string) ([]project.OrgProject, error)
@@ -359,6 +363,26 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 			mp.CheckoutKeys = append(mp.CheckoutKeys, manifest.CheckoutKey{
 				Type: k.Type, Fingerprint: k.Fingerprint, PublicKey: k.PublicKey, Preferred: k.Preferred, CreatedAt: k.CreatedAt,
 			})
+		}
+	}
+
+	// Additional SSH keys (public metadata only; private key is never returned
+	// by the API). On error a non-fatal warning is recorded and the export
+	// continues — missing SSH key metadata is not a fatal failure.
+	if sshKeys, skerr := e.Projects.ListAdditionalSSHKeys(mp.Slug); skerr != nil {
+		m.AddWarning("project:"+mp.Slug, "ssh_keys_unreadable",
+			fmt.Sprintf("could not list additional SSH keys: %v", skerr))
+	} else {
+		for _, k := range sshKeys {
+			mp.SSHKeys = append(mp.SSHKeys, manifest.ProjectSSHKey{
+				Hostname:    k.Hostname,
+				PublicKey:   k.PublicKey,
+				Fingerprint: k.Fingerprint,
+			})
+		}
+		if len(sshKeys) > 0 {
+			m.AddWarning("project:"+mp.Slug, "ssh_keys_private_excluded",
+				fmt.Sprintf("%d additional SSH key(s) captured (public metadata only); private keys are not exported — re-add them on the destination via the SSH-key extraction step", len(sshKeys)))
 		}
 	}
 

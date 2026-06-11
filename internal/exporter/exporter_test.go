@@ -203,6 +203,7 @@ type fakeProjectAPI struct {
 	getSettings               func(provider, orgName, proj string) (*project.AdvancedSettings, error)
 	listEnvVars               func(slug string) ([]project.EnvVar, error)
 	listCheckoutKeys          func(slug string) ([]project.CheckoutKey, error)
+	listAdditionalSSHKeys     func(slug string) ([]project.SSHKeyMeta, error)
 	listWebhooks              func(projectID string) ([]project.Webhook, error)
 	listSchedules             func(slug string) ([]project.Schedule, error)
 	followedProjectsForOrg    func(orgName string) ([]project.FollowedProject, error)
@@ -237,6 +238,13 @@ func (f *fakeProjectAPI) ListEnvVars(slug string) ([]project.EnvVar, error) {
 func (f *fakeProjectAPI) ListCheckoutKeys(slug string) ([]project.CheckoutKey, error) {
 	if f.listCheckoutKeys != nil {
 		return f.listCheckoutKeys(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error) {
+	if f.listAdditionalSSHKeys != nil {
+		return f.listAdditionalSSHKeys(slug)
 	}
 	return nil, nil
 }
@@ -3205,5 +3213,190 @@ func TestExport_Projects_ProgressLog_NoName_FallsBackToSlug(t *testing.T) {
 	// The slug must appear when no name is set.
 	if !strings.Contains(logged, "gh/myorg/nameless") {
 		t.Errorf("progress log should contain slug 'gh/myorg/nameless' when name is empty; got:\n%s", logged)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional SSH key export
+// ---------------------------------------------------------------------------
+
+// TestExport_Projects_IncludeExtras_AdditionalSSHKeys verifies that the
+// exporter populates manifest.Project.SSHKeys when ListAdditionalSSHKeys
+// returns data, and records the private-excluded warning.
+func TestExport_Projects_IncludeExtras_AdditionalSSHKeys(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			listAdditionalSSHKeys: func(slug string) ([]project.SSHKeyMeta, error) {
+				return []project.SSHKeyMeta{
+					{Hostname: "github.com", PublicKey: "ssh-rsa AAAA...", Fingerprint: "Cv1Bb...="},
+					{Hostname: "bitbucket.org", PublicKey: "ssh-ed25519 AAAA...", Fingerprint: "XYZabc="},
+				}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	p := m.Projects[0]
+	if len(p.SSHKeys) != 2 {
+		t.Fatalf("expected 2 SSH keys, got %d", len(p.SSHKeys))
+	}
+	if p.SSHKeys[0].Hostname != "github.com" {
+		t.Errorf("SSHKeys[0].Hostname: got %q, want github.com", p.SSHKeys[0].Hostname)
+	}
+	if p.SSHKeys[0].Fingerprint != "Cv1Bb...=" {
+		t.Errorf("SSHKeys[0].Fingerprint: got %q", p.SSHKeys[0].Fingerprint)
+	}
+	if p.SSHKeys[0].PublicKey != "ssh-rsa AAAA..." {
+		t.Errorf("SSHKeys[0].PublicKey: got %q", p.SSHKeys[0].PublicKey)
+	}
+	if p.SSHKeys[1].Hostname != "bitbucket.org" {
+		t.Errorf("SSHKeys[1].Hostname: got %q, want bitbucket.org", p.SSHKeys[1].Hostname)
+	}
+
+	// A warning about private keys being excluded must be recorded.
+	found := false
+	for _, w := range m.Warnings {
+		if w.Scope == "project:gh/myorg/web" && w.Code == "ssh_keys_private_excluded" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected ssh_keys_private_excluded warning, got warnings: %+v", m.Warnings)
+	}
+}
+
+// TestExport_Projects_IncludeExtras_SSHKeysError verifies that a non-fatal
+// warning is recorded when ListAdditionalSSHKeys returns an error, and the
+// export continues without SSHKeys populated.
+func TestExport_Projects_IncludeExtras_SSHKeysError(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			listAdditionalSSHKeys: func(slug string) ([]project.SSHKeyMeta, error) {
+				return nil, errors.New("forbidden")
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	if len(m.Projects[0].SSHKeys) != 0 {
+		t.Errorf("expected no SSH keys on error, got %d", len(m.Projects[0].SSHKeys))
+	}
+
+	// A warning about the unreadable keys must be recorded.
+	found := false
+	for _, w := range m.Warnings {
+		if w.Scope == "project:gh/myorg/web" && w.Code == "ssh_keys_unreadable" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected ssh_keys_unreadable warning, got warnings: %+v", m.Warnings)
+	}
+}
+
+// TestExport_Projects_SSHKeysNotCalledWithoutExtras verifies that
+// ListAdditionalSSHKeys is not called when IncludeExtras=false.
+func TestExport_Projects_SSHKeysNotCalledWithoutExtras(t *testing.T) {
+	sshCalled := false
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			listAdditionalSSHKeys: func(slug string) ([]project.SSHKeyMeta, error) {
+				sshCalled = true
+				return nil, nil
+			},
+		},
+	}
+
+	_, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   false,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sshCalled {
+		t.Error("ListAdditionalSSHKeys should NOT be called when IncludeExtras=false")
+	}
+}
+
+// TestExport_Projects_SSHKeysEmpty_NoWarning verifies that when
+// ListAdditionalSSHKeys returns an empty list, no private-excluded warning is
+// recorded (the warning should only fire when keys are actually present).
+func TestExport_Projects_SSHKeysEmpty_NoWarning(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: "web"}, nil
+			},
+			listAdditionalSSHKeys: func(slug string) ([]project.SSHKeyMeta, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+		IncludeExtras:   true,
+		ProjectSlugs:    []string{"gh/myorg/web"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range m.Warnings {
+		if w.Code == "ssh_keys_private_excluded" {
+			t.Errorf("should not have ssh_keys_private_excluded warning when no SSH keys present")
+		}
 	}
 }
