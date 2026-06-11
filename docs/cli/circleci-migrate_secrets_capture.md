@@ -37,14 +37,18 @@ HOST PROJECT FOR CONTEXT EXTRACTION:
   Use --host-project to specify it; the guided mode prompts you to choose.
   Project env vars are always captured under each project's own pipeline.
 
-ENCRYPTION (--encrypt):
-  When --encrypt is set the in-pipeline extraction job encrypts the artifact
-  with age using a public key you supply (--ssh-public-key or an age key via
-  the recipient field). The CircleCI artifact is then encrypted — plaintext
-  secrets NEVER persist in CircleCI storage.
+ENCRYPTION (default: ON — use --no-encrypt to opt out):
+  By default, the in-pipeline extraction job encrypts the artifact with age so
+  that plaintext secrets NEVER persist in CircleCI artifact storage. Encryption
+  requires a public key: supply --ssh-public-key or --generate-key. When neither
+  is given, capture auto-generates a fresh keypair (--generate-key behaviour).
 
   After the run, capture downloads the .age artifact and decrypts it locally
   with --ssh-private-key (or the generated key) to build the in-memory bundle.
+
+  Use --no-encrypt to disable encryption and accept a PLAINTEXT artifact. This
+  is strongly discouraged for production secrets — build artifacts are retained
+  for at least 1 day and there is no delete-artifact API.
 
   Use --generate-key to have capture create a fresh age X25519 keypair
   automatically, print the file paths, and use it for this run.
@@ -67,20 +71,22 @@ Examples:
   # Interactive guided walkthrough (recommended for first-time use):
   circleci-migrate secrets capture
 
-  # Non-interactive (all flags bypass prompts; CI-safe):
+  # Non-interactive with encryption (default; auto-generates a keypair):
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
     --enable-trigger --branch main -o secrets.json
-  # Encrypted capture with auto-generated key:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key
+  # Encrypted capture with auto-generated key (explicit):
+  circleci-migrate secrets capture --manifest manifest.json --generate-key
   # Encrypted capture with existing SSH key:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt \
+  circleci-migrate secrets capture --manifest manifest.json \
     --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Opt out of encryption (PLAINTEXT artifact — NOT recommended):
+  circleci-migrate secrets capture --manifest manifest.json --no-encrypt
   # Context capture specifying host project explicitly:
   circleci-migrate secrets capture --manifest manifest.json \
     --context deploy-prod --host-project gh/acme/web --enable-trigger
   # Upload encrypted bundle to S3 instead of artifact:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
+  circleci-migrate secrets capture --manifest manifest.json --generate-key \
     --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/
 
 ```
@@ -94,11 +100,12 @@ circleci-migrate secrets capture [--manifest <file>] [flags]
       --branch string                 Branch to check out for the extraction run (default "main")
       --context stringArray           Context name(s) to capture (default: all in manifest)
       --enable-trigger                Enable api-trigger-with-config if not already on, and restore after capture
-      --encrypt                       Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI. Requires --ssh-public-key or --generate-key.
-      --generate-key                  Generate a fresh age X25519 keypair for this run. Writes the identity to ./migration-identity.age and the recipient to ./migration-recipient.txt. Use --generate-key instead of --ssh-public-key when you do not have an existing key.
+      --encrypt                       Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI (default: true). Supply --ssh-public-key or --generate-key; if neither is given a fresh keypair is auto-generated. Use --no-encrypt to opt out. (default true)
+      --generate-key                  Generate a fresh age X25519 keypair for this run. Writes the identity to ./migration-identity.age and the recipient to ./migration-recipient.txt. Use --generate-key instead of --ssh-public-key when you do not have an existing key. Auto-enabled when --encrypt is in effect and no key is supplied.
   -h, --help                          help for capture
       --host-project string           Project slug to use when running the CONTEXT extraction pipeline. Any project works — build history is irrelevant; only the extraction matters. Prompted interactively when contexts are selected and this flag is absent.
       --manifest string               Path to the export manifest (prompted interactively when omitted on a TTY)
+      --no-encrypt                    Disable artifact encryption and produce a PLAINTEXT secrets artifact. NOT recommended for production secrets — build artifacts are retained for at least 1 day and there is no delete-artifact API.
       --no-input                      Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
   -o, --output string                 Path to the secret bundle to write/append (default "secrets.json")
       --poll-timeout duration         Maximum time to wait for each pipeline to complete (0 = no timeout) (default 10m0s)

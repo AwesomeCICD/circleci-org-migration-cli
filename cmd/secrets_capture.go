@@ -601,6 +601,7 @@ func newSecretsCaptureCommand() *cobra.Command {
 		skipRestrictedCtxs    bool
 		removeRestrictions    bool
 		noInput               bool
+		noEncrypt             bool // explicit opt-out; overrides the encrypt=true default
 		pollTimeout           time.Duration
 		artifactRetentionDays int
 		encOpts               captureEncryptOpts
@@ -642,14 +643,18 @@ HOST PROJECT FOR CONTEXT EXTRACTION:
   Use --host-project to specify it; the guided mode prompts you to choose.
   Project env vars are always captured under each project's own pipeline.
 
-ENCRYPTION (--encrypt):
-  When --encrypt is set the in-pipeline extraction job encrypts the artifact
-  with age using a public key you supply (--ssh-public-key or an age key via
-  the recipient field). The CircleCI artifact is then encrypted — plaintext
-  secrets NEVER persist in CircleCI storage.
+ENCRYPTION (default: ON — use --no-encrypt to opt out):
+  By default, the in-pipeline extraction job encrypts the artifact with age so
+  that plaintext secrets NEVER persist in CircleCI artifact storage. Encryption
+  requires a public key: supply --ssh-public-key or --generate-key. When neither
+  is given, capture auto-generates a fresh keypair (--generate-key behaviour).
 
   After the run, capture downloads the .age artifact and decrypts it locally
   with --ssh-private-key (or the generated key) to build the in-memory bundle.
+
+  Use --no-encrypt to disable encryption and accept a PLAINTEXT artifact. This
+  is strongly discouraged for production secrets — build artifacts are retained
+  for at least 1 day and there is no delete-artifact API.
 
   Use --generate-key to have capture create a fresh age X25519 keypair
   automatically, print the file paths, and use it for this run.
@@ -672,20 +677,22 @@ Examples:
   # Interactive guided walkthrough (recommended for first-time use):
   circleci-migrate secrets capture
 
-  # Non-interactive (all flags bypass prompts; CI-safe):
+  # Non-interactive with encryption (default; auto-generates a keypair):
   circleci-migrate secrets capture --manifest manifest.json --source-token $TOKEN
   circleci-migrate secrets capture --manifest manifest.json --project gh/acme/web \
     --enable-trigger --branch main -o secrets.json
-  # Encrypted capture with auto-generated key:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key
+  # Encrypted capture with auto-generated key (explicit):
+  circleci-migrate secrets capture --manifest manifest.json --generate-key
   # Encrypted capture with existing SSH key:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt \
+  circleci-migrate secrets capture --manifest manifest.json \
     --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519
+  # Opt out of encryption (PLAINTEXT artifact — NOT recommended):
+  circleci-migrate secrets capture --manifest manifest.json --no-encrypt
   # Context capture specifying host project explicitly:
   circleci-migrate secrets capture --manifest manifest.json \
     --context deploy-prod --host-project gh/acme/web --enable-trigger
   # Upload encrypted bundle to S3 instead of artifact:
-  circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key \
+  circleci-migrate secrets capture --manifest manifest.json --generate-key \
     --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// ── Interactive guided mode ────────────────────────────────────────
@@ -708,8 +715,11 @@ Examples:
 				if cmd.Flags().Changed("storage") {
 					walkthroughStorage = encOpts.storage
 				}
+				// For encrypt: reset to zero so the walkthrough always asks.
+				// The flag defaults to true but we never want to suppress step 4.
 				walkthroughEncOpts := encOpts
 				walkthroughEncOpts.storage = walkthroughStorage
+				walkthroughEncOpts.encrypt = false // walkthrough asks; don't pre-fill
 
 				// For branch and enable-trigger: only pre-fill if user explicitly set them.
 				walkthroughBranch := ""
@@ -751,8 +761,9 @@ Examples:
 				if result.EncOpts.storage != "" {
 					encOpts.storage = result.EncOpts.storage
 				}
+				// Always take the walkthrough's encrypt decision (it asked the user).
+				encOpts.encrypt = result.EncOpts.encrypt
 				if result.EncOpts.encrypt {
-					encOpts.encrypt = true
 					encOpts.generateKey = result.EncOpts.generateKey
 					encOpts.sshPublicKey = result.EncOpts.sshPublicKey
 					encOpts.sshPrivateKey = result.EncOpts.sshPrivateKey
@@ -767,6 +778,45 @@ Examples:
 
 			if manifestPath == "" {
 				return errors.New("--manifest is required")
+			}
+
+			// ── Resolve encrypt/no-encrypt after walkthrough ─────────────────
+			// In non-interactive mode (wantsInteraction==false), apply the
+			// --no-encrypt override and handle the "no explicit choice" case.
+			if !wantsInteraction {
+				encryptChanged := cmd.Flags().Changed("encrypt")
+				noEncryptChanged := cmd.Flags().Changed("no-encrypt")
+				generateKeyChanged := cmd.Flags().Changed("generate-key")
+				sshPubKeyChanged := cmd.Flags().Changed("ssh-public-key")
+
+				// In --no-input mode every unattended run must carry an explicit
+				// encryption decision so there are no silent plaintext captures.
+				// Any of these flags count as an explicit choice:
+				//   --encrypt, --no-encrypt, --generate-key, --ssh-public-key
+				hasExplicitChoice := encryptChanged || noEncryptChanged ||
+					generateKeyChanged || sshPubKeyChanged
+				if noInput && !hasExplicitChoice {
+					return fmt.Errorf(
+						"--no-input requires an explicit encryption choice: " +
+							"use --generate-key (encrypt with auto-generated key), " +
+							"--ssh-public-key <path> (encrypt with existing key), " +
+							"or --no-encrypt (opt out — NOT recommended for production secrets)")
+				}
+
+				if noEncryptChanged {
+					// --no-encrypt was explicitly passed; override the default.
+					encOpts.encrypt = !noEncrypt
+				}
+				// else: encOpts.encrypt retains its default (true) or the value
+				// set by --encrypt if the user passed that flag explicitly.
+			}
+
+			// When encrypt is enabled and no key material supplied, auto-generate.
+			// This matches the walkthrough's "generate-key" default and allows
+			// zero-argument non-interactive use: `secrets capture --manifest m.json`.
+			if encOpts.encrypt && !encOpts.generateKey && encOpts.sshPublicKey == "" {
+				encOpts.generateKey = true
+				clog.Infof("capture: no key supplied with --encrypt; auto-enabling --generate-key")
 			}
 
 			token := rootOptions.SourceTokenOrDefault()
@@ -1034,12 +1084,12 @@ Examples:
 
 			if encOpts.encrypt {
 				fmt.Fprintln(cmd.ErrOrStderr(), `
-NOTE: --encrypt was set. The CircleCI artifact was age-encrypted.
+NOTE: Encryption was enabled. The CircleCI artifact was age-encrypted.
   Plaintext secrets never persisted in CircleCI artifact storage.
   The local bundle at `+output+` contains plaintext. Protect it.`)
 			} else {
 				fmt.Fprintln(cmd.ErrOrStderr(), `
-WARNING: The secret bundle contains PLAINTEXT secrets.
+WARNING: --no-encrypt was set. The secret bundle contains PLAINTEXT secrets.
   - Protect the file; do not commit it to version control.
   - Build artifacts from the extraction run are retained for at least 1 day.
     There is NO delete-artifact API. Rotate captured secrets and treat the
@@ -1078,9 +1128,17 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 			"when secrets may land in artifacts.")
 
 	// ── Encryption flags ──────────────────────────────────────────────────────
-	f.BoolVar(&encOpts.encrypt, "encrypt", false,
-		"Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI. "+
-			"Requires --ssh-public-key or --generate-key.")
+	// Encryption is ON by default. --no-encrypt opts out; --encrypt is kept for
+	// backward-compatibility (explicitly passing --encrypt is a no-op when
+	// encryption is already the default).
+	f.BoolVar(&encOpts.encrypt, "encrypt", true,
+		"Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI "+
+			"(default: true). Supply --ssh-public-key or --generate-key; if neither is given a fresh "+
+			"keypair is auto-generated. Use --no-encrypt to opt out.")
+	f.BoolVar(&noEncrypt, "no-encrypt", false,
+		"Disable artifact encryption and produce a PLAINTEXT secrets artifact. "+
+			"NOT recommended for production secrets — build artifacts are retained for at least 1 day "+
+			"and there is no delete-artifact API.")
 	f.StringVar(&encOpts.sshPublicKey, "ssh-public-key", "",
 		"Path to an SSH public key (.pub) or age recipients file used as the encryption recipient. "+
 			"The public key is safe to embed in the pipeline config.")
@@ -1090,7 +1148,8 @@ WARNING: The secret bundle contains PLAINTEXT secrets.
 	f.BoolVar(&encOpts.generateKey, "generate-key", false,
 		"Generate a fresh age X25519 keypair for this run. Writes the identity to "+
 			"./migration-identity.age and the recipient to ./migration-recipient.txt. "+
-			"Use --generate-key instead of --ssh-public-key when you do not have an existing key.")
+			"Use --generate-key instead of --ssh-public-key when you do not have an existing key. "+
+			"Auto-enabled when --encrypt is in effect and no key is supplied.")
 
 	// ── Storage flags ─────────────────────────────────────────────────────────
 	f.StringVar(&encOpts.storage, "storage", "artifact",
