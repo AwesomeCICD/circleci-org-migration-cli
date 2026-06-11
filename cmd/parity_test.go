@@ -140,7 +140,10 @@ func TestSetCommandPath_HeaderAbsentWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("url.Parse: %v", err)
 	}
-	// No SetCommandPath call — commandPath stays empty.
+	// No per-client SetCommandPath call. Clear any process-wide default that a
+	// prior test (e.g. one that ran a command through PersistentPreRunE) may
+	// have left set via rest.SetDefaultCommandPath, so commandPath is empty.
+	rest.SetDefaultCommandPath("")
 	c := rest.New(base, "tok", srv.Client())
 
 	req, err := c.NewRequest(http.MethodGet, &url.URL{Path: "me"}, nil)
@@ -151,6 +154,43 @@ func TestSetCommandPath_HeaderAbsentWhenEmpty(t *testing.T) {
 
 	if captured != "" {
 		t.Errorf("Circleci-Cli-Command = %q; want empty (not set)", captured)
+	}
+}
+
+// TestRootPersistentPreRun_SetsDefaultCommandPath verifies that running a
+// command through the tree wires the active command path into rest via
+// SetDefaultCommandPath (C4), so that every REST client built afterwards
+// forwards the Circleci-Cli-Command header without each call site opting in.
+func TestRootPersistentPreRun_SetsDefaultCommandPath(t *testing.T) {
+	rest.SetDefaultCommandPath("") // reset any leftover state from other tests.
+
+	// `version` exercises PersistentPreRunE without making API calls.
+	if _, _, err := runCmd(t, "version"); err != nil {
+		t.Fatalf("running version: %v", err)
+	}
+
+	var captured string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Get("Circleci-Cli-Command")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{}`)
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL + "/api/v2/")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	// A client built AFTER the command ran must inherit the default path.
+	c := rest.New(base, "tok", srv.Client())
+	req, err := c.NewRequest(http.MethodGet, &url.URL{Path: "me"}, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, _ = c.DoRequest(req, nil)
+
+	if captured != "circleci-migrate version" {
+		t.Errorf("Circleci-Cli-Command = %q; want %q", captured, "circleci-migrate version")
 	}
 }
 

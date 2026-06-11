@@ -87,6 +87,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --secrets string                 Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them. (default "secrets.json")
       --skip-ciam                      Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
       --skip-contexts                  Skip syncing contexts
+      --skip-extras                    Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
       --skip-projects                  Skip syncing projects
       --skip-runner                    Skip syncing self-hosted runner resource classes

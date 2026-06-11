@@ -151,7 +151,7 @@ Examples:
 
 			srcToken := rootOptions.SourceTokenOrDefault()
 			if srcToken == "" {
-				return fmt.Errorf("no source API token: set --source-token, --token, CIRCLECI_SOURCE_TOKEN, or CIRCLECI_CLI_TOKEN")
+				return noSourceTokenError()
 			}
 			dstToken := rootOptions.DestTokenOrDefault()
 			if dstToken == "" {

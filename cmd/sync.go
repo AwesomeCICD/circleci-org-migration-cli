@@ -109,6 +109,20 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	return summary
 }
 
+// stripProjectExtras clears the "safety net" project metadata (checkout keys,
+// additional SSH keys, webhooks, and schedules) from every project in the
+// manifest. It is used by sync's --skip-extras flag to mirror the export and
+// migrate --skip-extras behaviour at sync time: with these slices empty the
+// syncer's webhook/schedule/SSH-key steps no-op.
+func stripProjectExtras(m *manifest.Manifest) {
+	for i := range m.Projects {
+		m.Projects[i].CheckoutKeys = nil
+		m.Projects[i].SSHKeys = nil
+		m.Projects[i].Webhooks = nil
+		m.Projects[i].Schedules = nil
+	}
+}
+
 func newSyncCommand() *cobra.Command {
 	var (
 		manifestPath        string
@@ -122,6 +136,7 @@ func newSyncCommand() *cobra.Command {
 		skipOrgSettings     bool
 		skipRunner          bool
 		skipCIAM            bool
+		skipExtras          bool
 		githubToken         string
 		destGitHubOrg       string
 		destRunnerNamespace string
@@ -214,6 +229,14 @@ Examples:
 			m, err := manifest.Load(manifestPath)
 			if err != nil {
 				return err
+			}
+			// --skip-extras mirrors export/migrate: drop the "safety net" project
+			// metadata (checkout keys, additional SSH keys, webhooks, schedules)
+			// so the syncer never re-creates it. Stripping it from the in-memory
+			// manifest is sufficient because the syncer's webhook/schedule/SSH-key
+			// steps no-op on empty slices.
+			if skipExtras {
+				stripProjectExtras(m)
 			}
 			secretsExplicit := cmd.Flags().Changed("secrets")
 			bundle, err := loadBundleWithFeedback(secretsPath, !secretsExplicit, cmd.ErrOrStderr())
@@ -421,6 +444,7 @@ Examples:
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 	f.BoolVar(&skipRunner, "skip-runner", false, "Skip syncing self-hosted runner resource classes")
 	f.BoolVar(&skipCIAM, "skip-ciam", false, "Skip syncing CIAM roles and groups (standalone circleci-type orgs only)")
+	f.BoolVar(&skipExtras, "skip-extras", false, "Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules")
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",

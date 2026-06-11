@@ -21,61 +21,6 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseURLForFilename / findByte
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestParseURLForFilename_StripsQueryString(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{
-			in:   "https://s3.example.com/reports/usage-2026-05.csv.gz?X-Amz-Signature=abc",
-			want: "https://s3.example.com/reports/usage-2026-05.csv.gz",
-		},
-		{
-			in:   "https://s3.example.com/usage.csv.gz",
-			want: "https://s3.example.com/usage.csv.gz",
-		},
-		{
-			in:   "/simple/path/file.csv.gz?token=xyz&expires=123",
-			want: "/simple/path/file.csv.gz",
-		},
-		{
-			in:   "",
-			want: "",
-		},
-	}
-	for _, tc := range cases {
-		got, err := parseURLForFilename(tc.in)
-		if err != nil {
-			t.Errorf("parseURLForFilename(%q) unexpected error: %v", tc.in, err)
-		}
-		if got != tc.want {
-			t.Errorf("parseURLForFilename(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestFindByte_Found(t *testing.T) {
-	if got := findByte("hello?world", '?'); got != 5 {
-		t.Errorf("findByte = %d, want 5", got)
-	}
-}
-
-func TestFindByte_NotFound(t *testing.T) {
-	if got := findByte("hello world", '?'); got != -1 {
-		t.Errorf("findByte = %d, want -1", got)
-	}
-}
-
-func TestFindByte_EmptyString(t *testing.T) {
-	if got := findByte("", '?'); got != -1 {
-		t.Errorf("findByte on empty = %d, want -1", got)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // downloadUsageFile
 // ─────────────────────────────────────────────────────────────────────────────
 

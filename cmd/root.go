@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/charmbracelet/lipgloss"
@@ -240,7 +241,12 @@ Typical workflow:
 
 Use "circleci-migrate [command] --help" for more information about a command.`,
 		SilenceUsage: true,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			// Forward the active sub-command path (e.g. "circleci-migrate export")
+			// to the API via the Circleci-Cli-Command header on every REST client
+			// constructed after this point, mirroring the official circleci-cli.
+			rest.SetDefaultCommandPath(cmd.CommandPath())
+
 			// Resolve token fallbacks from the environment AFTER flag parsing so
 			// secret values never appear as flag defaults in --help. An explicit
 			// flag always wins; otherwise fall back to the matching env var.
@@ -315,5 +321,20 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	// bundle-encrypt is a hidden internal command used by inline pipeline configs.
 	rootCmd.AddCommand(newBundleEncryptCommand())
 
+	// Enforce SilenceUsage on the whole command tree in one place so that no
+	// individual sub-command (existing or future) can forget it: on a RunE error
+	// cobra would otherwise dump the full usage text, burying the error message.
+	silenceUsageTree(rootCmd)
+
 	return rootCmd
+}
+
+// silenceUsageTree sets SilenceUsage = true on cmd and every descendant. It is
+// the single source of truth for this setting so adding a new sub-command can
+// never accidentally reintroduce usage-on-error noise.
+func silenceUsageTree(cmd *cobra.Command) {
+	cmd.SilenceUsage = true
+	for _, child := range cmd.Commands() {
+		silenceUsageTree(child)
+	}
 }
