@@ -575,7 +575,6 @@ func writeAutomatedBySync(b *strings.Builder) {
 	fmt.Fprintf(b, "- Org settings: feature flags, OIDC, URL-orb allow list, config policies, technical/security contacts.\n")
 	fmt.Fprintf(b, "- Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.\n")
 	fmt.Fprintf(b, "- Context group restrictions, mapped onto destination CIAM groups.\n")
-	fmt.Fprintf(b, "- CIAM roles, groups, and per-project role grants (standalone circleci-type orgs only; users matched by email, falling back to username).\n")
 }
 
 // hasNonDefaultGroupRestrictions reports whether any context in the manifest
@@ -909,11 +908,11 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		rolesURL := "https://circleci.com/docs/guides/permissions-authentication/manage-roles-and-permissions/"
 		groupsURL := "https://circleci.com/docs/guides/permissions-authentication/manage-groups/"
 		items = append(items, fmt.Sprintf(
-			"**CIAM user invitations (standalone orgs)** — `sync` applies org and project roles only for "+
-				"users already present in the destination org (matched by email). Users not yet in the "+
-				"destination org must be **invited first** before their roles can be assigned — "+
-				"there is no bulk-invite API for circleci-type orgs. "+
-				"After inviting users, re-run `sync` to apply their roles. "+
+			"**CIAM roles and groups (standalone orgs)** — the org and per-project role grants listed in "+
+				"the *CIAM roles and groups* section above are captured for reference but are **not yet "+
+				"applied automatically by `sync`** (tracked upstream). Recreate them manually on the "+
+				"destination: invite each user first (there is no bulk-invite API for circleci-type orgs), "+
+				"then assign their org/project roles. Match users by email where available, otherwise by username. "+
 				"Refs: [Manage roles](%s) | [Manage groups](%s)",
 			rolesURL, groupsURL))
 

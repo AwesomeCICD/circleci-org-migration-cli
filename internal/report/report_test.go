@@ -1935,6 +1935,29 @@ func TestMarkdown_CIAMSection_ProjectUserGrantsRendered(t *testing.T) {
 	}
 }
 
+// TestMarkdown_CIAM_NotClaimedAutomated guards #176: CIAM role grants are NOT
+// applied by `sync --apply` (the path is not wired into the CLI), so the report
+// must not list them under "Automated by sync --apply" and must instead flag
+// them as a manual step.
+func TestMarkdown_CIAM_NotClaimedAutomated(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			OrgRoles: []manifest.CIAMOrgRole{
+				{Username: "Alice", Role: "org-admin"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	automated := md[strings.Index(md, "### 2. Automated by"):strings.Index(md, "### 3. Manual steps")]
+	if strings.Contains(automated, "CIAM roles, groups, and per-project role grants") {
+		t.Error("CIAM must not be listed as automated by sync --apply (#176)")
+	}
+	if !strings.Contains(md, "not yet "+"applied automatically by `sync`") {
+		t.Error("report must flag CIAM as a manual step until sync wiring lands (#176)")
+	}
+}
+
 func TestMarkdown_CIAMSection_ProjectGroupGrantsRendered(t *testing.T) {
 	m := &manifest.Manifest{
 		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
