@@ -7,6 +7,24 @@ import (
 	"path/filepath"
 )
 
+// BundleSSHKey holds the private-key material for one additional SSH key on
+// a project, captured via an in-pipeline extraction job. This is the ONLY
+// place in the tool where a private key value is ever stored — the manifest
+// itself only captures the public metadata.
+//
+// SECURITY: PrivateKey is a plaintext PEM private key. Protect the bundle.
+type BundleSSHKey struct {
+	// Fingerprint is the SHA256 fingerprint (without the "SHA256:" prefix)
+	// that uniquely identifies this key, matching the manifest ProjectSSHKey.
+	Fingerprint string `json:"fingerprint"`
+	// Hostname is the target host this key is scoped to (may be empty for
+	// global additional SSH keys). Matched from the manifest catalog.
+	Hostname string `json:"hostname,omitempty"`
+	// PrivateKey is the plaintext PEM private-key material captured from the
+	// in-pipeline extraction job.
+	PrivateKey string `json:"private_key"`
+}
+
 // SecretBundle holds the plaintext environment-variable values that CircleCI
 // will not return via API. It is produced only by the in-pipeline `secrets`
 // command, which reads the values from the live job environment.
@@ -23,6 +41,11 @@ type SecretBundle struct {
 	ContextSecrets map[string]map[string]string `json:"context_secrets,omitempty"`
 	// ProjectSecrets maps project slug -> variable name -> value.
 	ProjectSecrets map[string]map[string]string `json:"project_secrets,omitempty"`
+	// SSHKeys maps project slug -> list of captured SSH private keys.
+	// Keys are captured via an in-pipeline extraction job (add_ssh_keys step)
+	// that materialises private-key files and reads them. Only keys whose
+	// SHA256 fingerprint matches a cataloged ProjectSSHKey are captured.
+	SSHKeys map[string][]BundleSSHKey `json:"ssh_keys,omitempty"`
 }
 
 // NewSecretBundle returns an empty, initialized SecretBundle.
@@ -31,6 +54,7 @@ func NewSecretBundle() *SecretBundle {
 		SchemaVersion:  SchemaVersion,
 		ContextSecrets: map[string]map[string]string{},
 		ProjectSecrets: map[string]map[string]string{},
+		SSHKeys:        map[string][]BundleSSHKey{},
 	}
 }
 
@@ -56,9 +80,28 @@ func (b *SecretBundle) SetProjectSecret(projectSlug, name, value string) {
 	b.ProjectSecrets[projectSlug][name] = value
 }
 
-// Merge copies all context and project secrets from other into b. Later values
-// win on key collisions. Used to combine the per-context bundles produced by
-// separate extraction jobs into one.
+// AddSSHKey appends a captured SSH private key for projectSlug.
+// Duplicate fingerprints (same project + fingerprint) are silently skipped so
+// that re-running capture is idempotent.
+//
+// SECURITY: key.PrivateKey is plaintext. Protect the bundle file.
+func (b *SecretBundle) AddSSHKey(projectSlug string, key BundleSSHKey) {
+	if b.SSHKeys == nil {
+		b.SSHKeys = map[string][]BundleSSHKey{}
+	}
+	// Idempotency: skip if a key with the same fingerprint already exists.
+	for _, existing := range b.SSHKeys[projectSlug] {
+		if existing.Fingerprint == key.Fingerprint {
+			return
+		}
+	}
+	b.SSHKeys[projectSlug] = append(b.SSHKeys[projectSlug], key)
+}
+
+// Merge copies all context, project secrets, and SSH keys from other into b.
+// Later values win on key collisions for env vars. SSH keys are merged
+// idempotently via AddSSHKey (duplicate fingerprints per project are skipped).
+// Used to combine the per-context bundles produced by separate extraction jobs.
 func (b *SecretBundle) Merge(other *SecretBundle) {
 	if other == nil {
 		return
@@ -71,6 +114,11 @@ func (b *SecretBundle) Merge(other *SecretBundle) {
 	for slug, vars := range other.ProjectSecrets {
 		for name, val := range vars {
 			b.SetProjectSecret(slug, name, val)
+		}
+	}
+	for slug, keys := range other.SSHKeys {
+		for _, k := range keys {
+			b.AddSSHKey(slug, k)
 		}
 	}
 }

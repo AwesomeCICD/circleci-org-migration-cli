@@ -16,6 +16,7 @@ import (
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	bundlepkg "github.com/AwesomeCICD/circleci-org-migration-cli/internal/bundle"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
@@ -545,6 +546,263 @@ func CaptureWithDecrypt(
 	}
 
 	return values, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSH-key extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+// sshKeyArtifactPath is the path written by the SSH-key extraction job.
+const sshKeyArtifactPath = "/tmp/circleci-migrate-sshkeys.json"
+
+// sshKeyArtifactPathAge is the encrypted variant.
+const sshKeyArtifactPathAge = "/tmp/circleci-migrate-sshkeys.json.age"
+
+// sshKeyDumpJobName is the name of the SSH-key extraction job.
+const sshKeyDumpJobName = "circleci-migrate-ssh-extract"
+
+// SSHKeyInput describes one cataloged SSH key whose private material we want
+// to extract.  Fingerprint is the bare SHA256 fingerprint (no "SHA256:" prefix)
+// as stored in the manifest; the generated config prefixes it with "SHA256:"
+// when calling add_ssh_keys and when matching via ssh-keygen -lf.
+type SSHKeyInput struct {
+	Fingerprint string // bare SHA256 fingerprint (no "SHA256:" prefix)
+	Hostname    string // target hostname (may be empty for global keys)
+}
+
+// buildSSHKeyExtractConfig constructs the minimal CircleCI YAML config that:
+//   - Uses a docker executor (no checkout step, so the deploy/checkout key is
+//     never materialised).
+//   - Runs add_ssh_keys with the EXPLICIT cataloged fingerprints (prefixed with
+//     "SHA256:") so only the requested keys are placed in $HOME/.ssh.
+//   - Runs a script that iterates ~/.ssh/id_rsa_* files, computes each file's
+//     SHA256 fingerprint via ssh-keygen -lf, and records matching keys (by
+//     recomputed SHA256 fingerprint) as JSON.
+//   - Optionally encrypts the JSON output via the existing bundle-encrypt path.
+//   - Stores the (optionally encrypted) artifact.
+//
+// The match-by-recomputed-SHA256 approach is necessary because CircleCI names
+// the materialised key files using the MD5 fingerprint (id_rsa_<md5fp>), while
+// the manifest stores SHA256 fingerprints (the only format the API returns).
+// Recomputing the SHA256 in-job bridges this gap without any MD5 lookups.
+//
+// SECURITY: private key material never appears in logs — the script reads file
+// contents without echoing them. Only the encrypted artifact leaves the job.
+func buildSSHKeyExtractConfig(keys []SSHKeyInput, opts *Options) string {
+	return buildSSHKeyExtractConfigWithVersion(keys, opts, version.Version)
+}
+
+// buildSSHKeyExtractConfigWithVersion is the testable variant.
+func buildSSHKeyExtractConfigWithVersion(keys []SSHKeyInput, opts *Options, ver string) string {
+	encrypt := opts != nil && opts.EncryptRecipient != ""
+
+	var sb strings.Builder
+
+	sb.WriteString("version: 2.1\n")
+	sb.WriteString("jobs:\n")
+	sb.WriteString("  " + sshKeyDumpJobName + ":\n")
+	sb.WriteString("    docker:\n")
+	sb.WriteString("      - image: cimg/base:current\n")
+	sb.WriteString("    resource_class: small\n")
+
+	if encrypt {
+		sb.WriteString("    environment:\n")
+		safeRecip := strings.ReplaceAll(opts.EncryptRecipient, "$", "\\$")
+		sb.WriteString(fmt.Sprintf("      MIGRATE_ENCRYPT_RECIPIENT: %q\n", safeRecip))
+	}
+
+	sb.WriteString("    steps:\n")
+	// Install circleci-migrate so bundle-encrypt is available.
+	sb.WriteString(buildInstallStep(ver))
+
+	// add_ssh_keys step — explicit fingerprints with SHA256: prefix.
+	sb.WriteString("      - add_ssh_keys:\n")
+	sb.WriteString("          fingerprints:\n")
+	for _, k := range keys {
+		sb.WriteString(fmt.Sprintf("            - \"SHA256:%s\"\n", k.Fingerprint))
+	}
+
+	// Script: iterate materialised key files, match by recomputed SHA256,
+	// collect into JSON.
+	sb.WriteString("      - run:\n")
+	sb.WriteString("          name: Collect SSH private keys by SHA256 fingerprint\n")
+	sb.WriteString("          command: |\n")
+	sb.WriteString("            set -euo pipefail\n")
+
+	// Build a shell map of SHA256→hostname so we can look up the hostname
+	// when we find a matching file.  We embed the fingerprint→hostname pairs
+	// directly in the generated script as a simple series of assignments.
+	sb.WriteString("            # fingerprint → hostname lookup (from manifest catalog)\n")
+	sb.WriteString("            declare -A FP_TO_HOST\n")
+	for _, k := range keys {
+		// Shell-safe: fingerprints are base64 chars + '=' signs; hostnames are
+		// hostname chars.  Neither contains shell-special characters.
+		sb.WriteString(fmt.Sprintf("            FP_TO_HOST[%q]=%q\n", k.Fingerprint, k.Hostname))
+	}
+
+	// Walk ~/.ssh/id_rsa_* files, recompute SHA256, match against our set.
+	sb.WriteString(`
+            results='[]'
+            for f in "$HOME"/.ssh/id_rsa_* "$HOME"/.ssh/id_ed25519_* "$HOME"/.ssh/id_ecdsa_*; do
+              [ -f "$f" ] || continue
+              # Recompute SHA256 fingerprint (output: "2048 SHA256:<fp> comment (RSA)")
+              fp_line=$(ssh-keygen -lf "$f" -E sha256 2>/dev/null) || continue
+              # Extract bare fingerprint after "SHA256:"
+              fp=$(echo "$fp_line" | grep -oP '(?<=SHA256:)[A-Za-z0-9+/=]+') || continue
+              # Check if this fingerprint is in our catalog
+              if [ -z "${FP_TO_HOST[$fp]+set}" ]; then
+                continue
+              fi
+              host="${FP_TO_HOST[$fp]}"
+              # Read private key contents (no echo — avoid leaking to log)
+              privkey=$(cat "$f")
+              # Append JSON object to results array using jq
+              results=$(printf '%s' "$results" | jq \
+                --arg fp  "$fp" \
+                --arg hn  "$host" \
+                --arg pk  "$privkey" \
+                '. += [{"fingerprint":$fp,"hostname":$hn,"private_key":$pk}]')
+            done
+            printf '%s\n' "$results" > ` + sshKeyArtifactPath + "\n")
+
+	if encrypt {
+		sb.WriteString(fmt.Sprintf("            trap 'rm -f %s' EXIT\n", sshKeyArtifactPath))
+		sb.WriteString(fmt.Sprintf("            circleci-migrate bundle-encrypt --recipient \"$MIGRATE_ENCRYPT_RECIPIENT\" --input %s --output %s\n", sshKeyArtifactPath, sshKeyArtifactPathAge))
+	}
+
+	// store_artifacts step.
+	if encrypt {
+		sb.WriteString("      - store_artifacts:\n")
+		sb.WriteString(fmt.Sprintf("          path: %s\n", sshKeyArtifactPathAge))
+		sb.WriteString("          destination: circleci-migrate-sshkeys.json.age\n")
+	} else {
+		sb.WriteString("      - store_artifacts:\n")
+		sb.WriteString(fmt.Sprintf("          path: %s\n", sshKeyArtifactPath))
+		sb.WriteString("          destination: circleci-migrate-sshkeys.json\n")
+	}
+
+	sb.WriteString("workflows:\n")
+	sb.WriteString("  extract-ssh:\n")
+	sb.WriteString("    jobs:\n")
+	sb.WriteString("      - " + sshKeyDumpJobName + "\n")
+
+	return sb.String()
+}
+
+// CaptureSSHKeys triggers an unversioned pipeline that materialises additional
+// SSH keys via add_ssh_keys, collects private-key material matched by SHA256
+// fingerprint, and returns the captured keys.
+//
+// keys lists the cataloged SSH keys (fingerprint + hostname) from the manifest
+// Project.SSHKeys. Only keys whose SHA256 fingerprints appear in this list are
+// captured; the checkout/deploy key is never materialised (no checkout step).
+//
+// When opts.EncryptRecipient is set, the artifact is age-encrypted and
+// decryptIdentityFile must be provided for local decryption.
+//
+// SECURITY: the returned slice contains plaintext private-key material.
+// The caller must never log or print the PrivateKey field.
+func CaptureSSHKeys(
+	ctx context.Context,
+	deps Deps,
+	projectSlug string,
+	keys []SSHKeyInput,
+	opts Options,
+	decryptIdentityFile string,
+) ([]manifest.BundleSSHKey, error) {
+	if opts.DefinitionID == "" {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: DefinitionID is required")
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	encrypt := opts.EncryptRecipient != ""
+	branch := opts.branch()
+	pollInterval := opts.pollInterval()
+
+	configYAML := buildSSHKeyExtractConfig(keys, &opts)
+
+	pipelineID, err := deps.TriggerPipelineRun(projectSlug, opts.DefinitionID, branch, configYAML, nil)
+	if err != nil {
+		if errors.Is(err, project.ErrPipelineSkipped) {
+			return nil, fmt.Errorf("extract.CaptureSSHKeys: pipeline run was skipped — check api-trigger-with-config is enabled")
+		}
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: trigger pipeline: %w", err)
+	}
+
+	pollCtx := ctx
+	if opts.PollTimeout > 0 {
+		var cancel context.CancelFunc
+		pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
+		defer cancel()
+	}
+
+	wf, err := pollWorkflow(pollCtx, deps, pipelineID, pollInterval)
+	if err != nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: poll: %w", err)
+	}
+	if wf.Status != "success" {
+		return nil, fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
+	}
+
+	jobs, err := deps.GetWorkflowJobs(wf.ID)
+	if err != nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: list jobs: %w", err)
+	}
+	var dumpJob *project.Job
+	for i := range jobs {
+		if jobs[i].Name == sshKeyDumpJobName {
+			dumpJob = &jobs[i]
+			break
+		}
+	}
+	if dumpJob == nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: job %q not found in workflow", sshKeyDumpJobName)
+	}
+
+	artifacts, err := deps.ListJobArtifacts(projectSlug, dumpJob.JobNumber)
+	if err != nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: list artifacts: %w", err)
+	}
+
+	wantDest := "circleci-migrate-sshkeys.json"
+	if encrypt {
+		wantDest = "circleci-migrate-sshkeys.json.age"
+	}
+	var artifactURL string
+	for _, a := range artifacts {
+		if strings.HasSuffix(a.Path, wantDest) || strings.HasSuffix(a.URL, wantDest) {
+			artifactURL = a.URL
+			break
+		}
+	}
+	if artifactURL == "" {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: %w (want %q)", ErrNoArtifact, wantDest)
+	}
+
+	data, err := deps.DownloadArtifact(artifactURL)
+	if err != nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: download artifact: %w", err)
+	}
+
+	if encrypt && decryptIdentityFile != "" {
+		identities, idErr := bundlepkg.ParseIdentityFile(decryptIdentityFile)
+		if idErr != nil {
+			return nil, fmt.Errorf("extract.CaptureSSHKeys: load decrypt identity: %w", idErr)
+		}
+		data, err = bundlepkg.DecryptBundle(data, identities...)
+		if err != nil {
+			return nil, fmt.Errorf("extract.CaptureSSHKeys: decrypt artifact: %w", err)
+		}
+	}
+
+	var captured []manifest.BundleSSHKey
+	if err := json.Unmarshal(data, &captured); err != nil {
+		return nil, fmt.Errorf("extract.CaptureSSHKeys: parse artifact JSON: %w", err)
+	}
+
+	return captured, nil
 }
 
 // pollWorkflow blocks until the pipeline has a terminal workflow, then returns

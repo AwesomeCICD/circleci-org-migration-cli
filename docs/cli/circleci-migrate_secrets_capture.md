@@ -118,6 +118,7 @@ circleci-migrate secrets capture [--manifest <file>] [flags]
       --s3-bucket string              S3 bucket name for --storage s3|both (required when --storage s3 or both)
       --s3-prefix string              S3 key prefix for --storage s3|both (optional; e.g. 'migration/')
       --skip-restricted-contexts      Skip contexts that have project/expression/group restrictions (attach warning instead of attempting) (default true)
+      --ssh-keys                      Extract additional SSH private keys for projects that have cataloged SSH keys in the manifest. Runs a separate in-pipeline job using add_ssh_keys with the explicit cataloged fingerprints — the checkout/deploy key is never materialised. Use --no-ssh-keys to skip SSH key extraction (e.g. when running env-var capture only). (default true)
       --ssh-private-key string        Path to an SSH private key or age identity file used to decrypt the artifact locally. Defaults to ~/.ssh/id_ed25519 if present and --ssh-public-key points to the matching .pub.
       --ssh-public-key string         Path to an SSH public key (.pub) or age recipients file used as the encryption recipient. The public key is safe to embed in the pipeline config.
       --storage string                Where to store the (optionally encrypted) bundle after extraction.

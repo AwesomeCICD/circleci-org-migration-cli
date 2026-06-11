@@ -659,6 +659,7 @@ func newSecretsCaptureCommand() *cobra.Command {
 		pollTimeout           time.Duration
 		artifactRetentionDays int
 		encOpts               captureEncryptOpts
+		sshKeysCapture        bool // when true, extract SSH private keys for projects with cataloged keys
 	)
 
 	cmd := &cobra.Command{
@@ -1076,6 +1077,8 @@ Examples:
 				clog.Infof("capture: running CONTEXT extraction under host project %s", hostProjectSlug)
 				fmt.Fprintf(cmd.ErrOrStderr(), "Running CONTEXT extraction under host project %s…\n", hostProjectSlug)
 				// projectVarsOnly=false: capture contexts (and host project's own vars).
+				// captureSSHKeys=false: SSH key extraction is only done in project-vars
+				// mode (projectVarsOnly=true) so it runs under the correct project.
 				if err := captureProject(
 					cmd.Context(),
 					cmd,
@@ -1089,6 +1092,7 @@ Examples:
 					encOpts,
 					resDecider,
 					false, // projectVarsOnly=false: include context extraction
+					false, // captureSSHKeys=false: not in host-project context run
 				); err != nil {
 					if errors.Is(err, errSkipProject) {
 						// Not a hard error; already printed a SKIP notice.
@@ -1123,7 +1127,8 @@ Examples:
 						pollTimeout,
 						encOpts,
 						resDecider,
-						true, // projectVarsOnly=true: skip context loop entirely
+						true,           // projectVarsOnly=true: skip context loop entirely
+						sshKeysCapture, // capture SSH private keys when flag is set
 					); err != nil {
 						if errors.Is(err, errSkipProject) {
 							// Not a hard error; SKIP notice already printed in captureProject.
@@ -1225,6 +1230,13 @@ both               — store in both artifact and S3.`)
 		"S3 bucket name for --storage s3|both (required when --storage s3 or both)")
 	f.StringVar(&encOpts.s3Prefix, "s3-prefix", "",
 		"S3 key prefix for --storage s3|both (optional; e.g. 'migration/')")
+
+	// ── SSH-key extraction flag ───────────────────────────────────────────────
+	f.BoolVar(&sshKeysCapture, "ssh-keys", true,
+		"Extract additional SSH private keys for projects that have cataloged SSH keys in the manifest. "+
+			"Runs a separate in-pipeline job using add_ssh_keys with the explicit cataloged fingerprints — "+
+			"the checkout/deploy key is never materialised. "+
+			"Use --no-ssh-keys to skip SSH key extraction (e.g. when running env-var capture only).")
 
 	return cmd
 }
@@ -1402,6 +1414,9 @@ type restrictionDecider func(ctxName string, realRestrictions int) (removeAndRes
 // real restrictions is encountered.  In interactive mode the caller provides a
 // prompter-backed decider; in non-interactive mode nil falls back to the
 // skipRestricted / removeRestrictions flag logic.
+//
+// captureSSHKeys controls whether SSH private keys are extracted for this
+// project (requires the project to have cataloged SSHKeys in the manifest).
 func captureProject(
 	ctx context.Context,
 	cmd *cobra.Command,
@@ -1416,6 +1431,7 @@ func captureProject(
 	encOpts captureEncryptOpts,
 	restrictDecider restrictionDecider,
 	projectVarsOnly bool, // Fix 1: when true, skip context loop entirely
+	captureSSHKeys bool, // when true, also extract SSH private keys for this project
 ) error {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1619,6 +1635,42 @@ func captureProject(
 			if v, ok := values[ev.Name]; ok {
 				bundle.SetContextSecret(mc.Name, ev.Name, v)
 			}
+		}
+	}
+
+	// ── 6. SSH private-key capture (optional) ────────────────────────────────
+	// Run a separate in-pipeline job that materialises additional SSH keys via
+	// add_ssh_keys (with explicit cataloged fingerprints) and reads the private
+	// key files. Only called when the project has cataloged SSH keys AND the
+	// caller requested SSH-key extraction.
+	if captureSSHKeys && projectVarsOnly && len(p.SSHKeys) > 0 {
+		sshInputs := make([]extract.SSHKeyInput, len(p.SSHKeys))
+		for i, k := range p.SSHKeys {
+			sshInputs[i] = extract.SSHKeyInput{
+				Fingerprint: k.Fingerprint,
+				Hostname:    k.Hostname,
+			}
+		}
+
+		fmt.Fprintf(stdout, "Capturing %d SSH key(s) for project %s…\n", len(sshInputs), p.Slug)
+
+		sshOpts := extract.Options{
+			DefinitionID:     defID,
+			Branch:           branch,
+			PollTimeout:      pollTimeout,
+			EncryptRecipient: encOpts.recipientStr,
+		}
+
+		// SECURITY: encOpts.identityFile is a private key path — do not log.
+		captured, sshErr := extract.CaptureSSHKeys(ctx, client, p.Slug, sshInputs, sshOpts, encOpts.identityFile)
+		if sshErr != nil {
+			// Non-fatal: warn and continue rather than failing the whole capture.
+			fmt.Fprintf(stderr, "WARNING: SSH key capture for %s failed: %v\n", p.Slug, sshErr)
+		} else {
+			for _, k := range captured {
+				bundle.AddSSHKey(p.Slug, k)
+			}
+			fmt.Fprintf(stdout, "Captured %d SSH key(s) for %s\n", len(captured), p.Slug)
 		}
 	}
 
