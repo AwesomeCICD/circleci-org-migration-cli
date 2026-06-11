@@ -1,7 +1,4 @@
-// Internal (white-box) tests for applyArtifactRetentionControl in
-// secrets_capture.go.  Uses package cmd (not cmd_test) to access unexported
-// symbols.
-package cmd
+package capture
 
 import (
 	"bytes"
@@ -11,10 +8,9 @@ import (
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
-	"github.com/spf13/cobra"
 )
 
-// fakeStorageRetentionManager is a test double for storageRetentionManager.
+// fakeStorageRetentionManager is a test double for StorageRetentionManager.
 type fakeStorageRetentionManager struct {
 	getStorageRetention func(orgUUID string) (*org.StorageRetention, error)
 	setStorageRetention func(orgUUID string, controls org.StorageRetentionControls) error
@@ -47,25 +43,17 @@ func (f *fakeStorageRetentionManager) SetStorageRetention(_ context.Context, org
 	return nil
 }
 
-// newTestCmdForRetention builds a cobra.Command with stderr captured.
-func newTestCmdForRetention(stderrBuf *bytes.Buffer) *cobra.Command {
-	cmd := &cobra.Command{}
-	cmd.SetErr(stderrBuf)
-	return cmd
-}
-
 const testRetentionOrgUUID = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// applyArtifactRetentionControl happy-path
+// ApplyArtifactRetentionControl happy-path
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestApplyArtifactRetentionControl_SetsArtifactDaysOnly(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{}
-	cmd := newTestCmdForRetention(&stderr)
 
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 1)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 1)
 
 	if mgr.setCallCount != 1 {
 		t.Fatalf("expected 1 SetStorageRetention call, got %d", mgr.setCallCount)
@@ -85,9 +73,8 @@ func TestApplyArtifactRetentionControl_SetsArtifactDaysOnly(t *testing.T) {
 func TestApplyArtifactRetentionControl_LogsPriorValue(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{}
-	cmd := newTestCmdForRetention(&stderr)
 
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 1)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 1)
 
 	out := stderr.String()
 	// stderr must contain the prior artifact-retention value (30).
@@ -107,9 +94,8 @@ func TestApplyArtifactRetentionControl_LogsPriorValue(t *testing.T) {
 func TestApplyArtifactRetentionControl_OrgIDPassedThrough(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{}
-	cmd := newTestCmdForRetention(&stderr)
 
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 3)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 3)
 
 	if mgr.lastSetOrgUUID != testRetentionOrgUUID {
 		t.Errorf("orgUUID: got %q want %q", mgr.lastSetOrgUUID, testRetentionOrgUUID)
@@ -117,20 +103,19 @@ func TestApplyArtifactRetentionControl_OrgIDPassedThrough(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// applyArtifactRetentionControl error paths
+// ApplyArtifactRetentionControl error paths
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestApplyArtifactRetentionControl_GetError_SkipsSet(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{
-		getStorageRetention: func(orgUUID string) (*org.StorageRetention, error) {
+		getStorageRetention: func(string) (*org.StorageRetention, error) {
 			return nil, errors.New("permission denied")
 		},
 	}
-	cmd := newTestCmdForRetention(&stderr)
 
 	// Must not panic or return error.
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 1)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 1)
 
 	if mgr.setCallCount != 0 {
 		t.Error("SetStorageRetention must not be called when GetStorageRetention fails")
@@ -143,30 +128,23 @@ func TestApplyArtifactRetentionControl_GetError_SkipsSet(t *testing.T) {
 func TestApplyArtifactRetentionControl_SetError_PrintsWarning(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{
-		setStorageRetention: func(orgUUID string, controls org.StorageRetentionControls) error {
+		setStorageRetention: func(string, org.StorageRetentionControls) error {
 			return errors.New("quota exceeded")
 		},
 	}
-	cmd := newTestCmdForRetention(&stderr)
 
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 1)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 1)
 
 	if !strings.Contains(stderr.String(), "WARNING") {
 		t.Errorf("stderr should contain WARNING on SetStorageRetention failure, got: %q", stderr.String())
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// applyArtifactRetentionControl: no-op when targetDays == 0
-// (exercised via the command path; here we just confirm the helper skips)
-// ─────────────────────────────────────────────────────────────────────────────
-
 func TestApplyArtifactRetentionControl_TargetFive_SetsCorrectly(t *testing.T) {
 	var stderr bytes.Buffer
 	mgr := &fakeStorageRetentionManager{}
-	cmd := newTestCmdForRetention(&stderr)
 
-	applyArtifactRetentionControl(cmd, mgr, testRetentionOrgUUID, 5)
+	ApplyArtifactRetentionControl(context.Background(), &stderr, mgr, testRetentionOrgUUID, 5)
 
 	if mgr.lastSetControls.ArtifactDays != 5 {
 		t.Errorf("ArtifactDays: got %d want 5", mgr.lastSetControls.ArtifactDays)
