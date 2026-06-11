@@ -463,12 +463,10 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "╚══════════════════════════════════════════════════╝")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Tip: re-run with --source-org and --dest-org to skip these prompts.")
-	fmt.Fprintln(out, "")
 
 	// --- 1. Org slugs --------------------------------------------------------
-	fmt.Fprintln(out, "Step 1 of 4 — Source and destination organizations")
+	printStepHeader(out, 1, 4, "Source and destination organizations")
 	fmt.Fprintln(out, "  Slug format: gh/<org>  or  circleci/<org-id>")
-	fmt.Fprintln(out, "")
 
 	if sourceOrg == "" {
 		sourceOrg, err = p.askRequired("Source org slug", "e.g. gh/acme")
@@ -489,10 +487,8 @@ func RunMigrateWalkthroughWith(
 	}
 
 	// --- 2. Tokens -----------------------------------------------------------
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 2 of 4 — API tokens")
+	printStepHeader(out, 2, 4, "API tokens")
 	fmt.Fprintln(out, "  Token input is hidden when running on an interactive terminal.")
-	fmt.Fprintln(out, "")
 
 	srcToken := rootOptions.SourceTokenOrDefault()
 	if srcToken == "" {
@@ -517,9 +513,7 @@ func RunMigrateWalkthroughWith(
 	}
 
 	// --- 3. What to migrate --------------------------------------------------
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 3 of 4 — What to migrate")
-	fmt.Fprintln(out, "")
+	printStepHeader(out, 3, 4, "What to migrate")
 
 	var chosen []string
 	chosen, err = p.askMultiSelect(
@@ -550,11 +544,9 @@ func RunMigrateWalkthroughWith(
 	}
 
 	// --- Step 3a. Secrets bundle ---------------------------------------------
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 3a of 4 — Secrets bundle")
+	printSubStepHeader(out, "3a", 4, "Secrets bundle")
 	fmt.Fprintln(out, "  A captured secrets bundle supplies plaintext env-var values during sync.")
 	fmt.Fprintln(out, "  Produce one with 'secrets capture' before running migrate.")
-	fmt.Fprintln(out, "")
 	var useBundle bool
 	useBundle, err = p.askBool("Do you have a captured secrets bundle to provide?", false)
 	if err != nil {
@@ -570,10 +562,8 @@ func RunMigrateWalkthroughWith(
 	}
 
 	// --- Step 3b. Missing secrets handling -----------------------------------
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 3b of 4 — Missing secret values")
+	printSubStepHeader(out, "3b", 4, "Missing secret values")
 	fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
-	fmt.Fprintln(out, "")
 	var missingChoice string
 	missingChoice, err = p.askChoice(
 		"How should missing secret values be handled?",
@@ -585,10 +575,8 @@ func RunMigrateWalkthroughWith(
 	missing = missingChoice
 
 	// --- 4. Dry run vs apply -------------------------------------------------
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 4 of 4 — Dry run or apply")
+	printStepHeader(out, 4, 4, "Dry run or apply")
 	fmt.Fprintln(out, "  A dry run previews changes without writing anything to the destination.")
-	fmt.Fprintln(out, "")
 
 	var doApply bool
 	doApply, err = p.askBool("Perform a dry run first (recommended)?", true)

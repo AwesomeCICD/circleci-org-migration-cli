@@ -37,7 +37,6 @@ Use "circleci-migrate [command] --help" for more information about a command.
 
 ### SEE ALSO
 
-* [circleci-migrate completion](circleci-migrate_completion.md)	 - Generate the autocompletion script for the specified shell
 * [circleci-migrate export](circleci-migrate_export.md)	 - Export source-org data to a local manifest file.
 * [circleci-migrate migrate](circleci-migrate_migrate.md)	 - All-in-one: export source org and sync into destination org.
 * [circleci-migrate orb](circleci-migrate_orb.md)	 - Manage CircleCI orb references in pipeline configs.
