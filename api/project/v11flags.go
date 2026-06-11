@@ -19,11 +19,10 @@ type v11ProjectSettingsResponse struct {
 	FeatureFlags map[string]any `json:"feature_flags"`
 }
 
-// GetV11ProjectFeatureFlags returns the two project-level feature flags that
-// live in the v1.1 project settings endpoint.  It returns a map with at most
-// two keys: "api-trigger-with-config" and "drop-all-build-requests" (kebab-case,
-// as returned by the API).  Non-bool values in the feature_flags blob are
-// silently ignored.
+// GetV11ProjectFeatureFlags returns the project-level feature flags from the
+// v1.1 project settings endpoint.  It returns the full map of bool-valued flags
+// (kebab-case keys, as returned by the API).  Non-bool values in the
+// feature_flags blob are silently ignored.
 //
 // Endpoint: GET /api/v1.1/project/{slug}/settings
 //
@@ -45,15 +44,13 @@ func (c *Client) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 		return nil, fmt.Errorf("GetV11ProjectFeatureFlags %q: %w", slug, err)
 	}
 
-	const keyAPI = "api-trigger-with-config"
-	const keyDrop = "drop-all-build-requests"
-
-	result := make(map[string]bool, 2)
-	for _, k := range []string{keyAPI, keyDrop} {
-		if v, ok := raw.FeatureFlags[k]; ok {
-			if b, ok := v.(bool); ok {
-				result[k] = b
-			}
+	// Capture the entire bool-valued feature-flags map so nothing is lost.
+	// The caller (exporter) also extracts the two well-known keys separately
+	// for backward-compat fields; the full map is stored alongside them.
+	result := make(map[string]bool, len(raw.FeatureFlags))
+	for k, v := range raw.FeatureFlags {
+		if b, ok := v.(bool); ok {
+			result[k] = b
 		}
 	}
 	return result, nil

@@ -5,6 +5,14 @@ import (
 	"net/url"
 )
 
+// ScheduleActor holds the attribution actor for a pipeline schedule. The actor
+// is the CircleCI user (or system actor) under whose identity the scheduled
+// pipeline runs. Only the Login field is captured; other actor fields (e.g.
+// avatar_url) are not needed for migration.
+type ScheduleActor struct {
+	Login string `json:"login,omitempty"`
+}
+
 // Schedule represents a pipeline schedule as returned by
 // GET /api/v2/project/{project-slug}/schedule.
 //
@@ -16,12 +24,17 @@ import (
 // flexible (the API supports both days-of-week and days-of-month variants, and
 // parameters can be integers, strings, or booleans).  Callers that need typed
 // access can unmarshal from the map.
+//
+// Actor holds the user whose identity is used when the scheduled pipeline runs.
+// The actor.login is surfaced in the export report as a manual-follow-up note:
+// the destination schedule must be attributed to a valid user in the new org.
 type Schedule struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Timetable   map[string]any `json:"timetable"`
 	Parameters  map[string]any `json:"parameters"`
+	Actor       ScheduleActor  `json:"actor"`
 }
 
 type listSchedulesResponse struct {

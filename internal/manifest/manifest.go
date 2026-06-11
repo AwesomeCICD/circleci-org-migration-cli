@@ -142,6 +142,11 @@ type OrgSettings struct {
 	// has no custom retention or when the export lacked permission to read it.
 	StorageRetention *StorageRetentionControls `json:"storage_retention,omitempty"`
 
+	// StorageRetentionLimits captures the plan-enforced min/max bounds for each
+	// retention type at time of export. Recorded for reference so operators know
+	// the destination plan's limits before applying sync. Nil when not captured.
+	StorageRetentionLimits *StorageRetentionLimits `json:"storage_retention_limits,omitempty"`
+
 	// Budgets captures the org's spend-budget configuration. The org-level budget
 	// is transferred directly to the destination. Per-project budgets reference
 	// source org project UUIDs, which must be mapped to destination project UUIDs;
@@ -160,6 +165,12 @@ type OrgSettings struct {
 	// different namespace, and orb source is only available via GraphQL/republish),
 	// so sync surfaces each as a manual action. Nil/empty when not captured.
 	Orbs []OrgOrb `json:"orbs,omitempty"`
+
+	// OrbNamespace is the orb namespace claimed by this org (best-effort; derived
+	// from the org name). For circleci-type orgs the org UUID is used as the
+	// namespace base; for VCS orgs the org name is used. Captured so the republish
+	// runbook can reference the source namespace. Empty when not determinable.
+	OrbNamespace string `json:"orb_namespace,omitempty"`
 
 	// ReleaseTracker captures the org's release-tracker settings. When non-nil,
 	// sync transfers these to the destination via PATCH. Nil when not configured
@@ -265,6 +276,20 @@ type StorageRetentionControls struct {
 	WorkspaceDays int `json:"retention_days_workspace"`
 	// ArtifactDays is the retention period for job artifacts in days.
 	ArtifactDays int `json:"retention_days_artifact"`
+}
+
+// StorageRetentionLimits mirrors the plan-enforced min/max bounds for each
+// retention type as returned alongside the controls by the BFF API.
+type StorageRetentionLimits struct {
+	Cache     StorageRetentionBound `json:"retention_days_cache"`
+	Workspace StorageRetentionBound `json:"retention_days_workspace"`
+	Artifact  StorageRetentionBound `json:"retention_days_artifact"`
+}
+
+// StorageRetentionBound is a min/max pair within StorageRetentionLimits.
+type StorageRetentionBound struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
 }
 
 // SSOSettings is a reference snapshot of an org's SSO (SAML) configuration.
@@ -446,6 +471,12 @@ type AdvancedSettings struct {
 	// /api/v1.1/project/{slug}/settings, feature_flags blob).
 	APITriggerWithConfig *bool `json:"api_trigger_with_config,omitempty"`
 	DropAllBuildRequests *bool `json:"drop_all_build_requests,omitempty"`
+
+	// V11FeatureFlags is the full set of bool-valued feature flags from the v1.1
+	// project settings endpoint, capturing any flags beyond the two explicit
+	// fields above. Keys are kebab-case (as returned by the API, e.g.
+	// "api-trigger-with-config"). Nil/empty when no flags were returned.
+	V11FeatureFlags map[string]bool `json:"v11_feature_flags,omitempty"`
 }
 
 // ProjectEnvVar is a project environment variable. MaskedValue is the
@@ -480,6 +511,12 @@ type Schedule struct {
 	Description string         `json:"description,omitempty"`
 	Timetable   map[string]any `json:"timetable,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	// ActorLogin is the CircleCI login of the attribution actor for this
+	// schedule (the user identity under which the scheduled pipeline runs).
+	// Captured for the migration runbook: the operator must attribute the
+	// destination schedule to a valid user in the new org.
+	// Empty when the actor login was not returned by the API.
+	ActorLogin string `json:"actor_login,omitempty"`
 }
 
 // PipelineSource describes the code-source (config or checkout) for a pipeline

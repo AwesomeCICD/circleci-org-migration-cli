@@ -25,6 +25,7 @@ func TestGetV11ProjectFeatureFlags_HappyPath(t *testing.T) {
 			"feature_flags": map[string]any{
 				"api-trigger-with-config": true,
 				"drop-all-build-requests": false,
+				"some-extra-bool-flag":    true,
 				// Non-bool value that must be ignored.
 				"some-array-flag": []string{"val1", "val2"},
 			},
@@ -42,6 +43,10 @@ func TestGetV11ProjectFeatureFlags_HappyPath(t *testing.T) {
 	}
 	if v, ok := flags["drop-all-build-requests"]; !ok || v {
 		t.Errorf("drop-all-build-requests: got %v (ok=%v), want false", v, ok)
+	}
+	// Extra bool flags must also be captured (full-map behavior).
+	if v, ok := flags["some-extra-bool-flag"]; !ok || !v {
+		t.Errorf("some-extra-bool-flag: got %v (ok=%v), want true", v, ok)
 	}
 	// Non-bool keys must not be in the result.
 	if _, ok := flags["some-array-flag"]; ok {
@@ -195,6 +200,7 @@ func TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored(t *testing.T) {
 		respondJSON(w, http.StatusOK, map[string]any{
 			"feature_flags": map[string]any{
 				"api-trigger-with-config":  true,
+				"another-bool-flag":        false,
 				"pr-only-branch-overrides": []string{"main", "develop"},
 				"some-numeric-flag":        42,
 				"some-object-flag":         map[string]any{"k": "v"},
@@ -210,6 +216,10 @@ func TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored(t *testing.T) {
 	}
 	if v, ok := flags["api-trigger-with-config"]; !ok || !v {
 		t.Errorf("api-trigger-with-config: got %v (ok=%v), want true", v, ok)
+	}
+	// Other bool flags must also be captured (full-map behavior).
+	if _, ok := flags["another-bool-flag"]; !ok {
+		t.Error("another-bool-flag should be present (bool value)")
 	}
 	// Non-bool keys must not appear in the result.
 	for _, k := range []string{"pr-only-branch-overrides", "some-numeric-flag", "some-object-flag"} {

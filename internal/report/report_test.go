@@ -485,10 +485,36 @@ func TestMarkdown_ManualStepsBaselineAlwaysPresent(t *testing.T) {
 		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
 	}
 	md := report.Markdown(m)
-	for _, want := range []string{"secret values", "Checkout & SSH keys", "Webhook signing secrets"} {
+	for _, want := range []string{"secret values", "Checkout & SSH keys"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Markdown manual steps missing baseline item %q", want)
 		}
+	}
+}
+
+func TestMarkdown_ManualSteps_WebhookSigningSecretOnlyWhenWebhooksPresent(t *testing.T) {
+	// Without webhooks: no signing secret warning.
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "Webhook signing secrets") {
+		t.Errorf("Markdown should not mention webhook signing secrets when no webhooks captured")
+	}
+
+	// With webhooks: must warn.
+	withWebhooks := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Webhooks: []manifest.Webhook{
+					{Name: "notify", URL: "https://hooks.example.com"},
+				},
+			},
+		},
+	})
+	if !strings.Contains(withWebhooks, "Webhook signing secrets") {
+		t.Errorf("Markdown should mention webhook signing secrets when webhooks are captured")
 	}
 }
 
@@ -1239,5 +1265,216 @@ func TestMarkdown_SSHKeys_PublicKeyPreviewTruncated(t *testing.T) {
 	// The truncation marker must be present.
 	if !strings.Contains(md, "...") {
 		t.Errorf("Truncation marker '...' missing from SSH key preview in report")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #130: new warnings in manual steps
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_ManualSteps_RunnerTokensOnlyWhenPresent verifies that the
+// runner agent-token manual step is only emitted when runner classes exist.
+func TestMarkdown_ManualSteps_RunnerTokensOnlyWhenPresent(t *testing.T) {
+	// Without runner classes: no runner agent-token step.
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "Runner agent tokens") {
+		t.Errorf("Markdown should not mention runner agent tokens when no runner classes captured")
+	}
+
+	// With runner classes: step must appear.
+	withRunners := report.Markdown(&manifest.Manifest{
+		Source:          manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		RunnerNamespace: "my-ns",
+		RunnerResourceClasses: []manifest.RunnerResourceClass{
+			{Name: "my-ns/runner-a"},
+			{Name: "my-ns/runner-b"},
+		},
+	})
+	for _, want := range []string{"Runner agent tokens", "my-ns", "2 resource class"} {
+		if !strings.Contains(withRunners, want) {
+			t.Errorf("Markdown runner-agent-token step missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_ManualSteps_OrgOrbsOnlyWhenPresent verifies that the org-orbs
+// republish step is only emitted when orbs are captured.
+func TestMarkdown_ManualSteps_OrgOrbsOnlyWhenPresent(t *testing.T) {
+	// Without orbs: no orbs step.
+	plain := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	})
+	if strings.Contains(plain, "Org orbs (") {
+		t.Errorf("Markdown should not mention org orbs republish when no orbs captured")
+	}
+
+	// With orbs: step must appear with count and namespace.
+	withOrbs := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				OrbNamespace: "acme-ns",
+				Orbs: []manifest.OrgOrb{
+					{OrbName: "acme-ns/my-orb", LatestVersionNumber: "1.0.0"},
+				},
+			},
+		}},
+	})
+	for _, want := range []string{"Org orbs (1", "acme-ns", "republish"} {
+		if !strings.Contains(withOrbs, want) {
+			t.Errorf("Markdown org-orbs republish step missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_ManualSteps_BudgetBlockOnlyWhenBlockEnforcement verifies that
+// the budget enforcement=block step is only emitted when applicable.
+func TestMarkdown_ManualSteps_BudgetBlockOnlyWhenBlockEnforcement(t *testing.T) {
+	// Warn enforcement: no block warning.
+	withWarn := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				Budgets: &manifest.OrgBudgets{
+					OrgBudget: &manifest.BudgetEntry{Credits: 500000, EnforcementType: "warn"},
+				},
+			},
+		}},
+	})
+	if strings.Contains(withWarn, "Budget enforcement mode") {
+		t.Errorf("Markdown should not mention budget enforcement block for warn enforcement")
+	}
+
+	// Block enforcement: warning must appear.
+	withBlock := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				Budgets: &manifest.OrgBudgets{
+					OrgBudget: &manifest.BudgetEntry{Credits: 500000, EnforcementType: "block"},
+				},
+			},
+		}},
+	})
+	for _, want := range []string{"Budget enforcement mode", "block", "manually"} {
+		if !strings.Contains(withBlock, want) {
+			t.Errorf("Markdown budget-enforcement-block step missing %q", want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #131: new captured fields in report
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_StorageRetentionLimits_Rendered verifies that when
+// StorageRetentionLimits are captured they appear in the report.
+func TestMarkdown_StorageRetentionLimits_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				StorageRetention: &manifest.StorageRetentionControls{
+					CacheDays: 7, WorkspaceDays: 7, ArtifactDays: 15,
+				},
+				StorageRetentionLimits: &manifest.StorageRetentionLimits{
+					Cache:     manifest.StorageRetentionBound{Min: 1, Max: 30},
+					Workspace: manifest.StorageRetentionBound{Min: 1, Max: 15},
+					Artifact:  manifest.StorageRetentionBound{Min: 1, Max: 730},
+				},
+			},
+		}},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{"Plan limits", "30", "730"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown storage retention limits missing %q; got:\n%s", want, md[:min(len(md), 400)])
+		}
+	}
+}
+
+// TestMarkdown_StorageRetentionLimits_NotRenderedWhenNil verifies that when no
+// limits are captured, the limits line is not emitted.
+func TestMarkdown_StorageRetentionLimits_NotRenderedWhenNil(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				StorageRetention: &manifest.StorageRetentionControls{
+					CacheDays: 7,
+				},
+				// No StorageRetentionLimits
+			},
+		}},
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "Plan limits") {
+		t.Errorf("Markdown should not emit Plan limits line when StorageRetentionLimits is nil")
+	}
+}
+
+// TestMarkdown_OrbNamespace_Rendered verifies that OrbNamespace appears in the
+// namespaces & orbs section.
+func TestMarkdown_OrbNamespace_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "o", Slug: "gh/o",
+			Settings: &manifest.OrgSettings{
+				OrbNamespace: "my-namespace",
+			},
+		}},
+	}
+	md := report.Markdown(m)
+	if !strings.Contains(md, "my-namespace") {
+		t.Errorf("Markdown should contain orb namespace 'my-namespace'; got:\n%s", md)
+	}
+}
+
+// TestMarkdown_ScheduleActorLogin_Rendered verifies that when a schedule has an
+// ActorLogin it appears in the report.
+func TestMarkdown_ScheduleActorLogin_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				Schedules: []manifest.Schedule{
+					{Name: "nightly", ActorLogin: "pipeline-bot"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{"nightly", "pipeline-bot"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown schedule actor login missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_V11FeatureFlags_ExtraFlagsRendered verifies that extra v1.1
+// feature flags (beyond the two well-known ones) are shown in the report.
+func TestMarkdown_V11FeatureFlags_ExtraFlagsRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				Settings: &manifest.AdvancedSettings{
+					V11FeatureFlags: map[string]bool{
+						"api-trigger-with-config": true,
+						"extra-custom-flag":       false,
+					},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	if !strings.Contains(md, "extra-custom-flag") {
+		t.Errorf("Markdown should show extra v1.1 feature flags; got:\n%s", md)
 	}
 }
