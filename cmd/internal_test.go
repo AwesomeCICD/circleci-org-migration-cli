@@ -617,6 +617,66 @@ func TestAskSecretRequired_NonTTY_RepromptOnEmpty(t *testing.T) {
 var _ = errors.New
 
 // ---------------------------------------------------------------------------
+// resolveHost — CIRCLE_URL fallback (circleci run migrate)
+// ---------------------------------------------------------------------------
+
+func TestResolveHost_CircleURL_UsedWhenNothingElseSet(t *testing.T) {
+	// CIRCLE_URL is injected by `circleci run migrate`; it should be used when
+	// neither CIRCLECI_CLI_HOST nor CIRCLECI_HOST is set.
+	t.Setenv("CIRCLECI_CLI_HOST", "")
+	t.Setenv("CIRCLECI_HOST", "")
+	t.Setenv("CIRCLE_URL", "https://circleci.example.com")
+	got := resolveHost()
+	if got != "https://circleci.example.com" {
+		t.Errorf("resolveHost() = %q; want %q", got, "https://circleci.example.com")
+	}
+}
+
+func TestResolveHost_CircleURL_SchemeHostOnly_StripPath(t *testing.T) {
+	// CIRCLE_URL may include a full API URL with a path; only scheme+host should
+	// be returned so that downstream URL construction is not confused.
+	t.Setenv("CIRCLECI_CLI_HOST", "")
+	t.Setenv("CIRCLECI_HOST", "")
+	t.Setenv("CIRCLE_URL", "https://circleci.example.com/api/v2/")
+	got := resolveHost()
+	if got != "https://circleci.example.com" {
+		t.Errorf("resolveHost() = %q; want scheme+host only %q", got, "https://circleci.example.com")
+	}
+}
+
+func TestResolveHost_CircleCLIHost_WinsOverCircleURL(t *testing.T) {
+	// CIRCLECI_CLI_HOST must take precedence over the lower-priority CIRCLE_URL.
+	t.Setenv("CIRCLECI_CLI_HOST", "https://my-server.example.com")
+	t.Setenv("CIRCLECI_HOST", "")
+	t.Setenv("CIRCLE_URL", "https://circleci.example.com")
+	got := resolveHost()
+	if got != "https://my-server.example.com" {
+		t.Errorf("resolveHost() = %q; want CIRCLECI_CLI_HOST value", got)
+	}
+}
+
+func TestResolveHost_CircleciHost_WinsOverCircleURL(t *testing.T) {
+	// CIRCLECI_HOST must take precedence over CIRCLE_URL.
+	t.Setenv("CIRCLECI_CLI_HOST", "")
+	t.Setenv("CIRCLECI_HOST", "https://legacy-server.example.com")
+	t.Setenv("CIRCLE_URL", "https://circleci.example.com")
+	got := resolveHost()
+	if got != "https://legacy-server.example.com" {
+		t.Errorf("resolveHost() = %q; want CIRCLECI_HOST value", got)
+	}
+}
+
+func TestResolveHost_NoVarsSet_ReturnsEmpty(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_HOST", "")
+	t.Setenv("CIRCLECI_HOST", "")
+	t.Setenv("CIRCLE_URL", "")
+	got := resolveHost()
+	if got != "" {
+		t.Errorf("resolveHost() = %q; want empty string when no vars set", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // handleEnableBuilds — yes=true path
 // ---------------------------------------------------------------------------
 

@@ -12,12 +12,16 @@ import (
 // help text (and our own docs tell users to paste --help/--debug output into
 // issues). Canary values are low-entropy and prefix-free so this test file does
 // not itself trip the secret scanner.
+//
+// CIRCLE_TOKEN (the circleci run migrate fallback) is included here because it
+// carries the user's real token and must never be leaked in help output.
 func TestTokensNotLeakedInHelp(t *testing.T) {
 	canaries := map[string]string{
 		"CIRCLECI_CLI_TOKEN":    "canary-cli-token-DONOTLEAK",
 		"CIRCLECI_SOURCE_TOKEN": "canary-src-token-DONOTLEAK",
 		"CIRCLECI_DEST_TOKEN":   "canary-dst-token-DONOTLEAK",
 		"GITHUB_TOKEN":          "canary-gh-token-DONOTLEAK",
+		"CIRCLE_TOKEN":          "canary-circle-tok-DONOTLEAK",
 	}
 	for k, v := range canaries {
 		t.Setenv(k, v)

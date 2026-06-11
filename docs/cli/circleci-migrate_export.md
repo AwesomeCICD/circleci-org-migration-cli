@@ -34,6 +34,7 @@ circleci-migrate export --source-org <org-slug> [flags]
 
 ```
   -h, --help                      help for export
+      --json                      Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)
   -o, --output string             Path to write the JSON manifest (always written; use -o to change the path) (default "manifest.json")
       --project stringArray       Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)
       --report string             Path to write the human-readable audit report (default "migration-report.md")
@@ -49,9 +50,9 @@ circleci-migrate export --source-org <org-slug> [flags]
 ```
       --debug                 Enable debug logging
       --dest-token string     API token for the destination org (env: CIRCLECI_DEST_TOKEN)
-      --host string           CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST) (default "https://circleci.com")
+      --host string           CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL) (default "https://circleci.com")
       --source-token string   API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
-      --token string          Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)
+      --token string          Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
 ```
 
 ### SEE ALSO

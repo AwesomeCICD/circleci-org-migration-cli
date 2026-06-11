@@ -42,6 +42,10 @@ Examples:
 	help for export
 
 .PP
+\fB--json\fP[=false]
+	Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)
+
+.PP
 \fB-o\fP, \fB--output\fP="manifest.json"
 	Path to write the JSON manifest (always written; use -o to change the path)
 
@@ -84,7 +88,7 @@ Examples:
 
 .PP
 \fB--host\fP="https://circleci.com"
-	CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST)
+	CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)
 
 .PP
 \fB--source-token\fP=""
@@ -92,7 +96,7 @@ Examples:
 
 .PP
 \fB--token\fP=""
-	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)
+	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
 
 
 .SH SEE ALSO

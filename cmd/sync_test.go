@@ -80,6 +80,7 @@ func TestSyncCmd_MissingManifest_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runSyncCmd(t)
 	if err == nil {
@@ -102,6 +103,7 @@ func TestSyncCmd_InvalidMissingSecrets_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	dir := t.TempDir()
 	mPath := writeTinyManifest(t, dir)
@@ -127,6 +129,7 @@ func TestSyncCmd_NoToken_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	dir := t.TempDir()
 	mPath := writeTinyManifest(t, dir)
@@ -148,6 +151,7 @@ func TestSyncCmd_TokenFromEnv_PassesTokenCheck(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-for-test")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	dir := t.TempDir()
 	mPath := writeTinyManifest(t, dir)
@@ -164,6 +168,7 @@ func TestSyncCmd_DestTokenFromEnv_PassesTokenCheck(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dest-token")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	dir := t.TempDir()
 	mPath := writeTinyManifest(t, dir)
@@ -203,6 +208,7 @@ func TestSyncCmd_SkipOrgSettings_FlagAccepted(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	dir := t.TempDir()
 	mPath := writeTinyManifest(t, dir)

@@ -153,20 +153,27 @@ jobs:
       - checkout
       - go/mod-download-cached
       # Cache the gosec binary across runs — keyed on version + arch so a new
-      # version or a different executor arch triggers a fresh install.
+      # version or a different executor arch triggers a fresh download.
       - restore_cache:
           keys:
-            - gosec-v2.27.1-{{ arch }}-v1
+            - gosec-v2.27.1-{{ arch }}-v2
       - run:
           name: Install gosec (if not cached)
           command: |
-            if [ ! -x "$(go env GOPATH)/bin/gosec" ]; then
-              go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+            if [ ! -x /usr/local/bin/gosec ]; then
+              # renovate: datasource=github-releases depName=securego/gosec
+              ver=v2.27.1
+              for attempt in 1 2 3; do
+                curl -sfL "https://github.com/securego/gosec/releases/download/${ver}/gosec_${ver#v}_linux_amd64.tar.gz" \
+                  | sudo tar -xz -C /usr/local/bin gosec && break
+                echo "Attempt ${attempt} failed; retrying in 5s..." && sleep 5
+              done
+              gosec --version
             fi
       - save_cache:
-          key: gosec-v2.27.1-{{ arch }}-v1
+          key: gosec-v2.27.1-{{ arch }}-v2
           paths:
-            - /home/circleci/go/bin/gosec
+            - /usr/local/bin/gosec
       - run:
           name: gosec (SAST)
           command: |

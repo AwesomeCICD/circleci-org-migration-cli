@@ -210,3 +210,8 @@ orb-publish-dev: orb-validate
 .PHONY: clean
 clean:
 	rm -rf bin/ dist/ coverage.out coverage.html test-results/ *.sarif
+
+demo-gif: build ## Regenerate the README demo gif (requires vhs: https://github.com/charmbracelet/vhs)
+	@command -v vhs >/dev/null 2>&1 || { echo "vhs not found — install from https://github.com/charmbracelet/vhs"; exit 1; }
+	PATH="$(PWD)/bin:$$PATH" vhs docs/demo.tape
+	@echo "Regenerated docs/demo.gif"

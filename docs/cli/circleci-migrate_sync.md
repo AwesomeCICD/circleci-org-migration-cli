@@ -60,6 +60,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
       --github-token string            GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
   -h, --help                           help for sync
+      --json                           Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports
       --manifest string                Path to the export manifest (required)
       --mapping string                 Path to a source->destination mapping file (optional)
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")
@@ -75,9 +76,9 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
 ```
       --debug                 Enable debug logging
       --dest-token string     API token for the destination org (env: CIRCLECI_DEST_TOKEN)
-      --host string           CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST) (default "https://circleci.com")
+      --host string           CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL) (default "https://circleci.com")
       --source-token string   API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
-      --token string          Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)
+      --token string          Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
 ```
 
 ### SEE ALSO

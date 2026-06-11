@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.4.1...v0.5.0) (2026-06-11)
+
+
+### Features
+
+* **cli:** circleci-cli parity — host alias, command header, flag-error, version ([#94](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/94)) ([a97b274](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/a97b27402299783da712476fae7786001b91253e)), closes [#77](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/77)
+
+
+### Bug Fixes
+
+* **cli:** clearer arg errors, extract/capture wording, TTY/dest-org help notes, exit code 1 ([#100](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/100)) ([7af3347](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/7af3347aa88fe60ef729cc61bc36c1ac37de4e7d)), closes [#78](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/78)
+* **cli:** correct broken workflow examples in root help ([#84](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/84)) ([cef5836](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/cef5836a4fd6c88f172b15538024c3fa1f858553)), closes [#69](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/69)
+* **cli:** walkthrough step numbering + output-path prompt + secrets auto-load feedback ([#99](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/99)) ([9074576](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/9074576e9f004bbeb77a5315d22fb1ba6abeebcc)), closes [#76](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/76)
+* **deps:** update go modules — golang.org/x/crypto v0.53.0 ([#91](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/91)) ([5d43976](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/5d43976a015cc458f5a8b764bc3649f02343316b))
+* **docs:** disable cobra auto-gen date footer in generated docs ([#87](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/87)) ([6075d3b](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/6075d3b33dad0af29c98772961c34ce61545833f))
+* **export:** drop malformed repo URL for CircleCI-native projects; friendly progress names ([#96](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/96)) ([84cc238](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/84cc238946f5bf6ae1085430575958c4642f9cc3)), closes [#95](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/95)
+* **orb:** resolve orb inline token via source-token chain ([#93](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/93)) ([df9f864](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/df9f8647dd3046590f858a73fea3034cd025ff0c)), closes [#70](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/70)
+* **report:** full org-settings section + project repo; fix double-logged progress ([#63](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/63)) ([c691000](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c691000751c9bc93601eb7a64709f52f0f3911e2))
+* **secrets:** encrypt captures by default; add --no-encrypt opt-out ([#86](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/86)) ([ced0bd3](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/ced0bd341c6f016824b8b54ecf898dd78a8ecc18)), closes [#67](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/67)
+* **secrets:** mask secret input with x/term; drop false hidden-input claims ([#92](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/92)) ([11d0693](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/11d06938ccfde8f4ad41952c1be7f10d94dbb5b8)), closes [#66](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/66)
+* **secrets:** org-type-aware context restrictions; flag group restrictions manual ([#98](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/98)) ([525d062](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/525d0620cb41a31d11e7d9f24904ba39790b73ea)), closes [#74](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/74)
+* **secrets:** scope capture strictly + never touch default group (incident fix) ([#65](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/65)) ([02f5111](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/02f5111dd713bb75f0da7577f2ffcc0097ce183c))
+* **security:** 0700 secret dirs + always remove plaintext on encrypt failure ([#82](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/82)) ([1af4da1](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1af4da1a900415e952c3f1eb61e8cbf2c69e1793)), closes [#72](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/72)
+* **security:** harden manifest redaction — OTel headers, URL-orb auth, nested SSO ([#83](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/83)) ([d7f5475](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d7f54750ca8ccf0ac667b4a9baf07d0e18cc5b5e)), closes [#73](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/73)
+* **sync:** describe full sync scope — contexts, projects, settings ([#85](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/85)) ([1cba8f0](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1cba8f051feb900b5361d93db7ee9344c1ed4fea)), closes [#71](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/71)
+
 ## [0.4.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.4.0...v0.4.1) (2026-06-10)
 
 
