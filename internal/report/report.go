@@ -209,7 +209,11 @@ func Markdown(m *manifest.Manifest) string {
 				}
 				configSrc := pipelineSourceLabel(pd.ConfigSource)
 				checkoutSrc := pipelineSourceLabel(pd.CheckoutSource)
-				fmt.Fprintf(&b, "  - **`%s`**%s\n", pd.Name, descLine)
+				pdName := pd.Name
+				if pdName == "" {
+					pdName = "(unnamed pipeline)"
+				}
+				fmt.Fprintf(&b, "  - **`%s`**%s\n", pdName, descLine)
 				if configSrc != "" {
 					fmt.Fprintf(&b, "    - Config: %s\n", configSrc)
 				}
@@ -446,16 +450,16 @@ func writeCIAMSection(b *strings.Builder, m *manifest.Manifest) {
 		return
 	}
 	fmt.Fprintf(b, "\n## CIAM roles and groups\n\n")
-	fmt.Fprintf(b, "_Only present for standalone (`circleci`-type) orgs. Users are identified by email; groups by name._\n\n")
+	fmt.Fprintf(b, "_Only present for standalone (`circleci`-type) orgs. Users are identified by email when available, otherwise by username; groups by name._\n\n")
 	fmt.Fprintf(b, "Reference: [Manage roles and permissions](https://circleci.com/docs/guides/permissions-authentication/manage-roles-and-permissions/) | [Manage groups](https://circleci.com/docs/guides/permissions-authentication/manage-groups/)\n\n")
 
 	ciam := m.CIAM
 
 	if len(ciam.OrgRoles) > 0 {
 		fmt.Fprintf(b, "### Org-level roles (%d)\n\n", len(ciam.OrgRoles))
-		fmt.Fprintf(b, "| Email | Username | Role |\n|---|---|---|\n")
+		fmt.Fprintf(b, "| User (email or username) | Username | Role |\n|---|---|---|\n")
 		for _, r := range ciam.OrgRoles {
-			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", r.Email, orDash(r.Username), r.Role)
+			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", ciamUserCell(r.Email, r.Username), orDash(r.Username), r.Role)
 		}
 		fmt.Fprintf(b, "\n")
 	}
@@ -471,9 +475,9 @@ func writeCIAMSection(b *strings.Builder, m *manifest.Manifest) {
 
 	if len(ciam.ProjectUserGrants) > 0 {
 		fmt.Fprintf(b, "### Per-project user role grants (%d)\n\n", len(ciam.ProjectUserGrants))
-		fmt.Fprintf(b, "| Project | Email | Role |\n|---|---|---|\n")
+		fmt.Fprintf(b, "| Project | User (email or username) | Role |\n|---|---|---|\n")
 		for _, g := range ciam.ProjectUserGrants {
-			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", g.ProjectName, g.Email, g.Role)
+			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", g.ProjectName, ciamUserCell(g.Email, g.Username), g.Role)
 		}
 		fmt.Fprintf(b, "\n")
 	}
@@ -521,8 +525,10 @@ func writeCutoverOrder(b *strings.Builder) {
 // the commands are immediately actionable for the operator.
 func writeDetailedCutoverCommands(b *strings.Builder, m *manifest.Manifest) {
 	orgSlug := m.Source.Org.Slug
+	usedPlaceholder := false
 	if orgSlug == "" {
 		orgSlug = "<source-org-slug>"
+		usedPlaceholder = true
 	}
 
 	sshFlag := ""
@@ -552,7 +558,12 @@ func writeDetailedCutoverCommands(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "# Step 5 — validate the destination, then rotate every captured secret value.\n")
 	fmt.Fprintf(b, "# Delete secrets.json and any pipeline artifacts that contain secret material.\n")
 	fmt.Fprintf(b, "```\n\n")
-	fmt.Fprintf(b, "_The destination org comes from the manifest; use `--mapping mapping.json` to target a different org (e.g. `gh/acme-new` or `circleci/<new-org-uuid>`) or rename projects. Replace `<source-org-slug>` above if the placeholder was used._\n")
+	footnote := "_The destination org comes from the manifest; use `--mapping mapping.json` to target a different org (e.g. `gh/acme-new` or `circleci/<new-org-uuid>`) or rename projects."
+	if usedPlaceholder {
+		footnote += " Replace `<source-org-slug>` above with the real source org slug."
+	}
+	footnote += "_\n"
+	fmt.Fprintf(b, "%s", footnote)
 }
 
 // writeAutomatedBySync lists what `sync --apply` handles end-to-end.
@@ -564,7 +575,7 @@ func writeAutomatedBySync(b *strings.Builder) {
 	fmt.Fprintf(b, "- Org settings: feature flags, OIDC, URL-orb allow list, config policies, technical/security contacts.\n")
 	fmt.Fprintf(b, "- Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.\n")
 	fmt.Fprintf(b, "- Context group restrictions, mapped onto destination CIAM groups.\n")
-	fmt.Fprintf(b, "- CIAM roles, groups, and per-project role grants (standalone circleci-type orgs only; users matched by email).\n")
+	fmt.Fprintf(b, "- CIAM roles, groups, and per-project role grants (standalone circleci-type orgs only; users matched by email, falling back to username).\n")
 }
 
 // hasNonDefaultGroupRestrictions reports whether any context in the manifest
@@ -990,6 +1001,20 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// ciamUserCell returns the identifier to show for a CIAM user grant: the email
+// when present, otherwise the username, otherwise an em dash. The CIAM
+// role-grants API frequently returns an empty email, so falling back to the
+// username keeps the report's user columns from rendering as blank cells.
+func ciamUserCell(email, username string) string {
+	if email != "" {
+		return email
+	}
+	if username != "" {
+		return username
+	}
+	return "—"
 }
 
 func countContextVars(m *manifest.Manifest) int {

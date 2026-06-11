@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
@@ -867,5 +868,154 @@ func TestSyncCIAM_GroupMembersMatchedAndUnmatched(t *testing.T) {
 	// alice should have been added to the group.
 	if len(ciam.usersAdded) == 0 {
 		t.Errorf("expected AddUsersToGroup called; got empty usersAdded map")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test (#167): source grants with EMPTY email fall back to username matching
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncCIAM_EmptyEmail_MatchedByUsername(t *testing.T) {
+	var setOrgRoleUID, setProjectRoleUID string
+	ciam := &fakeCIAMWriter{
+		// Destination grants carry username + userID but NO email — mirrors the
+		// real CIAM role-grants API, which frequently returns an empty email.
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{
+				{UserID: "uid-bob", Username: "bob", Email: ""},
+			}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+	}
+	ciam.setOrgUserRole = func(_, userID, _ string) error {
+		setOrgRoleUID = userID
+		return nil
+	}
+	ciam.setProjectUserRole = func(_, _, userID, _ string) error {
+		setProjectRoleUID = userID
+		return nil
+	}
+
+	s := newCIAMTestSyncer(ciam, "circleci")
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.ProjectGroupGrants = nil
+	// Source grants have no email, only a username that matches the dest user.
+	m.CIAM.OrgRoles = []manifest.CIAMOrgRole{
+		{Email: "", Username: "bob", Role: "org-admin"},
+	}
+	m.CIAM.ProjectUserGrants = []manifest.CIAMProjectUserGrant{
+		{
+			ProjectName: "my-project",
+			ProjectSlug: "circleci/src-org-uuid/proj-uuid-1",
+			Email:       "",
+			Username:    "bob",
+			Role:        "project-admin",
+		},
+	}
+
+	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if setOrgRoleUID != "uid-bob" {
+		t.Errorf("expected org role set for uid-bob via username match; got %q", setOrgRoleUID)
+	}
+	if setProjectRoleUID != "uid-bob" {
+		t.Errorf("expected project role set for uid-bob via username match; got %q", setProjectRoleUID)
+	}
+
+	// No manual actions: both grants matched by username.
+	for _, a := range report.Actions {
+		if a.Status == "manual" {
+			t.Errorf("did not expect manual action when username matches; got: %+v", a)
+		}
+	}
+	// Targets should be keyed by username (the label) since email is empty.
+	var sawUsernameTarget bool
+	for _, a := range report.Actions {
+		if a.Target == "ciam-org-role:bob" {
+			sawUsernameTarget = true
+		}
+	}
+	if !sawUsernameTarget {
+		t.Errorf("expected org-role target keyed by username 'bob'; got: %+v", report.Actions)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test (#167): empty email and no username match → clear [manual] result
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSyncCIAM_EmptyEmail_NoUsernameMatch_EmitsManual(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			// Dest has alice only; source grant for "charlie" cannot be matched.
+			return []CIAMRoleGrant{
+				{UserID: "uid-alice", Username: "alice", Email: "alice@example.com"},
+			}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+	}
+	var setOrgRoleCalled bool
+	ciam.setOrgUserRole = func(_, _, _ string) error {
+		setOrgRoleCalled = true
+		return nil
+	}
+
+	s := newCIAMTestSyncer(ciam, "circleci")
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.ProjectUserGrants = nil
+	m.CIAM.ProjectGroupGrants = nil
+	m.CIAM.OrgRoles = []manifest.CIAMOrgRole{
+		{Email: "", Username: "charlie", Role: "org-viewer"},
+	}
+
+	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if setOrgRoleCalled {
+		t.Error("SetOrgUserRole should not be called when the user cannot be matched")
+	}
+
+	var manual []Action
+	for _, a := range report.Actions {
+		if a.Status == "manual" {
+			manual = append(manual, a)
+		}
+	}
+	if len(manual) != 1 {
+		t.Fatalf("expected exactly 1 manual action for unmatched user; got %d: %+v", len(manual), report.Actions)
+	}
+	// The manual result must be keyed/labelled by the username (not blank) so it
+	// is actionable, and must mention email-or-username matching.
+	if manual[0].Target != "ciam-org-role:charlie" {
+		t.Errorf("expected manual target keyed by username 'charlie'; got %q", manual[0].Target)
+	}
+	if !strings.Contains(manual[0].Detail, "charlie") ||
+		!strings.Contains(manual[0].Detail, "email or username") {
+		t.Errorf("manual detail should name the user and mention email/username matching; got: %q", manual[0].Detail)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test (#167): ciamUserLabel falls back username → placeholder
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestCIAMUserLabel(t *testing.T) {
+	cases := []struct {
+		email, username, want string
+	}{
+		{"a@example.com", "alice", "a@example.com"},
+		{"", "alice", "alice"},
+		{"", "", "(unknown user)"},
+	}
+	for _, c := range cases {
+		if got := ciamUserLabel(c.email, c.username); got != c.want {
+			t.Errorf("ciamUserLabel(%q,%q) = %q; want %q", c.email, c.username, got, c.want)
+		}
 	}
 }
