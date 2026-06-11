@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -169,6 +170,146 @@ func TestListAdditionalSSHKeys_SlugEncoding(t *testing.T) {
 	c := newTestClient(t, srv)
 	_, err := c.ListAdditionalSSHKeys("gh/my org/my repo")
 	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AddAdditionalSSHKey tests
+// ---------------------------------------------------------------------------
+
+// TestAddAdditionalSSHKey_HappyPath verifies that the client sends a POST
+// request to the correct v1.1 endpoint with the expected JSON body.
+func TestAddAdditionalSSHKey_HappyPath(t *testing.T) {
+	const slug = "gh/acme/web"
+	const hostname = "github.com"
+	const privateKey = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAK...\n-----END RSA PRIVATE KEY-----\n"
+
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		wantPath := "/api/v1.1/project/gh/acme/web/ssh-key"
+		if r.URL.EscapedPath() != wantPath {
+			t.Errorf("path: got %q want %q", r.URL.EscapedPath(), wantPath)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if err := c.AddAdditionalSSHKey(slug, hostname, privateKey); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotBody["hostname"] != hostname {
+		t.Errorf("body.hostname: got %q, want %q", gotBody["hostname"], hostname)
+	}
+	if gotBody["private_key"] != privateKey {
+		t.Errorf("body.private_key: got %q, want %q", gotBody["private_key"], privateKey)
+	}
+}
+
+// TestAddAdditionalSSHKey_EmptyHostname verifies that an empty hostname is
+// sent as an empty string (globally-scoped key), not omitted.
+func TestAddAdditionalSSHKey_EmptyHostname(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if err := c.AddAdditionalSSHKey("gh/acme/web", "", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// hostname key must be present and empty.
+	if gotBody["hostname"] != "" {
+		t.Errorf("body.hostname: got %q, want empty string", gotBody["hostname"])
+	}
+}
+
+// TestAddAdditionalSSHKey_APIError verifies that a non-2xx response returns an error.
+func TestAddAdditionalSSHKey_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusForbidden, map[string]string{"message": "forbidden"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.AddAdditionalSSHKey("gh/acme/web", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestAddAdditionalSSHKey_EmptySlug verifies that an empty slug returns an error
+// before making any HTTP request.
+func TestAddAdditionalSSHKey_EmptySlug(t *testing.T) {
+	c := &Client{}
+	err := c.AddAdditionalSSHKey("", "github.com", "private-key")
+	if err == nil {
+		t.Fatal("expected error for empty slug, got nil")
+	}
+}
+
+// TestAddAdditionalSSHKey_EmptyPrivateKey verifies that an empty private key
+// returns an error before making any HTTP request.
+func TestAddAdditionalSSHKey_EmptyPrivateKey(t *testing.T) {
+	c := &Client{}
+	err := c.AddAdditionalSSHKey("gh/acme/web", "github.com", "")
+	if err == nil {
+		t.Fatal("expected error for empty private key, got nil")
+	}
+}
+
+// TestAddAdditionalSSHKey_SlugEncoding verifies that slug components are
+// correctly percent-encoded in the request path.
+func TestAddAdditionalSSHKey_SlugEncoding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/api/v1.1/project/gh/my%20org/my%20repo/ssh-key"
+		if r.URL.EscapedPath() != wantPath {
+			t.Errorf("path: got %q want %q", r.URL.EscapedPath(), wantPath)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.AddAdditionalSSHKey("gh/my org/my repo", "github.com", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestAddAdditionalSSHKey_StandaloneSlug verifies that a circleci/<uuid>/<uuid>
+// slug is encoded correctly in the path.
+func TestAddAdditionalSSHKey_StandaloneSlug(t *testing.T) {
+	const orgUUID = "org-uuid-123"
+	const projUUID = "proj-uuid-456"
+	slug := "circleci/" + orgUUID + "/" + projUUID
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/api/v1.1/project/circleci/" + orgUUID + "/" + projUUID + "/ssh-key"
+		if r.URL.EscapedPath() != wantPath {
+			t.Errorf("path: got %q want %q", r.URL.EscapedPath(), wantPath)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if err := c.AddAdditionalSSHKey(slug, "bitbucket.org", "-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END RSA PRIVATE KEY-----\n"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

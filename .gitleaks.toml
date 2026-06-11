@@ -20,7 +20,6 @@ paths = [
 
 [[allowlists]]
 description = """
-Additional-SSH-key test fixtures. These test files contain synthetic, throwaway
 SSH private keys used only to verify the CLI forwards/round-trips key material
 (POST .../ssh-key, bundle, sync re-add). They are not real credentials — the
 private-key detector cannot tell a fake test key from a real one. This allowlist
