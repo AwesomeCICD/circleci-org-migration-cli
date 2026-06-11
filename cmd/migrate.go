@@ -334,9 +334,9 @@ Examples:
 	f.BoolVar(&skipExtras, "skip-extras", false,
 		"Skip checkout keys, webhooks, and schedules")
 	f.StringVarP(&output, "output", "o", "",
-		"If set, save the exported manifest to this path")
+		"Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)")
 	f.StringVar(&reportPath, "report", "",
-		"If set, save the human-readable audit report to this path")
+		"Optional: save the human-readable audit report to this path (omit to skip writing the report)")
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")

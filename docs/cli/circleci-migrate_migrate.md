@@ -76,8 +76,8 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --mapping string                 Path to a source->destination mapping file (optional)
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")
       --no-input                       Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
-  -o, --output string                  If set, save the exported manifest to this path
-      --report string                  If set, save the human-readable audit report to this path
+  -o, --output string                  Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)
+      --report string                  Optional: save the human-readable audit report to this path (omit to skip writing the report)
       --runner-namespace string        Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). The namespace must be supplied explicitly — there is no clean org→namespace lookup.
       --secrets string                 Path to a captured secret bundle (optional) (default "secrets.json")
       --skip-contexts                  Skip exporting and syncing contexts

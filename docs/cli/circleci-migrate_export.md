@@ -21,27 +21,27 @@ Pass --runner-namespace to capture them. The namespace must be supplied explicit
 because there is no clean org→namespace lookup in the CircleCI API.
 
 Examples:
-  circleci-migrate export --org gh/acme --source-token $SRC_TOKEN
-  circleci-migrate export --org gh/acme -o acme.json --report acme-audit.md
-  circleci-migrate export --org gh/acme --projects gh/acme/web,gh/acme/api
-  circleci-migrate export --org gh/acme --runner-namespace acme
+  circleci-migrate export --source-org gh/acme --source-token $SRC_TOKEN
+  circleci-migrate export --source-org gh/acme -o acme.json --report acme-audit.md
+  circleci-migrate export --source-org gh/acme --project gh/acme/web --project gh/acme/api
+  circleci-migrate export --source-org gh/acme --runner-namespace acme
 
 ```
-circleci-migrate export --org <org-slug> [flags]
+circleci-migrate export --source-org <org-slug> [flags]
 ```
 
 ### Options
 
 ```
   -h, --help                      help for export
-      --org string                Source organization slug: gh/<org> or circleci/<org-id> (required)
-  -o, --output string             Path to write the JSON manifest (default "manifest.json")
-      --projects strings          Explicit project slugs to export (merged with discovered projects)
+  -o, --output string             Path to write the JSON manifest (always written; use -o to change the path) (default "manifest.json")
+      --project stringArray       Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)
       --report string             Path to write the human-readable audit report (default "migration-report.md")
       --runner-namespace string   Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). The namespace must be supplied explicitly — there is no clean org→namespace lookup.
       --skip-contexts             Skip exporting contexts
       --skip-extras               Skip checkout keys, webhooks, and schedules
       --skip-projects             Skip exporting projects
+      --source-org string         Source organization slug: gh/<org> or circleci/<org-id> (required)
 ```
 
 ### Options inherited from parent commands
