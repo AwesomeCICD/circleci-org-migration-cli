@@ -62,41 +62,44 @@ fixtures:
       pipeline_definitions: true   # at least one repo with .circleci/config.yml
 
 # ---------------------------------------------------------------------------
-# Orgs used for ad-hoc live testing during development. These are real accounts
-# (may hold real config) — do NOT run destructive operations except where noted.
+# Roles used for ad-hoc live testing during development. Fill in slugs/org_ids
+# with your OWN orgs before running anything live — these are placeholders, not
+# real accounts. Treat any org you point at the "source" roles as read-only and
+# only use a throwaway org for the "dest-writable" role. Do NOT run destructive
+# operations against an org that holds real config.
 # ---------------------------------------------------------------------------
 known_dev_resources:
-  - name: Dummy-Test
-    circleci_slug: circleci/8G3atTsVAntm74tjLjbpaG
-    org_id: 3ac9b843-7095-443e-bfb3-bd7037999ef5
+  - name: writable-dummy
+    circleci_slug: circleci/<DEST_ORG_UUID>
+    org_id: <DEST_ORG_ID>
     vcs_type: circleci
     role: dest-writable-dummy
     notes: >-
-      Safe for write tests (sync --apply, project create/delete). Validated:
-      context/env-var/restriction writes, App project shell create + delete.
-      Has the GitHub App but NO connected repo yet, so pipeline-definition /
-      trigger creation cannot be live-tested here until a repo is connected.
+      A throwaway standalone/App org that is safe for write tests (sync --apply,
+      project create/delete). Provision a dedicated org for this — never reuse
+      one with real config. Connect a repo to it if you need to live-test
+      pipeline-definition / trigger creation.
 
-  - name: james-crowley
-    circleci_slug: gh/james-crowley
-    org_id: 7115df1c-31e7-4681-be16-0a1eeb316b60
+  - name: oauth-source
+    circleci_slug: gh/<your-org>
+    org_id: <SOURCE_ORG_ID>
     vcs_type: github
     role: oauth-source-readonly
-    notes: Real OAuth org; used for export/read tests only. ~105 projects.
+    notes: Any GitHub OAuth org you control; used for export/read tests only.
 
-  - name: CircleCI-Labs-Standalone
-    circleci_slug: circleci/98KhFjn8YyZY9qoBGmzCBs
-    org_id: 41ced616-61aa-47b8-9bf9-b8ed52d0468a
+  - name: app-source
+    circleci_slug: circleci/<SOURCE_ORG_UUID>
+    org_id: <SOURCE_ORG_ID>
     vcs_type: circleci
     role: app-source-readonly
     notes: >-
-      Real GitHub App org with connected repos + real pipeline-definitions/
-      triggers (used to validate capture: 50 projects). Read/export only — not
-      designated for create/delete tests.
+      A GitHub App / standalone org with connected repos + pipeline-definitions/
+      triggers, used to validate capture. Read/export only — not designated for
+      create/delete tests.
 
-  - name: AwesomeCICD
-    circleci_slug: gh/AwesomeCICD
-    org_id: efc130dc-284f-4533-964e-844f5c173860
+  - name: ci-host
+    circleci_slug: gh/<your-ci-org>
+    org_id: <CI_HOST_ORG_ID>
     vcs_type: github
     role: ci-host
-    notes: Hosts this repo's CI and the awesomecicd orb namespace.
+    notes: The org that hosts this repo's CI and the orb namespace.

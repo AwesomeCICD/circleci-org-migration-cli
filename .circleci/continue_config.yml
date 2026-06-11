@@ -148,6 +148,13 @@ jobs:
               exit 1
             fi
             echo "docs-check: OK (no diff)"
+      - run:
+          name: doc-flags-check (hand-written docs staleness gate)
+          command: |
+            # Fail if a released flag in the generated docs/cli/ reference is
+            # not mentioned in the hand-written docs/guide.md walkthrough.
+            # Guards against the v0.5-v0.7 doc drift the audit flagged (H3/D2).
+            ./scripts/check-doc-flags.sh docs/cli docs/guide.md
 
   # ===========================================================================
   # WAVE A — Coverage (run in parallel with build matrix + lint, no prerequisites)

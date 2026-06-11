@@ -152,6 +152,101 @@ CI will fail the `coverage` job if it drops below the gate.
 
 ---
 
+## End-to-end and manual testing
+
+The unit and `httptest`-mocked suites above cover the wire protocol. To exercise
+the CLI against a real CircleCI API, use the topology described in
+`e2e-fixtures.yaml` at the repo root. That file documents two kinds of resource:
+
+- **`fixtures`** — dedicated throwaway orgs for repeatable e2e tests. Each
+  scenario has a `source` (seeded with synthetic data) and an empty `dest`. Two
+  scenarios are defined: `oauth_to_oauth` (GitHub OAuth → OAuth, same-type) and
+  `app_to_app` (GitHub App / standalone → App, same-type). Slugs/org IDs are
+  `TBD` until you provision the orgs.
+- **`known_dev_resources`** — role placeholders (`oauth-source-readonly`,
+  `app-source-readonly`, `dest-writable-dummy`, `ci-host`) for ad-hoc dev
+  testing. Fill them in with **your own** orgs. Only ever point write tests
+  (`sync --apply`, project create/delete) at a throwaway `dest-writable-dummy`
+  org — never one holding real config.
+
+### No secrets in fixtures
+
+`e2e-fixtures.yaml` contains **no API tokens or secret values** — it stores only
+the *names* of the env vars to read. Supply credentials via the environment:
+
+| Env var | Purpose |
+|---|---|
+| `CIRCLECI_SOURCE_TOKEN` | API token for the source org (fallback: `CIRCLECI_CLI_TOKEN`) |
+| `CIRCLECI_DEST_TOKEN` | API token for the destination org (fallback: `CIRCLECI_CLI_TOKEN`) |
+| `GITHUB_TOKEN` | GitHub PAT for resolving repo external IDs (App pipeline definitions) |
+
+Never commit token values to any file in the repository.
+
+### Manual dry-run
+
+A dry run reads the source org and prints what *would* happen — no writes. Safe
+against any org you can read. Substitute your own slugs (placeholders shown):
+
+```bash
+export CIRCLECI_SOURCE_TOKEN=your-source-token
+export CIRCLECI_DEST_TOKEN=your-dest-token
+
+# Separate export + sync (sync is dry-run by default)
+circleci-migrate export --source-org gh/your-org
+circleci-migrate sync --manifest manifest.json --dest-token "$CIRCLECI_DEST_TOKEN"
+
+# Or the all-in-one migrate command
+circleci-migrate migrate \
+  --source-org gh/your-org \
+  --dest-org circleci/<DEST_ORG_UUID>
+```
+
+Review the output for `manual` items and `migration-report.md` for a full audit
+of what was captured.
+
+### Manual apply against a writable dummy org
+
+Run `--apply` only against a throwaway `dest-writable-dummy` org (see
+`e2e-fixtures.yaml`). It is safe to create and delete contexts, env vars, and
+project shells there.
+
+```bash
+export CIRCLECI_SOURCE_TOKEN=your-source-token
+export CIRCLECI_DEST_TOKEN=your-dest-token
+
+circleci-migrate export \
+  --source-org gh/your-org \
+  -o manifest.json \
+  --report migration-report.md
+
+# --yes skips the enable-builds prompt
+circleci-migrate sync \
+  --manifest manifest.json \
+  --dest-token "$CIRCLECI_DEST_TOKEN" \
+  --mapping mapping.json \
+  --apply \
+  --yes
+```
+
+**Tip:** pass `--skip-org-settings` if you do not want to overwrite the dummy
+org's feature flags and OIDC settings during a test run.
+
+### Using the e2e fixtures (once provisioned)
+
+A typical `oauth_to_oauth` flow:
+
+1. Seed the source org with the contexts and project env vars under
+   `fixtures.oauth_to_oauth.seed`.
+2. Run the migration in dry-run mode and verify the plan output.
+3. Run with `--apply --yes` and verify the destination matches the source.
+4. Re-run with `--apply` to verify idempotency (no duplicate resources).
+5. Clean up: delete the created resources from the destination org.
+
+For `app_to_app`, additionally verify that pipeline definitions and triggers are
+created with `disabled=true`, then that `--yes` enables them correctly.
+
+---
+
 ## Linting
 
 CI runs three linting steps (all in the `lint` job):
