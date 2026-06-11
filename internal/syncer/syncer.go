@@ -171,7 +171,10 @@ type Syncer struct {
 	// Runner, when set, is used to create runner resource classes in the
 	// destination namespace. When nil, runner classes are flagged as manual.
 	Runner RunnerWriter
-	Out    io.Writer
+	// CIAM, when set, is used to sync CIAM role/group data for circleci-type
+	// destination orgs. When nil, CIAM sync is silently skipped.
+	CIAM CIAMWriter
+	Out  io.Writer
 }
 
 // logf writes a human-progress line to both s.Out (for user-facing output) and

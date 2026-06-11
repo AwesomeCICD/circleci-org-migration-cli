@@ -42,10 +42,65 @@ type Manifest struct {
 	// translate "<srcNs>/<name>" → "<destNs>/<name>" when recreating classes.
 	RunnerNamespace       string                `json:"runner_namespace,omitempty"`
 	RunnerResourceClasses []RunnerResourceClass `json:"runner_resource_classes,omitempty"`
+	// CIAM captures CircleCI CIAM role/group data for standalone (circleci-type)
+	// orgs. It is nil for VCS-type orgs (GitHub OAuth, Bitbucket), whose identity
+	// is managed by the VCS provider and not migratable here. All identities are
+	// keyed by portable values (email / group name), never by raw user/group UUIDs.
+	CIAM *CIAMData `json:"ciam,omitempty"`
 	// Warnings records anything that could not be fully captured (for example
 	// a context secret value, which CircleCI never exposes via API). These are
 	// surfaced in the audit report so nothing is dropped silently.
 	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// CIAMData holds CIAM identity data captured from a standalone (circleci-type)
+// source org. All identities use portable values: email for users, name for groups.
+type CIAMData struct {
+	// OrgRoles lists org-level role grants, keyed by email. Only non-default roles
+	// are captured (the default role for all members need not be explicitly set).
+	OrgRoles []CIAMOrgRole `json:"org_roles,omitempty"`
+	// Groups lists CIAM group definitions in the org. The default "All members"
+	// group (ID == org ID) is excluded. MemberEmails is best-effort: it is
+	// populated from the org role-grants list and may not capture every group
+	// member if the read fails.
+	Groups []CIAMGroup `json:"groups,omitempty"`
+	// ProjectUserGrants lists per-project CIAM role grants for individual users,
+	// keyed by portable identity (email). Only present for circleci-type orgs.
+	ProjectUserGrants []CIAMProjectUserGrant `json:"project_user_grants,omitempty"`
+	// ProjectGroupGrants lists per-project CIAM role grants for groups,
+	// keyed by group name. Only present for circleci-type orgs.
+	ProjectGroupGrants []CIAMProjectGroupGrant `json:"project_group_grants,omitempty"`
+}
+
+// CIAMOrgRole is one org-level CIAM role assignment, keyed by email.
+type CIAMOrgRole struct {
+	Email    string `json:"email"`
+	Username string `json:"username,omitempty"`
+	Role     string `json:"role"` // org-admin | org-contributor | org-viewer
+}
+
+// CIAMGroup is a CIAM group definition with portable identity information.
+type CIAMGroup struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	MemberEmails []string `json:"member_emails,omitempty"`
+}
+
+// CIAMProjectUserGrant is one project-level CIAM role grant for a user.
+type CIAMProjectUserGrant struct {
+	ProjectName string `json:"project_name"`
+	ProjectSlug string `json:"project_slug,omitempty"`
+	Email       string `json:"email"`
+	Username    string `json:"username,omitempty"`
+	Role        string `json:"role"` // project-admin | project-contributor | project-viewer
+}
+
+// CIAMProjectGroupGrant is one project-level CIAM role grant for a group.
+type CIAMProjectGroupGrant struct {
+	ProjectName string `json:"project_name"`
+	ProjectSlug string `json:"project_slug,omitempty"`
+	GroupName   string `json:"group_name"`
+	Role        string `json:"role"` // project-admin | project-contributor | project-viewer
 }
 
 // RunnerResourceClass is a self-hosted runner resource class definition
