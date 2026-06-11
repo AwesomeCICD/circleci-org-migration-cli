@@ -6,7 +6,7 @@ circleci-migrate-export - Export source-org data to a local manifest file.
 
 
 .SH SYNOPSIS
-\fBcircleci-migrate export --org  [flags]\fP
+\fBcircleci-migrate export --source-org  [flags]\fP
 
 
 .SH DESCRIPTION
@@ -31,10 +31,10 @@ because there is no clean org→namespace lookup in the CircleCI API.
 
 .PP
 Examples:
-  circleci-migrate export --org gh/acme --source-token $SRC_TOKEN
-  circleci-migrate export --org gh/acme -o acme.json --report acme-audit.md
-  circleci-migrate export --org gh/acme --projects gh/acme/web,gh/acme/api
-  circleci-migrate export --org gh/acme --runner-namespace acme
+  circleci-migrate export --source-org gh/acme --source-token $SRC_TOKEN
+  circleci-migrate export --source-org gh/acme -o acme.json --report acme-audit.md
+  circleci-migrate export --source-org gh/acme --project gh/acme/web --project gh/acme/api
+  circleci-migrate export --source-org gh/acme --runner-namespace acme
 
 
 .SH OPTIONS
@@ -42,16 +42,12 @@ Examples:
 	help for export
 
 .PP
-\fB--org\fP=""
-	Source organization slug: gh/ or circleci/ (required)
-
-.PP
 \fB-o\fP, \fB--output\fP="manifest.json"
-	Path to write the JSON manifest
+	Path to write the JSON manifest (always written; use -o to change the path)
 
 .PP
-\fB--projects\fP=[]
-	Explicit project slugs to export (merged with discovered projects)
+\fB--project\fP=[]
+	Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)
 
 .PP
 \fB--report\fP="migration-report.md"
@@ -72,6 +68,10 @@ Examples:
 .PP
 \fB--skip-projects\fP[=false]
 	Skip exporting projects
+
+.PP
+\fB--source-org\fP=""
+	Source organization slug: gh/ or circleci/ (required)
 
 
 .SH OPTIONS INHERITED FROM PARENT COMMANDS

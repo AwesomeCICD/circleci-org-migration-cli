@@ -19,6 +19,7 @@ func newExportCommand() *cobra.Command {
 		output          string
 		reportPath      string
 		projectSlugs    []string
+		projectsAlias   []string // hidden alias --projects (StringSlice back-compat)
 		skipContexts    bool
 		skipProjects    bool
 		skipExtras      bool
@@ -26,7 +27,7 @@ func newExportCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "export --org <org-slug>",
+		Use:   "export --source-org <org-slug>",
 		Short: "Export source-org data to a local manifest file.",
 		Long: `export reads configuration from the source CircleCI organization and
 writes a non-secret JSON manifest plus a human-readable audit report.
@@ -45,13 +46,19 @@ Pass --runner-namespace to capture them. The namespace must be supplied explicit
 because there is no clean org→namespace lookup in the CircleCI API.
 
 Examples:
-  circleci-migrate export --org gh/acme --source-token $SRC_TOKEN
-  circleci-migrate export --org gh/acme -o acme.json --report acme-audit.md
-  circleci-migrate export --org gh/acme --projects gh/acme/web,gh/acme/api
-  circleci-migrate export --org gh/acme --runner-namespace acme`,
+  circleci-migrate export --source-org gh/acme --source-token $SRC_TOKEN
+  circleci-migrate export --source-org gh/acme -o acme.json --report acme-audit.md
+  circleci-migrate export --source-org gh/acme --project gh/acme/web --project gh/acme/api
+  circleci-migrate export --source-org gh/acme --runner-namespace acme`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Merge values from hidden alias --projects (StringSlice, comma-or-repeat)
+			// into the canonical --project list.
+			for _, s := range projectsAlias {
+				projectSlugs = append(projectSlugs, s)
+			}
+
 			if orgSlug == "" {
-				return fmt.Errorf("--org is required (e.g. --org gh/acme)")
+				return fmt.Errorf("--source-org is required (e.g. --source-org gh/acme)")
 			}
 			token := rootOptions.SourceTokenOrDefault()
 			if token == "" {
@@ -116,16 +123,31 @@ Examples:
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&orgSlug, "org", "", "Source organization slug: gh/<org> or circleci/<org-id> (required)")
-	f.StringVarP(&output, "output", "o", "manifest.json", "Path to write the JSON manifest")
-	f.StringVar(&reportPath, "report", "migration-report.md", "Path to write the human-readable audit report")
-	f.StringSliceVar(&projectSlugs, "projects", nil, "Explicit project slugs to export (merged with discovered projects)")
+
+	// Canonical flags (new names).
+	f.StringVar(&orgSlug, "source-org", "",
+		"Source organization slug: gh/<org> or circleci/<org-id> (required)")
+	f.StringVarP(&output, "output", "o", "manifest.json",
+		"Path to write the JSON manifest (always written; use -o to change the path)")
+	f.StringVar(&reportPath, "report", "migration-report.md",
+		"Path to write the human-readable audit report")
+	f.StringArrayVar(&projectSlugs, "project", nil,
+		"Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip exporting projects")
 	f.BoolVar(&skipExtras, "skip-extras", false, "Skip checkout keys, webhooks, and schedules")
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+
+	// Hidden back-compat aliases — old invocations must still work.
+	f.StringVar(&orgSlug, "org", "",
+		"Deprecated: use --source-org. Source organization slug: gh/<org> or circleci/<org-id>")
+	_ = f.MarkHidden("org")
+
+	f.StringSliceVar(&projectsAlias, "projects", nil,
+		"Deprecated: use --project. Comma-separated project slugs to export")
+	_ = f.MarkHidden("projects")
 
 	return cmd
 }
