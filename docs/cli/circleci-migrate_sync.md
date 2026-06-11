@@ -85,6 +85,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --mapping string                 Path to a source->destination mapping file (JSON). REQUIRED to change the destination org name; without it sync targets the SOURCE org. Schema: { "org": {"from":"gh/acme","to":"gh/acme-new"}, "projects": {"gh/acme/web":"gh/acme-new/web"}, "github_org": {"from":"acme","to":"acme-new"} }. Only org.to is required to retarget; projects/github_org are optional.
       --missing-secrets string         How to handle variables with no captured value: 'skip' omits the variable entirely; 'placeholder' creates the variable with a placeholder value. Use 'placeholder' for restricted contexts whose values cannot be captured, so the variable name exists and can be filled in manually later. (default "skip")
       --secrets string                 Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them. (default "secrets.json")
+      --skip-ciam                      Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
       --skip-contexts                  Skip syncing contexts
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
       --skip-projects                  Skip syncing projects

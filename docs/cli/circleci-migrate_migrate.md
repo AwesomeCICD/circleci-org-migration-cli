@@ -82,6 +82,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --report string                  Optional: save the human-readable audit report to this path (omit to skip writing the report)
       --runner-namespace string        Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). The namespace must be supplied explicitly — there is no clean org→namespace lookup.
       --secrets string                 Path to a captured secret bundle (optional) (default "secrets.json")
+      --skip-ciam                      Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
       --skip-contexts                  Skip exporting and syncing contexts
       --skip-extras                    Skip checkout keys, webhooks, and schedules
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)

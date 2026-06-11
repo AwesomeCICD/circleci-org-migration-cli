@@ -29,8 +29,8 @@ func TestListOrgRoleGrants_HappyPath(t *testing.T) {
 		}
 		respondJSON(w, http.StatusOK, map[string]any{
 			"items": []map[string]any{
-				{"userId": testUserID, "email": "alice@example.com", "username": "alice", "role": "org-admin"},
-				{"userId": "user-999", "email": "bob@example.com", "username": "bob", "role": "org-viewer"},
+				{"user_id": testUserID, "email": "alice@example.com", "username": "alice", "role": "org-admin"},
+				{"user_id": "user-999", "email": "bob@example.com", "username": "bob", "role": "org-viewer"},
 			},
 		})
 	}))

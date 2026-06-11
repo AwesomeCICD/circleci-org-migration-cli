@@ -128,6 +128,10 @@ Examples:
 	Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them.
 
 .PP
+\fB--skip-ciam\fP[=false]
+	Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
+
+.PP
 \fB--skip-contexts\fP[=false]
 	Skip syncing contexts
 

@@ -348,7 +348,10 @@ func TestSyncCIAM_EmailMatchedUsersGetRoles_UnmatchedEmitManual(t *testing.T) {
 // Test: project user grants applied for matched users
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestSyncCIAM_ProjectUserGrantsApplied(t *testing.T) {
+// Project-level user grants are recorded as MANUAL (never written): the dest
+// project UUID is not reliably mappable from the source, so SyncCIAM must not
+// attempt SetProjectUserRole. See #176/#179.
+func TestSyncCIAM_ProjectUserGrants_RecordedManual(t *testing.T) {
 	ciam := &fakeCIAMWriter{
 		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
 			return []CIAMRoleGrant{
@@ -356,6 +359,10 @@ func TestSyncCIAM_ProjectUserGrantsApplied(t *testing.T) {
 			}, nil
 		},
 		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(_, _, _, _ string) error {
+			t.Fatal("SetProjectUserRole must not be called: project grants are manual")
+			return nil
+		},
 	}
 
 	s := newCIAMTestSyncer(ciam, "circleci")
@@ -364,18 +371,21 @@ func TestSyncCIAM_ProjectUserGrantsApplied(t *testing.T) {
 	m.CIAM.OrgRoles = nil
 	m.CIAM.ProjectGroupGrants = nil
 
-	_, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(ciam.projectRolesSet) != 1 {
-		t.Fatalf("expected 1 project role set; got %d: %v", len(ciam.projectRolesSet), ciam.projectRolesSet)
+	if len(ciam.projectRolesSet) != 0 {
+		t.Fatalf("expected 0 project roles written; got %v", ciam.projectRolesSet)
 	}
-	// The project ID used is the source SourceID (same-org migration).
-	want := "dest-org-uuid/proj-uuid-1/uid-alice/project-admin"
-	if ciam.projectRolesSet[0] != want {
-		t.Errorf("got %q, want %q", ciam.projectRolesSet[0], want)
+	var manual int
+	for _, a := range report.Actions {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-user:") {
+			manual++
+		}
+	}
+	if manual != 1 {
+		t.Errorf("expected 1 manual project-user action; got %d (%+v)", manual, report.Actions)
 	}
 }
 
@@ -473,15 +483,16 @@ func TestSyncCIAM_ListOrgRoleGrantsError_ErrorRecorded(t *testing.T) {
 // Test: project group grants applied when group exists in destination
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestSyncCIAM_ProjectGroupGrantsApplied(t *testing.T) {
-	// The group must be present in m.CIAM.Groups so syncCIAMGroups builds the
-	// nameToID map — the listGroups stub returns it as an existing group so no
-	// CreateGroup is called. The resulting nameToID map is then used to resolve
-	// the project group grant.
+// Project-level group grants are recorded as MANUAL (never written). See #176/#179.
+func TestSyncCIAM_ProjectGroupGrants_RecordedManual(t *testing.T) {
 	ciam := &fakeCIAMWriter{
 		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
 		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
 			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
+		},
+		addProjectGroupRole: func(_, _ string, _ []string, _ string) error {
+			t.Fatal("AddProjectGroupRole must not be called: project grants are manual")
+			return nil
 		},
 	}
 
@@ -489,21 +500,22 @@ func TestSyncCIAM_ProjectGroupGrantsApplied(t *testing.T) {
 	m := ciamManifest()
 	m.CIAM.OrgRoles = nil
 	m.CIAM.ProjectUserGrants = nil
-	// Keep Groups with "security-team" so syncCIAMGroups records it as "exists"
-	// and includes it in groupNameToID.
 
-	_, err := s.SyncCIAM(m, nil, Options{Apply: true})
+	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(ciam.projectGroupRoles) != 1 {
-		t.Fatalf("expected 1 project group role set; got %d: %v", len(ciam.projectGroupRoles), ciam.projectGroupRoles)
+	if len(ciam.projectGroupRoles) != 0 {
+		t.Fatalf("expected 0 project group roles written; got %v", ciam.projectGroupRoles)
 	}
-	// "dest-org-uuid/proj-uuid-1/grp-security-id/project-contributor"
-	want := "dest-org-uuid/proj-uuid-1/grp-security-id/project-contributor"
-	if ciam.projectGroupRoles[0] != want {
-		t.Errorf("got %q, want %q", ciam.projectGroupRoles[0], want)
+	var manual int
+	for _, a := range report.Actions {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-group:") {
+			manual++
+		}
+	}
+	if manual != 1 {
+		t.Errorf("expected 1 manual project-group action; got %d (%+v)", manual, report.Actions)
 	}
 }
 
@@ -659,120 +671,13 @@ func TestSyncCIAM_AddUsersToGroupError_RecordsError(t *testing.T) {
 // Test: SetProjectUserRole error — error action recorded, continues
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestSyncCIAM_SetProjectUserRoleError_RecordsError(t *testing.T) {
-	ciam := &fakeCIAMWriter{
-		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
-			return []CIAMRoleGrant{
-				{UserID: "uid-alice", Email: "alice@example.com"},
-			}, nil
-		},
-		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
-		setProjectUserRole: func(_, _, _, _ string) error {
-			return fmt.Errorf("project role API error")
-		},
-	}
-
-	s := newCIAMTestSyncer(ciam, "circleci")
-	m := ciamManifest()
-	m.CIAM.OrgRoles = nil
-	m.CIAM.Groups = nil
-	m.CIAM.ProjectGroupGrants = nil
-
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
-	if err != nil {
-		t.Fatalf("unexpected fatal error: %v", err)
-	}
-
-	var errorActions []Action
-	for _, a := range report.Actions {
-		if a.Status == "error" {
-			errorActions = append(errorActions, a)
-		}
-	}
-	if len(errorActions) == 0 {
-		t.Errorf("expected error action from SetProjectUserRole failure; got: %+v", report.Actions)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: AddProjectGroupRole error — error action recorded, continues
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestSyncCIAM_AddProjectGroupRoleError_RecordsError(t *testing.T) {
-	ciam := &fakeCIAMWriter{
-		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
-		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
-			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
-		},
-		addProjectGroupRole: func(_, _ string, _ []string, _ string) error {
-			return fmt.Errorf("group role API error")
-		},
-	}
-
-	s := newCIAMTestSyncer(ciam, "circleci")
-	m := ciamManifest()
-	m.CIAM.OrgRoles = nil
-	m.CIAM.ProjectUserGrants = nil
-	// security-team must be in Groups so syncCIAMGroups adds it to nameToID map.
-
-	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
-	if err != nil {
-		t.Fatalf("unexpected fatal error: %v", err)
-	}
-
-	var errorActions []Action
-	for _, a := range report.Actions {
-		if a.Status == "error" {
-			errorActions = append(errorActions, a)
-		}
-	}
-	if len(errorActions) == 0 {
-		t.Errorf("expected error action from AddProjectGroupRole failure; got: %+v", report.Actions)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: explicit project mapping overrides source slug
 // ─────────────────────────────────────────────────────────────────────────────
-
-func TestSyncCIAM_ExplicitProjectMappingUsed(t *testing.T) {
-	ciam := &fakeCIAMWriter{
-		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
-			return []CIAMRoleGrant{
-				{UserID: "uid-alice", Email: "alice@example.com"},
-			}, nil
-		},
-		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
-	}
-
-	s := newCIAMTestSyncer(ciam, "circleci")
-	m := ciamManifest()
-	m.CIAM.OrgRoles = nil
-	m.CIAM.Groups = nil
-	m.CIAM.ProjectGroupGrants = nil
-
-	// Provide an explicit mapping that maps the source slug to a different dest project.
-	mapping := &manifest.Mapping{
-		Org: manifest.OrgMapping{To: "circleci/dest-org-uuid"},
-		Projects: map[string]string{
-			"circleci/src-org-uuid/proj-uuid-1": "circleci/dest-org-uuid/mapped-proj-uuid",
-		},
-	}
-
-	_, err := s.SyncCIAM(m, mapping, Options{Apply: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// The project role should use the mapped project ID, not the SourceID.
-	if len(ciam.projectRolesSet) != 1 {
-		t.Fatalf("expected 1 project role set; got %d", len(ciam.projectRolesSet))
-	}
-	want := "dest-org-uuid/circleci/dest-org-uuid/mapped-proj-uuid/uid-alice/project-admin"
-	if ciam.projectRolesSet[0] != want {
-		t.Errorf("got %q, want %q", ciam.projectRolesSet[0], want)
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: SetOrgUserRole error — error action recorded, continues
@@ -900,18 +805,10 @@ func TestSyncCIAM_EmptyEmail_MatchedByUsername(t *testing.T) {
 	m := ciamManifest()
 	m.CIAM.Groups = nil
 	m.CIAM.ProjectGroupGrants = nil
-	// Source grants have no email, only a username that matches the dest user.
+	m.CIAM.ProjectUserGrants = nil // org-level only: project grants are always manual (#179)
+	// Source grant has no email, only a username that matches the dest user.
 	m.CIAM.OrgRoles = []manifest.CIAMOrgRole{
 		{Email: "", Username: "bob", Role: "org-admin"},
-	}
-	m.CIAM.ProjectUserGrants = []manifest.CIAMProjectUserGrant{
-		{
-			ProjectName: "my-project",
-			ProjectSlug: "circleci/src-org-uuid/proj-uuid-1",
-			Email:       "",
-			Username:    "bob",
-			Role:        "project-admin",
-		},
 	}
 
 	report, err := s.SyncCIAM(m, nil, Options{Apply: true})
@@ -922,11 +819,11 @@ func TestSyncCIAM_EmptyEmail_MatchedByUsername(t *testing.T) {
 	if setOrgRoleUID != "uid-bob" {
 		t.Errorf("expected org role set for uid-bob via username match; got %q", setOrgRoleUID)
 	}
-	if setProjectRoleUID != "uid-bob" {
-		t.Errorf("expected project role set for uid-bob via username match; got %q", setProjectRoleUID)
+	if setProjectRoleUID != "" {
+		t.Errorf("project roles are manual; SetProjectUserRole must not be called (got %q)", setProjectRoleUID)
 	}
 
-	// No manual actions: both grants matched by username.
+	// No manual actions: the org grant matched by username.
 	for _, a := range report.Actions {
 		if a.Status == "manual" {
 			t.Errorf("did not expect manual action when username matches; got: %+v", a)

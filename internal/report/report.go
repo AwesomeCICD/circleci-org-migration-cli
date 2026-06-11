@@ -575,6 +575,7 @@ func writeAutomatedBySync(b *strings.Builder) {
 	fmt.Fprintf(b, "- Org settings: feature flags, OIDC, URL-orb allow list, config policies, technical/security contacts.\n")
 	fmt.Fprintf(b, "- Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.\n")
 	fmt.Fprintf(b, "- Context group restrictions, mapped onto destination CIAM groups.\n")
+	fmt.Fprintf(b, "- CIAM **org-level** role grants and groups (standalone circleci-type orgs only; users matched by email, falling back to username — invite users to the destination first). Per-project CIAM grants are a manual step (see below).\n")
 }
 
 // hasNonDefaultGroupRestrictions reports whether any context in the manifest
@@ -908,13 +909,21 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		rolesURL := "https://circleci.com/docs/guides/permissions-authentication/manage-roles-and-permissions/"
 		groupsURL := "https://circleci.com/docs/guides/permissions-authentication/manage-groups/"
 		items = append(items, fmt.Sprintf(
-			"**CIAM roles and groups (standalone orgs)** — the org and per-project role grants listed in "+
-				"the *CIAM roles and groups* section above are captured for reference but are **not yet "+
-				"applied automatically by `sync`** (tracked upstream). Recreate them manually on the "+
-				"destination: invite each user first (there is no bulk-invite API for circleci-type orgs), "+
-				"then assign their org/project roles. Match users by email where available, otherwise by username. "+
+			"**CIAM users & org roles (standalone orgs)** — `sync --apply` sets **org-level** role grants, "+
+				"but only for users already present in the destination org (matched by email, then username). "+
+				"Users not yet in the destination must be **invited first** (there is no bulk-invite API for "+
+				"circleci-type orgs); after inviting, re-run `sync` to apply their org roles. "+
 				"Refs: [Manage roles](%s) | [Manage groups](%s)",
 			rolesURL, groupsURL))
+
+		if len(m.CIAM.ProjectUserGrants) > 0 || len(m.CIAM.ProjectGroupGrants) > 0 {
+			items = append(items, fmt.Sprintf(
+				"**CIAM per-project role grants (%d)** — `sync` does **not** apply project-level role grants "+
+					"automatically: the destination project UUID is assigned on creation and is not reliably "+
+					"mappable from the source, so they must be recreated manually on each destination project "+
+					"(see the *CIAM roles and groups* section above for the full list). → [Manage roles](%s)",
+				len(m.CIAM.ProjectUserGrants)+len(m.CIAM.ProjectGroupGrants), rolesURL))
+		}
 
 		if len(m.CIAM.Groups) > 0 {
 			groupNames := make([]string, 0, len(m.CIAM.Groups))

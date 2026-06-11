@@ -54,7 +54,9 @@ type CIAMGroupInfo struct {
 //   - Resolves destination user IDs from ListOrgRoleGrants by email, then by
 //     username, then by userID (the CIAM API often returns an empty email).
 //   - Applies org-level roles for matched users.
-//   - Applies project role grants (user + group) for matched users/groups.
+//   - Records per-project role grants (user + group) as "manual": the dest
+//     project UUID is not reliably mappable from the source, so they cannot be
+//     applied automatically (see #179).
 //   - Unmatched users (not yet in dest org) emit "manual" actions.
 //   - Dry-run: no writes, plans are recorded in the report.
 func (s *Syncer) SyncCIAM(m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
@@ -108,14 +110,13 @@ func (s *Syncer) SyncCIAM(m *manifest.Manifest, mapping *manifest.Mapping, opts 
 	resolver := s.buildUserResolver(report, destOrgID)
 
 	// ── Step 2: Create groups (idempotent by name) ───────────────────────────
-	// groupNameToID maps group name → destination group ID (for project grants).
-	groupNameToID := s.syncCIAMGroups(report, ciam, destOrgID, resolver, opts)
+	s.syncCIAMGroups(report, ciam, destOrgID, resolver, opts)
 
 	// ── Step 3: Apply org-level role grants ──────────────────────────────────
 	s.syncCIAMOrgRoles(report, ciam, destOrgID, resolver, opts)
 
-	// ── Step 4: Apply project role grants ────────────────────────────────────
-	s.syncCIAMProjectGrants(report, ciam, destOrgID, resolver, groupNameToID, m, mapping, opts)
+	// ── Step 4: Record project role grants as manual (see #179) ──────────────
+	s.syncCIAMProjectGrants(report, ciam)
 
 	return report, nil
 }
@@ -310,98 +311,27 @@ func (s *Syncer) syncCIAMOrgRoles(report *Report, ciam *manifest.CIAMData, destO
 	}
 }
 
-// syncCIAMProjectGrants applies per-project CIAM role grants (user + group).
-func (s *Syncer) syncCIAMProjectGrants(report *Report, ciam *manifest.CIAMData, destOrgID string, resolver *ciamUserResolver, groupNameToID map[string]string, m *manifest.Manifest, mapping *manifest.Mapping, opts Options) {
-	// Build a source-slug → dest-project-ID map from the manifest projects.
-	// We need the destination project UUID; the syncer's project mapper works
-	// from slugs, so we look up by project name or slug match.
-	srcSlugToDestID := buildSrcSlugToDestProjectID(m, mapping)
+// syncCIAMProjectGrants records per-project CIAM role grants (user + group) as
+// MANUAL follow-ups. Unlike org-level roles, project-level grants cannot be
+// applied automatically: the destination project UUID is assigned when the
+// project is created on the destination and is not reliably mappable from the
+// source project UUID, so a blind write keyed on the source UUID would target
+// the wrong project (and the API accepts it without persisting a usable grant).
+// Reliable project-grant apply requires resolving the destination project UUID
+// by name on the destination org — tracked in #179.
+func (s *Syncer) syncCIAMProjectGrants(report *Report, ciam *manifest.CIAMData) {
+	const note = " — project-level CIAM grants are not applied automatically because the destination project UUID is not reliably mappable from the source (see #179); recreate this grant manually on the destination project"
 
-	// Per-project user grants.
 	for _, g := range ciam.ProjectUserGrants {
 		label := ciamUserLabel(g.Email, g.Username)
 		target := "ciam-project-user:" + g.ProjectName + "/" + label
-		destProjID, ok := srcSlugToDestID[g.ProjectSlug]
-		if !ok {
-			report.add("ciam", target, "manual",
-				fmt.Sprintf("project %q not found in destination (slug %q) — create the project first, then re-run", g.ProjectName, g.ProjectSlug))
-			continue
-		}
-		uid, _ := resolver.resolve(g.Email, g.Username, "")
-		if uid == "" {
-			report.add("ciam", target, "manual",
-				fmt.Sprintf("user %q (project=%q, role=%q) not found in destination org by email or username — invite the user first, then re-run", label, g.ProjectName, g.Role))
-			continue
-		}
-		if !opts.Apply {
-			report.add("ciam", target, "set",
-				fmt.Sprintf("would set project role %q for %q on %q", g.Role, label, g.ProjectName))
-			continue
-		}
-		if err := s.CIAM.SetProjectUserRole(destOrgID, destProjID, uid, g.Role); err != nil {
-			report.add("ciam", target, "error",
-				fmt.Sprintf("set project role %q for %q on %q: %v", g.Role, label, g.ProjectName, err))
-			continue
-		}
-		report.add("ciam", target, "set",
-			fmt.Sprintf("set project role %q for %q on %q", g.Role, label, g.ProjectName))
+		report.add("ciam", target, "manual",
+			fmt.Sprintf("grant project role %q to user %q on project %q%s", g.Role, label, g.ProjectName, note))
 	}
 
-	// Per-project group grants.
 	for _, g := range ciam.ProjectGroupGrants {
-		destProjID, ok := srcSlugToDestID[g.ProjectSlug]
-		if !ok {
-			target := "ciam-project-group:" + g.ProjectName + "/" + g.GroupName
-			report.add("ciam", target, "manual",
-				fmt.Sprintf("project %q not found in destination (slug %q) — create the project first, then re-run", g.ProjectName, g.ProjectSlug))
-			continue
-		}
 		target := "ciam-project-group:" + g.ProjectName + "/" + g.GroupName
-		groupID, ok := groupNameToID[g.GroupName]
-		if !ok {
-			report.add("ciam", target, "manual",
-				fmt.Sprintf("group %q (project=%q, role=%q) not found in destination — create the group first, then re-run", g.GroupName, g.ProjectName, g.Role))
-			continue
-		}
-		if !opts.Apply {
-			report.add("ciam", target, "set",
-				fmt.Sprintf("would grant project role %q to group %q on %q", g.Role, g.GroupName, g.ProjectName))
-			continue
-		}
-		if err := s.CIAM.AddProjectGroupRole(destOrgID, destProjID, []string{groupID}, g.Role); err != nil {
-			report.add("ciam", target, "error",
-				fmt.Sprintf("grant project role %q to group %q on %q: %v", g.Role, g.GroupName, g.ProjectName, err))
-			continue
-		}
-		report.add("ciam", target, "set",
-			fmt.Sprintf("granted project role %q to group %q on %q", g.Role, g.GroupName, g.ProjectName))
+		report.add("ciam", target, "manual",
+			fmt.Sprintf("grant project role %q to group %q on project %q%s", g.Role, g.GroupName, g.ProjectName, note))
 	}
-}
-
-// buildSrcSlugToDestProjectID builds a map of source project slug → destination
-// project UUID from the manifest's project list plus any explicit project mapping.
-// For circleci-type dest orgs the project's own SourceID is the UUID; for explicit
-// mappings the mapped value is used.
-func buildSrcSlugToDestProjectID(m *manifest.Manifest, mapping *manifest.Mapping) map[string]string {
-	result := make(map[string]string, len(m.Projects))
-	for _, p := range m.Projects {
-		if p.SourceID == "" {
-			continue
-		}
-		// For circleci-type same-org or same-type destination the source project UUID
-		// is the destination project UUID (projects are shared by UUID, not recreated).
-		// When an explicit slug→slug mapping exists and a dest project UUID is needed,
-		// we use the source SourceID as best-effort.
-		result[p.Slug] = p.SourceID
-	}
-	// Apply explicit slug→slug overrides from the mapping; use the mapped dest slug
-	// as the "project ID" (best-effort for project grant lookups).
-	if mapping != nil {
-		for srcSlug, dstSlug := range mapping.Projects {
-			if dstSlug != "" {
-				result[srcSlug] = dstSlug
-			}
-		}
-	}
-	return result
 }
