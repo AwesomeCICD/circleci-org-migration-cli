@@ -238,19 +238,6 @@ Examples:
 			}
 
 			// --- step 2: sync into destination org ----------------------------
-			dstOrgClient, err := org.NewClient(cfg, dstToken)
-			if err != nil {
-				return fmt.Errorf("creating destination org client: %w", err)
-			}
-			dstCtxClient, err := cctx.NewClient(cfg, dstToken)
-			if err != nil {
-				return fmt.Errorf("creating destination context client: %w", err)
-			}
-			dstProjClient, err := project.NewClient(cfg, dstToken)
-			if err != nil {
-				return fmt.Errorf("creating destination project client: %w", err)
-			}
-
 			mapping, err := BuildMigrateMapping(mappingPath, sourceOrg, destOrg)
 			if err != nil {
 				return err
@@ -261,15 +248,6 @@ Examples:
 				return err
 			}
 
-			sy := &syncer.Syncer{
-				Org:         dstOrgClient,
-				Contexts:    dstCtxClient,
-				Projects:    dstProjClient,
-				OrgSettings: orgSettingsAdapter{dstOrgClient},
-				Groups:      orgGroupLister{dstOrgClient},
-				CIAM:        ciamWriterAdapter{dstOrgClient},
-				Out:         cmd.ErrOrStderr(),
-			}
 			opts := syncer.Options{
 				Apply:               apply,
 				MissingSecrets:      missing,
@@ -281,12 +259,10 @@ Examples:
 
 			// Wire up the runner client for the destination when needed and not
 			// skipped.
-			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
-				dstRunnerClient, rerr := runner.NewClient(cfg, dstToken)
-				if rerr != nil {
-					return fmt.Errorf("creating destination runner client: %w", rerr)
-				}
-				sy.Runner = dstRunnerClient
+			wireRunner := !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0)
+			sy, err := buildSyncer(cfg, dstToken, cmd.ErrOrStderr(), wireRunner)
+			if err != nil {
+				return err
 			}
 
 			// Accumulate section reports for --json output.

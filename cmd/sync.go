@@ -9,10 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/cciurl"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
@@ -295,28 +292,6 @@ Examples:
 				}
 			}
 
-			orgClient, err := org.NewClient(cfg, token)
-			if err != nil {
-				return fmt.Errorf("creating org client: %w", err)
-			}
-			ctxClient, err := cctx.NewClient(cfg, token)
-			if err != nil {
-				return fmt.Errorf("creating context client: %w", err)
-			}
-			projClient, err := project.NewClient(cfg, token)
-			if err != nil {
-				return fmt.Errorf("creating project client: %w", err)
-			}
-
-			sy := &syncer.Syncer{
-				Org:         orgClient,
-				Contexts:    ctxClient,
-				Projects:    projClient,
-				OrgSettings: orgSettingsAdapter{orgClient},
-				Groups:      orgGroupLister{orgClient},
-				CIAM:        ciamWriterAdapter{orgClient},
-				Out:         cmd.ErrOrStderr(),
-			}
 			opts := syncer.Options{
 				Apply:               apply,
 				MissingSecrets:      missing,
@@ -329,12 +304,10 @@ Examples:
 			// Wire up the runner client when a destination namespace was provided
 			// or the manifest has runner classes (so dry-run preview works).
 			// Skip when --skip-runner is set.
-			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
-				runnerClient, rerr := runner.NewClient(cfg, token)
-				if rerr != nil {
-					return fmt.Errorf("creating runner client: %w", rerr)
-				}
-				sy.Runner = runnerClient
+			wireRunner := !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0)
+			sy, err := buildSyncer(cfg, token, cmd.ErrOrStderr(), wireRunner)
+			if err != nil {
+				return err
 			}
 
 			// Accumulate section reports for --json output.

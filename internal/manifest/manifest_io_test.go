@@ -1,7 +1,8 @@
 package manifest
 
-// Additional tests to push coverage above 80 %.
-// Existing tests live in manifest_test.go; this file only adds NEW test names.
+// Tests for manifest/mapping/secret-bundle load+save round-trips, warning
+// accumulation, and repo-owner remapping. Existing tests live in
+// manifest_test.go; this file only adds NEW test names.
 
 import (
 	"os"
