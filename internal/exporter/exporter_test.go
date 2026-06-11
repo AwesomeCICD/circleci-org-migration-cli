@@ -212,6 +212,7 @@ type fakeProjectAPI struct {
 	listOrgProjects           func(orgID string) ([]project.OrgProject, error)
 	listPipelineDefinitions   func(projectID string) ([]project.PipelineDefinition, error)
 	listTriggers              func(projectID, defID string) ([]project.Trigger, error)
+	listProjectTokens         func(slug string) ([]project.ProjectAPIToken, error)
 }
 
 func (f *fakeProjectAPI) GetProject(slug string) (*project.Project, error) {
@@ -302,6 +303,13 @@ func (f *fakeProjectAPI) ListPipelineDefinitions(projectID string) ([]project.Pi
 func (f *fakeProjectAPI) ListTriggers(projectID, defID string) ([]project.Trigger, error) {
 	if f.listTriggers != nil {
 		return f.listTriggers(projectID, defID)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectAPI) ListProjectTokens(slug string) ([]project.ProjectAPIToken, error) {
+	if f.listProjectTokens != nil {
+		return f.listProjectTokens(slug)
 	}
 	return nil, nil
 }

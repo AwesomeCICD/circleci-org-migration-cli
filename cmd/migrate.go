@@ -39,6 +39,7 @@ func newMigrateCommand() *cobra.Command {
 		runnerNamespace     string
 		destRunnerNamespace string
 		jsonOutput          bool
+		createProjectTokens bool
 	)
 
 	cmd := &cobra.Command{
@@ -270,6 +271,7 @@ Examples:
 				GitHubToken:         githubToken,
 				DestGitHubOrg:       destGitHubOrg,
 				DestRunnerNamespace: destRunnerNamespace,
+				CreateProjectTokens: createProjectTokens,
 			}
 
 			// Wire up the runner client for the destination when needed and not
@@ -393,6 +395,11 @@ Examples:
 		"Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). "+
 			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
 			"When omitted and the manifest contains runner classes, each is flagged for manual recreation.")
+	f.BoolVar(&createProjectTokens, "create-project-tokens", false,
+		"When set AND --apply, recreate each captured project API token on the destination project. "+
+			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
+			"must be repointed to the new value. New plaintext values are printed to stderr once and cannot "+
+			"be retrieved again. Default false: emit manual steps only.")
 
 	return cmd
 }

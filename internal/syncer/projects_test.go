@@ -39,6 +39,8 @@ type fakeProjectWriter struct {
 	setV11ProjectFeatureFlags func(slug string, flags map[string]bool) error
 	listAdditionalSSHKeys     func(slug string) ([]project.SSHKeyMeta, error)
 	addAdditionalSSHKey       func(slug, hostname, privateKey string) error
+	listProjectTokens         func(slug string) ([]project.ProjectAPIToken, error)
+	createProjectToken        func(slug, scope, label string) (string, error)
 
 	// App-org methods
 	createAppProject         func(orgID, name string) (*project.Project, error)
@@ -183,6 +185,22 @@ func (f *fakeProjectWriter) AddAdditionalSSHKey(slug, hostname, privateKey strin
 		return f.addAdditionalSSHKey(slug, hostname, privateKey)
 	}
 	return nil
+}
+
+func (f *fakeProjectWriter) ListProjectTokens(slug string) ([]project.ProjectAPIToken, error) {
+	f.calls = append(f.calls, projectCall{"ListProjectTokens", []string{slug}})
+	if f.listProjectTokens != nil {
+		return f.listProjectTokens(slug)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) CreateProjectToken(slug, scope, label string) (string, error) {
+	f.calls = append(f.calls, projectCall{"CreateProjectToken", []string{slug, scope, label}})
+	if f.createProjectToken != nil {
+		return f.createProjectToken(slug, scope, label)
+	}
+	return "ccipat_PLACEHOLDER_syncer_test_value", nil
 }
 
 func (f *fakeProjectWriter) CreateAppProject(orgID, name string) (*project.Project, error) {
@@ -3364,5 +3382,215 @@ func TestResolveExternalID_ResolvedCountsInSummary(t *testing.T) {
 	}
 	if counts["resolved"] != 0 {
 		t.Errorf("expected zero 'resolved' count (status was renamed to 'set'), got %d", counts["resolved"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Project API token sync tests (#132)
+// ---------------------------------------------------------------------------
+
+// projectManifestWithTokens builds a minimal project manifest with captured
+// API tokens for testing.
+func projectManifestWithTokens(tokens ...manifest.ProjectAPIToken) *manifest.Manifest {
+	return &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Slug: "gh/src", ID: "org-src-uuid"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:      "gh/src/web",
+				Name:      "web",
+				SourceID:  "proj-src-uuid",
+				EnvVars:   []manifest.ProjectEnvVar{},
+				APITokens: tokens,
+			},
+		},
+	}
+}
+
+// TestSyncProjectAPITokens_FlagOff_DefaultManual verifies that when
+// --create-project-tokens is false (default), each token emits a "manual" action
+// and CreateProjectToken is NEVER called.
+func TestSyncProjectAPITokens_FlagOff_DefaultManual(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifestWithTokens(
+		manifest.ProjectAPIToken{Label: "deploy-bot", Scope: "all"},
+		manifest.ProjectAPIToken{Label: "status-check", Scope: "status"},
+	)
+
+	// Apply with CreateProjectTokens=false (default).
+	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// CreateProjectToken must NOT have been called.
+	if fp.hasCalled("CreateProjectToken") {
+		t.Error("CreateProjectToken must NOT be called when --create-project-tokens is false")
+	}
+
+	// There must be exactly 2 "manual" actions for the tokens.
+	manualCount := 0
+	for _, a := range rep.Actions {
+		if a.Kind == "project-api-token" && a.Status == "manual" {
+			manualCount++
+		}
+	}
+	if manualCount != 2 {
+		t.Errorf("expected 2 manual token actions, got %d (actions: %v)", manualCount, rep.Actions)
+	}
+}
+
+// TestSyncProjectAPITokens_FlagOn_Apply_Creates verifies that when
+// --create-project-tokens=true AND --apply, a new token is created and the
+// result is "created".
+func TestSyncProjectAPITokens_FlagOn_Apply_Creates(t *testing.T) {
+	var createCalls [][]string
+
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		listProjectTokens: func(slug string) ([]project.ProjectAPIToken, error) {
+			// No existing tokens on destination.
+			return nil, nil
+		},
+		createProjectToken: func(slug, scope, label string) (string, error) {
+			createCalls = append(createCalls, []string{slug, scope, label})
+			return "ccipat_PLACEHOLDER_created_value", nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifestWithTokens(
+		manifest.ProjectAPIToken{Label: "deploy-bot", Scope: "all"},
+	)
+
+	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(createCalls) != 1 {
+		t.Fatalf("expected 1 CreateProjectToken call, got %d", len(createCalls))
+	}
+	if createCalls[0][1] != "all" {
+		t.Errorf("scope: got %q want all", createCalls[0][1])
+	}
+	if createCalls[0][2] != "deploy-bot" {
+		t.Errorf("label: got %q want deploy-bot", createCalls[0][2])
+	}
+
+	// Action must be "created".
+	createdCount := 0
+	for _, a := range rep.Actions {
+		if a.Kind == "project-api-token" && a.Status == "created" {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Errorf("expected 1 created token action, got %d", createdCount)
+	}
+}
+
+// TestSyncProjectAPITokens_FlagOn_Apply_IdempotentSkip verifies that when a
+// token with the same label+scope already exists on the destination,
+// CreateProjectToken is NOT called (idempotent skip).
+func TestSyncProjectAPITokens_FlagOn_Apply_IdempotentSkip(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		listProjectTokens: func(slug string) ([]project.ProjectAPIToken, error) {
+			// Token already exists on destination.
+			return []project.ProjectAPIToken{
+				{ID: "existing-tok-id", Label: "deploy-bot", Scope: "all"},
+			}, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifestWithTokens(
+		manifest.ProjectAPIToken{Label: "deploy-bot", Scope: "all"},
+	)
+
+	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// CreateProjectToken must NOT have been called (idempotent skip).
+	if fp.hasCalled("CreateProjectToken") {
+		t.Error("CreateProjectToken must NOT be called when token already exists (idempotent skip)")
+	}
+
+	// Action must be "exists".
+	existsCount := 0
+	for _, a := range rep.Actions {
+		if a.Kind == "project-api-token" && a.Status == "exists" {
+			existsCount++
+		}
+	}
+	if existsCount != 1 {
+		t.Errorf("expected 1 exists token action, got %d (actions: %v)", existsCount, rep.Actions)
+	}
+}
+
+// TestSyncProjectAPITokens_FlagOn_DryRun_NoCreate verifies that with
+// --create-project-tokens=true but --apply=false (dry run), CreateProjectToken
+// is NOT called and the action status is "created" (would create).
+func TestSyncProjectAPITokens_FlagOn_DryRun_NoCreate(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifestWithTokens(
+		manifest.ProjectAPIToken{Label: "ci-token", Scope: "view-builds"},
+	)
+
+	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: false, CreateProjectTokens: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No API calls should be made in dry-run.
+	if fp.hasCalled("CreateProjectToken") {
+		t.Error("CreateProjectToken must NOT be called in dry-run mode")
+	}
+	if fp.hasCalled("ListProjectTokens") {
+		t.Error("ListProjectTokens must NOT be called in dry-run mode (no apply)")
+	}
+
+	// Action must be "created" (would create).
+	createdCount := 0
+	for _, a := range rep.Actions {
+		if a.Kind == "project-api-token" && a.Status == "created" {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Errorf("expected 1 would-create token action, got %d", createdCount)
 	}
 }
