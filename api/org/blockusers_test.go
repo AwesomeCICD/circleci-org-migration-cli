@@ -122,6 +122,26 @@ func TestSetBlockUnregisteredUsers_Disable(t *testing.T) {
 	}
 }
 
+// TestSetBlockUnregisteredUsers_EmptyContentType reproduces #166: the feature
+// PUT can return a successful status with an empty body and no Content-Type
+// header. This must be treated as success, not an "unexpected content-type"
+// error.
+func TestSetBlockUnregisteredUsers_EmptyContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		// Deliberately do not set a Content-Type header and write no body.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClientWithAppServer(t, srv)
+	if err := c.SetBlockUnregisteredUsers(blockUsersOrgUUID, true); err != nil {
+		t.Fatalf("unexpected error for 200 with empty content-type/body: %v", err)
+	}
+}
+
 func TestSetBlockUnregisteredUsers_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid request"})

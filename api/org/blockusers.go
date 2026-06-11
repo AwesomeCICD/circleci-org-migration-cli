@@ -58,8 +58,12 @@ func (c *Client) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
 		return fmt.Errorf("SetBlockUnregisteredUsers: build request: %w", err)
 	}
 
-	var ignored map[string]any
-	if _, err := c.app.DoRequest(req, &ignored); err != nil {
+	// The PUT response body is not used. Pass a nil decode target so the
+	// client treats any 2xx as success without inspecting the response
+	// content-type: this endpoint can return a 200 with an empty body and no
+	// Content-Type header, which must not be treated as an error (#166).
+	// Non-2xx responses are still surfaced as errors by DoRequest.
+	if _, err := c.app.DoRequest(req, nil); err != nil {
 		return fmt.Errorf("SetBlockUnregisteredUsers %s: %w", orgUUID, err)
 	}
 	return nil
