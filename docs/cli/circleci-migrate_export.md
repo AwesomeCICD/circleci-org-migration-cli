@@ -34,6 +34,7 @@ circleci-migrate export --source-org <org-slug> [flags]
 
 ```
   -h, --help                      help for export
+      --json                      Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)
   -o, --output string             Path to write the JSON manifest (always written; use -o to change the path) (default "manifest.json")
       --project stringArray       Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)
       --report string             Path to write the human-readable audit report (default "migration-report.md")

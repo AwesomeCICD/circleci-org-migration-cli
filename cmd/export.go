@@ -9,9 +9,80 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/spf13/cobra"
 )
+
+// ExportJSONSummary is the machine-readable result of an export command when
+// --json is set. Only counts and paths are included — no secret values.
+type ExportJSONSummary struct {
+	// SourceOrgSlug is the slug of the source organization (e.g. "gh/acme").
+	SourceOrgSlug string `json:"source_org_slug"`
+	// SourceOrgID is the UUID of the source organization, when available.
+	SourceOrgID string `json:"source_org_id,omitempty"`
+	// Host is the CircleCI host that was queried.
+	Host string `json:"host"`
+	// GeneratedAt is the RFC 3339 timestamp of the export.
+	GeneratedAt string `json:"generated_at"`
+	// ContextCount is the number of contexts exported.
+	ContextCount int `json:"context_count"`
+	// ContextVarCount is the total number of context variable names exported
+	// (values are never included).
+	ContextVarCount int `json:"context_var_count"`
+	// ProjectCount is the number of projects exported.
+	ProjectCount int `json:"project_count"`
+	// ProjectVarCount is the total number of project variable names exported
+	// (values are never included).
+	ProjectVarCount int `json:"project_var_count"`
+	// WarningCount is the number of warnings recorded during export.
+	WarningCount int `json:"warning_count"`
+	// Warnings lists the warning codes and scopes (no secrets).
+	Warnings []exportWarning `json:"warnings,omitempty"`
+	// ManifestPath is the path the manifest was written to.
+	ManifestPath string `json:"manifest_path"`
+	// ReportPath is the path the audit report was written to.
+	ReportPath string `json:"report_path"`
+}
+
+// exportWarning is a safe, secret-free representation of a manifest warning for
+// JSON output.
+type exportWarning struct {
+	Scope   string `json:"scope"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// buildExportSummary constructs an ExportJSONSummary from a manifest and paths.
+// It never includes secret values — only names and counts.
+func buildExportSummary(m *manifest.Manifest, manifestPath, reportPath string) ExportJSONSummary {
+	ctxVars := 0
+	for _, c := range m.Contexts {
+		ctxVars += len(c.EnvVars)
+	}
+	projVars := 0
+	for _, p := range m.Projects {
+		projVars += len(p.EnvVars)
+	}
+	warnings := make([]exportWarning, 0, len(m.Warnings))
+	for _, w := range m.Warnings {
+		warnings = append(warnings, exportWarning{Scope: w.Scope, Code: w.Code, Message: w.Message})
+	}
+	return ExportJSONSummary{
+		SourceOrgSlug:   m.Source.Org.Slug,
+		SourceOrgID:     m.Source.Org.ID,
+		Host:            m.Source.Host,
+		GeneratedAt:     m.GeneratedAt,
+		ContextCount:    len(m.Contexts),
+		ContextVarCount: ctxVars,
+		ProjectCount:    len(m.Projects),
+		ProjectVarCount: projVars,
+		WarningCount:    len(m.Warnings),
+		Warnings:        warnings,
+		ManifestPath:    manifestPath,
+		ReportPath:      reportPath,
+	}
+}
 
 func newExportCommand() *cobra.Command {
 	var (
@@ -24,6 +95,7 @@ func newExportCommand() *cobra.Command {
 		skipProjects    bool
 		skipExtras      bool
 		runnerNamespace string
+		jsonOutput      bool
 	)
 
 	cmd := &cobra.Command{
@@ -113,6 +185,10 @@ Examples:
 			}
 
 			out := cmd.OutOrStdout()
+			if jsonOutput {
+				summary := buildExportSummary(m, output, reportPath)
+				return marshalJSON(out, summary)
+			}
 			fmt.Fprint(out, report.Summary(m))
 			fmt.Fprintf(out, "\nWrote manifest to      %s\n", output)
 			fmt.Fprintf(out, "Wrote audit report to  %s\n", reportPath)
@@ -134,6 +210,8 @@ Examples:
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip exporting projects")
 	f.BoolVar(&skipExtras, "skip-extras", false, "Skip checkout keys, webhooks, and schedules")
+	f.BoolVar(&jsonOutput, "json", false,
+		"Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)")
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
