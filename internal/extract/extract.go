@@ -266,21 +266,27 @@ func buildExtractConfigWithVersion(envNames []string, contextNames []string, opt
 	// The jq filter builds the object incrementally from a stream of
 	// ["NAME","$VALUE"] two-element arrays.
 	sb.WriteString("            set -euo pipefail\n")
-	sb.WriteString("            (\n")
 
-	for _, name := range envNames {
-		// Each line: printf '%s\t%s\n' NAME "$NAME"
-		// Using tab as delimiter; jq splits on \t.
-		safeName := strings.ReplaceAll(name, "'", "'\\''")
-		sb.WriteString(fmt.Sprintf(
-			"              printf '%%s\\t%%s\\n' '%s' \"${%s:-}\"\n",
-			safeName, safeName,
-		))
+	if len(envNames) > 0 {
+		sb.WriteString("            (\n")
+		for _, name := range envNames {
+			// Each line: printf '%s\t%s\n' NAME "$NAME"
+			// Using tab as delimiter; jq splits on \t.
+			safeName := strings.ReplaceAll(name, "'", "'\\''")
+			sb.WriteString(fmt.Sprintf(
+				"              printf '%%s\\t%%s\\n' '%s' \"${%s:-}\"\n",
+				safeName, safeName,
+			))
+		}
+		// Pipe through jq to build the JSON object.
+		sb.WriteString("            ) | jq -Rn '[inputs | split(\"\\t\")] | map({(.[0]): .[1]}) | add // {}' \\\n")
+		sb.WriteString(fmt.Sprintf("              > %s\n", artifactPath))
+	} else {
+		// No variable names: an empty `( )` subshell is a bash syntax error, so
+		// just write an empty JSON object. (Callers should skip extraction
+		// entirely when there is nothing to capture, but stay robust here.)
+		sb.WriteString(fmt.Sprintf("            echo '{}' > %s\n", artifactPath))
 	}
-
-	// Pipe through jq to build the JSON object.
-	sb.WriteString("            ) | jq -Rn '[inputs | split(\"\\t\")] | map({(.[0]): .[1]}) | add // {}' \\\n")
-	sb.WriteString(fmt.Sprintf("              > %s\n", artifactPath))
 
 	if encrypt {
 		// Run circleci-migrate secrets extract --encrypt inline to produce the

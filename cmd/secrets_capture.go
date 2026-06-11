@@ -1587,55 +1587,68 @@ func captureProject(
 	// same name).
 	allVarNames = dedupe(allVarNames)
 
-	fmt.Fprintf(stdout, "Capturing %d variable(s) for project %s (contexts: %v)…\n",
-		len(allVarNames), p.Slug, ctxNamesForRun)
+	// ── 4. Run env-var capture (only if there are names to capture) ───────────
+	// When there are no env-var names (e.g. a project that has only additional
+	// SSH keys and no context/project variables), skip the env-var extraction
+	// pipeline entirely: there is nothing to extract, and running it would both
+	// waste a pipeline and previously failed on an empty dump — which would also
+	// block the SSH-key extraction below. We still fall through to SSH capture.
+	capturedVarCount := 0
+	if len(allVarNames) > 0 {
+		fmt.Fprintf(stdout, "Capturing %d variable(s) for project %s (contexts: %v)…\n",
+			len(allVarNames), p.Slug, ctxNamesForRun)
 
-	// ── 4. Run Capture ────────────────────────────────────────────────────────
-	opts := extract.Options{
-		DefinitionID:     defID,
-		Branch:           branch,
-		PollTimeout:      pollTimeout,
-		EncryptRecipient: encOpts.recipientStr,
-		Storage:          extract.StorageMode(encOpts.storage),
-		S3Bucket:         encOpts.s3Bucket,
-		S3Prefix:         encOpts.s3Prefix,
-	}
+		opts := extract.Options{
+			DefinitionID:     defID,
+			Branch:           branch,
+			PollTimeout:      pollTimeout,
+			EncryptRecipient: encOpts.recipientStr,
+			Storage:          extract.StorageMode(encOpts.storage),
+			S3Bucket:         encOpts.s3Bucket,
+			S3Prefix:         encOpts.s3Prefix,
+		}
 
-	// SECURITY: encOpts.identityFile is a private key path — do not log.
-	values, err := extract.CaptureWithDecrypt(ctx, client, p.Slug, allVarNames, ctxNamesForRun, opts, encOpts.identityFile)
-	if err != nil {
-		return fmt.Errorf("capture for %s: %w", p.Slug, err)
-	}
+		// SECURITY: encOpts.identityFile is a private key path — do not log.
+		values, err := extract.CaptureWithDecrypt(ctx, client, p.Slug, allVarNames, ctxNamesForRun, opts, encOpts.identityFile)
+		if err != nil {
+			return fmt.Errorf("capture for %s: %w", p.Slug, err)
+		}
+		capturedVarCount = len(values)
 
-	// ── 5. Store in bundle ────────────────────────────────────────────────────
-	// Project vars — only in project-vars mode (in context mode this project is
-	// just the host and its own vars were not requested above).
-	if projectVarsOnly {
-		for _, ev := range p.EnvVars {
-			if v, ok := values[ev.Name]; ok {
-				bundle.SetProjectSecret(p.Slug, ev.Name, v)
+		// ── 5. Store in bundle ────────────────────────────────────────────────
+		// Project vars — only in project-vars mode (in context mode this project
+		// is just the host and its own vars were not requested above).
+		if projectVarsOnly {
+			for _, ev := range p.EnvVars {
+				if v, ok := values[ev.Name]; ok {
+					bundle.SetProjectSecret(p.Slug, ev.Name, v)
+				}
 			}
 		}
-	}
-	// Context vars.
-	for i := range m.Contexts {
-		mc := &m.Contexts[i]
-		// Only store contexts we actually attached.
-		included := false
-		for _, n := range ctxNamesForRun {
-			if n == mc.Name {
-				included = true
-				break
+		// Context vars.
+		for i := range m.Contexts {
+			mc := &m.Contexts[i]
+			// Only store contexts we actually attached.
+			included := false
+			for _, n := range ctxNamesForRun {
+				if n == mc.Name {
+					included = true
+					break
+				}
+			}
+			if !included {
+				continue
+			}
+			for _, ev := range mc.EnvVars {
+				if v, ok := values[ev.Name]; ok {
+					bundle.SetContextSecret(mc.Name, ev.Name, v)
+				}
 			}
 		}
-		if !included {
-			continue
-		}
-		for _, ev := range mc.EnvVars {
-			if v, ok := values[ev.Name]; ok {
-				bundle.SetContextSecret(mc.Name, ev.Name, v)
-			}
-		}
+	} else if projectVarsOnly && captureSSHKeys && len(p.SSHKeys) > 0 {
+		fmt.Fprintf(stdout, "No env-var values to capture for project %s; proceeding to SSH-key extraction.\n", p.Slug)
+	} else {
+		fmt.Fprintf(stdout, "No env-var values to capture for project %s; skipping env-var extraction.\n", p.Slug)
 	}
 
 	// ── 6. SSH private-key capture (optional) ────────────────────────────────
@@ -1681,7 +1694,7 @@ func captureProject(
 		return fmt.Errorf("saving bundle after project %s: %w", p.Slug, err)
 	}
 
-	fmt.Fprintf(stdout, "Captured %d variable(s) for %s\n", len(values), p.Slug)
+	fmt.Fprintf(stdout, "Captured %d variable(s) for %s\n", capturedVarCount, p.Slug)
 	return nil
 }
 
