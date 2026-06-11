@@ -123,11 +123,13 @@ jobs:
               echo "$unformatted"
               exit 1
             fi
-      - run:
-          name: Install golangci-lint
-          command: |
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-              | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+      # Install golangci-lint via `go install` at a pinned version instead of
+      # piping the installer fetched from the floating HEAD ref. This removes a
+      # supply-chain risk (the install.sh could change under us) while keeping
+      # the exact same pinned tool version.
+      # renovate: datasource=github-releases depName=golangci/golangci-lint
+      - goinstall:
+          pkg: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - run:
           name: golangci-lint
           command: golangci-lint run --timeout 5m
@@ -183,9 +185,12 @@ jobs:
       - checkout
       - go/mod-download-cached
       # govulncheck uses call-graph analysis: it fails only on vulnerabilities
-      # in code paths we actually call. Run @latest so the scanner DB is fresh.
+      # in code paths we actually call. Pin the scanner binary for a reproducible
+      # security gate (the vulnerability DB is still fetched fresh at run time, so
+      # pinning the binary does not staleness the findings). Renovate bumps this.
+      # renovate: datasource=github-releases depName=golang/vuln
       - goinstall:
-          pkg: golang.org/x/vuln/cmd/govulncheck@latest
+          pkg: golang.org/x/vuln/cmd/govulncheck@v1.3.0
       - run:
           name: govulncheck
           command: govulncheck ./...
@@ -515,8 +520,13 @@ jobs:
       - run:
           name: Install CircleCI CLI (pinned v0.1.34950)
           command: |
-            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh \
-              | sudo bash
+            # Pin BOTH the installer script (to a commit SHA, not the floating
+            # `main` ref) and the CLI version it installs (via VERSION). Piping a
+            # script fetched from a moving ref into `sudo bash` is a supply-chain
+            # risk; the SHA freezes the script and VERSION makes the comment true
+            # (without VERSION the script silently installs whatever is latest).
+            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/07b63e4750438deef3fc0bd2aa10a5eda1d12026/install.sh \
+              | sudo VERSION=0.1.34950 bash
             circleci version
       - run:
           name: Pack orb source
@@ -537,8 +547,13 @@ jobs:
       - run:
           name: Install CircleCI CLI (pinned v0.1.34950)
           command: |
-            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh \
-              | sudo bash
+            # Pin BOTH the installer script (to a commit SHA, not the floating
+            # `main` ref) and the CLI version it installs (via VERSION). Piping a
+            # script fetched from a moving ref into `sudo bash` is a supply-chain
+            # risk; the SHA freezes the script and VERSION makes the comment true
+            # (without VERSION the script silently installs whatever is latest).
+            curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/07b63e4750438deef3fc0bd2aa10a5eda1d12026/install.sh \
+              | sudo VERSION=0.1.34950 bash
             circleci version
       - run:
           name: Pack orb source
@@ -594,18 +609,34 @@ workflows:
       # A compile/lint/coverage failure short-circuits before the heavy
       # test/security jobs start (fail-fast).
       # -----------------------------------------------------------------------
+      # Every ci job carries `tags: ignore: /.*/` so the whole ci workflow is
+      # branch-only and never fires on a tag push (only the `release` and
+      # `orb-publish-prod` workflows should run on tags). This setup pipeline
+      # runs the continuation on tags (config.yml uses `tags: only: /.*/` so the
+      # release/orb workflows can fire), so without these per-job tag-ignore
+      # filters the ci jobs would also execute on tags — wasting credits and
+      # showing confusing CI status on releases.
       - build:
           name: "Build: << matrix.goos >>/<< matrix.goarch >>"
           matrix:
             parameters:
               goos: [linux, darwin]
               goarch: [amd64, arm64]
+          filters:
+            tags:
+              ignore: /.*/
 
       - lint:
           name: Lint
+          filters:
+            tags:
+              ignore: /.*/
 
       - coverage:
           name: "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       # -----------------------------------------------------------------------
       # Wave B: test + security — require ALL Wave A jobs to pass first.
@@ -620,6 +651,9 @@ workflows:
             - "Build: darwin/arm64"
             - Lint
             - "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       - security-vuln:
           name: "Security: govulncheck"
@@ -630,6 +664,9 @@ workflows:
             - "Build: darwin/arm64"
             - Lint
             - "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       - security-sast:
           name: "Security: gosec (SAST)"
@@ -640,6 +677,9 @@ workflows:
             - "Build: darwin/arm64"
             - Lint
             - "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       - security-secrets:
           name: "Security: gitleaks"
@@ -650,6 +690,9 @@ workflows:
             - "Build: darwin/arm64"
             - Lint
             - "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       - security-trivy:
           name: "Security: Trivy"
@@ -660,6 +703,9 @@ workflows:
             - "Build: darwin/arm64"
             - Lint
             - "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
 
       # -----------------------------------------------------------------------
       # Wave C: e2e — requires ALL Wave B jobs.
@@ -675,6 +721,9 @@ workflows:
             - "Security: gosec (SAST)"
             - "Security: gitleaks"
             - "Security: Trivy"
+          filters:
+            tags:
+              ignore: /.*/
 
   # ---------------------------------------------------------------------------
   # Release workflow — fires ONLY on version tags (v*), never on branches.
