@@ -781,3 +781,143 @@ func TestMarkdown_OrgSettings_NoneCaptured(t *testing.T) {
 		t.Errorf("expected an Org settings section with '_None captured._'; got:\n%s", out[:min(len(out), 400)])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Repository line rendering (Bug #95)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_RepositoryLine_CircleCINativeProject verifies that a project
+// with provider=="circleci" does NOT emit a scheme-less "//..." URL and instead
+// shows the friendly "CircleCI-native project" label.
+func TestMarkdown_RepositoryLine_CircleCINativeProject(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "myorg", Slug: "circleci/8ee930d4-abc"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/8ee930d4-abc/08ef317c-proj",
+				Name: "Jam-Test",
+				VCS: manifest.ProjectVCS{
+					Provider: "circleci",
+					URL:      "//circleci.com/8ee930d4-abc/08ef317c-proj",
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Must not contain the malformed scheme-less URL.
+	if strings.Contains(md, "//circleci.com/") {
+		t.Errorf("Markdown should not emit the scheme-less //circleci.com URL; got:\n%s", md)
+	}
+	// Must not contain a bare "//" anywhere in a Repository line.
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- Repository:") && strings.Contains(line, "//") {
+			t.Errorf("Repository line contains scheme-less '//': %q", line)
+		}
+	}
+	// Must show the friendly label instead.
+	if !strings.Contains(md, "CircleCI-native project") {
+		t.Errorf("Markdown should show 'CircleCI-native project' for circleci-provider projects; got:\n%s", md)
+	}
+}
+
+// TestMarkdown_RepositoryLine_CircleCINativeURL verifies that a project whose
+// URL starts with "//circleci.com/" (but has an empty/missing provider) is also
+// treated as CircleCI-native.
+func TestMarkdown_RepositoryLine_CircleCINativeURL(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "myorg", Slug: "circleci/abc"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/abc/proj",
+				Name: "NativeProj",
+				VCS: manifest.ProjectVCS{
+					Provider: "",
+					URL:      "//circleci.com/abc/proj-uuid",
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if strings.Contains(md, "//circleci.com/") {
+		t.Errorf("Markdown should not emit scheme-less //circleci.com URL; got:\n%s", md)
+	}
+	if !strings.Contains(md, "CircleCI-native project") {
+		t.Errorf("Markdown should show 'CircleCI-native project' for //circleci.com URL; got:\n%s", md)
+	}
+}
+
+// TestMarkdown_RepositoryLine_GitHubProject verifies that a real GitHub-backed
+// project emits a proper https:// URL (never a scheme-less "//" URL).
+func TestMarkdown_RepositoryLine_GitHubProject(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				VCS: manifest.ProjectVCS{
+					Provider:      "GitHub",
+					URL:           "https://github.com/acme/web",
+					DefaultBranch: "main",
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "https://github.com/acme/web") {
+		t.Errorf("Markdown should contain the full https GitHub URL; got:\n%s", md)
+	}
+	// Ensure there is no scheme-less // URL in any Repository line.
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- Repository:") && strings.Contains(line, "//") {
+			// The only "//" should be inside "https://" — a bare "//" is a bug.
+			if !strings.Contains(line, "https://") {
+				t.Errorf("Repository line contains scheme-less '//': %q", line)
+			}
+		}
+	}
+}
+
+// TestMarkdown_RepositoryLine_SchemelessGitHubURL verifies that a scheme-less
+// "//github.com/..." URL (as sometimes returned by the API) is normalised to
+// "https://github.com/..." in the rendered report.
+func TestMarkdown_RepositoryLine_SchemelessGitHubURL(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/api",
+				Name: "api",
+				VCS: manifest.ProjectVCS{
+					Provider: "GitHub",
+					URL:      "//github.com/acme/api",
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	// The rendered URL must be prefixed with https://.
+	if !strings.Contains(md, "https://github.com/acme/api") {
+		t.Errorf("Markdown should normalise //github.com URL to https://; got:\n%s", md)
+	}
+	// And the raw scheme-less form must not appear as a Repository value.
+	if strings.Contains(md, "- Repository: GitHub — `//github.com") {
+		t.Errorf("Markdown must not emit scheme-less //github.com in Repository line; got:\n%s", md)
+	}
+}

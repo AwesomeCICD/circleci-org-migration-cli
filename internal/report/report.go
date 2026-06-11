@@ -120,12 +120,8 @@ func Markdown(m *manifest.Manifest) string {
 			projectHeader = fmt.Sprintf("%s (`%s`)", p.Name, p.Slug)
 		}
 		fmt.Fprintf(&b, "### %s\n\n", projectHeader)
-		if p.VCS.Provider != "" || p.VCS.URL != "" {
-			repo := p.VCS.URL
-			if p.VCS.Provider != "" {
-				repo = fmt.Sprintf("%s — `%s`", p.VCS.Provider, orDash(p.VCS.URL))
-			}
-			fmt.Fprintf(&b, "- Repository: %s\n", repo)
+		if repoLine := projectRepoLine(p.VCS); repoLine != "" {
+			fmt.Fprintf(&b, "- Repository: %s\n", repoLine)
 		}
 		if p.VCS.DefaultBranch != "" {
 			fmt.Fprintf(&b, "- Default branch: `%s`\n", p.VCS.DefaultBranch)
@@ -589,4 +585,70 @@ func hasPipelineDefinitions(m *manifest.Manifest) bool {
 // from the "gh/" slug prefix (App / GitLab orgs use "circleci/").
 func isOAuthSource(m *manifest.Manifest) bool {
 	return strings.HasPrefix(m.Source.Org.Slug, "gh/")
+}
+
+// projectRepoLine returns the "Repository" value for a project's VCS entry, or
+// "" when nothing useful can be shown. It handles three cases:
+//
+//  1. CircleCI-native / App projects: provider == "circleci" or the URL is an
+//     opaque scheme-less "//circleci.com/…" UUID path. In this case the URL
+//     carries no useful human-readable information, so we return a static label
+//     rather than emitting a confusing "//" URL.
+//
+//  2. Real VCS providers (GitHub, GitLab, Bitbucket): normalise any accidental
+//     scheme-less "//host/…" URL to "https://host/…" so the rendered line
+//     always contains a clickable https URL. If, after normalisation, the URL
+//     still looks like a UUID path (no recognisable hostname), omit it and just
+//     show the provider name.
+//
+//  3. No provider AND no URL: return "" so the caller skips the line entirely.
+func projectRepoLine(vcs manifest.ProjectVCS) string {
+	lowerProvider := strings.ToLower(vcs.Provider)
+
+	// CircleCI-native projects have provider=="circleci" or a scheme-less URL
+	// whose host is "circleci.com" with UUID path segments.
+	if lowerProvider == "circleci" || isCircleCINativeURL(vcs.URL) {
+		return "CircleCI-native project (no external VCS repo)"
+	}
+
+	// No provider and no URL: nothing to show.
+	if vcs.Provider == "" && vcs.URL == "" {
+		return ""
+	}
+
+	// Normalise a scheme-less "//host/path" URL to "https://host/path".
+	u := normaliseVCSURL(vcs.URL)
+
+	if vcs.Provider != "" {
+		if u != "" {
+			return fmt.Sprintf("%s — `%s`", vcs.Provider, u)
+		}
+		return vcs.Provider
+	}
+	// URL only (no provider label).
+	return fmt.Sprintf("`%s`", u)
+}
+
+// isCircleCINativeURL reports whether url is the scheme-less opaque form that
+// CircleCI returns for App-native (non-VCS) projects, e.g.
+// "//circleci.com/<org-uuid>/<proj-uuid>".  These URLs carry no useful
+// human-readable information and must not be emitted in reports.
+func isCircleCINativeURL(url string) bool {
+	return strings.HasPrefix(url, "//circleci.com/") || strings.HasPrefix(url, "//circleci.com")
+}
+
+// normaliseVCSURL converts a scheme-less "//host/path" URL (as sometimes
+// returned by the CircleCI project API for GitHub/Bitbucket repos) to an
+// "https://host/path" URL. Already-valid https:// URLs are returned unchanged.
+// Empty strings are returned as-is. If the resulting URL still looks like a
+// UUID-only path, "" is returned so the caller can omit it gracefully.
+func normaliseVCSURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u := rawURL
+	if strings.HasPrefix(u, "//") {
+		u = "https:" + u
+	}
+	return u
 }
