@@ -20,8 +20,28 @@ import (
 	"golang.org/x/term"
 )
 
-// rootOptions holds the runtime configuration shared across all sub-commands.
-var rootOptions *settings.Config
+// configCtxKey is the (unexported, package-private) context key under which the
+// per-invocation *settings.Config is stashed. Using a dedicated unexported type
+// guarantees no other package can collide with or read this key.
+type configCtxKey struct{}
+
+// configFromContext retrieves the *settings.Config that PersistentPreRunE
+// stashed on the command context for this invocation. It is the single
+// accessor every sub-command uses instead of a package-level global, so each
+// command tree (one per MakeCommands call) carries its own isolated config and
+// two commands run in the same process can never leak config state into one
+// another.
+//
+// It panics if no config is present: that can only happen if a RunE runs
+// without the root PersistentPreRunE having executed, which is a programmer
+// error in the command wiring rather than a user-facing condition.
+func configFromContext(ctx context.Context) *settings.Config {
+	cfg, ok := ctx.Value(configCtxKey{}).(*settings.Config)
+	if !ok || cfg == nil {
+		panic("cmd: no *settings.Config in context; root PersistentPreRunE did not run")
+	}
+	return cfg
+}
 
 // Execute is the entry point called by main.  It builds the command tree,
 // installs a SIGINT/SIGTERM-cancellable context, and delegates to cobra's
@@ -215,7 +235,12 @@ func styledHelpFunc(width int) func(*cobra.Command, []string) {
 // sub-commands registered.  It is a standalone constructor so that tests and
 // other callers can obtain a fresh command tree without side-effects.
 func MakeCommands() *cobra.Command {
-	rootOptions = &settings.Config{
+	// cfg is the per-invocation runtime configuration. It is NOT a package-level
+	// global: each MakeCommands call gets its own, the persistent flags bind to
+	// it, and PersistentPreRunE stashes it on the command context so every
+	// sub-command reads it via configFromContext. This isolates two command
+	// trees (or two test runs) in the same process from leaking config state.
+	cfg := &settings.Config{
 		Host:         settings.DefaultHost,
 		RestEndpoint: settings.DefaultRestEndpoint,
 	}
@@ -226,7 +251,7 @@ func MakeCommands() *cobra.Command {
 	// the secret value the flag's default and leak it into --help output. They
 	// are resolved in PersistentPreRunE instead (after flag parsing).
 	if h := resolveHost(); h != "" {
-		rootOptions.Host = h
+		cfg.Host = h
 	}
 
 	rootCmd := &cobra.Command{
@@ -266,26 +291,33 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 			//   --token / --source-token / --dest-token (explicit flags)
 			//   → CIRCLECI_CLI_TOKEN / CIRCLECI_SOURCE_TOKEN / CIRCLECI_DEST_TOKEN
 			//   → CIRCLE_TOKEN (injected by `circleci run migrate`)
-			if rootOptions.Token == "" {
-				rootOptions.Token = os.Getenv("CIRCLECI_CLI_TOKEN")
+			if cfg.Token == "" {
+				cfg.Token = os.Getenv("CIRCLECI_CLI_TOKEN")
 			}
-			if rootOptions.Token == "" {
+			if cfg.Token == "" {
 				// CIRCLE_TOKEN is injected by the official circleci-cli when
 				// invoked as `circleci run migrate ...`.
-				rootOptions.Token = os.Getenv("CIRCLE_TOKEN")
+				cfg.Token = os.Getenv("CIRCLE_TOKEN")
 			}
-			if rootOptions.SourceToken == "" {
-				rootOptions.SourceToken = os.Getenv("CIRCLECI_SOURCE_TOKEN")
+			if cfg.SourceToken == "" {
+				cfg.SourceToken = os.Getenv("CIRCLECI_SOURCE_TOKEN")
 			}
-			if rootOptions.DestToken == "" {
-				rootOptions.DestToken = os.Getenv("CIRCLECI_DEST_TOKEN")
+			if cfg.DestToken == "" {
+				cfg.DestToken = os.Getenv("CIRCLECI_DEST_TOKEN")
 			}
 
 			level := clog.LevelInfo
-			if rootOptions.Debug {
+			if cfg.Debug {
 				level = clog.LevelDebug
 			}
 			clog.SetDefault(clog.New(os.Stderr, level))
+
+			// Stash the resolved per-invocation config on the command context so
+			// every sub-command's RunE retrieves it via configFromContext —
+			// replacing the former package-level rootOptions global. cmd here is
+			// the leaf sub-command being executed, so SetContext makes the config
+			// visible to its RunE via cmd.Context().
+			cmd.SetContext(context.WithValue(cmd.Context(), configCtxKey{}, cfg))
 			return nil
 		},
 	}
@@ -307,17 +339,17 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 
 	// Persistent (global) flags — available to every sub-command.
 	pf := rootCmd.PersistentFlags()
-	pf.StringVar(&rootOptions.Host, "host", rootOptions.Host,
+	pf.StringVar(&cfg.Host, "host", cfg.Host,
 		"CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)")
 	// Token flags default to "" (never the env value) so --help never prints a
 	// secret. The env fallback is applied in PersistentPreRunE.
-	pf.StringVar(&rootOptions.Token, "token", "",
+	pf.StringVar(&cfg.Token, "token", "",
 		"Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)")
-	pf.StringVar(&rootOptions.SourceToken, "source-token", "",
+	pf.StringVar(&cfg.SourceToken, "source-token", "",
 		"API token for the source org (env: CIRCLECI_SOURCE_TOKEN)")
-	pf.StringVar(&rootOptions.DestToken, "dest-token", "",
+	pf.StringVar(&cfg.DestToken, "dest-token", "",
 		"API token for the destination org (env: CIRCLECI_DEST_TOKEN)")
-	pf.BoolVar(&rootOptions.Debug, "debug", false,
+	pf.BoolVar(&cfg.Debug, "debug", false,
 		"Enable debug logging")
 
 	// Register sub-commands.
