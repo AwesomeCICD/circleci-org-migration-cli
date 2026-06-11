@@ -431,7 +431,7 @@ func RunMigrateWalkthroughWith(
 	// --- 2. Tokens -----------------------------------------------------------
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Step 2 of 4 — API tokens")
-	fmt.Fprintln(out, "  Tokens are read without echo and are never written to logs.")
+	fmt.Fprintln(out, "  Token input is hidden when running on an interactive terminal.")
 	fmt.Fprintln(out, "")
 
 	srcToken := rootOptions.SourceTokenOrDefault()
