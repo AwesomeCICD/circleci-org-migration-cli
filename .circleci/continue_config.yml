@@ -163,9 +163,14 @@ jobs:
             if [ ! -x /usr/local/bin/gosec ]; then
               # renovate: datasource=github-releases depName=securego/gosec
               ver=v2.27.1
+              url="https://github.com/securego/gosec/releases/download/${ver}/gosec_${ver#v}_linux_amd64.tar.gz"
+              # --connect-timeout/--max-time bound each attempt so a network stall
+              # fails fast (and the retry loop actually fires) instead of hanging
+              # the job. Download to a file first so a partial transfer never feeds tar.
               for attempt in 1 2 3; do
-                curl -sfL "https://github.com/securego/gosec/releases/download/${ver}/gosec_${ver#v}_linux_amd64.tar.gz" \
-                  | sudo tar -xz -C /usr/local/bin gosec && break
+                if curl -fsSL --connect-timeout 20 --max-time 120 -o /tmp/gosec.tgz "$url"; then
+                  sudo tar -xz -C /usr/local/bin -f /tmp/gosec.tgz gosec && break
+                fi
                 echo "Attempt ${attempt} failed; retrying in 5s..." && sleep 5
               done
               gosec --version
