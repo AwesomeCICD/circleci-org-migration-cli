@@ -471,6 +471,27 @@ jobs:
             curl -sfL "https://github.com/goreleaser/goreleaser/releases/download/v${ver}/goreleaser_Linux_x86_64.tar.gz" \
               | sudo tar -xz -C /usr/local/bin goreleaser
             goreleaser --version
+      # cosign + syft are REQUIRED by the .goreleaser.yml `signs:` (keyless
+      # artifact signing) and `sboms:` (CycloneDX SBOM) blocks. They are not
+      # bundled with GoReleaser, so the release step fails without them on PATH.
+      # Installed via direct, pinned release downloads (same pattern as above).
+      - run:
+          name: Install cosign (pinned v2.4.1)
+          command: |
+            # renovate: datasource=github-releases depName=sigstore/cosign
+            ver=2.4.1
+            curl -sfL "https://github.com/sigstore/cosign/releases/download/v${ver}/cosign-linux-amd64" \
+              -o /tmp/cosign
+            sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+            cosign version
+      - run:
+          name: Install syft (pinned v1.18.1)
+          command: |
+            # renovate: datasource=github-releases depName=anchore/syft
+            ver=1.18.1
+            curl -sfL "https://github.com/anchore/syft/releases/download/v${ver}/syft_${ver}_linux_amd64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin syft
+            syft version
       - go/mod-download-cached
       - run:
           name: goreleaser release
