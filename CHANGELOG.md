@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.7.0...v0.8.0) (2026-06-11)
+
+
+### Features
+
+* **sync:** warn when destination equals source; document mapping schema + secrets/--missing-secrets/--yes ([#165](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/165), [#170](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/170)) ([#174](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/174)) ([12e18e6](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/12e18e6169c64d7476cdb6c00ba64969e24064a7))
+
+
+### Bug Fixes
+
+* **org:** treat empty content-type 2xx as success for feature PUTs ([#166](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/166)) ([#172](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/172)) ([26e924c](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/26e924c905ced534813c5f181f0974aac6435286))
+* **report,sync:** render+match CIAM users by username when email blank; report polish ([#167](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/167), [#168](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/168)) ([#173](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/173)) ([4d46044](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/4d46044e1189e8c2606319444cf2df86404e807c))
+* **report:** stop claiming CIAM is automated by sync; flag as manual ([#176](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/176)) ([#178](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/178)) ([7c7a316](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/7c7a316a5af8b21cf81da6ec34229b39fc7ff0d8))
+* **secrets:** fail closed on unattended capture-all in non-TTY ([#164](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/164)) ([#171](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/171)) ([93db19a](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/93db19a484df63b6cd61aedb4a2bda8143a76bdd))
+
 ## [0.7.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.6.0...v0.7.0) (2026-06-11)
 
 
