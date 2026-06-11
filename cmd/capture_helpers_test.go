@@ -733,3 +733,123 @@ func TestValidateStorageFlags_Unknown_Error(t *testing.T) {
 		t.Fatal("expected error for unknown storage value, got nil")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #74: isGroupRestriction / isDefaultAllMembersGroup — org-type helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIsGroupRestriction_GroupType_True(t *testing.T) {
+	r := manifest.Restriction{Type: "group", Value: "some-team-uuid"}
+	if !isGroupRestriction(r) {
+		t.Error("expected true for type=group")
+	}
+}
+
+func TestIsGroupRestriction_ProjectType_False(t *testing.T) {
+	r := manifest.Restriction{Type: "project", Value: "proj-uuid"}
+	if isGroupRestriction(r) {
+		t.Error("expected false for type=project")
+	}
+}
+
+func TestIsGroupRestriction_ExpressionType_False(t *testing.T) {
+	r := manifest.Restriction{Type: "expression", Value: `pipeline.git.branch == "main"`}
+	if isGroupRestriction(r) {
+		t.Error("expected false for type=expression")
+	}
+}
+
+func TestIsDefaultAllMembersGroup_Matches(t *testing.T) {
+	const orgID = "org-uuid-abc"
+	r := manifest.Restriction{Type: "group", Value: orgID, Name: "All members"}
+	if !isDefaultAllMembersGroup(r, orgID) {
+		t.Error("expected true for group with value==orgID")
+	}
+}
+
+func TestIsDefaultAllMembersGroup_DifferentValue_False(t *testing.T) {
+	r := manifest.Restriction{Type: "group", Value: "team-uuid", Name: "engineering"}
+	if isDefaultAllMembersGroup(r, "org-uuid-abc") {
+		t.Error("expected false when group value != orgID")
+	}
+}
+
+func TestIsDefaultAllMembersGroup_ProjectType_False(t *testing.T) {
+	const orgID = "org-uuid-abc"
+	r := manifest.Restriction{Type: "project", Value: orgID}
+	if isDefaultAllMembersGroup(r, orgID) {
+		t.Error("expected false for type=project even when value==orgID")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #74: prepareRestrictionRemoval must NOT touch group restrictions
+// (including non-default ones) because group restrictions are only supported
+// on GitHub OAuth orgs and cannot be recreated via API on standalone/Bitbucket.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPrepareRestrictionRemoval_NonDefaultGroupNotTouched verifies that a
+// non-default group restriction (type=="group", value!=orgID) is NEVER deleted
+// or recreated by prepareRestrictionRemoval, even though it is a real
+// restriction returned by realRestrictions.
+func TestPrepareRestrictionRemoval_NonDefaultGroupNotTouched(t *testing.T) {
+	const orgID = "acme-org-uuid"
+	const teamUUID = "engineering-team-uuid"
+
+	mgr := &fakeRestrictionManager{
+		liveRestrictions: []apicontext.Restriction{
+			// A real non-default group restriction (type=group, value=teamUUID != orgID).
+			{ID: "group-restr-id", Type: "group", Value: teamUUID, Name: "engineering"},
+			// A project restriction that SHOULD be touched.
+			{ID: "proj-restr-id", Type: "project", Value: "proj-uuid-X"},
+		},
+	}
+
+	mc := &manifest.Context{
+		Name:     "secured-ctx",
+		SourceID: "ctx-uuid",
+		Restrictions: []manifest.Restriction{
+			{Type: "group", Value: teamUUID, Name: "engineering"}, // non-default group
+			{Type: "project", Value: "proj-uuid-X", Name: "web"},
+		},
+	}
+
+	cmd, errBuf := newTestCobraCmd()
+
+	restore, err := prepareRestrictionRemoval(cmd, mgr, mc, orgID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only the project restriction should have been deleted.
+	if len(mgr.deletedIDs) != 1 {
+		t.Fatalf("expected exactly 1 DELETE (project only), got %d: %v", len(mgr.deletedIDs), mgr.deletedIDs)
+	}
+	if mgr.deletedIDs[0] != "proj-restr-id" {
+		t.Errorf("wrong restriction deleted: got %q, want proj-restr-id", mgr.deletedIDs[0])
+	}
+
+	// A NOTICE about the group restriction being unmodified should appear.
+	if !bytes.Contains(errBuf.Bytes(), []byte("group restriction")) {
+		t.Errorf("expected NOTICE about group restriction being unmodified; stderr: %s", errBuf.String())
+	}
+
+	restore()
+
+	// Only the project restriction should have been re-created.
+	if len(mgr.createdRestrictions) != 1 {
+		t.Fatalf("expected exactly 1 CREATE (project only) in restore, got %d: %v",
+			len(mgr.createdRestrictions), mgr.createdRestrictions)
+	}
+	got := mgr.createdRestrictions[0]
+	if got.rType != "project" || got.rValue != "proj-uuid-X" {
+		t.Errorf("restore created wrong restriction: type=%q value=%q", got.rType, got.rValue)
+	}
+
+	// The group restriction must never have been re-created.
+	for _, c := range mgr.createdRestrictions {
+		if c.rType == "group" {
+			t.Errorf("group restriction must NEVER be created by restore: type=%q value=%q", c.rType, c.rValue)
+		}
+	}
+}

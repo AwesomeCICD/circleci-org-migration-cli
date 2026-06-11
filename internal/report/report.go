@@ -335,6 +335,26 @@ func writeAutomatedBySync(b *strings.Builder) {
 	fmt.Fprintf(b, "- Context group restrictions, mapped onto destination CIAM groups.\n")
 }
 
+// hasNonDefaultGroupRestrictions reports whether any context in the manifest
+// has at least one group restriction that is NOT the default "All members"
+// group (type=="group", value!=orgID).  These are real access restrictions
+// that must be re-applied manually because:
+//   - Group restrictions are only supported on GitHub OAuth ("gh/…") orgs.
+//   - They cannot be created via the API on standalone ("circleci/…") or
+//     Bitbucket orgs (fails with "This is only supported for OAuth orgs.").
+//   - VCS team IDs are org-specific and do not map across orgs.
+func hasNonDefaultGroupRestrictions(m *manifest.Manifest) bool {
+	orgID := m.Source.Org.ID
+	for _, c := range m.Contexts {
+		for _, r := range c.Restrictions {
+			if r.Type == "group" && r.Value != orgID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // writeManualSteps renders the manual steps required to finish the migration.
 // The list is data-driven: an item is included only when the manifest provides
 // the corresponding signal, with a small always-include baseline (secret values
@@ -358,6 +378,26 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// Always: webhook signing secrets.
 	items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are not exported; "+
 		"regenerate them on the destination and update the receiving systems.")
+
+	// Group restrictions — only when non-default group restrictions are present.
+	//
+	// Org-type matrix for context restriction_type:
+	//   project    — all org types (GitHub OAuth, standalone/circleci, Bitbucket)
+	//   expression — all org types
+	//   group      — GitHub OAuth ("gh/…") ONLY; API call fails on standalone/Bitbucket
+	//
+	// Because group restrictions are org-type-specific and their VCS team IDs
+	// are not portable across orgs, they are NEVER automatically removed or
+	// recreated by this tool.  They must always be re-applied manually on the
+	// destination org.
+	if hasNonDefaultGroupRestrictions(m) {
+		items = append(items, "**Context group restrictions (manual)** — one or more contexts have "+
+			"`group`-type restrictions. Group restrictions are only supported on GitHub OAuth orgs "+
+			"(`gh/…`); they cannot be created via the API on standalone (`circleci/…`) or Bitbucket orgs. "+
+			"VCS team IDs embedded in group restrictions are org-specific and do not map across orgs. "+
+			"Re-apply group restrictions manually on the destination after migration."+
+			warningSuffix(m, "group_restriction"))
+	}
 
 	// SSO (SAML) — only when present.
 	if s != nil && s.SSO != nil {
