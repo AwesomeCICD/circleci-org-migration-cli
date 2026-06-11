@@ -258,10 +258,11 @@ func TestMarkdown_ContainsContextEntry(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
 
-	if !strings.Contains(md, "### `deploy-prod`") {
+	// Context headings now use Markdown links ([name](url)) — check for the name text.
+	if !strings.Contains(md, "deploy-prod") {
 		t.Errorf("Markdown missing context entry for deploy-prod")
 	}
-	if !strings.Contains(md, "### `staging`") {
+	if !strings.Contains(md, "staging") {
 		t.Errorf("Markdown missing context entry for staging")
 	}
 }
@@ -352,13 +353,15 @@ func TestMarkdown_ContainsProjectExtras(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
 
-	if !strings.Contains(md, "Checkout keys: 1") {
+	// Checkout keys, webhooks, and schedules now render as detailed sub-lists
+	// with "(N)" format rather than ": N".
+	if !strings.Contains(md, "Checkout keys (1)") {
 		t.Errorf("Markdown missing checkout keys count")
 	}
-	if !strings.Contains(md, "Webhooks: 1") {
+	if !strings.Contains(md, "Webhooks (1)") {
 		t.Errorf("Markdown missing webhooks count")
 	}
-	if !strings.Contains(md, "Schedules: 1") {
+	if !strings.Contains(md, "Schedules (1)") {
 		t.Errorf("Markdown missing schedules count")
 	}
 }
@@ -1208,8 +1211,9 @@ func TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent(t *testing.T) {
 	md := report.Markdown(m)
 
 	// New wording: keys are migrated as-is, no regenerate instruction.
+	// The item now carries [Automatable] prefix.
 	for _, want := range []string{
-		"**Additional SSH keys**",
+		"Additional SSH keys",
 		"migrated as-is",
 		"secrets capture --ssh-keys",
 		"same private key keeps working",
@@ -1975,6 +1979,7 @@ func TestIssue148_AdditionalSSHKeys_MigratedAsIs(t *testing.T) {
 	md := report.Markdown(m)
 
 	// Must say keys are migrated as-is via ssh-key extraction.
+	// The item now carries [Automatable] prefix.
 	for _, want := range []string{
 		"migrated as-is by the ssh-key extraction",
 		"secrets capture --ssh-keys",
@@ -2176,5 +2181,505 @@ func TestIssue150_OrgOrbs_InlineOrbBridgeNote(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("orbs manual step inline-orb note missing %q", want)
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #156 — render all captured data: regression guard + new sections
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue156_ExistingManualStepPhrasesPreserved is a regression guard that
+// ensures none of the sharpened manual-step phrases from the previous improvement
+// pass were removed or reworded during the #156 additions.
+func TestIssue156_ExistingManualStepPhrasesPreserved(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "acme", Slug: "gh/acme",
+			Settings: &manifest.OrgSettings{
+				OrbNamespace: "acme-ns",
+				Orbs:         []manifest.OrgOrb{{OrbName: "acme-ns/my-orb"}},
+			},
+		}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+				},
+				Webhooks: []manifest.Webhook{
+					{Name: "notify", URL: "https://hooks.example.com"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		// Additional SSH keys — migrated as-is framing must be present.
+		"migrated as-is",
+		// Webhook — outbound-webhooks docs link must be present.
+		"outbound-webhooks",
+		// OIDC cloud-provider trust item must be present.
+		"openid-connect-tokens",
+		// Branch-protection item must be present.
+		"branch-protection",
+		// Project API token docs link must be present (test with project that has API tokens).
+		// (checked separately in the API-token test)
+		// Org-admins / email-domain / GHES checklist must be present.
+		"managing-api-tokens",
+	} {
+		// managing-api-tokens only appears when API tokens are captured; add them.
+		_ = want
+	}
+
+	// Re-run assertions for phrases that don't require specific project data.
+	for _, want := range []string{
+		"migrated as-is",
+		"outbound-webhooks",
+		"openid-connect-tokens",
+		"branch-protection",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Issue #155 regression: phrase %q missing from report; must be preserved", want)
+		}
+	}
+
+	// managing-api-tokens requires API tokens captured.
+	withTokens := report.Markdown(&manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug:      "gh/acme/web",
+				Name:      "web",
+				APITokens: []manifest.ProjectAPIToken{{Label: "ci", Scope: "status"}},
+			},
+		},
+	})
+	if !strings.Contains(withTokens, "managing-api-tokens") {
+		t.Errorf("Issue #155 regression: 'managing-api-tokens' phrase missing when API tokens present")
+	}
+}
+
+// TestIssue156_SummaryTableClarified verifies the summary table uses the new
+// "Env-var names captured" header and includes the legend.
+func TestIssue156_SummaryTableClarified(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "Env-var names captured") {
+		t.Errorf("summary table should use 'Env-var names captured' column header")
+	}
+	if !strings.Contains(md, "Legend") {
+		t.Errorf("summary table should include a legend line")
+	}
+	if !strings.Contains(md, "not values") {
+		t.Errorf("summary legend should clarify names vs values")
+	}
+}
+
+// TestIssue156_SummaryClarifiedInCLI verifies the Summary() function also uses
+// the clarified env-var column label.
+func TestIssue156_SummaryClarifiedInCLI(t *testing.T) {
+	m := buildManifest()
+	s := report.Summary(m)
+
+	if !strings.Contains(s, "env-var name") {
+		t.Errorf("Summary should use 'env-var name' label; got: %q", s)
+	}
+	if !strings.Contains(s, "captured separately") {
+		t.Errorf("Summary should clarify values are captured separately; got: %q", s)
+	}
+}
+
+// TestIssue156_ContextHeadingsLinked verifies that context headings include the
+// org Contexts settings URL as a Markdown link.
+func TestIssue156_ContextHeadingsLinked(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod", EnvVars: []manifest.ContextEnvVar{{Name: "KEY"}}},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Heading should be a Markdown link.
+	if !strings.Contains(md, "[deploy-prod](") {
+		t.Errorf("context heading should be a Markdown link; got context section:\n%s", md)
+	}
+	// The link should point at the contexts settings page.
+	if !strings.Contains(md, "https://app.circleci.com/settings/organization/gh/acme/contexts") {
+		t.Errorf("context heading link should target the contexts settings page")
+	}
+}
+
+// TestIssue156_ProjectHeadingsLinked verifies that project headings include the
+// project settings URL as a Markdown link.
+func TestIssue156_ProjectHeadingsLinked(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web"},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Heading should be a Markdown link to the project settings page.
+	if !strings.Contains(md, "[web (`gh/acme/web`)](https://app.circleci.com/settings/project/gh/acme/web)") {
+		t.Errorf("project heading should be a Markdown link with settings URL; got:\n%s", md)
+	}
+}
+
+// TestIssue156_CheckoutKeyDetail verifies that checkout keys are rendered with
+// per-key detail (type, fingerprint, preferred marker) rather than just a count.
+func TestIssue156_CheckoutKeyDetail(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				CheckoutKeys: []manifest.CheckoutKey{
+					{Type: "deploy-key", Fingerprint: "aa:bb:cc", Preferred: true},
+					{Type: "github-user-key", Fingerprint: "dd:ee:ff", Preferred: false},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Checkout keys (2)",
+		"deploy-key",
+		"aa:bb:cc",
+		"preferred",
+		"github-user-key",
+		"dd:ee:ff",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("checkout key detail missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_WebhookDetail verifies that webhooks are rendered with per-webhook
+// detail (URL, events, verify-TLS) rather than just a count.
+func TestIssue156_WebhookDetail(t *testing.T) {
+	tls := true
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				Webhooks: []manifest.Webhook{
+					{
+						Name:      "notify",
+						URL:       "https://hooks.example.com/notify",
+						Events:    []string{"workflow-completed", "job-completed"},
+						VerifyTLS: &tls,
+					},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Webhooks (1)",
+		"notify",
+		"https://hooks.example.com/notify",
+		"verify-tls",
+		"workflow-completed",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("webhook detail missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_ScheduleDetail verifies that schedules are rendered with per-schedule
+// detail (description, actor) rather than only actor lines.
+func TestIssue156_ScheduleDetail(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				Schedules: []manifest.Schedule{
+					{Name: "nightly", Description: "build every night", ActorLogin: "pipeline-bot"},
+					{Name: "weekly"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Schedules (2)",
+		"nightly",
+		"build every night",
+		"pipeline-bot",
+		"weekly",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("schedule detail missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_ProjectOIDCClaims verifies that per-project OIDC custom claims
+// are rendered in the project section when present.
+func TestIssue156_ProjectOIDCClaims(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug:         "gh/acme/web",
+				Name:         "web",
+				OIDCAudience: []string{"https://aud.example.com"},
+				OIDCTTL:      "2h",
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"OIDC custom claims",
+		"https://aud.example.com",
+		"2h",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("project OIDC claims missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_PipelineDefinitionsRendered verifies that App pipeline definitions
+// and their triggers are rendered in the project section.
+func TestIssue156_PipelineDefinitionsRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "circleci/org-uuid"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/org-uuid/proj-uuid",
+				Name: "MyService",
+				PipelineDefinitions: []manifest.PipelineDefinition{
+					{
+						Name:        "default",
+						Description: "main pipeline",
+						ConfigSource: manifest.PipelineSource{
+							Provider:     "github_app",
+							RepoFullName: "acme/myservice",
+							FilePath:     ".circleci/config.yml",
+						},
+						Triggers: []manifest.Trigger{
+							{
+								Name:        "push-trigger",
+								EventName:   "push",
+								Disabled:    false,
+								EventSource: manifest.TriggerEventSource{Provider: "github_app"},
+							},
+							{
+								Name:        "schedule-nightly",
+								EventName:   "schedule",
+								Disabled:    true,
+								EventSource: manifest.TriggerEventSource{Provider: "schedule", ScheduleCron: "0 2 * * *"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Pipeline definitions (1)",
+		"default",
+		"main pipeline",
+		"github_app",
+		"acme/myservice",
+		".circleci/config.yml",
+		"Triggers (2)",
+		"push-trigger",
+		"push",
+		"schedule-nightly",
+		"0 2 * * *",
+		"(disabled)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("pipeline definition/trigger detail missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_RunnerResourceClasses_Rendered verifies the runner resource classes
+// section is rendered when classes are present.
+func TestIssue156_RunnerResourceClasses_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source:          manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		RunnerNamespace: "acme-ns",
+		RunnerResourceClasses: []manifest.RunnerResourceClass{
+			{Name: "acme-ns/linux-medium", Description: "medium Linux runner"},
+			{Name: "acme-ns/arm-small"},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"## Runner resource classes",
+		"acme-ns",
+		"acme-ns/linux-medium",
+		"medium Linux runner",
+		"acme-ns/arm-small",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("runner resource classes section missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_RunnerResourceClasses_AbsentWhenNone verifies the runner resource
+// classes section is not rendered when no classes were captured.
+func TestIssue156_RunnerResourceClasses_AbsentWhenNone(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "## Runner resource classes") {
+		t.Errorf("runner resource classes section should not appear when no classes captured")
+	}
+}
+
+// TestIssue156_ProjectAPITokenDetail verifies that project API token metadata is
+// rendered in the project section (label + scope) when present.
+func TestIssue156_ProjectAPITokenDetail(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				APITokens: []manifest.ProjectAPIToken{
+					{Label: "ci-readonly", Scope: "view-builds"},
+					{Label: "deploy-bot", Scope: "all"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"API tokens (2)",
+		"ci-readonly",
+		"view-builds",
+		"deploy-bot",
+		"all",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("project API token detail missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_AutomatableCalloutPresent verifies that the automatable callout
+// block is present in the manual steps section.
+func TestIssue156_AutomatableCalloutPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Automatable items",
+		"secrets capture",
+		"--ssh-keys",
+		"sync --secrets",
+		"[Automatable]",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("automatable callout missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_DetailedCutoverCommands verifies the copy-pasteable command
+// sequence is rendered with the source org slug.
+func TestIssue156_DetailedCutoverCommands(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"### 1a. Copy-pasteable command sequence",
+		"circleci-migrate secrets capture --org gh/acme",
+		"circleci-migrate sync --org gh/acme",
+		"--apply",
+		"--secrets secrets.json",
+		"<destination-org-slug>",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("detailed cutover commands missing %q", want)
+		}
+	}
+}
+
+// TestIssue156_DetailedCutoverCommands_SSHKeysLine verifies that the SSH keys
+// capture step is included in commands when SSH keys are present.
+func TestIssue156_DetailedCutoverCommands_SSHKeysLine(t *testing.T) {
+	withSSH := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug:    "gh/acme/web",
+				Name:    "web",
+				SSHKeys: []manifest.ProjectSSHKey{{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"}},
+			},
+		},
+	}
+	md := report.Markdown(withSSH)
+	if !strings.Contains(md, "secrets capture --org gh/acme --ssh-keys") {
+		t.Errorf("cutover commands should include --ssh-keys step when SSH keys present; got:\n%s", md[:min(2000, len(md))])
+	}
+
+	// Without SSH keys: --ssh-keys step should NOT appear.
+	plain := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	mdPlain := report.Markdown(plain)
+	if strings.Contains(mdPlain, "secrets capture --org gh/acme --ssh-keys") {
+		t.Errorf("cutover commands should NOT include --ssh-keys step when no SSH keys present")
+	}
+}
+
+// TestIssue156_SummaryTableLegendExplainsCapturedSeparately verifies the
+// "Variable names" column is re-labelled and the legend explains values are
+// captured separately via secrets capture.
+func TestIssue156_SummaryTableLegendExplainsCapturedSeparately(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	// Old ambiguous header must be gone.
+	if strings.Contains(md, "| Variable names |") {
+		t.Errorf("old 'Variable names' column header should be replaced; still present")
+	}
+	// New header must be present.
+	if !strings.Contains(md, "Env-var names captured") {
+		t.Errorf("new 'Env-var names captured' column header missing")
+	}
+	// Legend must mention circleci-migrate secrets capture.
+	if !strings.Contains(md, "circleci-migrate secrets capture") {
+		t.Errorf("summary legend should mention 'circleci-migrate secrets capture'")
 	}
 }
