@@ -119,6 +119,37 @@ func TestBuildExtractConfig_EncryptRecipient_EmbeddedInConfig(t *testing.T) {
 	if !strings.Contains(cfg, artifactPathAge) {
 		t.Errorf("config missing .age artifact path:\n%s", cfg)
 	}
+	// Must use a trap to ensure plaintext is removed even on encrypt failure.
+	wantTrap := "trap 'rm -f " + artifactPath + "' EXIT"
+	if !strings.Contains(cfg, wantTrap) {
+		t.Errorf("config missing trap for plaintext cleanup:\n%s", cfg)
+	}
+	// The trap must appear BEFORE bundle-encrypt so cleanup is registered first.
+	trapIdx := strings.Index(cfg, "trap 'rm -f")
+	encryptIdx := strings.Index(cfg, "bundle-encrypt")
+	if trapIdx < 0 || encryptIdx < 0 || trapIdx > encryptIdx {
+		t.Errorf("trap must appear before bundle-encrypt; trapIdx=%d encryptIdx=%d", trapIdx, encryptIdx)
+	}
+}
+
+// TestBuildExtractConfig_Encrypt_NoRmFAfterEncrypt verifies that the old
+// unconditional "rm -f <plaintext>" line no longer appears after bundle-encrypt
+// (cleanup is now done via trap, not a bare rm -f that would be skipped on
+// encrypt failure under set -euo pipefail).
+func TestBuildExtractConfig_Encrypt_NoRmFAfterEncrypt(t *testing.T) {
+	opts := &Options{EncryptRecipient: "age1fake"}
+	cfg := buildExtractConfig([]string{"FOO"}, nil, opts)
+
+	encryptIdx := strings.Index(cfg, "bundle-encrypt")
+	if encryptIdx < 0 {
+		t.Fatalf("bundle-encrypt not found in config:\n%s", cfg)
+	}
+	// The substring after bundle-encrypt must not contain a bare "rm -f <plaintext>".
+	afterEncrypt := cfg[encryptIdx:]
+	bare := "rm -f " + artifactPath + "\n"
+	if strings.Contains(afterEncrypt, bare) {
+		t.Errorf("found bare 'rm -f <plaintext>' after bundle-encrypt; cleanup should be via trap instead:\n%s", afterEncrypt)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

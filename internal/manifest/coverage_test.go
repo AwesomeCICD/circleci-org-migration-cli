@@ -328,6 +328,31 @@ func TestSecretBundleSave_CreatesParentDir(t *testing.T) {
 	}
 }
 
+// TestSecretBundleSave_ParentDirPerms verifies that SecretBundle.Save creates
+// the parent directory with 0700 permissions (owner-only) so that secret
+// material is not readable by other users on the same system.
+func TestSecretBundleSave_ParentDirPerms(t *testing.T) {
+	base := t.TempDir()
+	// Use a sub-directory that does not yet exist so Save must create it.
+	path := filepath.Join(base, "secret-dir", "bundle.json")
+
+	b := NewSecretBundle()
+	b.SetContextSecret("ctx", "KEY", "val")
+
+	if err := b.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("Stat parent dir: %v", err)
+	}
+	// Parent directory must be 0700 (owner read/write/execute only).
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("parent dir mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mapping.MapRepoFullName
 // ---------------------------------------------------------------------------
