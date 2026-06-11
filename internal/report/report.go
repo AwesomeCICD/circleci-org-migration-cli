@@ -468,11 +468,17 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		"Capture them with the in-pipeline `secrets` step in the source org, supply the bundle to `sync`, then rotate them after cutover."+
 		warningSuffix(m, "context_values_excluded", "project_values_excluded"))
 
-	// Always: checkout / SSH keys cannot be transferred.
-	items = append(items, "**Checkout & SSH keys** — private key material is never exported. "+
-		"Regenerate deploy/checkout and user keys on the destination and update any VCS-side deploy keys.")
+	// Always: checkout / deploy keys — bound to the source org's VCS connection.
+	items = append(items, "**Checkout / deploy keys** — deploy and checkout keys are bound to the "+
+		"source org's VCS connection (public key registered on the VCS side, private key stored in CircleCI). "+
+		"The destination org has a fresh OAuth/VCS connection and new project UUIDs, so these keys do NOT transfer. "+
+		"OAuth projects auto-provision a new deploy key when followed; GitHub App projects use HTTPS checkout and need no deploy key. "+
+		"Verify checkout works on the destination after sync. "+
+		"Ref: https://circleci.com/docs/guides/security/rotate-project-ssh-keys/#github-projects")
 
 	// Additional SSH keys — per-project details when at least one project captured SSH key metadata.
+	// IMPORTANT: additional SSH keys ARE migrated as-is (same private key) via `secrets capture --ssh-keys`.
+	// Do NOT tell the user to regenerate them — the remote already authorises the same public key.
 	if hasAdditionalSSHKeys(m) {
 		var perProject []string
 		for _, p := range m.Projects {
@@ -490,11 +496,10 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if detail == "" {
 			detail = "(see manifest for details)"
 		}
-		items = append(items, "**Additional SSH keys (private keys not exported)** — "+
-			"additional SSH key public metadata is captured in this manifest (hostname, fingerprint, public key), "+
-			"but the corresponding PRIVATE keys are never returned by the CircleCI API. "+
-			"Use the SSH-key extraction step to capture and transfer private key material, "+
-			"then re-add each key on the destination project under Project Settings → SSH Keys → Additional SSH Keys. "+
+		items = append(items, "**Additional SSH keys** — "+
+			"additional SSH keys are migrated as-is by the ssh-key extraction (`secrets capture --ssh-keys`); "+
+			"the same private key keeps working against the remote that already authorizes its public key — no remote change needed. "+
+			"Only add a new public key to the remote if you choose to generate fresh keys on the destination. "+
 			detail+"."+
 			warningSuffix(m, "ssh_keys_private_excluded"))
 	}
@@ -516,8 +521,10 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if detail == "" {
 			detail = "(see manifest for details)"
 		}
-		items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are masked by the API and not exported; "+
-			"re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls. "+
+		items = append(items, "**Webhook signing secrets** — sync recreates each webhook with a NEW signing secret. "+
+			"HMAC-validating receivers will reject deliveries until BOTH the destination webhook secret and the "+
+			"receiver's stored secret are realigned; update your receiver's stored secret and test delivery after cutover. "+
+			"Ref: https://circleci.com/docs/guides/integration/outbound-webhooks/#validate-webhooks "+
 			detail+"."+
 			warningSuffix(m, "webhook_signing_secret_excluded"))
 	}
@@ -525,8 +532,11 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// Runner agent tokens — only when runner resource classes were captured.
 	if len(m.RunnerResourceClasses) > 0 {
 		items = append(items, fmt.Sprintf(
-			"**Runner agent tokens (%d resource class(es))** — agent registration tokens are never retrievable via API; "+
-				"issue new tokens on the destination namespace (`%s`) after recreating each resource class."+
+			"**Runner agent tokens (%d resource class(es))** — agent registration tokens are never retrievable via API. "+
+				"After recreating each resource class on the destination namespace (`%s`), issue new tokens with "+
+				"`circleci runner token create <resource-class> \"<nickname>\"`, add each token to `launch-agent-config.yml`, "+
+				"and restart the launch-agent. "+
+				"Ref: https://support.circleci.com/hc/en-us/articles/11816211460891 "+
 				warningSuffix(m, "runner_agent_token_excluded"),
 			len(m.RunnerResourceClasses), orDash(m.RunnerNamespace)))
 	}
@@ -537,12 +547,36 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		orbsURL := orgSettingsURL(host, orgSlug, "orbs")
 		items = append(items, fmt.Sprintf(
 			"**Org orbs (%d orb(s), source namespace `%s`)** — orb source YAML is not exportable via REST API (GraphQL only) "+
-				"and the destination org has a different namespace; "+
-				"republish each orb under the destination namespace manually using `circleci orb publish`. "+
+				"and a namespace lives in one org at a time (transfer is a one-way Support ticket after cutover). "+
+				"During the namespace-transfer overlap, consuming repos can keep working by inlining the published orb source "+
+				"(see `orb inline` command — https://circleci.com/docs/orbs/create-an-inline-orb/). "+
+				"Republish each orb under the destination namespace manually using `circleci orb publish` after cutover. "+
+				"Ref: https://support.circleci.com/hc/en-us/articles/21518826780827-Transferring-and-Renaming-Namespaces "+
 				"→ %s (Orbs tab)"+
 				warningSuffix(m, "orbs_require_republish"),
 			len(s.Orbs), ns, orbsURL))
 	}
+
+	// OIDC cloud-provider trust — always add (distinct from the OIDC claim sync we do).
+	// The destination org has a new UUID → new OIDC issuer URL → cloud IAM trust must be updated.
+	items = append(items, "**OIDC cloud-provider trust** — the destination org has a NEW UUID, so its OIDC issuer is "+
+		"`https://oidc.circleci.com/org/<new-uuid>` and the default audience also changes. "+
+		"Any AWS IAM OIDC provider, GCP workload-identity pool, or Vault JWT auth mount that trusts the source org's issuer/audience "+
+		"must be reconfigured to trust the destination org, or jobs will fail with AssumeRole / AccessDenied errors. "+
+		"Ref: https://circleci.com/docs/guides/permissions-authentication/openid-connect-tokens/#format-of-the-openid-connect-id-token")
+
+	// VCS branch-protection / required-status-check repoint — always add.
+	items = append(items, "**VCS branch-protection / required status checks** — "+
+		"when a project is recreated on the destination its CircleCI check name changes. "+
+		"Update any branch-protection rules or required-status-check configurations on your VCS repositories "+
+		"to reference the new check name, or pull requests will be blocked after cutover.")
+
+	// Org admins, email-domain restriction, GHES endpoint — not readable via our APIs.
+	items = append(items, "**Org-level settings not readable via API (manual checklist)** — "+
+		"the following items cannot be captured by the export and must be configured manually on the destination: "+
+		"(1) org admin role assignments; "+
+		"(2) email-domain sign-up restrictions (if enabled); "+
+		"(3) GitHub Enterprise Server endpoint configuration (if applicable).")
 
 	// Budget enforcement=block — per-budget details when at least one block budget was captured.
 	if hasBudgetEnforcementBlock(m) {
@@ -753,6 +787,8 @@ func writeDataLoss(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "\n### 4. Does not transfer / data loss\n\n")
 	fmt.Fprintf(b, "- **Identifiers change.** Project, context, and pipeline UUIDs are reassigned by the destination; anything that hard-codes a source UUID must be updated.\n")
 	fmt.Fprintf(b, "- **Captured secrets must be rotated.** Treat every value captured for migration as exposed and rotate it after cutover.\n")
+	fmt.Fprintf(b, "- **Build/workflow/Insights/flaky-test history does not transfer.** Capture baseline screenshots of Insights dashboards and flaky-test reports before cutover; historical data remains only in the source org.\n")
+	fmt.Fprintf(b, "- **Plan/billing tier is not migrated.** Ensure the destination org's plan/credit tier is set to the correct level in the destination org settings UI before enabling builds.\n")
 
 	if isOAuthSource(m) {
 		fmt.Fprintf(b, "- **OAuth → App has no equivalent for some settings.** Fork-PR builds, the OSS flag, and `pr_only_branch_overrides` do not exist on App destinations and are dropped.\n")
@@ -769,7 +805,7 @@ func writeExternalPins(b *strings.Builder) {
 	fmt.Fprintf(b, "- Service catalogs / Backstage entries referencing the old project slugs.\n")
 	fmt.Fprintf(b, "- Slack and other notification integrations.\n")
 	fmt.Fprintf(b, "- Dashboards, status badges, and Insights links.\n")
-	fmt.Fprintf(b, "- Branch-protection / required status-check integrations on the VCS side.\n")
+	fmt.Fprintf(b, "- Branch-protection / required status-check rules on the VCS side (check names change when projects are recreated).\n")
 	fmt.Fprintf(b, "- Documentation, READMEs, and bookmarks linking to the old org.\n")
 }
 

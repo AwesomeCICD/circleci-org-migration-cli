@@ -485,7 +485,8 @@ func TestMarkdown_ManualStepsBaselineAlwaysPresent(t *testing.T) {
 		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
 	}
 	md := report.Markdown(m)
-	for _, want := range []string{"secret values", "Checkout & SSH keys"} {
+	// "Checkout / deploy keys" replaces the old "Checkout & SSH keys" heading.
+	for _, want := range []string{"secret values", "Checkout / deploy keys"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Markdown manual steps missing baseline item %q", want)
 		}
@@ -834,11 +835,9 @@ func TestMarkdown_RepositoryLine_CircleCINativeProject(t *testing.T) {
 	}
 	md := report.Markdown(m)
 
-	// Must not contain the malformed scheme-less URL.
-	if strings.Contains(md, "//circleci.com/") {
-		t.Errorf("Markdown should not emit the scheme-less //circleci.com URL; got:\n%s", md)
-	}
-	// Must not contain a bare "//" anywhere in a Repository line.
+	// Must not contain a bare "//" anywhere in a Repository line (the scheme-less form).
+	// Note: we check only Repository lines (not the full document) because docs URLs
+	// such as "https://circleci.com/docs/..." legitimately contain "//circleci.com/".
 	for _, line := range strings.Split(md, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "- Repository:") && strings.Contains(line, "//") {
 			t.Errorf("Repository line contains scheme-less '//': %q", line)
@@ -872,8 +871,13 @@ func TestMarkdown_RepositoryLine_CircleCINativeURL(t *testing.T) {
 	}
 	md := report.Markdown(m)
 
-	if strings.Contains(md, "//circleci.com/") {
-		t.Errorf("Markdown should not emit scheme-less //circleci.com URL; got:\n%s", md)
+	// Must not contain the scheme-less URL in any Repository line.
+	// (Docs links in the runbook legitimately contain "https://circleci.com/",
+	// so we scope the check to Repository lines only.)
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- Repository:") && strings.Contains(line, "//") {
+			t.Errorf("Repository line contains scheme-less '//': %q", line)
+		}
 	}
 	if !strings.Contains(md, "CircleCI-native project") {
 		t.Errorf("Markdown should show 'CircleCI-native project' for //circleci.com URL; got:\n%s", md)
@@ -1175,8 +1179,8 @@ func TestMarkdown_SSHKeys_NoSectionWhenAbsent(t *testing.T) {
 }
 
 // TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent verifies that the manual
-// steps section includes a note about private SSH keys not being exported
-// when at least one project has additional SSH keys.
+// steps section includes a note about additional SSH keys when at least one
+// project has them, using the corrected framing (migrated as-is, no regenerate).
 func TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent(t *testing.T) {
 	m := &manifest.Manifest{
 		SchemaVersion: manifest.SchemaVersion,
@@ -1203,16 +1207,24 @@ func TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent(t *testing.T) {
 
 	md := report.Markdown(m)
 
+	// New wording: keys are migrated as-is, no regenerate instruction.
 	for _, want := range []string{
-		"Additional SSH keys (private keys not exported)",
-		"PRIVATE keys are never returned",
-		"SSH-key extraction step",
+		"**Additional SSH keys**",
+		"migrated as-is",
+		"secrets capture --ssh-keys",
+		"same private key keeps working",
+		"no remote change needed",
 		"export note:",
 		"1 additional SSH key(s) captured (public metadata only)",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Markdown manual-steps missing %q; got:\n%s", want, md[:min(800, len(md))])
 		}
+	}
+
+	// Must NOT tell the user to regenerate additional SSH keys.
+	if strings.Contains(md, "Regenerate") || strings.Contains(md, "regenerate") {
+		t.Errorf("Markdown manual-steps must NOT say 'regenerate' for additional SSH keys; got:\n%s", md[:min(1200, len(md))])
 	}
 }
 
@@ -1231,7 +1243,8 @@ func TestMarkdown_ManualSteps_SSHKeysNoteAbsentWhenNoKeys(t *testing.T) {
 	}
 
 	md := report.Markdown(m)
-	if strings.Contains(md, "Additional SSH keys (private keys not exported)") {
+	// The additional SSH keys manual-step item must be absent when no keys present.
+	if strings.Contains(md, "migrated as-is by the ssh-key extraction") {
 		t.Errorf("Manual-steps SSH-key note should be absent when no SSH keys in manifest; got note in:\n%s", md[:min(800, len(md))])
 	}
 }
@@ -1936,6 +1949,232 @@ func TestMarkdown_CIAMSection_ProjectGroupGrantsRendered(t *testing.T) {
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("CIAM project group grants section missing %q", want)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #148 — sharpen existing items + correct SSH-key framing
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue148_AdditionalSSHKeys_MigratedAsIs verifies that the additional
+// SSH keys manual step says keys are migrated as-is (not regenerated).
+func TestIssue148_AdditionalSSHKeys_MigratedAsIs(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Must say keys are migrated as-is via ssh-key extraction.
+	for _, want := range []string{
+		"migrated as-is by the ssh-key extraction",
+		"secrets capture --ssh-keys",
+		"same private key keeps working",
+		"no remote change needed",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("additional SSH key item missing %q; snippet:\n%s", want, md[:min(1200, len(md))])
+		}
+	}
+
+	// Must NOT say "regenerate" for additional SSH keys.
+	if strings.Contains(md, "Regenerate") || strings.Contains(md, "regenerate") {
+		t.Errorf("additional SSH key item must not say 'regenerate'; snippet:\n%s", md[:min(1200, len(md))])
+	}
+}
+
+// TestIssue148_CheckoutDeployKeys_NewItem verifies the new checkout/deploy keys
+// item explains WHY (fresh OAuth/VCS connection) and includes the docs link.
+func TestIssue148_CheckoutDeployKeys_NewItem(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Checkout / deploy keys",
+		"fresh OAuth/VCS connection",
+		"new project UUIDs",
+		"https://circleci.com/docs/guides/security/rotate-project-ssh-keys/#github-projects",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("checkout/deploy-keys item missing %q", want)
+		}
+	}
+}
+
+// TestIssue148_WebhookSigningSecret_NewSecretExplanation verifies the webhook
+// item explains that sync creates a NEW secret and HMAC receivers must be realigned.
+func TestIssue148_WebhookSigningSecret_NewSecretExplanation(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				Webhooks: []manifest.Webhook{
+					{Name: "notify", URL: "https://hooks.example.com"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"NEW signing secret",
+		"HMAC-validating receivers",
+		"https://circleci.com/docs/guides/integration/outbound-webhooks/#validate-webhooks",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("webhook signing secret item missing %q", want)
+		}
+	}
+}
+
+// TestIssue148_RunnerTokens_CommandAndLink verifies the runner-token item now
+// includes the CLI command and a support link.
+func TestIssue148_RunnerTokens_CommandAndLink(t *testing.T) {
+	m := &manifest.Manifest{
+		Source:          manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		RunnerNamespace: "my-ns",
+		RunnerResourceClasses: []manifest.RunnerResourceClass{
+			{Name: "my-ns/runner-a"},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"circleci runner token create",
+		"launch-agent-config.yml",
+		"https://support.circleci.com/hc/en-us/articles/11816211460891",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("runner token item missing %q", want)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #149 — OIDC cloud-provider trust, branch-protection, data-loss items
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue149_OIDCCloudProviderTrust_AlwaysPresent verifies that the OIDC
+// cloud-provider trust manual item is always present (not gated by a signal).
+func TestIssue149_OIDCCloudProviderTrust_AlwaysPresent(t *testing.T) {
+	// Minimal manifest: no org settings, no projects.
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"OIDC cloud-provider trust",
+		"NEW UUID",
+		"https://oidc.circleci.com/org/<new-uuid>",
+		"AssumeRole / AccessDenied",
+		"https://circleci.com/docs/guides/permissions-authentication/openid-connect-tokens/#format-of-the-openid-connect-id-token",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("OIDC cloud-provider trust item missing %q", want)
+		}
+	}
+}
+
+// TestIssue149_BranchProtection_AlwaysPresent verifies that the VCS
+// branch-protection / required-status-check repoint item is always present.
+func TestIssue149_BranchProtection_AlwaysPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"VCS branch-protection / required status checks",
+		"check name changes",
+		"pull requests will be blocked",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("branch-protection item missing %q", want)
+		}
+	}
+}
+
+// TestIssue149_OrgAdminsAndApiSettings_AlwaysPresent verifies the
+// org-level settings manual checklist item is always present.
+func TestIssue149_OrgAdminsAndApiSettings_AlwaysPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Org-level settings not readable via API",
+		"org admin role assignments",
+		"email-domain sign-up restrictions",
+		"GitHub Enterprise Server endpoint",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("org-level settings checklist item missing %q", want)
+		}
+	}
+}
+
+// TestIssue149_DataLoss_BuildHistoryAndPlan verifies the new data-loss lines
+// about build history and plan/billing tier are present.
+func TestIssue149_DataLoss_BuildHistoryAndPlan(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Build/workflow/Insights/flaky-test history does not transfer",
+		"Plan/billing tier is not migrated",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("data-loss section missing %q", want)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #150 — inline-orb bridge note in orbs manual item
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIssue150_OrgOrbs_InlineOrbBridgeNote verifies that the orbs manual step
+// includes the inline-orb bridge note and both docs links.
+func TestIssue150_OrgOrbs_InlineOrbBridgeNote(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{
+			Name: "acme", Slug: "gh/acme",
+			Settings: &manifest.OrgSettings{
+				OrbNamespace: "acme-ns",
+				Orbs: []manifest.OrgOrb{
+					{OrbName: "acme-ns/my-orb", LatestVersionNumber: "1.0.0"},
+				},
+			},
+		}},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"namespace lives in one org at a time",
+		"inlining the published orb source",
+		"orb inline",
+		"https://circleci.com/docs/orbs/create-an-inline-orb/",
+		"https://support.circleci.com/hc/en-us/articles/21518826780827-Transferring-and-Renaming-Namespaces",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("orbs manual step inline-orb note missing %q", want)
 		}
 	}
 }
