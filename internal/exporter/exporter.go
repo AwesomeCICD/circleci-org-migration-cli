@@ -1027,12 +1027,13 @@ var urlOrbAuthSafeValues = map[string]bool{
 // not in the known-safe enum set and has therefore been redacted.
 const urlOrbAuthRedactionPlaceholder = "<redacted: unknown URL-orb auth type>"
 
-// redactURLOrbAuth returns auth verbatim when it is in the known-safe enum set
-// (currently "none" and "aws"). Any other value is replaced with
-// urlOrbAuthRedactionPlaceholder to prevent unrecognised credential formats
-// from appearing in the manifest.
+// redactURLOrbAuth returns auth verbatim when it is empty (no auth configured)
+// or in the known-safe enum set (currently "none" and "aws"). Any other value
+// is replaced with urlOrbAuthRedactionPlaceholder to prevent unrecognised
+// credential formats from appearing in the manifest. Empty is passed through so
+// entries with no auth round-trip correctly through sync.
 func redactURLOrbAuth(auth string) string {
-	if urlOrbAuthSafeValues[auth] {
+	if auth == "" || urlOrbAuthSafeValues[auth] {
 		return auth
 	}
 	return urlOrbAuthRedactionPlaceholder

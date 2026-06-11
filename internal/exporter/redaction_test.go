@@ -143,6 +143,7 @@ func TestURLOrbAuth_KnownSafeValues_PassedThrough(t *testing.T) {
 	}{
 		{"none"},
 		{"aws"},
+		{""}, // empty = no auth configured; must pass through for sync round-trip
 	}
 
 	for _, tc := range cases {
