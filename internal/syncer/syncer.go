@@ -319,9 +319,15 @@ func (s *Syncer) writeVar(ctxID, name, value string, apply bool) error {
 func (s *Syncer) syncContextRestrictions(report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
 	var existing []cctx.Restriction
 	if opts.Apply && ctxID != "" {
-		if rs, err := s.Contexts.ListRestrictions(ctxID); err == nil {
-			existing = rs
+		rs, err := s.Contexts.ListRestrictions(ctxID)
+		if err != nil {
+			for _, r := range c.Restrictions {
+				target := c.Name + " [" + r.Type + "]"
+				report.add("restriction", target, "error", fmt.Sprintf("list existing restrictions: %v", err))
+			}
+			return
 		}
+		existing = rs
 	}
 	for _, r := range c.Restrictions {
 		target := c.Name + " [" + r.Type + "]"
@@ -559,6 +565,10 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 			if !opts.Apply {
 				destProj = &project.Project{Slug: dst}
 			}
+		} else {
+			// Project already exists in destination — record it so re-runs are
+			// visible in the report summary.
+			report.add("project", dst, "exists", "reusing existing project")
 		}
 
 		s.syncProjectSettings(report, p, dst, opts)
@@ -605,8 +615,10 @@ func (s *Syncer) syncAppProject(
 	existing, exists := (*destOrgProjectsByName)[name]
 
 	if exists {
-		// Reuse the existing project — configure settings/vars with the real slug.
+		// Reuse the existing project — record it so re-runs are visible in the
+		// report summary, then configure settings/vars with the real slug.
 		dst := existing.Slug
+		report.add("project", dst, "exists", "reusing existing project")
 		s.syncProjectSettings(report, p, dst, opts)
 		s.syncProjectVars(report, p, bundle, dst, opts)
 		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
@@ -882,7 +894,8 @@ func (s *Syncer) resolveExternalID(report *Report, target, fullName, capturedID 
 			return "", false
 		}
 		// Success: log that the repo was found (helpful in dry-run preview too).
-		report.add("project-ext-id", target, "resolved",
+		// Use "set" (not "resolved") so the action appears in the summary counts.
+		report.add("project-ext-id", target, "set",
 			fmt.Sprintf("repo %s found in destination GitHub org (id %s)", destFullName, id))
 		return id, true
 	}
@@ -1035,10 +1048,14 @@ func (s *Syncer) syncProjectVars(report *Report, p manifest.Project, bundle *man
 	}
 	// Project env vars are not idempotent (no upsert), so skip names that
 	// already exist in the destination.
+	// Guard with Apply: in dry-run mode the project slug may be a placeholder
+	// (e.g. "circleci/<org-id>/<new>") that would cause a doomed HTTP call.
 	existing := map[string]bool{}
-	if vars, err := s.Projects.ListEnvVars(dst); err == nil {
-		for _, v := range vars {
-			existing[v.Name] = true
+	if opts.Apply {
+		if vars, err := s.Projects.ListEnvVars(dst); err == nil {
+			for _, v := range vars {
+				existing[v.Name] = true
+			}
 		}
 	}
 	for _, v := range p.EnvVars {

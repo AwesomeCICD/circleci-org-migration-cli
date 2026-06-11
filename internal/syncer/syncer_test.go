@@ -1465,6 +1465,63 @@ func TestSyncContexts_Restriction_UnnamedProject_LabelUsesValue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Fix #1: ListRestrictions error → per-restriction error actions + skip context
+// ---------------------------------------------------------------------------
+
+// TestSyncContexts_ListRestrictions_Error_SkipsContext verifies that when
+// ListRestrictions returns an error, each restriction for that context is
+// recorded as an "error" action and CreateRestriction is NOT called.
+// (Previously, the error was silently swallowed → empty existing list →
+// unconditional CreateRestriction → duplicates on re-run.)
+func TestSyncContexts_ListRestrictions_Error_SkipsContext(t *testing.T) {
+	const ctxID = "ctx-lr-err"
+	fw := &fakeContextWriter{
+		listContexts: func(ownerID, ownerSlug string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(contextID string) ([]cctx.Restriction, error) {
+			return nil, errors.New("list restrictions API down")
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw}
+
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
+		Contexts: []manifest.Context{
+			{
+				Name: "prod",
+				Restrictions: []manifest.Restriction{
+					{Type: "expression", Value: `project.slug == "gh/org/api"`},
+					{Type: "expression", Value: `project.slug == "gh/org/web"`},
+				},
+			},
+		},
+	}
+
+	rep, err := sy.SyncContexts(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("ListRestrictions error must not propagate as top-level error, got: %v", err)
+	}
+
+	// CreateRestriction must NOT be called (no duplicates on re-run).
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when ListRestrictions fails")
+	}
+
+	// Each restriction should have an "error" action.
+	errorCount := 0
+	for _, a := range rep.Actions {
+		if a.Kind == "restriction" && a.Status == "error" {
+			errorCount++
+		}
+	}
+	if errorCount != 2 {
+		t.Errorf("expected 2 restriction 'error' actions (one per restriction), got %d", errorCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MissingPlaceholder UpsertEnvVar error path
 // ---------------------------------------------------------------------------
 

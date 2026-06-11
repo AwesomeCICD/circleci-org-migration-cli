@@ -35,6 +35,47 @@ type OrgSettingsWriter interface {
 	SetReleaseTrackerSettings(orgUUID string, ttl string) error
 }
 
+// URLOrbAllowEntry is a single entry on an org's URL-orb allow list.
+// It mirrors api/org.URLOrbAllowEntry; the syncer package re-declares it so
+// idempotency checks do not force an api/org import in syncer.
+type URLOrbAllowEntry struct {
+	ID     string
+	Name   string
+	Prefix string
+	Auth   string
+}
+
+// OTelExporter is one OpenTelemetry exporter configuration on an org.
+// It mirrors api/org.OTelExporter; the syncer package re-declares it so
+// idempotency checks do not force an api/org import in syncer.
+type OTelExporter struct {
+	ID       string
+	Endpoint string
+	Protocol string
+	Insecure bool
+	Headers  map[string]string
+}
+
+// URLOrbAllowListGetter is an optional capability for OrgSettingsWriter implementations
+// that support pre-flight idempotency checks for the URL-orb allow list.
+// When OrgSettingsWriter also implements this interface, syncURLOrbAllowList will
+// skip entries whose name+prefix already exist in the destination (preventing
+// duplicates on re-runs). Implementations that do not provide this method fall
+// back to the previous unconditional-create behaviour.
+type URLOrbAllowListGetter interface {
+	GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error)
+}
+
+// OTelExporterGetter is an optional capability for OrgSettingsWriter implementations
+// that support pre-flight idempotency checks for OTel exporters.
+// When OrgSettingsWriter also implements this interface, syncOTelExporters will
+// skip exporters whose endpoint+protocol already exist in the destination
+// (preventing duplicates on re-runs). Implementations that do not provide this
+// method fall back to the previous unconditional-create behaviour.
+type OTelExporterGetter interface {
+	GetOTelExporters(orgID string) ([]OTelExporter, error)
+}
+
 // StorageRetentionArgs carries the storage-retention values to write. It is a
 // locally-defined struct so neither the syncer nor the OrgSettingsWriter
 // interface needs to depend on api/org directly.
@@ -207,13 +248,39 @@ func (s *Syncer) syncOIDCClaims(report *Report, src *manifest.OrgSettings, destO
 }
 
 // syncURLOrbAllowList adds each allow-list entry that is not already present.
+// When OrgSettings also implements URLOrbAllowListGetter, existing entries
+// (matched by name+prefix) are skipped with status "exists" to prevent
+// duplicates on re-runs.
 func (s *Syncer) syncURLOrbAllowList(report *Report, src *manifest.OrgSettings, destSlug string, opts Options) {
+	if len(src.URLOrbAllowList) == 0 {
+		return
+	}
+
+	// Pre-fetch existing entries for idempotency when the writer supports it
+	// and we are in apply mode (in dry-run the dest slug may be a placeholder).
+	existing := map[string]bool{} // key: name+"\x00"+prefix
+	if opts.Apply {
+		if getter, ok := s.OrgSettings.(URLOrbAllowListGetter); ok {
+			if entries, err := getter.GetURLOrbAllowList(destSlug); err == nil {
+				for _, e := range entries {
+					existing[e.Name+"\x00"+e.Prefix] = true
+				}
+			}
+		}
+	}
+
 	for _, entry := range src.URLOrbAllowList {
 		target := "url_orb_allow_list:" + entry.Name
 
 		if !opts.Apply {
 			report.add("org-settings", target, "set",
 				fmt.Sprintf("would add URL-orb allow-list entry %q (%s)", entry.Name, entry.Prefix))
+			continue
+		}
+
+		if existing[entry.Name+"\x00"+entry.Prefix] {
+			report.add("org-settings", target, "exists",
+				fmt.Sprintf("URL-orb allow-list entry %q (%s) already present", entry.Name, entry.Prefix))
 			continue
 		}
 
@@ -258,13 +325,14 @@ func (s *Syncer) syncPolicies(report *Report, src *manifest.OrgSettings, destOrg
 	}
 }
 
-// syncOTelExporters creates each OTel exporter on the destination. Because
-// there is no list-by-destination method, creation is attempted unconditionally
-// (best-effort idempotency). Header values are NOT sent — they were redacted on
-// export and are unusable. When an exporter had headers, a "manual" action is
-// emitted listing the header keys that must be re-added as secrets. The 5-exporter
-// cap is enforced by the API; if more than 5 exporters are present a note is
-// included in the detail.
+// syncOTelExporters creates each OTel exporter on the destination. When
+// OrgSettings also implements OTelExporterGetter, existing exporters (matched
+// by endpoint+protocol) are skipped with status "exists" to prevent duplicates
+// on re-runs. Header values are NOT sent — they were redacted on export and are
+// unusable. When an exporter had headers, a "manual" action is emitted listing
+// the header keys that must be re-added as secrets. The 5-exporter cap is
+// enforced by the API; if more than 5 exporters are present a note is included
+// in the detail.
 func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if len(src.OTelExporters) == 0 {
 		return
@@ -273,6 +341,19 @@ func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, de
 	capNote := ""
 	if len(src.OTelExporters) > 5 {
 		capNote = " (warning: source has >5 exporters; the API enforces a 5-exporter cap per org)"
+	}
+
+	// Pre-fetch existing exporters for idempotency when the writer supports it
+	// and we are in apply mode.
+	existing := map[string]bool{} // key: endpoint+"\x00"+protocol
+	if opts.Apply {
+		if getter, ok := s.OrgSettings.(OTelExporterGetter); ok {
+			if exporters, err := getter.GetOTelExporters(destOrgID); err == nil {
+				for _, e := range exporters {
+					existing[e.Endpoint+"\x00"+e.Protocol] = true
+				}
+			}
+		}
 	}
 
 	for i, ex := range src.OTelExporters {
@@ -287,6 +368,12 @@ func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, de
 				report.add("org-settings", target, "manual",
 					fmt.Sprintf("OTel exporter header values were redacted on export and cannot be replayed; re-add these header keys manually: %v", keys))
 			}
+			continue
+		}
+
+		if existing[ex.Endpoint+"\x00"+ex.Protocol] {
+			report.add("org-settings", target, "exists",
+				fmt.Sprintf("OTel exporter endpoint=%q protocol=%q already present", ex.Endpoint, ex.Protocol))
 			continue
 		}
 
@@ -430,43 +517,62 @@ func (s *Syncer) syncBudgets(report *Report, src *manifest.OrgSettings, destOrgI
 		srcProjID := *pb.ProjectID
 		target := fmt.Sprintf("budget:project:%d", i)
 
-		// Attempt to resolve the destination project slug via the mapping.
-		destProjSlug, ok := resolveProjectByID(srcProjID, mapping)
+		// Attempt to resolve the destination project UUID via the mapping.
+		// The mapping value must be a destination project UUID (not a slug);
+		// passing a slug (containing "/") causes a 422 from the budgets API.
+		destProjID, ok := resolveProjectByID(srcProjID, mapping)
 		if !ok {
 			report.add("org-settings", target, "manual",
 				fmt.Sprintf(
 					"per-project budget (source project_id=%q, credits=%d, enforcement_type=%q) "+
 						"cannot be automatically transferred: the source project UUID has no "+
-						"mapping to the destination — recreate this budget manually after "+
-						"identifying the equivalent destination project",
+						"mapping to the destination — add an entry to the mapping file with "+
+						"the source project UUID as the key and the destination project UUID "+
+						"as the value, then re-run",
 					srcProjID, pb.Credits, pb.EnforcementType))
+			continue
+		}
+
+		// Warn when the mapped value looks like a slug (contains "/") rather
+		// than a UUID — the budgets API requires a UUID and rejects slugs with
+		// a 422.  Emit a "manual" action so the operator can correct the mapping
+		// before re-running; do not attempt the doomed API call.
+		if strings.Contains(destProjID, "/") {
+			report.add("org-settings", target, "manual",
+				fmt.Sprintf(
+					"per-project budget mapping value %q looks like a project slug, not a UUID "+
+						"(contains \"/\") — the budgets API requires a destination project UUID; "+
+						"update the mapping entry for source project %q to use the destination "+
+						"project UUID and re-run",
+					destProjID, srcProjID))
 			continue
 		}
 
 		if !opts.Apply {
 			report.add("org-settings", target, "set",
-				fmt.Sprintf("would set per-project budget dest_project=%q credits=%d", destProjSlug, pb.Credits))
+				fmt.Sprintf("would set per-project budget dest_project_id=%q credits=%d", destProjID, pb.Credits))
 			continue
 		}
-		if err := s.OrgSettings.SetBudget(destOrgID, &destProjSlug, pb.Credits); err != nil {
+		if err := s.OrgSettings.SetBudget(destOrgID, &destProjID, pb.Credits); err != nil {
 			report.add("org-settings", target, "error",
-				fmt.Sprintf("could not set per-project budget dest_project=%q: %v", destProjSlug, err))
+				fmt.Sprintf("could not set per-project budget dest_project_id=%q: %v", destProjID, err))
 			continue
 		}
 		report.add("org-settings", target, "set",
-			fmt.Sprintf("set per-project budget dest_project=%q credits=%d", destProjSlug, pb.Credits))
+			fmt.Sprintf("set per-project budget dest_project_id=%q credits=%d", destProjID, pb.Credits))
 	}
 }
 
 // resolveProjectByID tries to find a destination project UUID for a source
 // project UUID using the mapping's Projects table. It returns the destination
-// UUID (from the mapping value) and true when found. Returns ("", false) when
-// the mapping is nil, the Projects table is empty, or the source ID is absent.
+// project ID value (from the mapping) and true when found. Returns ("", false)
+// when the mapping is nil, the Projects table is empty, or the source ID is
+// absent.
 //
-// The mapping.Projects map is keyed by SOURCE SLUG, not UUID, so this performs
-// a reverse-scan looking for any mapping entry whose key or value is the source
-// ID. In practice callers should populate an explicit Projects mapping entry with
-// the source project UUID as the key when budgets must be transferred.
+// The mapping entry must use the source project UUID as the key and the
+// DESTINATION PROJECT UUID as the value. The budgets API requires a UUID and
+// rejects slug-form values (containing "/") with a 422 error. Callers should
+// validate the returned value with strings.Contains(v, "/") and warn accordingly.
 func resolveProjectByID(srcProjID string, mapping *manifest.Mapping) (string, bool) {
 	if mapping == nil || len(mapping.Projects) == 0 {
 		return "", false

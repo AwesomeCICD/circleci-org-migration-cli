@@ -2630,7 +2630,8 @@ func stubResolveRepoID(t *testing.T, expectName, returnID string, returnErr erro
 
 // TestResolveExternalID_TokenAndRepoFound verifies that when a token is
 // provided and the repo is found in the dest GH org, the resolved id is used
-// and a "resolved" action is emitted.
+// and a "set" action is emitted (previously "resolved"; renamed to "set" so
+// it appears in summary counts).
 func TestResolveExternalID_TokenAndRepoFound(t *testing.T) {
 	stubResolveRepoID(t, "acme-new/web", "999", nil)
 
@@ -2662,15 +2663,15 @@ func TestResolveExternalID_TokenAndRepoFound(t *testing.T) {
 		t.Error("CreatePipelineDefinition must be called when repo is found in dest GH org")
 	}
 
-	// "resolved" actions must be present for config and checkout sources.
-	resolvedCount := 0
+	// "set" actions must be present for config and checkout sources (repo found).
+	setCount := 0
 	for _, a := range actionsOfKind(rep, "project-ext-id") {
-		if a.Status == "resolved" {
-			resolvedCount++
+		if a.Status == "set" {
+			setCount++
 		}
 	}
-	if resolvedCount < 2 {
-		t.Errorf("expected at least 2 'resolved' ext-id actions (config+checkout), got %d", resolvedCount)
+	if setCount < 2 {
+		t.Errorf("expected at least 2 'set' ext-id actions (config+checkout), got %d", setCount)
 	}
 }
 
@@ -2898,15 +2899,16 @@ func TestSyncProjects_AppDest_DryRun_ResolvePreview(t *testing.T) {
 		t.Error("CreatePipelineDefinition must NOT be called in dry-run mode")
 	}
 
-	// But resolve results must be visible in the report.
+	// Resolve results must be visible in the report as "set" actions
+	// (GitHub GET is read-only — still runs in dry-run preview).
 	found := false
 	for _, a := range actionsOfKind(rep, "project-ext-id") {
-		if a.Status == "resolved" {
+		if a.Status == "set" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("dry-run must show 'resolved' ext-id actions (GitHub GET is read-only — run in dry-run)")
+		t.Error("dry-run must show 'set' ext-id actions (GitHub GET is read-only — run in dry-run)")
 	}
 }
 
@@ -3175,5 +3177,158 @@ func TestSyncProjectSSHKeys_NoSSHKeysInManifest(t *testing.T) {
 	}
 	if len(actionsOfKind(rep, "project-ssh-key")) != 0 {
 		t.Error("expected no project-ssh-key actions when project has no SSHKeys")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix #4: Dry-run must NOT call ListEnvVars (spurious call guard)
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_DryRun_NoListEnvVars verifies that in dry-run mode
+// ListEnvVars is NOT called. In dry-run mode the destination project slug
+// may be a placeholder (e.g. "circleci/<org-id>/<new>") that would cause
+// a doomed HTTP call, matching the pattern of syncProjectSSHKeys.
+func TestSyncProjects_DryRun_NoListEnvVars_AppOrg(t *testing.T) {
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+			return nil, nil // No existing projects → will create
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := simpleProject("gh/acme/web", "API_KEY")
+	p.Name = "web"
+	m := projectManifest("gh/acme", p)
+
+	_, err := sy.SyncProjects(m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("ListEnvVars") {
+		t.Error("ListEnvVars must NOT be called in dry-run mode (slug is a placeholder for new App projects)")
+	}
+}
+
+// TestSyncProjects_Apply_CallsListEnvVars verifies that in apply mode
+// ListEnvVars IS called (to detect already-existing vars).
+func TestSyncProjects_Apply_CallsListEnvVars(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	srcSlug := "gh/acme/web"
+	p := simpleProject(srcSlug, "API_KEY")
+	m := projectManifest("gh/acme", p)
+	bundle := projectBundleWith(srcSlug, "API_KEY", "val")
+
+	_, err := sy.SyncProjects(m, bundle, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("ListEnvVars") {
+		t.Error("ListEnvVars must be called in apply mode for idempotency check")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix #5: Existing project emits "exists" action
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_ExistingProject_OAuth_EmitsExists verifies that when
+// GetProject succeeds for an OAuth project (it already exists), a project
+// action with status "exists" is recorded before the sub-resource sync.
+func TestSyncProjects_ExistingProject_OAuth_EmitsExists(t *testing.T) {
+	fp := &fakeProjectWriter{
+		// GetProject succeeds → project already exists.
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "existing-proj-id", Name: "web"}, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := simpleProject("gh/acme/web", "DB_URL")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+	}
+	if a.Status != "exists" {
+		t.Errorf("project action status: got %q want %q", a.Status, "exists")
+	}
+}
+
+// TestSyncProjects_ExistingProject_App_EmitsExists verifies that when
+// ListOrgProjects finds a matching project, an "exists" project action is
+// recorded before the sub-resource sync.
+func TestSyncProjects_ExistingProject_App_EmitsExists(t *testing.T) {
+	existingSlug := "circleci/dest-org-id/existing-proj"
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "existing-proj-id", Slug: existingSlug, Name: "web"},
+			}, nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := simpleProject("gh/acme/web")
+	p.Name = "web"
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	a := firstActionOfKind(rep, "project")
+	if a == nil {
+		t.Fatal("expected a project action, got none")
+	}
+	if a.Status != "exists" {
+		t.Errorf("project action status: got %q want %q", a.Status, "exists")
+	}
+	if a.Target != existingSlug {
+		t.Errorf("project action target: got %q want %q", a.Target, existingSlug)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix #6: resolveExternalID emits "set" (not "resolved") when repo is found
+// ---------------------------------------------------------------------------
+
+// TestResolveExternalID_ResolvedCountsInSummary verifies that a successful
+// repo resolution emits status "set" (not "resolved") so it appears in the
+// Counts() summary tally.
+func TestResolveExternalID_ResolvedCountsInSummary(t *testing.T) {
+	stubResolveRepoID(t, "acme/web", "id-123", nil)
+
+	fp := &fakeProjectWriter{
+		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
+			return "def-id", nil
+		},
+	}
+	sy := newSyncerAppProjects(fp)
+
+	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	counts := rep.Counts()
+	if counts["set"] == 0 {
+		t.Errorf("expected at least one 'set' count (resolved repo), got counts=%v", counts)
+	}
+	if counts["resolved"] != 0 {
+		t.Errorf("expected zero 'resolved' count (status was renamed to 'set'), got %d", counts["resolved"])
 	}
 }

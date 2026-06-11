@@ -19,6 +19,14 @@ type Mapping struct {
 	// this for renames, or when the destination is a GitHub App org (where the
 	// slug is "circleci/<org-id>/<project-id>" and cannot be derived from the
 	// source repo name).
+	//
+	// Per-project budget mapping: to transfer a per-project budget, add an
+	// entry whose KEY is the source project UUID (not slug) and whose VALUE is
+	// the destination project UUID (not slug). The budgets API requires a UUID;
+	// passing a slug (containing "/") causes a 422 error. Example:
+	//   "projects": {
+	//     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee": "ffffffff-0000-1111-2222-333333333333"
+	//   }
 	Projects map[string]string `json:"projects,omitempty"`
 
 	// GitHubOrg maps the source GitHub organization owner to the destination
