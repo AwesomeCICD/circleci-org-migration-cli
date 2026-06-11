@@ -14,6 +14,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
 
@@ -103,6 +104,7 @@ Examples:
     --apply -o manifest.json --report migration-report.md`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			cfg := configFromContext(ctx)
 			// Resolve the GitHub token from the env after parsing so the flag
 			// default never leaks $GITHUB_TOKEN into --help output.
 			if githubToken == "" {
@@ -133,7 +135,7 @@ Examples:
 				var err error
 				sourceOrg, destOrg, secretsPath, missing, apply, yes,
 					skipContexts, skipProjects, skipOrgSettings, skipExtras,
-					err = runMigrateWalkthrough(cmd, sourceOrg, destOrg, yes)
+					err = runMigrateWalkthrough(cmd, cfg, sourceOrg, destOrg, yes)
 				if err != nil {
 					return err
 				}
@@ -150,11 +152,11 @@ Examples:
 				return fmt.Errorf("--missing-secrets must be %q or %q", syncer.MissingSkip, syncer.MissingPlaceholder)
 			}
 
-			srcToken := rootOptions.SourceTokenOrDefault()
+			srcToken := cfg.SourceTokenOrDefault()
 			if srcToken == "" {
 				return noSourceTokenError()
 			}
-			dstToken := rootOptions.DestTokenOrDefault()
+			dstToken := cfg.DestTokenOrDefault()
 			if dstToken == "" {
 				return fmt.Errorf("no destination API token: set --dest-token, --token, CIRCLECI_DEST_TOKEN, or CIRCLECI_CLI_TOKEN")
 			}
@@ -167,15 +169,15 @@ Examples:
 			}
 
 			// --- step 1: export from source org -------------------------------
-			srcOrgClient, err := org.NewClient(rootOptions, srcToken)
+			srcOrgClient, err := org.NewClient(cfg, srcToken)
 			if err != nil {
 				return fmt.Errorf("creating source org client: %w", err)
 			}
-			srcCtxClient, err := cctx.NewClient(rootOptions, srcToken)
+			srcCtxClient, err := cctx.NewClient(cfg, srcToken)
 			if err != nil {
 				return fmt.Errorf("creating source context client: %w", err)
 			}
-			srcProjClient, err := project.NewClient(rootOptions, srcToken)
+			srcProjClient, err := project.NewClient(cfg, srcToken)
 			if err != nil {
 				return fmt.Errorf("creating source project client: %w", err)
 			}
@@ -190,7 +192,7 @@ Examples:
 			// Wire up the runner client for the source when needed (skipped when
 			// --skip-runner is set).
 			if !skipRunner && runnerNamespace != "" {
-				srcRunnerClient, rerr := runner.NewClient(rootOptions, srcToken)
+				srcRunnerClient, rerr := runner.NewClient(cfg, srcToken)
 				if rerr != nil {
 					return fmt.Errorf("creating source runner client: %w", rerr)
 				}
@@ -198,7 +200,7 @@ Examples:
 			}
 
 			m, err := ex.Export(ctx, exporter.Options{
-				Host:            rootOptions.Host,
+				Host:            cfg.Host,
 				OrgSlug:         sourceOrg,
 				IncludeContexts: !skipContexts,
 				IncludeProjects: !skipProjects,
@@ -236,15 +238,15 @@ Examples:
 			}
 
 			// --- step 2: sync into destination org ----------------------------
-			dstOrgClient, err := org.NewClient(rootOptions, dstToken)
+			dstOrgClient, err := org.NewClient(cfg, dstToken)
 			if err != nil {
 				return fmt.Errorf("creating destination org client: %w", err)
 			}
-			dstCtxClient, err := cctx.NewClient(rootOptions, dstToken)
+			dstCtxClient, err := cctx.NewClient(cfg, dstToken)
 			if err != nil {
 				return fmt.Errorf("creating destination context client: %w", err)
 			}
-			dstProjClient, err := project.NewClient(rootOptions, dstToken)
+			dstProjClient, err := project.NewClient(cfg, dstToken)
 			if err != nil {
 				return fmt.Errorf("creating destination project client: %w", err)
 			}
@@ -280,7 +282,7 @@ Examples:
 			// Wire up the runner client for the destination when needed and not
 			// skipped.
 			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
-				dstRunnerClient, rerr := runner.NewClient(rootOptions, dstToken)
+				dstRunnerClient, rerr := runner.NewClient(cfg, dstToken)
 				if rerr != nil {
 					return fmt.Errorf("creating destination runner client: %w", rerr)
 				}
@@ -437,6 +439,7 @@ var migrateComponents = []string{
 // synthetic I/O via NewPrompter without spawning a real TTY.
 func runMigrateWalkthrough(
 	cmd *cobra.Command,
+	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
 ) (
@@ -447,16 +450,20 @@ func runMigrateWalkthrough(
 	return RunMigrateWalkthroughWith(
 		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
 		cmd,
+		cfg,
 		sourceOrg, destOrg, yes,
 	)
 }
 
 // RunMigrateWalkthroughWith is the injectable interactive walkthrough used by
 // both the command (via runMigrateWalkthrough) and external test files.
-// p supplies the I/O streams; cmd is used for printing the apply summary.
+// p supplies the I/O streams; cmd is used for printing the apply summary; cfg
+// is the per-invocation config the walkthrough fills in (e.g. tokens prompted
+// interactively) in place of the former package-level rootOptions global.
 func RunMigrateWalkthroughWith(
 	p *Prompter,
 	cmd *cobra.Command,
+	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
 ) (
@@ -507,24 +514,24 @@ func RunMigrateWalkthroughWith(
 	printStepHeader(out, 2, 4, "API tokens")
 	fmt.Fprintln(out, "  Token input is hidden when running on an interactive terminal.")
 
-	srcToken := rootOptions.SourceTokenOrDefault()
+	srcToken := cfg.SourceTokenOrDefault()
 	if srcToken == "" {
 		srcToken, err = p.askSecretRequired("Source API token (CIRCLECI_SOURCE_TOKEN)")
 		if err != nil {
 			return
 		}
-		rootOptions.SourceToken = srcToken
+		cfg.SourceToken = srcToken
 	} else {
 		fmt.Fprintln(out, "  Source token:      already set via flag or environment variable")
 	}
 
-	dstToken := rootOptions.DestTokenOrDefault()
+	dstToken := cfg.DestTokenOrDefault()
 	if dstToken == "" {
 		dstToken, err = p.askSecretRequired("Destination API token (CIRCLECI_DEST_TOKEN)")
 		if err != nil {
 			return
 		}
-		rootOptions.DestToken = dstToken
+		cfg.DestToken = dstToken
 	} else {
 		fmt.Fprintln(out, "  Destination token: already set via flag or environment variable")
 	}

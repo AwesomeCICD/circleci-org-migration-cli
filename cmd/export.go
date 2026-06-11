@@ -259,6 +259,7 @@ Examples:
   circleci-migrate export --source-org gh/acme --include-usage --usage-start 2026-01-01T00:00:00Z --usage-end 2026-01-31T23:59:59Z`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			cfg := configFromContext(ctx)
 			// Merge values from hidden alias --projects (StringSlice, comma-or-repeat)
 			// into the canonical --project list.
 			projectSlugs = append(projectSlugs, projectsAlias...)
@@ -266,20 +267,20 @@ Examples:
 			if orgSlug == "" {
 				return fmt.Errorf("--source-org is required (e.g. --source-org gh/acme)")
 			}
-			token := rootOptions.SourceTokenOrDefault()
+			token := cfg.SourceTokenOrDefault()
 			if token == "" {
 				return noSourceTokenError()
 			}
 
-			orgClient, err := org.NewClient(rootOptions, token)
+			orgClient, err := org.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating org client: %w", err)
 			}
-			ctxClient, err := cctx.NewClient(rootOptions, token)
+			ctxClient, err := cctx.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating context client: %w", err)
 			}
-			projClient, err := project.NewClient(rootOptions, token)
+			projClient, err := project.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating project client: %w", err)
 			}
@@ -292,7 +293,7 @@ Examples:
 			}
 
 			if runnerNamespace != "" {
-				runnerClient, rerr := runner.NewClient(rootOptions, token)
+				runnerClient, rerr := runner.NewClient(cfg, token)
 				if rerr != nil {
 					return fmt.Errorf("creating runner client: %w", rerr)
 				}
@@ -300,7 +301,7 @@ Examples:
 			}
 
 			m, err := ex.Export(ctx, exporter.Options{
-				Host:            rootOptions.Host,
+				Host:            cfg.Host,
 				OrgSlug:         orgSlug,
 				ProjectSlugs:    projectSlugs,
 				IncludeContexts: !skipContexts,

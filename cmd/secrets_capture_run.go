@@ -147,7 +147,8 @@ func (cf *captureFlags) run(cmd *cobra.Command) error {
 		clog.Infof("capture: no key supplied with --encrypt; auto-enabling --generate-key")
 	}
 
-	token := rootOptions.SourceTokenOrDefault()
+	cfg := configFromContext(cmd.Context())
+	token := cfg.SourceTokenOrDefault()
 	if token == "" {
 		return noSourceTokenError()
 	}
@@ -192,12 +193,12 @@ func (cf *captureFlags) run(cmd *cobra.Command) error {
 		return err
 	}
 
-	projClient, err := project.NewClient(rootOptions, token)
+	projClient, err := project.NewClient(cfg, token)
 	if err != nil {
 		return fmt.Errorf("creating project client: %w", err)
 	}
 
-	ctxClient, err := newContextClientForCapture(rootOptions, token)
+	ctxClient, err := newContextClientForCapture(cfg, token)
 	if err != nil {
 		return fmt.Errorf("creating context client: %w", err)
 	}
@@ -266,7 +267,7 @@ func (cf *captureFlags) run(cmd *cobra.Command) error {
 	// gate and callers can fix the org flag manually.
 	if cf.enableTrigger {
 		if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
-			orgClient, oerr := newOrgClientForCapture(rootOptions, token)
+			orgClient, oerr := newOrgClientForCapture(cfg, token)
 			if oerr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"WARNING: could not create org client to check org-level flag: %v\n", oerr)
@@ -284,7 +285,7 @@ func (cf *captureFlags) run(cmd *cobra.Command) error {
 	// auto-restore: keeping artifact retention low is the safe default
 	// when secrets may be present in artifacts.
 	if cf.artifactRetentionDays > 0 && m.Source.Org.ID != "" {
-		orgRetentionClient, oerr := newOrgClientForCapture(rootOptions, token)
+		orgRetentionClient, oerr := newOrgClientForCapture(cfg, token)
 		if oerr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"WARNING: could not create org client for artifact-retention control: %v\n", oerr)

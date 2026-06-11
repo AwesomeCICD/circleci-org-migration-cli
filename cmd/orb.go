@@ -97,7 +97,8 @@ Example:
 				return fmt.Errorf("--config is required")
 			}
 
-			token := rootOptions.SourceTokenOrDefault()
+			cfg := configFromContext(cmd.Context())
+			token := cfg.SourceTokenOrDefault()
 			if token == "" {
 				return noSourceTokenError()
 			}
@@ -107,7 +108,7 @@ Example:
 				return fmt.Errorf("reading config %s: %w", configPath, err)
 			}
 
-			result, inlined, err := inlineOrbs(rootOptions.Host, token, data, namespace)
+			result, inlined, err := inlineOrbs(cfg.Host, token, data, namespace)
 			if err != nil {
 				return err
 			}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
 
@@ -22,12 +23,13 @@ type skipResults struct {
 }
 
 // runWalkthrough drives the interactive guided walkthrough with scripted input
-// and returns the skip flags, apply flag, and any error.  rootOptions are
-// re-initialised via MakeCommands so that t.Setenv changes are picked up.
+// and returns the skip flags, apply flag, and any error.  A fresh per-invocation
+// settings.Config is passed in; token env vars are picked up by the config's
+// *TokenOrDefault accessors, so t.Setenv changes are honoured.
 func runWalkthrough(t *testing.T, input string) (skips skipResults, outApply bool, err error) {
 	t.Helper()
 
-	// Build a fresh command tree so rootOptions is re-seeded from env vars.
+	// Build a fresh command tree for an isolated invocation.
 	root := cmd.MakeCommands()
 	var migCmd *cobra.Command
 	for _, sub := range root.Commands() {
@@ -45,7 +47,7 @@ func runWalkthrough(t *testing.T, input string) (skips skipResults, outApply boo
 	p := cmd.NewPrompter(r, &promptBuf)
 
 	_, _, _, _, ap, _, skipCtx, skipProj, skipOrg, skipExt, walkErr :=
-		cmd.RunMigrateWalkthroughWith(p, migCmd, "", "", false)
+		cmd.RunMigrateWalkthroughWith(p, migCmd, &settings.Config{}, "", "", false)
 
 	return skipResults{
 		contexts:    skipCtx,

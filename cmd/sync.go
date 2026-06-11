@@ -212,6 +212,7 @@ Examples:
   circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			cfg := configFromContext(ctx)
 			// Resolve the GitHub token from the env after parsing so the flag
 			// default never leaks $GITHUB_TOKEN into --help output.
 			if githubToken == "" {
@@ -223,7 +224,7 @@ Examples:
 			if missing != syncer.MissingSkip && missing != syncer.MissingPlaceholder {
 				return fmt.Errorf("--missing-secrets must be %q or %q", syncer.MissingSkip, syncer.MissingPlaceholder)
 			}
-			token := rootOptions.DestTokenOrDefault()
+			token := cfg.DestTokenOrDefault()
 			if token == "" {
 				return fmt.Errorf("no destination API token: set --dest-token, --token, CIRCLECI_DEST_TOKEN, or CIRCLECI_CLI_TOKEN")
 			}
@@ -294,15 +295,15 @@ Examples:
 				}
 			}
 
-			orgClient, err := org.NewClient(rootOptions, token)
+			orgClient, err := org.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating org client: %w", err)
 			}
-			ctxClient, err := cctx.NewClient(rootOptions, token)
+			ctxClient, err := cctx.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating context client: %w", err)
 			}
-			projClient, err := project.NewClient(rootOptions, token)
+			projClient, err := project.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating project client: %w", err)
 			}
@@ -329,7 +330,7 @@ Examples:
 			// or the manifest has runner classes (so dry-run preview works).
 			// Skip when --skip-runner is set.
 			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
-				runnerClient, rerr := runner.NewClient(rootOptions, token)
+				runnerClient, rerr := runner.NewClient(cfg, token)
 				if rerr != nil {
 					return fmt.Errorf("creating runner client: %w", rerr)
 				}

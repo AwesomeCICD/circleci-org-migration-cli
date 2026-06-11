@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ func runWalkthroughWithInput(t *testing.T, inputLines []string) (
 
 	p := cmd.NewPrompter(r, &outBuf)
 
-	return cmd.RunMigrateWalkthroughWith(p, root, "", "", false)
+	return cmd.RunMigrateWalkthroughWith(p, root, &settings.Config{}, "", "", false)
 }
 
 // TestRunMigrateWalkthroughWith_DryRunAllComponents exercises the walkthrough
@@ -200,7 +201,7 @@ func TestRunMigrateWalkthroughWith_SourceOrgPreset(t *testing.T) {
 	p := cmd.NewPrompter(r, &outBuf)
 
 	srcOrg, dstOrg, _, _, _, _, _, _, _, _, err := cmd.RunMigrateWalkthroughWith(
-		p, root, "gh/preset-src", "", false,
+		p, root, &settings.Config{}, "gh/preset-src", "", false,
 	)
 	if err != nil {
 		t.Fatalf("walkthrough error: %v", err)
@@ -283,7 +284,7 @@ func runWalkthroughCaptureOutput(t *testing.T, inputLines []string) (string, err
 
 	p := cmd.NewPrompter(r, &outBuf)
 
-	_, _, _, _, _, _, _, _, _, _, err := cmd.RunMigrateWalkthroughWith(p, root, "", "", false)
+	_, _, _, _, _, _, _, _, _, _, err := cmd.RunMigrateWalkthroughWith(p, root, &settings.Config{}, "", "", false)
 	return outBuf.String(), err
 }
 
@@ -319,5 +320,66 @@ func TestMigrateWalkthrough_Step3SubStepLabels(t *testing.T) {
 	}
 	if !strings.Contains(output, "Missing secret values") {
 		t.Errorf("expected 'Missing secret values' label in Step 3b; got:\n%s", output)
+	}
+}
+
+// TestRunMigrateWalkthroughWith_ConfigIsolation is the regression test for the
+// rootOptions-global removal (#190). It drives the walkthrough twice in the SAME
+// process, each time with its OWN *settings.Config and a token entered at the
+// interactive prompt. With the former package-level global, the token captured
+// by the first run would leak into the second; with per-invocation config the
+// tokens land only in their own config and never cross-contaminate.
+func TestRunMigrateWalkthroughWith_ConfigIsolation(t *testing.T) {
+	// No token env vars set: the walkthrough must prompt for tokens, and those
+	// prompted values are written into the passed-in config.
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	drive := func(srcTok, dstTok string) *settings.Config {
+		t.Helper()
+		lines := []string{
+			"gh/src", // source org
+			"gh/dst", // dest org
+			srcTok,   // source token (prompted because env is empty)
+			dstTok,   // dest token (prompted because env is empty)
+			"",       // components: default (all)
+			"n",      // no secrets bundle
+			"1",      // missing-secrets: skip
+			"y",      // dry run
+		}
+		r := strings.NewReader(strings.Join(lines, "\n") + "\n")
+		var outBuf strings.Builder
+		root := cmd.MakeCommands()
+		root.SetOut(&outBuf)
+		root.SetErr(&outBuf)
+		p := cmd.NewPrompter(r, &outBuf)
+
+		cfg := &settings.Config{}
+		_, _, _, _, _, _, _, _, _, _, err := cmd.RunMigrateWalkthroughWith(p, root, cfg, "", "", false)
+		if err != nil {
+			t.Fatalf("walkthrough error: %v", err)
+		}
+		return cfg
+	}
+
+	first := drive("first-src-token", "first-dst-token")
+	second := drive("second-src-token", "second-dst-token")
+
+	// The first invocation's config must retain ONLY its own tokens.
+	if first.SourceToken != "first-src-token" || first.DestToken != "first-dst-token" {
+		t.Errorf("first config tokens = (%q, %q), want (first-src-token, first-dst-token)",
+			first.SourceToken, first.DestToken)
+	}
+	// The second invocation's config must retain ONLY its own tokens — proving
+	// the first run did not leak into a shared global.
+	if second.SourceToken != "second-src-token" || second.DestToken != "second-dst-token" {
+		t.Errorf("second config tokens = (%q, %q), want (second-src-token, second-dst-token)",
+			second.SourceToken, second.DestToken)
+	}
+	// And the two configs are distinct instances (no aliasing).
+	if first == second {
+		t.Error("expected two distinct *settings.Config instances across invocations")
 	}
 }
