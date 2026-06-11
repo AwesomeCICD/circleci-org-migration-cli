@@ -119,6 +119,7 @@ func newSyncCommand() *cobra.Command {
 		skipContexts        bool
 		skipProjects        bool
 		skipOrgSettings     bool
+		skipRunner          bool
 		githubToken         string
 		destGitHubOrg       string
 		destRunnerNamespace string
@@ -192,7 +193,8 @@ Examples:
 			if err != nil {
 				return err
 			}
-			bundle, err := loadBundleWithFeedback(secretsPath, !cmd.Flags().Changed("secrets"), cmd.ErrOrStderr())
+			secretsExplicit := cmd.Flags().Changed("secrets")
+			bundle, err := loadBundleWithFeedback(secretsPath, !secretsExplicit, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -234,7 +236,8 @@ Examples:
 
 			// Wire up the runner client when a destination namespace was provided
 			// or the manifest has runner classes (so dry-run preview works).
-			if destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0 {
+			// Skip when --skip-runner is set.
+			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
 				runnerClient, rerr := runner.NewClient(rootOptions, token)
 				if rerr != nil {
 					return fmt.Errorf("creating runner client: %w", rerr)
@@ -276,13 +279,13 @@ Examples:
 				}
 
 				// Handle the enable-builds (follow) step for paused projects.
-				if err := handleEnableBuilds(cmd, sy, rep, apply, yes); err != nil {
+				if err := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); err != nil {
 					return err
 				}
 			}
 
-			// Runner resource classes (always attempted when present in manifest).
-			if len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "" {
+			// Runner resource classes (attempted when present in manifest, unless skipped).
+			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
 				rep, err := sy.SyncRunnerResourceClasses(m, opts)
 				if err != nil {
 					return err
@@ -290,6 +293,23 @@ Examples:
 				repsBySection["Runner Resource Classes"] = rep
 				if !jsonOutput {
 					printSyncReport(cmd, "Runner Resource Classes", rep)
+				}
+			}
+
+			// Emit a warning when no bundle was loaded but the manifest contains
+			// context or project env vars that needed values.
+			if bundle == nil {
+				totalEnvVars := 0
+				for _, ctx := range m.Contexts {
+					totalEnvVars += len(ctx.EnvVars)
+				}
+				for _, proj := range m.Projects {
+					totalEnvVars += len(proj.EnvVars)
+				}
+				if totalEnvVars > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"WARNING: no secrets bundle loaded; %d env var value(s) were not synced and require manual entry\n",
+						totalEnvVars)
 				}
 			}
 
@@ -312,6 +332,7 @@ Examples:
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
+	f.BoolVar(&skipRunner, "skip-runner", false, "Skip syncing self-hosted runner resource classes")
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",
@@ -328,8 +349,10 @@ Examples:
 
 // handleEnableBuilds decides whether to follow (enable builds for) the
 // paused projects collected in rep.PendingEnable, then executes that decision.
-// It prints results to cmd's output/error streams.
-func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Report, apply, yes bool) error {
+// Progress and result lines go to stderr so they never pollute the JSON stream.
+// When jsonOutput is true all writes to stdout are suppressed; progress lines
+// are also suppressed (the caller folds results into the JSON summary).
+func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Report, apply, yes, jsonOutput bool) error {
 	pending := rep.PendingEnable
 	if len(pending) == 0 {
 		return nil
@@ -337,8 +360,11 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 	n := len(pending)
 
 	if !apply {
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+		// Dry-run plan message goes to stderr (not data, not JSON).
+		if !jsonOutput {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+		}
 		return nil
 	}
 
@@ -358,19 +384,25 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 	}
 
 	if !decideEnable(apply, yes, isTTY, confirm) {
-		if !isTTY && !yes {
-			fmt.Fprintf(cmd.OutOrStdout(),
-				"\nSkipped enabling builds (no TTY). Re-run with --yes to follow the %d created project(s).\n", n)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "\nSkipped enabling builds.\n")
+		if !jsonOutput {
+			if !isTTY && !yes {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"\nSkipped enabling builds (no TTY). Re-run with --yes to follow the %d created project(s).\n", n)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped enabling builds.\n")
+			}
 		}
 		return nil
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "\nEnabling builds for %d project(s)...\n", n)
+	if !jsonOutput {
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nEnabling builds for %d project(s)...\n", n)
+	}
 	for _, t := range pending {
 		action, _ := sy.EnableBuilds(t, true)
-		fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
+		if !jsonOutput {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
+		}
 	}
 	return nil
 }
@@ -481,8 +513,7 @@ func loadBundleIfPresent(path string) (*manifest.SecretBundle, error) {
 //   - Present:  "Loaded secrets bundle from <path> (N values)."
 //   - Absent (default path "secrets.json"):
 //     "Note: secrets.json not found — env-var values will be missing unless captured."
-//   - Absent (explicit non-default path): no note (user supplied the path explicitly;
-//     a missing explicit bundle is a configuration error the caller handles).
+//   - Absent (explicit non-default path): FATAL error "secrets bundle not found: <path>".
 //
 // isDefault should be true when path came from the flag default (i.e. the user
 // did not explicitly supply --secrets).
@@ -493,10 +524,16 @@ func loadBundleWithFeedback(path string, isDefault bool, errW io.Writer) (*manif
 	}
 	if bndl == nil {
 		// Bundle absent.
-		if isDefault && path != "" {
-			fmt.Fprintf(errW, "Note: %s not found — env-var values will be missing unless captured.\n", path)
+		if isDefault || path == "" {
+			// Default path missing (or user explicitly opted out with "")
+			// — informational note only.
+			if isDefault && path != "" {
+				fmt.Fprintf(errW, "Note: %s not found — env-var values will be missing unless captured.\n", path)
+			}
+			return nil, nil
 		}
-		return nil, nil
+		// Explicit --secrets <path> that does not exist is a fatal configuration error.
+		return nil, fmt.Errorf("secrets bundle not found: %s", path)
 	}
 	// Bundle loaded — count total secret values.
 	n := 0
