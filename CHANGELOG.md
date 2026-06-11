@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.5.0...v0.6.0) (2026-06-11)
+
+
+### Features
+
+* **cli:** add --json output to export and sync ([#110](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/110)) ([0277c23](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/0277c23016bac9c45dee7a6568b86ba68ac70eb9)), closes [#107](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/107)
+* **cli:** support circleci run migrate via CIRCLE_* env fallbacks ([#118](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/118)) ([eb96f4d](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/eb96f4db228606c109b490e0b9ebff900e43d826)), closes [#111](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/111)
+* **export:** capture additional project SSH-key metadata ([#116](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/116)) ([6ec5626](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/6ec56266f1c349f2ed3367693dfbf5b64e8ae695))
+* **export:** warn on non-migratable items; capture retention limits, full v1.1 flags, schedule actor, namespace ([#135](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/135)) ([ad858f3](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/ad858f32d1681f7d57964e675e810d308359181b)), closes [#130](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/130) [#131](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/131)
+* **migrate:** add --json and --skip-runner for export/sync consistency ([#147](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/147)) ([e988df6](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/e988df6af9ca961ce1f86237fb1aabe02bea531f)), closes [#146](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/146)
+* **report:** actionable manual items — friendly names, details, settings URLs ([#143](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/143)) ([d15f940](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d15f940707bc5dc9d6c7730e81f253d477735d90)), closes [#142](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/142)
+* **secrets:** extract additional project SSH private keys, fingerprint-matched ([#124](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/124)) ([bd0563e](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/bd0563eb5c00408c75e984d193430b59c2eecae0)), closes [#115](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/115)
+* **sync:** actionable plan output (names + dest URLs); only warn drop_all_build_requests when set ([#145](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/145)) ([2ab00c0](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2ab00c0b3af2b55b65fd9971a52fe0d293185e85)), closes [#144](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/144)
+* **sync:** re-add additional project SSH keys from the secret bundle ([#120](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/120)) ([bcb85a6](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/bcb85a69be0aeed39eabeb918f008a1f4d6b89e3))
+
+
+### Bug Fixes
+
+* **ci:** bound gosec download with curl timeouts to stop sast hangs ([#119](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/119)) ([11f80f8](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/11f80f81596f32e1b3af22920207d66def4e135b))
+* **ci:** gosec SAST on 8GB executor + gitleaks allowlist for ssh-key fixtures ([#121](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/121)) ([29c9c87](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/29c9c87bd8098679a8d11bf07fb28da23156316a))
+* **ci:** install gosec from pinned prebuilt binary with retry ([#114](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/114)) ([5f6ba42](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/5f6ba42b99b59dddaf9f352269630e14b1e57dd0)), closes [#113](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/113)
+* **secrets:** emit extract job as a string when there are no contexts ([#126](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/126)) ([9d659a7](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/9d659a79ced5dc31ed037d00ae848c0b1471273b)), closes [#125](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/125)
+* **secrets:** preserve trailing newline when extracting SSH private keys ([#128](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/128)) ([28b0e01](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/28b0e01e9f4eebe2b4e8686897dca08215507dae))
+* **secrets:** skip env-var extraction when a project has no variables ([#127](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/127)) ([b1dd222](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/b1dd222e69906fa881ccb646b2109f98e6359d99))
+* **sync:** activate OTel/URL-orb idempotency by exposing adapter getters ([#141](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/141)) ([d37fc31](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d37fc31e67ed3961b69bd99a4e95e1a55504588b))
+* **sync:** idempotent re-runs, dry-run guard, report actions, budget UUID mapping ([#140](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/140)) ([5c14509](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/5c145097a4c58c9d0e7ef78959bec6bc0cb4a014)), closes [#138](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/138)
+* **sync:** JSON/stderr hygiene, fatal on missing --secrets, --skip-runner ([#139](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/139)) ([2b31aa6](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2b31aa64901d315899423fa7131d093cfce3b32a)), closes [#137](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/137)
+
 ## [0.5.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.4.1...v0.5.0) (2026-06-11)
 
 
