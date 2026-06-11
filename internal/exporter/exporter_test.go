@@ -3098,3 +3098,112 @@ func TestExport_Projects_PipelineDefinitions_SortStable(t *testing.T) {
 		t.Errorf("triggers not sorted: %v %v", trigs[0].Name, trigs[1].Name)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Progress log friendly names (Bug #95)
+// ---------------------------------------------------------------------------
+
+// TestExport_Projects_ProgressLog_FriendlyName verifies that when the project
+// API returns a human-readable Name, the progress log line contains that name
+// alongside the slug, not just the opaque slug.
+func TestExport_Projects_ProgressLog_FriendlyName(t *testing.T) {
+	var logOutput strings.Builder
+
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) {
+				return &org.Organization{
+					ID:      "org-uuid",
+					Name:    "myorg",
+					Slug:    "circleci/org-uuid",
+					VCSType: "circleci",
+				}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{Slug: "circleci/org-uuid/26zLc3k7", Name: "Jam-Test"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{
+					ID:   "proj-uuid",
+					Name: "Jam-Test",
+					Slug: slug,
+					VCS: project.ProjectVCS{
+						Provider: "circleci",
+						URL:      "//circleci.com/org-uuid/proj-uuid",
+					},
+				}, nil
+			},
+		},
+		Out: &logOutput,
+	}
+
+	_, err := ex.Export(exporter.Options{
+		OrgSlug:         "circleci/org-uuid",
+		IncludeProjects: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logged := logOutput.String()
+	// The friendly name must appear in the progress output.
+	if !strings.Contains(logged, "Jam-Test") {
+		t.Errorf("progress log should contain friendly name 'Jam-Test'; got:\n%s", logged)
+	}
+	// The slug must still appear (as the disambiguating identifier).
+	if !strings.Contains(logged, "26zLc3k7") {
+		t.Errorf("progress log should contain slug fragment '26zLc3k7'; got:\n%s", logged)
+	}
+}
+
+// TestExport_Projects_ProgressLog_NoName_FallsBackToSlug verifies that when
+// the project name is empty the progress line falls back to the slug (no panic,
+// no regression from the original behaviour).
+func TestExport_Projects_ProgressLog_NoName_FallsBackToSlug(t *testing.T) {
+	var logOutput strings.Builder
+
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) {
+				return &org.Organization{
+					ID:      "org-uuid-123",
+					Name:    "myorg",
+					Slug:    "gh/myorg",
+					VCSType: "github",
+				}, nil
+			},
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{
+					{Slug: "gh/myorg/nameless"},
+				}, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				// Name intentionally blank to simulate a project with no name.
+				return &project.Project{ID: "p1", Name: "", Slug: slug}, nil
+			},
+		},
+		Out: &logOutput,
+	}
+
+	_, err := ex.Export(exporter.Options{
+		OrgSlug:         "gh/myorg",
+		IncludeProjects: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logged := logOutput.String()
+	// The slug must appear when no name is set.
+	if !strings.Contains(logged, "gh/myorg/nameless") {
+		t.Errorf("progress log should contain slug 'gh/myorg/nameless' when name is empty; got:\n%s", logged)
+	}
+}

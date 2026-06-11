@@ -317,8 +317,10 @@ func buildExtractConfigWithVersion(envNames []string, contextNames []string, opt
 		// FINAL decision: emit a step calling `circleci-migrate bundle-encrypt`
 		// (hidden internal command we add). The binary is already in PATH because
 		// the prior orb install step put it there.
+		// Remove plaintext on EXIT (covers both success and any non-zero exit,
+		// including when bundle-encrypt fails under set -euo pipefail).
+		sb.WriteString(fmt.Sprintf("            trap 'rm -f %s' EXIT\n", artifactPath))
 		sb.WriteString(fmt.Sprintf("            circleci-migrate bundle-encrypt --recipient \"$MIGRATE_ENCRYPT_RECIPIENT\" --input %s --output %s\n", artifactPath, artifactPathAge))
-		sb.WriteString(fmt.Sprintf("            rm -f %s\n", artifactPath)) // remove plaintext
 	}
 
 	// S3 upload step.

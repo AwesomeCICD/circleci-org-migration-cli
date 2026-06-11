@@ -343,7 +343,11 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 		}
 
 		m.Projects = append(m.Projects, mp)
-		e.logf("  • project %q: %d var(s)", slug, len(mp.EnvVars))
+		if mp.Name != "" {
+			e.logf("  • project %q (%s): %d var(s)", mp.Name, slug, len(mp.EnvVars))
+		} else {
+			e.logf("  • project %q: %d var(s)", slug, len(mp.EnvVars))
+		}
 	}
 }
 
