@@ -28,9 +28,21 @@
 
 ## What it does
 
-`circleci-migrate` exports everything it can read from your source org into a local `manifest.json`, then replays it into the destination. Because the CircleCI API never returns secret values, a separate **secrets capture** step runs a short-lived pipeline inside your source org to collect them — encrypted by default, never stored in plain text.
+`circleci-migrate` exports everything it can read from your source org into a local `manifest.json`, then replays it into the destination. **The manifest _is_ the exported source data** — `export` writes it, and `sync` recreates everything it describes in the destination org. It contains structure and names only (no secret values); it is safe to review, diff, and store.
 
-Items that cannot be migrated automatically (SSO/SAML, audit-log streaming, webhook HMAC secrets) are listed in a `migration-report.md` for manual follow-up.
+Because the CircleCI API never returns secret values, a separate **secrets capture** step runs a short-lived pipeline inside your source org to collect them — encrypted by default, never stored in plain text.
+
+### What does NOT transfer (manual follow-up)
+
+A few things cannot be migrated automatically by any API and require manual setup in the destination. They are listed in each export's `migration-report.md`:
+
+- **Secret values** — env-var and context values are masked by the API. Capture them with `secrets capture`, supply the bundle to `sync`, then rotate after cutover.
+- **SSH / checkout keys** — private key material is never exported. Regenerate deploy/checkout keys on the destination.
+- **Webhook HMAC signing secrets** — not exported; regenerate and update receivers.
+- **OIDC trust relationships** — re-establish any cloud-provider trust against the destination org's issuer/identifiers.
+- **SSO / SAML** — recreate the IdP integration and domain verification manually.
+
+See the [cutover runbook](docs/cutover-runbook.md#3-manual-steps-required) for the full manual checklist.
 
 | Category | What transfers |
 |---|---|

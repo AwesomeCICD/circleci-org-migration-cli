@@ -22,7 +22,7 @@ the manual steps and data-loss notes that apply to your org.
 
 ```bash
 circleci-migrate export \
-  --org gh/acme \
+  --source-org gh/acme \
   --source-token "$SRC_TOKEN" \
   --output manifest.json \
   --report migration-report.md
@@ -66,8 +66,8 @@ circleci-migrate secrets capture \
 The result is a plaintext `secrets.json` on your local machine — treat it as
 sensitive. Delete it after the sync is confirmed successful.
 
-See [README — Phase 2](../README.md#phase-2--capture-secrets) for the full
-orb-based alternative (committed config, matrix capture).
+See [Example 5 in docs/examples.md](examples.md#example-5--secrets-capture-in-detail)
+for the full orb-based alternative (committed config, matrix capture).
 
 ### Step 3 — Dry run (review the plan)
 

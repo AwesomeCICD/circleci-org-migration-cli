@@ -65,7 +65,7 @@ export CIRCLECI_SOURCE_TOKEN=your-source-token
 export CIRCLECI_DEST_TOKEN=your-dest-token
 
 # Using separate export + sync steps
-circleci-migrate export --org gh/james-crowley
+circleci-migrate export --source-org gh/james-crowley
 circleci-migrate sync --manifest manifest.json --dest-token "$CIRCLECI_DEST_TOKEN"
 
 # Or using the all-in-one migrate command
@@ -91,7 +91,7 @@ export CIRCLECI_DEST_TOKEN=your-dest-token
 
 # Export from source
 circleci-migrate export \
-  --org gh/james-crowley \
+  --source-org gh/james-crowley \
   -o manifest.json \
   --report migration-report.md
 

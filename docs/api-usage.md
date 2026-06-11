@@ -16,7 +16,7 @@ use the same token.
 Secret values are **never returned by any API version**. The CircleCI API
 masks every environment-variable value everywhere it appears. Capturing real
 values requires running inside a CircleCI job (see
-[Phase 2 in the README](../README.md#phase-2-capture-secrets-inside-a-pipeline)).
+[Secrets in the README](../README.md#secrets)).
 
 ---
 
