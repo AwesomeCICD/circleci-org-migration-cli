@@ -67,6 +67,10 @@ Examples:
 	Write changes to the destination (default: dry run)
 
 .PP
+\fB--create-project-tokens\fP[=false]
+	When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
+
+.PP
 \fB--dest-github-org\fP=""
 	Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
 

@@ -56,6 +56,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
 
 ```
       --apply                          Write changes to the destination (default: dry run)
+      --create-project-tokens          When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
       --dest-github-org string         Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
       --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
       --github-token string            GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
