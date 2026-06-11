@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -30,7 +31,7 @@ type listCheckoutKeysResponse struct {
 // fetching all pages automatically.
 //
 // Endpoint: GET /api/v2/project/{project-slug}/checkout-key
-func (c *Client) ListCheckoutKeys(slug string) ([]CheckoutKey, error) {
+func (c *Client) ListCheckoutKeys(ctx context.Context, slug string) ([]CheckoutKey, error) {
 	var all []CheckoutKey
 	pageToken := ""
 
@@ -45,7 +46,7 @@ func (c *Client) ListCheckoutKeys(slug string) ([]CheckoutKey, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListCheckoutKeys: build request: %w", err)
 		}

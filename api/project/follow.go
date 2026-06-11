@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -34,10 +35,10 @@ type FollowResult struct {
 //
 // The response is a flat JSON array and is not paginated; all results are
 // returned in a single request.
-func (c *Client) ListFollowedProjects() ([]FollowedProject, error) {
+func (c *Client) ListFollowedProjects(ctx context.Context) ([]FollowedProject, error) {
 	u := &url.URL{Path: "projects"}
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListFollowedProjects: build request: %w", err)
 	}
@@ -51,8 +52,8 @@ func (c *Client) ListFollowedProjects() ([]FollowedProject, error) {
 
 // FollowedProjectsForOrg filters the results of ListFollowedProjects to those
 // whose Username (org name) matches orgName.
-func (c *Client) FollowedProjectsForOrg(orgName string) ([]FollowedProject, error) {
-	all, err := c.ListFollowedProjects()
+func (c *Client) FollowedProjectsForOrg(ctx context.Context, orgName string) ([]FollowedProject, error) {
+	all, err := c.ListFollowedProjects(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,7 @@ func (c *Client) FollowedProjectsForOrg(orgName string) ([]FollowedProject, erro
 // key and webhook on the VCS repository, and may trigger an initial build.
 // The command layer MUST gate this behind an explicit user opt-in (e.g. a
 // --follow flag or confirmation prompt) before calling this method.
-func (c *Client) FollowProject(vcsType, org, repo string) (*FollowResult, error) {
+func (c *Client) FollowProject(ctx context.Context, vcsType, org, repo string) (*FollowResult, error) {
 	path := "project/" +
 		url.PathEscape(vcsType) + "/" +
 		url.PathEscape(org) + "/" +
@@ -85,7 +86,7 @@ func (c *Client) FollowProject(vcsType, org, repo string) (*FollowResult, error)
 		return nil, fmt.Errorf("FollowProject: build URL: %w", err)
 	}
 
-	req, err := c.v11.NewRequest("POST", u, nil)
+	req, err := c.v11.NewRequest(ctx, "POST", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("FollowProject: build request: %w", err)
 	}

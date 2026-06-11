@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,7 +38,7 @@ func TestListOrgRoleGrants_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	grants, err := c.ListOrgRoleGrants(testOrgID)
+	grants, err := c.ListOrgRoleGrants(context.Background(), testOrgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestListOrgRoleGrants_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	grants, err := c.ListOrgRoleGrants(testOrgID)
+	grants, err := c.ListOrgRoleGrants(context.Background(), testOrgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestListOrgRoleGrants_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.ListOrgRoleGrants(testOrgID)
+	_, err := c.ListOrgRoleGrants(context.Background(), testOrgID)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -99,7 +100,7 @@ func TestSetOrgUserRole_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetOrgUserRole(testOrgID, testUserID, "org-admin")
+	err := c.SetOrgUserRole(context.Background(), testOrgID, testUserID, "org-admin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestSetOrgUserRole_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetOrgUserRole(testOrgID, testUserID, "bad-role")
+	err := c.SetOrgUserRole(context.Background(), testOrgID, testUserID, "bad-role")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -146,7 +147,7 @@ func TestCreateGroup_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	g, err := c.CreateGroup(testOrgID, "security-team", "Security team group")
+	g, err := c.CreateGroup(context.Background(), testOrgID, "security-team", "Security team group")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestCreateGroup_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.CreateGroup(testOrgID, "existing", "")
+	_, err := c.CreateGroup(context.Background(), testOrgID, "existing", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -190,7 +191,7 @@ func TestAddUsersToGroup_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.AddUsersToGroup(testOrgID, testGroupID, []string{"uid-1", "uid-2"})
+	err := c.AddUsersToGroup(context.Background(), testOrgID, testGroupID, []string{"uid-1", "uid-2"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestListProjectUserRoleGrants_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	grants, err := c.ListProjectUserRoleGrants(testOrgID, testProjectID)
+	grants, err := c.ListProjectUserRoleGrants(context.Background(), testOrgID, testProjectID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestListProjectUserRoleGrants_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	grants, err := c.ListProjectUserRoleGrants(testOrgID, testProjectID)
+	grants, err := c.ListProjectUserRoleGrants(context.Background(), testOrgID, testProjectID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestListProjectUserRoleGrants_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.ListProjectUserRoleGrants(testOrgID, testProjectID)
+	_, err := c.ListProjectUserRoleGrants(context.Background(), testOrgID, testProjectID)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -281,7 +282,7 @@ func TestSetProjectUserRole_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetProjectUserRole(testOrgID, testProjectID, testUserID, "project-contributor")
+	err := c.SetProjectUserRole(context.Background(), testOrgID, testProjectID, testUserID, "project-contributor")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +314,7 @@ func TestListProjectGroupRoleGrants_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	grants, err := c.ListProjectGroupRoleGrants(testOrgID, testProjectID)
+	grants, err := c.ListProjectGroupRoleGrants(context.Background(), testOrgID, testProjectID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestAddProjectGroupRole_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.AddProjectGroupRole(testOrgID, testProjectID, []string{testGroupID}, "project-admin")
+	err := c.AddProjectGroupRole(context.Background(), testOrgID, testProjectID, []string{testGroupID}, "project-admin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestAddProjectGroupRole_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.AddProjectGroupRole(testOrgID, testProjectID, []string{testGroupID}, "project-admin")
+	err := c.AddProjectGroupRole(context.Background(), testOrgID, testProjectID, []string{testGroupID}, "project-admin")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -373,7 +374,7 @@ func TestAddUsersToGroup_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.AddUsersToGroup(testOrgID, testGroupID, []string{"uid-1"})
+	err := c.AddUsersToGroup(context.Background(), testOrgID, testGroupID, []string{"uid-1"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -386,7 +387,7 @@ func TestSetProjectUserRole_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	err := c.SetProjectUserRole(testOrgID, testProjectID, testUserID, "bad-role")
+	err := c.SetProjectUserRole(context.Background(), testOrgID, testProjectID, testUserID, "bad-role")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -399,7 +400,7 @@ func TestListProjectGroupRoleGrants_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.ListProjectGroupRoleGrants(testOrgID, testProjectID)
+	_, err := c.ListProjectGroupRoleGrants(context.Background(), testOrgID, testProjectID)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

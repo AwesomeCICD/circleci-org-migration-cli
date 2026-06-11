@@ -4,6 +4,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,7 @@ const DefaultBaseURL = "https://api.github.com"
 // are also returned as errors.
 //
 // JSON field used: id (a JSON number, returned as a string).
-func ResolveRepoID(fullName, token, baseURL string) (string, error) {
+func ResolveRepoID(ctx context.Context, fullName, token, baseURL string) (string, error) {
 	if fullName == "" {
 		return "", fmt.Errorf("github: ResolveRepoID: fullName must not be empty")
 	}
@@ -49,7 +50,7 @@ func ResolveRepoID(fullName, token, baseURL string) (string, error) {
 
 	apiURL := base + "/repos/" + parts[0] + "/" + parts[1]
 
-	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("github: ResolveRepoID: build request: %w", err)
 	}

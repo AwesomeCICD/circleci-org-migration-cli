@@ -11,6 +11,7 @@ package exporter_test
 // values are never used; all "secrets" are obvious fakes.
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestOTelHeaderValues_AreRedacted(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestOTelHeaders_EmptyHeadersNoWarning(t *testing.T) {
 		Projects: &fakeProjectAPI{},
 	}
 
-	m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestURLOrbAuth_KnownSafeValues_PassedThrough(t *testing.T) {
 				Projects: &fakeProjectAPI{},
 			}
 
-			m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+			m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -207,7 +208,7 @@ func TestURLOrbAuth_UnknownValue_IsRedacted(t *testing.T) {
 				Projects: &fakeProjectAPI{},
 			}
 
-			m, err := ex.Export(exporter.Options{OrgSlug: "gh/myorg"})
+			m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg"})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -260,7 +261,7 @@ func TestSSO_NestedSecretFields_AreRedacted(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestSSO_NonNestedFields_StillRedacted(t *testing.T) {
 		func(string) (map[string]any, bool, error) { return conn, true, nil },
 	)
 
-	m, err := ex.Export(ssoOpts)
+	m, err := ex.Export(context.Background(), ssoOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

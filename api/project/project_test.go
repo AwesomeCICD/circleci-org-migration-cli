@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -184,7 +185,7 @@ func TestGetProject_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetProject(slug)
+	got, err := c.GetProject(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestGetProject_EscapedPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.GetProject("gh/acme/web"); err != nil {
+	if _, err := c.GetProject(context.Background(), "gh/acme/web"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -220,7 +221,7 @@ func TestGetProject_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetProject("gh/acme/missing")
+	_, err := c.GetProject(context.Background(), "gh/acme/missing")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -251,7 +252,7 @@ func TestGetSettings_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetSettings("gh", "acme", "web")
+	got, err := c.GetSettings(context.Background(), "gh", "acme", "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -288,7 +289,7 @@ func TestGetSettings_AdvancedUnwrap(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetSettings("github", "myorg", "myrepo")
+	got, err := c.GetSettings(context.Background(), "github", "myorg", "myrepo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +313,7 @@ func TestGetSettings_DecomposedPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.GetSettings("bitbucket", "my-org", "my-repo"); err != nil {
+	if _, err := c.GetSettings(context.Background(), "bitbucket", "my-org", "my-repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -338,7 +339,7 @@ func TestListEnvVars_MaskedValue(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListEnvVars("gh/acme/web")
+	got, err := c.ListEnvVars(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestListEnvVars_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListEnvVars("gh/acme/web")
+	got, err := c.ListEnvVars(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestListCheckoutKeys_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListCheckoutKeys("gh/acme/web")
+	got, err := c.ListCheckoutKeys(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -484,7 +485,7 @@ func TestListCheckoutKeys_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListCheckoutKeys("gh/acme/web")
+	got, err := c.ListCheckoutKeys(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestListWebhooks_QueryParams(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListWebhooks(projectID)
+	got, err := c.ListWebhooks(context.Background(), projectID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -588,7 +589,7 @@ func TestListWebhooks_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListWebhooks("proj-uuid")
+	got, err := c.ListWebhooks(context.Background(), "proj-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -632,7 +633,7 @@ func TestListSchedules_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListSchedules("gh/acme/web")
+	got, err := c.ListSchedules(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -688,7 +689,7 @@ func TestListSchedules_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListSchedules("gh/acme/web")
+	got, err := c.ListSchedules(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -718,7 +719,7 @@ func TestListFollowedProjects_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListFollowedProjects()
+	got, err := c.ListFollowedProjects(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -744,7 +745,7 @@ func TestFollowedProjectsForOrg_Filter(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.FollowedProjectsForOrg("acme")
+	got, err := c.FollowedProjectsForOrg(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -767,7 +768,7 @@ func TestFollowedProjectsForOrg_NoMatch(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.FollowedProjectsForOrg("acme")
+	got, err := c.FollowedProjectsForOrg(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -795,7 +796,7 @@ func TestFollowProject_PostAndPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	result, err := c.FollowProject("github", "acme", "web")
+	result, err := c.FollowProject(context.Background(), "github", "acme", "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -814,7 +815,7 @@ func TestFollowProject_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.FollowProject("github", "acme", "web")
+	_, err := c.FollowProject(context.Background(), "github", "acme", "web")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

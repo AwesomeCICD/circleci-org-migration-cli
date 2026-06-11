@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -43,14 +44,14 @@ func usageExportJobStatusPath(orgID, jobID string) (*url.URL, error) {
 // exceed 31 days (enforced by the API).
 //
 // Endpoint: POST https://circleci.com/api/v2/organizations/{orgID}/usage_export_job
-func (c *Client) CreateUsageExportJob(orgID, start, end string) (jobID string, err error) {
+func (c *Client) CreateUsageExportJob(ctx context.Context, orgID, start, end string) (jobID string, err error) {
 	u, err := usageExportJobPath(orgID)
 	if err != nil {
 		return "", fmt.Errorf("CreateUsageExportJob: build URL: %w", err)
 	}
 
 	body := usageExportJobCreateRequest{Start: start, End: end}
-	req, err := c.v2.NewRequest("POST", u, body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return "", fmt.Errorf("CreateUsageExportJob: build request: %w", err)
 	}
@@ -66,13 +67,13 @@ func (c *Client) CreateUsageExportJob(orgID, start, end string) (jobID string, e
 // pre-signed download URLs for the given export job.
 //
 // Endpoint: GET https://circleci.com/api/v2/organizations/{orgID}/usage_export_job/{jobID}
-func (c *Client) GetUsageExportJob(orgID, jobID string) (state string, downloadURLs []string, err error) {
+func (c *Client) GetUsageExportJob(ctx context.Context, orgID, jobID string) (state string, downloadURLs []string, err error) {
 	u, err := usageExportJobStatusPath(orgID, jobID)
 	if err != nil {
 		return "", nil, fmt.Errorf("GetUsageExportJob: build URL: %w", err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("GetUsageExportJob: build request: %w", err)
 	}

@@ -102,6 +102,7 @@ Examples:
     --source-org gh/acme --dest-org gh/acme-new \
     --apply -o manifest.json --report migration-report.md`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			// Resolve the GitHub token from the env after parsing so the flag
 			// default never leaks $GITHUB_TOKEN into --help output.
 			if githubToken == "" {
@@ -196,7 +197,7 @@ Examples:
 				ex.Runner = srcRunnerClient
 			}
 
-			m, err := ex.Export(exporter.Options{
+			m, err := ex.Export(ctx, exporter.Options{
 				Host:            rootOptions.Host,
 				OrgSlug:         sourceOrg,
 				IncludeContexts: !skipContexts,
@@ -290,7 +291,7 @@ Examples:
 			repsBySection := make(map[string]*syncer.Report)
 
 			if !skipOrgSettings {
-				rep, syncErr := sy.SyncOrgSettings(m, mapping, opts)
+				rep, syncErr := sy.SyncOrgSettings(ctx, m, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
@@ -300,7 +301,7 @@ Examples:
 				}
 			}
 			if !skipContexts {
-				rep, syncErr := sy.SyncContexts(m, bundle, mapping, opts)
+				rep, syncErr := sy.SyncContexts(ctx, m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
@@ -310,7 +311,7 @@ Examples:
 				}
 			}
 			if !skipProjects {
-				rep, syncErr := sy.SyncProjects(m, bundle, mapping, opts)
+				rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
@@ -325,7 +326,7 @@ Examples:
 
 			// Runner resource classes (skipped when --skip-runner is set).
 			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
-				rep, syncErr := sy.SyncRunnerResourceClasses(m, opts)
+				rep, syncErr := sy.SyncRunnerResourceClasses(ctx, m, opts)
 				if syncErr != nil {
 					return syncErr
 				}
@@ -337,7 +338,7 @@ Examples:
 
 			// CIAM roles and groups (standalone circleci-type orgs only; self-gated).
 			if !skipCIAM && m.CIAM != nil {
-				rep, syncErr := sy.SyncCIAM(m, mapping, opts)
+				rep, syncErr := sy.SyncCIAM(ctx, m, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}

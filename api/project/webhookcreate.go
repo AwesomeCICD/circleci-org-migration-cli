@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -40,7 +41,7 @@ type webhookScopeObject struct {
 // signing-secret is REQUIRED by the API but is never readable from the source
 // project, so we always send an empty string.  The operator must set the real
 // HMAC secret on the destination webhook manually.
-func (c *Client) CreateWebhook(destProjectID string, w Webhook) error {
+func (c *Client) CreateWebhook(ctx context.Context, destProjectID string, w Webhook) error {
 	if destProjectID == "" {
 		return fmt.Errorf("project: CreateWebhook requires destProjectID")
 	}
@@ -63,7 +64,7 @@ func (c *Client) CreateWebhook(destProjectID string, w Webhook) error {
 	}
 
 	u := &url.URL{Path: "webhook"}
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return fmt.Errorf("project: CreateWebhook: build request: %w", err)
 	}

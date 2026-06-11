@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -30,13 +31,13 @@ type OTelExporter struct {
 // Response shape: a JSON array of {id, endpoint, protocol, insecure, headers}.
 // Header values are redacted ("xxxx") by the server.
 // Each org may have at most 5 exporters.
-func (c *Client) GetOTelExporters(orgID string) ([]OTelExporter, error) {
+func (c *Client) GetOTelExporters(ctx context.Context, orgID string) ([]OTelExporter, error) {
 	u := &url.URL{
 		Path:     "otel/exporters",
 		RawQuery: "org-id=" + url.QueryEscape(orgID),
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetOTelExporters: build request: %w", err)
 	}
@@ -65,7 +66,7 @@ type otelExporterCreateBody struct {
 //
 // Body: {"org_id":"<orgID>","endpoint":"...","protocol":"...","insecure":bool,
 // "headers":{...}}.  Each org may have at most 5 exporters.
-func (c *Client) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+func (c *Client) CreateOTelExporter(ctx context.Context, orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
 	u := &url.URL{Path: "otel/exporters"}
 
 	body := otelExporterCreateBody{
@@ -75,7 +76,7 @@ func (c *Client) CreateOTelExporter(orgID, endpoint, protocol string, insecure b
 		Insecure: insecure,
 		Headers:  headers,
 	}
-	req, err := c.v2.NewRequest("POST", u, body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return fmt.Errorf("CreateOTelExporter: build request: %w", err)
 	}

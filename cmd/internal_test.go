@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -539,7 +540,7 @@ func TestOrgGroupLister_ListGroups_HappyPath(t *testing.T) {
 
 	c := newOrgClientForTest(t, srv)
 	lister := orgGroupLister{c: c}
-	got, err := lister.ListGroups("org-uuid-test")
+	got, err := lister.ListGroups(context.Background(), "org-uuid-test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -562,7 +563,7 @@ func TestOrgGroupLister_ListGroups_ErrorPropagated(t *testing.T) {
 
 	c := newOrgClientForTest(t, srv)
 	lister := orgGroupLister{c: c}
-	_, err := lister.ListGroups("org-uuid-test")
+	_, err := lister.ListGroups(context.Background(), "org-uuid-test")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -938,7 +939,7 @@ func TestCIAMWriterAdapter_ListOrgRoleGrants_ConvertsAndMapsUserID(t *testing.T)
 	defer srv.Close()
 
 	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
-	got, err := a.ListOrgRoleGrants("org-uuid")
+	got, err := a.ListOrgRoleGrants(context.Background(), "org-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -969,7 +970,7 @@ func TestCIAMWriterAdapter_ListGroups_And_CreateGroup(t *testing.T) {
 
 	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
 
-	groups, err := a.ListGroups("org-uuid")
+	groups, err := a.ListGroups(context.Background(), "org-uuid")
 	if err != nil {
 		t.Fatalf("ListGroups error: %v", err)
 	}
@@ -977,7 +978,7 @@ func TestCIAMWriterAdapter_ListGroups_And_CreateGroup(t *testing.T) {
 		t.Errorf("ListGroups conversion wrong: %+v", groups)
 	}
 
-	id, err := a.CreateGroup("org-uuid", "platform", "desc")
+	id, err := a.CreateGroup(context.Background(), "org-uuid", "platform", "desc")
 	if err != nil {
 		t.Fatalf("CreateGroup error: %v", err)
 	}

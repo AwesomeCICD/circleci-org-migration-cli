@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -57,13 +58,13 @@ type v11CreateTokenResponse struct {
 //
 // On a non-2xx response an error is returned; callers should treat it as
 // non-fatal and record a manifest warning rather than aborting the export.
-func (c *Client) ListProjectTokens(slug string) ([]ProjectAPIToken, error) {
+func (c *Client) ListProjectTokens(ctx context.Context, slug string) ([]ProjectAPIToken, error) {
 	u, err := slugSubresource(slug, "token")
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectTokens: %w", err)
 	}
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectTokens: build request: %w", err)
 	}
@@ -92,7 +93,7 @@ func (c *Client) ListProjectTokens(slug string) ([]ProjectAPIToken, error) {
 // Request body: {"scope": "<scope>", "label": "<label>"}
 //
 // Scopes: "status" | "view-builds" | "all"
-func (c *Client) CreateProjectToken(slug, scope, label string) (string, error) {
+func (c *Client) CreateProjectToken(ctx context.Context, slug, scope, label string) (string, error) {
 	if slug == "" {
 		return "", fmt.Errorf("CreateProjectToken: slug is required")
 	}
@@ -109,7 +110,7 @@ func (c *Client) CreateProjectToken(slug, scope, label string) (string, error) {
 	}
 
 	body := createTokenRequest{Scope: scope, Label: label}
-	req, err := c.v11.NewRequest("POST", u, &body)
+	req, err := c.v11.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return "", fmt.Errorf("CreateProjectToken: build request: %w", err)
 	}

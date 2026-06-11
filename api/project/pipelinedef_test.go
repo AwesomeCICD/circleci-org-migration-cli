@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,7 +43,7 @@ func TestListPipelineDefinitions_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListPipelineDefinitions(projectID)
+	got, err := c.ListPipelineDefinitions(context.Background(), projectID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestListPipelineDefinitions_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListPipelineDefinitions("proj-id")
+	got, err := c.ListPipelineDefinitions(context.Background(), "proj-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestListPipelineDefinitions_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListPipelineDefinitions("proj-id")
+	_, err := c.ListPipelineDefinitions(context.Background(), "proj-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

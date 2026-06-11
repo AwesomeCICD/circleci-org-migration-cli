@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func TestCreateUsageExportJob_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	jobID, err := c.CreateUsageExportJob(usageOrgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
+	jobID, err := c.CreateUsageExportJob(context.Background(), usageOrgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestCreateUsageExportJob_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateUsageExportJob(usageOrgID, "bad", "bad")
+	_, err := c.CreateUsageExportJob(context.Background(), usageOrgID, "bad", "bad")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -92,7 +93,7 @@ func TestGetUsageExportJob_Pending(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	state, urls, err := c.GetUsageExportJob(usageOrgID, jobID)
+	state, urls, err := c.GetUsageExportJob(context.Background(), usageOrgID, jobID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestGetUsageExportJob_Completed(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	state, urls, err := c.GetUsageExportJob(usageOrgID, jobID)
+	state, urls, err := c.GetUsageExportJob(context.Background(), usageOrgID, jobID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestGetUsageExportJob_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, _, err := c.GetUsageExportJob(usageOrgID, "missing-job-id")
+	_, _, err := c.GetUsageExportJob(context.Background(), usageOrgID, "missing-job-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -192,7 +193,7 @@ func TestUsageExportJob_PollSequence(t *testing.T) {
 	c := newTestClient(t, srv)
 
 	// Create
-	createdJobID, err := c.CreateUsageExportJob(usageOrgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
+	createdJobID, err := c.CreateUsageExportJob(context.Background(), usageOrgID, "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
 	if err != nil {
 		t.Fatalf("CreateUsageExportJob: %v", err)
 	}
@@ -204,7 +205,7 @@ func TestUsageExportJob_PollSequence(t *testing.T) {
 	var finalState string
 	var downloadURLs []string
 	for i := 0; i < 5; i++ {
-		state, urls, err := c.GetUsageExportJob(usageOrgID, createdJobID)
+		state, urls, err := c.GetUsageExportJob(context.Background(), usageOrgID, createdJobID)
 		if err != nil {
 			t.Fatalf("GetUsageExportJob poll %d: %v", i, err)
 		}

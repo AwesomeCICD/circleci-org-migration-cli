@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
@@ -24,7 +25,7 @@ import (
 //
 //  4. In apply mode, call AddAdditionalSSHKey with the hostname and private
 //     key from the bundle.
-func (s *Syncer) syncProjectSSHKeys(report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
+func (s *Syncer) syncProjectSSHKeys(ctx context.Context, report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
 	if len(p.SSHKeys) == 0 {
 		return
 	}
@@ -41,7 +42,7 @@ func (s *Syncer) syncProjectSSHKeys(report *Report, p manifest.Project, bundle *
 	// Fetch existing keys on the DESTINATION so we can skip already-present ones.
 	existingFingerprints := map[string]bool{}
 	if opts.Apply {
-		if existing, err := s.Projects.ListAdditionalSSHKeys(dst); err == nil {
+		if existing, err := s.Projects.ListAdditionalSSHKeys(ctx, dst); err == nil {
 			for _, k := range existing {
 				existingFingerprints[k.Fingerprint] = true
 			}
@@ -72,7 +73,7 @@ func (s *Syncer) syncProjectSSHKeys(report *Report, p manifest.Project, bundle *
 			continue
 		}
 
-		if err := s.Projects.AddAdditionalSSHKey(dst, bundleKey.Hostname, bundleKey.PrivateKey); err != nil {
+		if err := s.Projects.AddAdditionalSSHKey(ctx, dst, bundleKey.Hostname, bundleKey.PrivateKey); err != nil {
 			report.add("project-ssh-key", target, "error",
 				fmt.Sprintf("add SSH key %q: %v", sk.Fingerprint, err))
 			continue

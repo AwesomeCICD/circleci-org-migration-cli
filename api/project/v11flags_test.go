@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func TestGetV11ProjectFeatureFlags_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	flags, err := c.GetV11ProjectFeatureFlags(slug)
+	flags, err := c.GetV11ProjectFeatureFlags(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestGetV11ProjectFeatureFlags_SlugEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetV11ProjectFeatureFlags(slug)
+	_, err := c.GetV11ProjectFeatureFlags(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestGetV11ProjectFeatureFlags_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetV11ProjectFeatureFlags("gh/acme/web")
+	_, err := c.GetV11ProjectFeatureFlags(context.Background(), "gh/acme/web")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -125,7 +126,7 @@ func TestSetV11ProjectFeatureFlags_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetV11ProjectFeatureFlags(slug, map[string]bool{"api_trigger_with_config": true})
+	err := c.SetV11ProjectFeatureFlags(context.Background(), slug, map[string]bool{"api_trigger_with_config": true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestSetV11ProjectFeatureFlags_DropAllBuildRequests_KebabKey(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetV11ProjectFeatureFlags("gh/acme/web", map[string]bool{"drop_all_build_requests": false})
+	err := c.SetV11ProjectFeatureFlags(context.Background(), "gh/acme/web", map[string]bool{"drop_all_build_requests": false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestSetV11ProjectFeatureFlags_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetV11ProjectFeatureFlags("gh/acme/web", map[string]bool{"api_trigger_with_config": true})
+	err := c.SetV11ProjectFeatureFlags(context.Background(), "gh/acme/web", map[string]bool{"api_trigger_with_config": true})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -184,7 +185,7 @@ func TestSetV11ProjectFeatureFlags_StringBody(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetV11ProjectFeatureFlags("gh/acme/web", map[string]bool{"api_trigger_with_config": true})
+	err := c.SetV11ProjectFeatureFlags(context.Background(), "gh/acme/web", map[string]bool{"api_trigger_with_config": true})
 	if err != nil {
 		t.Fatalf("unexpected error for string body: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	flags, err := c.GetV11ProjectFeatureFlags("gh/acme/web")
+	flags, err := c.GetV11ProjectFeatureFlags(context.Background(), "gh/acme/web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

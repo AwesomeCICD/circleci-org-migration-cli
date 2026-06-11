@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,7 +60,7 @@ func TestGetOrganization_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrganization(slug)
+	got, err := c.GetOrganization(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestGetOrganization_ByUUID(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrganization(uuid)
+	got, err := c.GetOrganization(context.Background(), uuid)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestGetOrganization_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetOrganization("gh/missing")
+	_, err := c.GetOrganization(context.Background(), "gh/missing")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -144,7 +145,7 @@ func TestListCollaborations_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListCollaborations()
+	got, err := c.ListCollaborations(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestListCollaborations_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListCollaborations()
+	got, err := c.ListCollaborations(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestListCollaborations_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.ListCollaborations()
+	_, err := c.ListCollaborations(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -201,7 +202,7 @@ func TestResolveOrgID_BareUUID(t *testing.T) {
 	)
 
 	const uuid = "12345678-1234-1234-1234-123456789abc"
-	got, err := c.ResolveOrgID(uuid)
+	got, err := c.ResolveOrgID(context.Background(), uuid)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestResolveOrgID_CircleCISlug(t *testing.T) {
 
 	const uuid = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb"
 	slug := "circleci/" + uuid
-	got, err := c.ResolveOrgID(slug)
+	got, err := c.ResolveOrgID(context.Background(), slug)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestResolveOrgID_OrgSlug_CallsGetOrganization(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ResolveOrgID("gh/acme")
+	got, err := c.ResolveOrgID(context.Background(), "gh/acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestResolveOrgID_NotCircleCISlugWithBadUUID(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ResolveOrgID("circleci/not-a-uuid")
+	got, err := c.ResolveOrgID(context.Background(), "circleci/not-a-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestGetOrgSettings_FlagTrue(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrgSettings("github", "acme")
+	got, err := c.GetOrgSettings(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestGetOrgSettings_FlagFalse(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrgSettings("github", "acme")
+	got, err := c.GetOrgSettings(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestGetOrgSettings_FlagAbsent(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrgSettings("github", "acme")
+	got, err := c.GetOrgSettings(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestGetOrgSettings_FeatureFlagsAbsent(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.GetOrgSettings("github", "acme")
+	got, err := c.GetOrgSettings(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -395,7 +396,7 @@ func TestGetOrgSettings_PathConstruction(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.GetOrgSettings("bitbucket", "my-org"); err != nil {
+	if _, err := c.GetOrgSettings(context.Background(), "bitbucket", "my-org"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -407,7 +408,7 @@ func TestGetOrgSettings_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetOrgSettings("github", "acme")
+	_, err := c.GetOrgSettings(context.Background(), "github", "acme")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,7 +55,7 @@ func TestGetOrgOrbs_SinglePage(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	orbs, err := c.GetOrgOrbs(orbsOrgUUID)
+	orbs, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestGetOrgOrbs_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	orbs, err := c.GetOrgOrbs(orbsOrgUUID)
+	orbs, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestGetOrgOrbs_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	orbs, err := c.GetOrgOrbs(orbsOrgUUID)
+	orbs, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestGetOrgOrbs_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if _, err := c.GetOrgOrbs(orbsOrgUUID); err == nil {
+	if _, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -197,7 +198,7 @@ func TestGetOrgOrbs_PaginationStopsOnEmptyOrbs(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	orbs, err := c.GetOrgOrbs(orbsOrgUUID)
+	orbs, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestGetOrgOrbs_FieldsCaptured(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	orbs, err := c.GetOrgOrbs(orbsOrgUUID)
+	orbs, err := c.GetOrgOrbs(context.Background(), orbsOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

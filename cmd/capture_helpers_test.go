@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,7 +146,7 @@ type fakeOrgFlagManager struct {
 	updateErr   error
 }
 
-func (f *fakeOrgFlagManager) GetFeatureFlags(vcsType, orgName string) (map[string]bool, error) {
+func (f *fakeOrgFlagManager) GetFeatureFlags(_ context.Context, vcsType, orgName string) (map[string]bool, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -156,7 +157,7 @@ func (f *fakeOrgFlagManager) GetFeatureFlags(vcsType, orgName string) (map[strin
 	return out, nil
 }
 
-func (f *fakeOrgFlagManager) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
+func (f *fakeOrgFlagManager) UpdateFeatureFlags(_ context.Context, vcsType, orgName string, flags map[string]bool) error {
 	if f.updateErr != nil {
 		return f.updateErr
 	}
@@ -331,14 +332,14 @@ type fakeRestrictionManager struct {
 	createErr error
 }
 
-func (f *fakeRestrictionManager) ListRestrictions(_ string) ([]apicontext.Restriction, error) {
+func (f *fakeRestrictionManager) ListRestrictions(_ context.Context, _ string) ([]apicontext.Restriction, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.liveRestrictions, nil
 }
 
-func (f *fakeRestrictionManager) DeleteRestriction(_, restrictionID string) error {
+func (f *fakeRestrictionManager) DeleteRestriction(_ context.Context, _, restrictionID string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
@@ -346,7 +347,7 @@ func (f *fakeRestrictionManager) DeleteRestriction(_, restrictionID string) erro
 	return nil
 }
 
-func (f *fakeRestrictionManager) CreateRestriction(_, rType, rValue string) error {
+func (f *fakeRestrictionManager) CreateRestriction(_ context.Context, _, rType, rValue string) error {
 	if f.createErr != nil {
 		return f.createErr
 	}

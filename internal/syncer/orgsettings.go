@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -12,27 +13,27 @@ import (
 // api/org/otel.go, api/org/contacts.go, api/org/storage_retention.go,
 // api/org/budgets.go, api/org/blockusers.go, and api/org/release_tracker.go.
 type OrgSettingsWriter interface {
-	UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error
-	SetOIDCClaims(orgID string, audience []string, ttl string) error
-	CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error
-	PutPolicyBundle(ownerID string, policies map[string]string) error
-	SetPolicyEnforcement(ownerID string, enabled bool) error
-	CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
-	SetContacts(orgID string, primary, security []string) error
+	UpdateFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error
+	SetOIDCClaims(ctx context.Context, orgID string, audience []string, ttl string) error
+	CreateURLOrbAllowEntry(ctx context.Context, slugOrID, name, prefix, auth string) error
+	PutPolicyBundle(ctx context.Context, ownerID string, policies map[string]string) error
+	SetPolicyEnforcement(ctx context.Context, ownerID string, enabled bool) error
+	CreateOTelExporter(ctx context.Context, orgID, endpoint, protocol string, insecure bool, headers map[string]string) error
+	SetContacts(ctx context.Context, orgID string, primary, security []string) error
 	// SetStorageRetention writes artifact/cache/workspace retention controls to
 	// the destination org. The server clamps values to the plan's limits.
 	// controls is passed as a manifest.StorageRetentionControls value; callers
 	// may need a thin adapter if using api/org.Client (see storage_retention_adapter.go).
-	SetStorageRetention(orgUUID string, controls StorageRetentionArgs) error
+	SetStorageRetention(ctx context.Context, orgUUID string, controls StorageRetentionArgs) error
 	// SetBudget creates or updates a spend budget. Pass projectID == nil for the
 	// org-level budget; pass a non-nil project UUID for a per-project budget.
-	SetBudget(orgUUID string, projectID *string, credits int) error
+	SetBudget(ctx context.Context, orgUUID string, projectID *string, credits int) error
 	// SetBlockUnregisteredUsers enables or disables the "block unregistered user
 	// spend" feature.
-	SetBlockUnregisteredUsers(orgUUID string, enabled bool) error
+	SetBlockUnregisteredUsers(ctx context.Context, orgUUID string, enabled bool) error
 	// SetReleaseTrackerSettings applies release-tracker settings to the destination
 	// org via PATCH. Called only when ReleaseTracker is non-nil in the manifest.
-	SetReleaseTrackerSettings(orgUUID string, ttl string) error
+	SetReleaseTrackerSettings(ctx context.Context, orgUUID string, ttl string) error
 }
 
 // URLOrbAllowEntry is a single entry on an org's URL-orb allow list.
@@ -63,7 +64,7 @@ type OTelExporter struct {
 // duplicates on re-runs). Implementations that do not provide this method fall
 // back to the previous unconditional-create behaviour.
 type URLOrbAllowListGetter interface {
-	GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error)
+	GetURLOrbAllowList(ctx context.Context, slugOrID string) ([]URLOrbAllowEntry, error)
 }
 
 // OTelExporterGetter is an optional capability for OrgSettingsWriter implementations
@@ -73,7 +74,7 @@ type URLOrbAllowListGetter interface {
 // (preventing duplicates on re-runs). Implementations that do not provide this
 // method fall back to the previous unconditional-create behaviour.
 type OTelExporterGetter interface {
-	GetOTelExporters(orgID string) ([]OTelExporter, error)
+	GetOTelExporters(ctx context.Context, orgID string) ([]OTelExporter, error)
 }
 
 // StorageRetentionArgs carries the storage-retention values to write. It is a
@@ -105,7 +106,7 @@ var dangerFlags = map[string]bool{
 // OIDC, URL-orb allow list, and config policies are applied when present.
 // Per-item errors are recorded as actions with status "error" and do not
 // cause a top-level error return (mirrors SyncContexts/SyncProjects patterns).
-func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
+func (s *Syncer) SyncOrgSettings(ctx context.Context, m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
 	}
@@ -115,7 +116,7 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	}
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
 
-	destOrgID, err := s.Org.ResolveOrgID(destSlug)
+	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
 	if err != nil {
 		return nil, fmt.Errorf("SyncOrgSettings: resolving destination org %q: %w", destSlug, err)
 	}
@@ -136,20 +137,20 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 	// Resolve the vcs/name pair from the destination slug for v1.1 flag writes.
 	vcs, orgName := splitDestSlug(destSlug)
 
-	s.syncFeatureFlags(report, src, vcs, orgName, opts)
-	s.syncOIDCClaims(report, src, destOrgID, opts)
-	s.syncURLOrbAllowList(report, src, destSlug, opts)
-	s.syncPolicies(report, src, destOrgID, opts)
-	s.reportAuditLogConfigs(report, src)
-	s.reportSSO(report, src)
-	s.syncOTelExporters(report, src, destOrgID, opts)
-	s.syncContacts(report, src, destOrgID, opts)
-	s.syncStorageRetention(report, src, destOrgID, opts)
-	s.syncBudgets(report, src, destOrgID, mapping, opts)
-	s.syncBlockUnregisteredUsers(report, src, destOrgID, opts)
-	s.reportOrbs(report, src)
-	s.syncReleaseTracker(report, src, destOrgID, opts)
-	s.reportEnvironmentHierarchy(report, src)
+	s.syncFeatureFlags(ctx, report, src, vcs, orgName, opts)
+	s.syncOIDCClaims(ctx, report, src, destOrgID, opts)
+	s.syncURLOrbAllowList(ctx, report, src, destSlug, opts)
+	s.syncPolicies(ctx, report, src, destOrgID, opts)
+	s.reportAuditLogConfigs(ctx, report, src)
+	s.reportSSO(ctx, report, src)
+	s.syncOTelExporters(ctx, report, src, destOrgID, opts)
+	s.syncContacts(ctx, report, src, destOrgID, opts)
+	s.syncStorageRetention(ctx, report, src, destOrgID, opts)
+	s.syncBudgets(ctx, report, src, destOrgID, mapping, opts)
+	s.syncBlockUnregisteredUsers(ctx, report, src, destOrgID, opts)
+	s.reportOrbs(ctx, report, src)
+	s.syncReleaseTracker(ctx, report, src, destOrgID, opts)
+	s.reportEnvironmentHierarchy(ctx, report, src)
 
 	return report, nil
 }
@@ -158,7 +159,7 @@ func (s *Syncer) SyncOrgSettings(m *manifest.Manifest, mapping *manifest.Mapping
 // SSO is never auto-applied: recreating it on the destination requires DNS TXT
 // domain verification and IdP-side SAML app / iframe-origin setup, none of which
 // is automatable, so we surface it for the operator and never write.
-func (s *Syncer) reportSSO(report *Report, src *manifest.OrgSettings) {
+func (s *Syncer) reportSSO(ctx context.Context, report *Report, src *manifest.OrgSettings) {
 	if src.SSO == nil {
 		return
 	}
@@ -173,7 +174,7 @@ func (s *Syncer) reportSSO(report *Report, src *manifest.OrgSettings) {
 // action. These are never auto-applied: the S3 ARN/region/bucket/endpoint are
 // environment-specific and point at the SOURCE org's AWS account, so POSTing the
 // source values to the destination would stream audit logs to the wrong account.
-func (s *Syncer) reportAuditLogConfigs(report *Report, src *manifest.OrgSettings) {
+func (s *Syncer) reportAuditLogConfigs(ctx context.Context, report *Report, src *manifest.OrgSettings) {
 	for _, cfg := range src.AuditLogConfigs {
 		target := "audit_log_config"
 		if cfg.Purpose != "" {
@@ -193,7 +194,7 @@ func (s *Syncer) reportAuditLogConfigs(report *Report, src *manifest.OrgSettings
 
 // syncFeatureFlags writes each feature flag to the destination. Danger flags
 // are skipped with a "manual" action regardless of Apply.
-func (s *Syncer) syncFeatureFlags(report *Report, src *manifest.OrgSettings, vcs, orgName string, opts Options) {
+func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *manifest.OrgSettings, vcs, orgName string, opts Options) {
 	if len(src.FeatureFlags) == 0 {
 		return
 	}
@@ -218,7 +219,7 @@ func (s *Syncer) syncFeatureFlags(report *Report, src *manifest.OrgSettings, vcs
 			continue
 		}
 
-		if err := s.OrgSettings.UpdateFeatureFlags(vcs, orgName, map[string]bool{flagKey: val}); err != nil {
+		if err := s.OrgSettings.UpdateFeatureFlags(ctx, vcs, orgName, map[string]bool{flagKey: val}); err != nil {
 			report.add("org-settings", target, "error", err.Error())
 			continue
 		}
@@ -227,7 +228,7 @@ func (s *Syncer) syncFeatureFlags(report *Report, src *manifest.OrgSettings, vcs
 }
 
 // syncOIDCClaims writes the OIDC audience/TTL when present.
-func (s *Syncer) syncOIDCClaims(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncOIDCClaims(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if len(src.OIDCAudience) == 0 && src.OIDCTTL == "" {
 		return
 	}
@@ -239,7 +240,7 @@ func (s *Syncer) syncOIDCClaims(report *Report, src *manifest.OrgSettings, destO
 		return
 	}
 
-	if err := s.OrgSettings.SetOIDCClaims(destOrgID, src.OIDCAudience, src.OIDCTTL); err != nil {
+	if err := s.OrgSettings.SetOIDCClaims(ctx, destOrgID, src.OIDCAudience, src.OIDCTTL); err != nil {
 		report.add("org-settings", target, "error", err.Error())
 		return
 	}
@@ -251,7 +252,7 @@ func (s *Syncer) syncOIDCClaims(report *Report, src *manifest.OrgSettings, destO
 // When OrgSettings also implements URLOrbAllowListGetter, existing entries
 // (matched by name+prefix) are skipped with status "exists" to prevent
 // duplicates on re-runs.
-func (s *Syncer) syncURLOrbAllowList(report *Report, src *manifest.OrgSettings, destSlug string, opts Options) {
+func (s *Syncer) syncURLOrbAllowList(ctx context.Context, report *Report, src *manifest.OrgSettings, destSlug string, opts Options) {
 	if len(src.URLOrbAllowList) == 0 {
 		return
 	}
@@ -261,7 +262,7 @@ func (s *Syncer) syncURLOrbAllowList(report *Report, src *manifest.OrgSettings, 
 	existing := map[string]bool{} // key: name+"\x00"+prefix
 	if opts.Apply {
 		if getter, ok := s.OrgSettings.(URLOrbAllowListGetter); ok {
-			if entries, err := getter.GetURLOrbAllowList(destSlug); err == nil {
+			if entries, err := getter.GetURLOrbAllowList(ctx, destSlug); err == nil {
 				for _, e := range entries {
 					existing[e.Name+"\x00"+e.Prefix] = true
 				}
@@ -284,7 +285,7 @@ func (s *Syncer) syncURLOrbAllowList(report *Report, src *manifest.OrgSettings, 
 			continue
 		}
 
-		if err := s.OrgSettings.CreateURLOrbAllowEntry(destSlug, entry.Name, entry.Prefix, entry.Auth); err != nil {
+		if err := s.OrgSettings.CreateURLOrbAllowEntry(ctx, destSlug, entry.Name, entry.Prefix, entry.Auth); err != nil {
 			report.add("org-settings", target, "error", err.Error())
 			continue
 		}
@@ -294,13 +295,13 @@ func (s *Syncer) syncURLOrbAllowList(report *Report, src *manifest.OrgSettings, 
 }
 
 // syncPolicies writes the policy bundle and enforcement setting.
-func (s *Syncer) syncPolicies(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncPolicies(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if len(src.ConfigPolicies) > 0 {
 		target := "config_policies"
 		if !opts.Apply {
 			report.add("org-settings", target, "set",
 				fmt.Sprintf("would write %d config polic(ies) (Scale plan required)", len(src.ConfigPolicies)))
-		} else if err := s.OrgSettings.PutPolicyBundle(destOrgID, src.ConfigPolicies); err != nil {
+		} else if err := s.OrgSettings.PutPolicyBundle(ctx, destOrgID, src.ConfigPolicies); err != nil {
 			report.add("org-settings", target, "error",
 				fmt.Sprintf("could not write config policies (Scale plan required): %v", err))
 		} else {
@@ -315,7 +316,7 @@ func (s *Syncer) syncPolicies(report *Report, src *manifest.OrgSettings, destOrg
 		if !opts.Apply {
 			report.add("org-settings", target, "set",
 				fmt.Sprintf("would set policy enforcement enabled=%v", enabled))
-		} else if err := s.OrgSettings.SetPolicyEnforcement(destOrgID, enabled); err != nil {
+		} else if err := s.OrgSettings.SetPolicyEnforcement(ctx, destOrgID, enabled); err != nil {
 			report.add("org-settings", target, "error",
 				fmt.Sprintf("could not set policy enforcement (Scale plan required): %v", err))
 		} else {
@@ -333,7 +334,7 @@ func (s *Syncer) syncPolicies(report *Report, src *manifest.OrgSettings, destOrg
 // the header keys that must be re-added as secrets. The 5-exporter cap is
 // enforced by the API; if more than 5 exporters are present a note is included
 // in the detail.
-func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncOTelExporters(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if len(src.OTelExporters) == 0 {
 		return
 	}
@@ -348,7 +349,7 @@ func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, de
 	existing := map[string]bool{} // key: endpoint+"\x00"+protocol
 	if opts.Apply {
 		if getter, ok := s.OrgSettings.(OTelExporterGetter); ok {
-			if exporters, err := getter.GetOTelExporters(destOrgID); err == nil {
+			if exporters, err := getter.GetOTelExporters(ctx, destOrgID); err == nil {
 				for _, e := range exporters {
 					existing[e.Endpoint+"\x00"+e.Protocol] = true
 				}
@@ -377,7 +378,7 @@ func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, de
 			continue
 		}
 
-		if err := s.OrgSettings.CreateOTelExporter(destOrgID, ex.Endpoint, ex.Protocol, ex.Insecure, nil); err != nil {
+		if err := s.OrgSettings.CreateOTelExporter(ctx, destOrgID, ex.Endpoint, ex.Protocol, ex.Insecure, nil); err != nil {
 			report.add("org-settings", target, "error", fmt.Sprintf("could not create OTel exporter: %v", err))
 			continue
 		}
@@ -396,7 +397,7 @@ func (s *Syncer) syncOTelExporters(report *Report, src *manifest.OrgSettings, de
 // syncContacts applies the org's primary and security contact email lists to
 // the destination via PUT (overwrites). Skipped silently when Contacts is nil
 // or both lists are empty.
-func (s *Syncer) syncContacts(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncContacts(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if src.Contacts == nil {
 		return
 	}
@@ -412,7 +413,7 @@ func (s *Syncer) syncContacts(report *Report, src *manifest.OrgSettings, destOrg
 		return
 	}
 
-	if err := s.OrgSettings.SetContacts(destOrgID, src.Contacts.Primary, src.Contacts.Security); err != nil {
+	if err := s.OrgSettings.SetContacts(ctx, destOrgID, src.Contacts.Primary, src.Contacts.Security); err != nil {
 		report.add("org-settings", target, "error", fmt.Sprintf("could not set contacts: %v", err))
 		return
 	}
@@ -446,7 +447,7 @@ func sortStrings(s []string) {
 // the destination org when the manifest carries them. Dry-run aware; reports
 // created/updated like other sync sections. A note is included that the server
 // clamps values to the destination plan's limits.
-func (s *Syncer) syncStorageRetention(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncStorageRetention(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if src.StorageRetention == nil {
 		return
 	}
@@ -468,7 +469,7 @@ func (s *Syncer) syncStorageRetention(report *Report, src *manifest.OrgSettings,
 		WorkspaceDays: sr.WorkspaceDays,
 		ArtifactDays:  sr.ArtifactDays,
 	}
-	if err := s.OrgSettings.SetStorageRetention(destOrgID, args); err != nil {
+	if err := s.OrgSettings.SetStorageRetention(ctx, destOrgID, args); err != nil {
 		report.add("org-settings", target, "error",
 			fmt.Sprintf("could not set storage-retention controls: %v", err))
 		return
@@ -482,7 +483,7 @@ func (s *Syncer) syncStorageRetention(report *Report, src *manifest.OrgSettings,
 // are flagged for manual recreation. EnforcementType is captured for reference
 // but the PUT endpoint only accepts credits (+project_id), so it may not be
 // transferred automatically (a note is emitted in the report detail).
-func (s *Syncer) syncBudgets(report *Report, src *manifest.OrgSettings, destOrgID string, mapping *manifest.Mapping, opts Options) {
+func (s *Syncer) syncBudgets(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, mapping *manifest.Mapping, opts Options) {
 	if src.Budgets == nil {
 		return
 	}
@@ -501,7 +502,7 @@ func (s *Syncer) syncBudgets(report *Report, src *manifest.OrgSettings, destOrgI
 		if !opts.Apply {
 			report.add("org-settings", target, "set",
 				"would set org budget: "+detail)
-		} else if err := s.OrgSettings.SetBudget(destOrgID, nil, ob.Credits); err != nil {
+		} else if err := s.OrgSettings.SetBudget(ctx, destOrgID, nil, ob.Credits); err != nil {
 			report.add("org-settings", target, "error",
 				fmt.Sprintf("could not set org budget: %v", err))
 		} else {
@@ -553,7 +554,7 @@ func (s *Syncer) syncBudgets(report *Report, src *manifest.OrgSettings, destOrgI
 				fmt.Sprintf("would set per-project budget dest_project_id=%q credits=%d", destProjID, pb.Credits))
 			continue
 		}
-		if err := s.OrgSettings.SetBudget(destOrgID, &destProjID, pb.Credits); err != nil {
+		if err := s.OrgSettings.SetBudget(ctx, destOrgID, &destProjID, pb.Credits); err != nil {
 			report.add("org-settings", target, "error",
 				fmt.Sprintf("could not set per-project budget dest_project_id=%q: %v", destProjID, err))
 			continue
@@ -586,7 +587,7 @@ func resolveProjectByID(srcProjID string, mapping *manifest.Mapping) (string, bo
 
 // syncBlockUnregisteredUsers transfers the "block unregistered user spend" feature
 // flag to the destination. Dry-run aware.
-func (s *Syncer) syncBlockUnregisteredUsers(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncBlockUnregisteredUsers(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if src.BlockUnregisteredUsers == nil {
 		return
 	}
@@ -599,7 +600,7 @@ func (s *Syncer) syncBlockUnregisteredUsers(report *Report, src *manifest.OrgSet
 		return
 	}
 
-	if err := s.OrgSettings.SetBlockUnregisteredUsers(destOrgID, enabled); err != nil {
+	if err := s.OrgSettings.SetBlockUnregisteredUsers(ctx, destOrgID, enabled); err != nil {
 		report.add("org-settings", target, "error",
 			fmt.Sprintf("could not set block_unregistered_users: %v", err))
 		return
@@ -613,7 +614,7 @@ func (s *Syncer) syncBlockUnregisteredUsers(report *Report, src *manifest.OrgSet
 // code is only accessible via GraphQL / the republish workflow. Each entry
 // carries enough metadata (name, version, is_private, hidden) for the operator
 // to republish the orb in the destination namespace.
-func (s *Syncer) reportOrbs(report *Report, src *manifest.OrgSettings) {
+func (s *Syncer) reportOrbs(ctx context.Context, report *Report, src *manifest.OrgSettings) {
 	for _, orb := range src.Orbs {
 		target := "orb:" + orb.OrbName
 		report.add("org-settings", target, "manual",
@@ -629,7 +630,7 @@ func (s *Syncer) reportOrbs(report *Report, src *manifest.OrgSettings) {
 
 // syncReleaseTracker transfers the release-tracker settings (inconclusive_release_ttl)
 // to the destination org via PATCH. Dry-run aware.
-func (s *Syncer) syncReleaseTracker(report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
+func (s *Syncer) syncReleaseTracker(ctx context.Context, report *Report, src *manifest.OrgSettings, destOrgID string, opts Options) {
 	if src.ReleaseTracker == nil || src.ReleaseTracker.InconclusiveReleaseTTL == "" {
 		return
 	}
@@ -642,7 +643,7 @@ func (s *Syncer) syncReleaseTracker(report *Report, src *manifest.OrgSettings, d
 		return
 	}
 
-	if err := s.OrgSettings.SetReleaseTrackerSettings(destOrgID, ttl); err != nil {
+	if err := s.OrgSettings.SetReleaseTrackerSettings(ctx, destOrgID, ttl); err != nil {
 		report.add("org-settings", target, "error",
 			fmt.Sprintf("could not set release-tracker settings: %v", err))
 		return
@@ -657,7 +658,7 @@ func (s *Syncer) syncReleaseTracker(report *Report, src *manifest.OrgSettings, d
 // be mapped automatically from the source org. The report includes the hierarchy
 // name and level names so the operator can recreate it manually after configuring
 // the matching deploy integrations in the destination.
-func (s *Syncer) reportEnvironmentHierarchy(report *Report, src *manifest.OrgSettings) {
+func (s *Syncer) reportEnvironmentHierarchy(ctx context.Context, report *Report, src *manifest.OrgSettings) {
 	if src.EnvironmentHierarchy == nil {
 		return
 	}

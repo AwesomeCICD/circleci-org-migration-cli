@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ type fakeStorageRetentionManager struct {
 	lastSetOrgUUID  string
 }
 
-func (f *fakeStorageRetentionManager) GetStorageRetention(orgUUID string) (*org.StorageRetention, error) {
+func (f *fakeStorageRetentionManager) GetStorageRetention(_ context.Context, orgUUID string) (*org.StorageRetention, error) {
 	if f.getStorageRetention != nil {
 		return f.getStorageRetention(orgUUID)
 	}
@@ -36,7 +37,7 @@ func (f *fakeStorageRetentionManager) GetStorageRetention(orgUUID string) (*org.
 	}, nil
 }
 
-func (f *fakeStorageRetentionManager) SetStorageRetention(orgUUID string, controls org.StorageRetentionControls) error {
+func (f *fakeStorageRetentionManager) SetStorageRetention(_ context.Context, orgUUID string, controls org.StorageRetentionControls) error {
 	f.setCallCount++
 	f.lastSetControls = controls
 	f.lastSetOrgUUID = orgUUID

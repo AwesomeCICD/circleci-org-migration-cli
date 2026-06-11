@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -25,13 +26,13 @@ type contactsResponse struct {
 //
 // Uses the private client (circleci.com/api/private/).
 // Response: {"primary":[emails],"security":[emails]}. Max 5 per list.
-func (c *Client) GetContacts(orgID string) (primary, security []string, err error) {
+func (c *Client) GetContacts(ctx context.Context, orgID string) (primary, security []string, err error) {
 	u, err := url.Parse("organization/" + url.PathEscape(orgID) + "/contacts")
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetContacts: build URL: %w", err)
 	}
 
-	req, err := c.private.NewRequest("GET", u, nil)
+	req, err := c.private.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetContacts: build request: %w", err)
 	}
@@ -50,14 +51,14 @@ func (c *Client) GetContacts(orgID string) (primary, security []string, err erro
 //
 // Body: {"primary":[...],"security":[...]}. PUT semantics — the full lists are
 // replaced. Max 5 addresses per list.
-func (c *Client) SetContacts(orgID string, primary, security []string) error {
+func (c *Client) SetContacts(ctx context.Context, orgID string, primary, security []string) error {
 	u, err := url.Parse("organization/" + url.PathEscape(orgID) + "/contacts")
 	if err != nil {
 		return fmt.Errorf("SetContacts: build URL: %w", err)
 	}
 
 	body := contactsResponse{Primary: primary, Security: security}
-	req, err := c.private.NewRequest("PUT", u, body)
+	req, err := c.private.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetContacts: build request: %w", err)
 	}

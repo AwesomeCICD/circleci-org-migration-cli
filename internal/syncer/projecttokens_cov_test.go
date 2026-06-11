@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestSyncProjectAPITokens_Apply_CreateErrorAndStderrPrint(t *testing.T) {
 		manifest.ProjectAPIToken{Label: "boom", Scope: "status"},
 	)
 
-	rep, err := sy.SyncProjects(m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true, CreateProjectTokens: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

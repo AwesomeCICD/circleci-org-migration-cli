@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +29,7 @@ func TestResolveRepoID_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := ResolveRepoID("acme/web", "my-token", srv.URL)
+	id, err := ResolveRepoID(context.Background(), "acme/web", "my-token", srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestResolveRepoID_NoToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := ResolveRepoID("acme/web", "", srv.URL)
+	id, err := ResolveRepoID(context.Background(), "acme/web", "", srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestResolveRepoID_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ResolveRepoID("acme/missing", "token", srv.URL)
+	_, err := ResolveRepoID(context.Background(), "acme/missing", "token", srv.URL)
 	if err == nil {
 		t.Fatal("expected error for 404, got nil")
 	}
@@ -96,7 +97,7 @@ func TestResolveRepoID_NonNotFoundDoesNotWrapErrRepoNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ResolveRepoID("acme/web", "token", srv.URL)
+	_, err := ResolveRepoID(context.Background(), "acme/web", "token", srv.URL)
 	if err == nil {
 		t.Fatal("expected error for 500, got nil")
 	}
@@ -111,14 +112,14 @@ func TestResolveRepoID_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ResolveRepoID("acme/web", "token", srv.URL)
+	_, err := ResolveRepoID(context.Background(), "acme/web", "token", srv.URL)
 	if err == nil {
 		t.Fatal("expected error for 500, got nil")
 	}
 }
 
 func TestResolveRepoID_EmptyFullName(t *testing.T) {
-	if _, err := ResolveRepoID("", "token", ""); err == nil {
+	if _, err := ResolveRepoID(context.Background(), "", "token", ""); err == nil {
 		t.Error("expected error for empty fullName, got nil")
 	}
 }
@@ -126,8 +127,8 @@ func TestResolveRepoID_EmptyFullName(t *testing.T) {
 func TestResolveRepoID_InvalidFullName(t *testing.T) {
 	cases := []string{"noslash", "/noowner", "owner/"}
 	for _, name := range cases {
-		if _, err := ResolveRepoID(name, "token", ""); err == nil {
-			t.Errorf("ResolveRepoID(%q): expected error, got nil", name)
+		if _, err := ResolveRepoID(context.Background(), name, "token", ""); err == nil {
+			t.Errorf("ResolveRepoID(context.Background(), %q): expected error, got nil", name)
 		}
 	}
 }
@@ -144,7 +145,7 @@ func TestResolveRepoID_TrailingSlashOnBaseURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := ResolveRepoID("owner/repo", "tok", srv.URL+"/")
+	id, err := ResolveRepoID(context.Background(), "owner/repo", "tok", srv.URL+"/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

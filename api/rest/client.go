@@ -5,6 +5,7 @@ package rest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,7 +106,10 @@ func NewFromConfig(host string, cfg *settings.Config, token string) (*Client, er
 }
 
 // NewRequest builds an *http.Request, JSON-encoding payload when non-nil.
-func (c *Client) NewRequest(method string, u *url.URL, payload interface{}) (*http.Request, error) {
+// The supplied context is attached to the request so that a cancelled context
+// (e.g. Ctrl-C) aborts the in-flight HTTP call rather than waiting out the
+// per-request timeout.
+func (c *Client) NewRequest(ctx context.Context, method string, u *url.URL, payload interface{}) (*http.Request, error) {
 	var r io.Reader
 	if payload != nil {
 		buf := &bytes.Buffer{}
@@ -115,7 +119,7 @@ func (c *Client) NewRequest(method string, u *url.URL, payload interface{}) (*ht
 		r = buf
 	}
 
-	req, err := http.NewRequest(method, c.BaseURL.ResolveReference(u).String(), r)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL.ResolveReference(u).String(), r)
 	if err != nil {
 		return nil, err
 	}

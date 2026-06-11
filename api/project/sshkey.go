@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -24,7 +25,7 @@ type addSSHKeyRequest struct {
 // Idempotency note: if the same key has already been uploaded, the server
 // returns 201 again (no-op at the API level). Callers should pre-check the
 // destination fingerprint list to avoid duplicate calls.
-func (c *Client) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
+func (c *Client) AddAdditionalSSHKey(ctx context.Context, slug, hostname, privateKey string) error {
 	if slug == "" {
 		return fmt.Errorf("AddAdditionalSSHKey: slug is required")
 	}
@@ -38,7 +39,7 @@ func (c *Client) AddAdditionalSSHKey(slug, hostname, privateKey string) error {
 	}
 
 	body := addSSHKeyRequest{Hostname: hostname, PrivateKey: privateKey}
-	req, err := c.v11.NewRequest("POST", u, &body)
+	req, err := c.v11.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return fmt.Errorf("AddAdditionalSSHKey: build request: %w", err)
 	}
@@ -85,7 +86,7 @@ type v11SSHKeySettings struct {
 //
 // On a 404 or other API error the caller should treat the result as
 // non-fatal and record a manifest warning rather than aborting the export.
-func (c *Client) ListAdditionalSSHKeys(slug string) ([]SSHKeyMeta, error) {
+func (c *Client) ListAdditionalSSHKeys(ctx context.Context, slug string) ([]SSHKeyMeta, error) {
 	u, err := slugSubresource(slug, "settings")
 	if err != nil {
 		return nil, fmt.Errorf("ListAdditionalSSHKeys: %w", err)
@@ -97,7 +98,7 @@ func (c *Client) ListAdditionalSSHKeys(slug string) ([]SSHKeyMeta, error) {
 	q.Set("ssh-key-digest", "sha256")
 	u.RawQuery = q.Encode()
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListAdditionalSSHKeys: build request: %w", err)
 	}

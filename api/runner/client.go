@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -87,7 +88,7 @@ type createResourceClassRequest struct {
 // namespace. namespace must be a bare name (e.g. "acme"), not a slug.
 //
 // GET https://runner.circleci.com/api/v3/runner/resource?namespace=<ns>
-func (c *Client) GetResourceClassesByNamespace(namespace string) ([]ResourceClass, error) {
+func (c *Client) GetResourceClassesByNamespace(ctx context.Context, namespace string) ([]ResourceClass, error) {
 	u, err := url.Parse("runner/resource")
 	if err != nil {
 		return nil, fmt.Errorf("runner: building URL: %w", err)
@@ -96,7 +97,7 @@ func (c *Client) GetResourceClassesByNamespace(namespace string) ([]ResourceClas
 	q.Set("namespace", namespace)
 	u.RawQuery = q.Encode()
 
-	req, err := c.rest.NewRequest(http.MethodGet, u, nil)
+	req, err := c.rest.NewRequest(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("runner: GetResourceClassesByNamespace: building request: %w", err)
 	}
@@ -112,7 +113,7 @@ func (c *Client) GetResourceClassesByNamespace(namespace string) ([]ResourceClas
 // full name (<namespace>/<class-name>) and optional description.
 //
 // POST https://runner.circleci.com/api/v3/runner/resource
-func (c *Client) CreateResourceClass(resourceClass, description string) (*ResourceClass, error) {
+func (c *Client) CreateResourceClass(ctx context.Context, resourceClass, description string) (*ResourceClass, error) {
 	u, err := url.Parse("runner/resource")
 	if err != nil {
 		return nil, fmt.Errorf("runner: building URL: %w", err)
@@ -122,7 +123,7 @@ func (c *Client) CreateResourceClass(resourceClass, description string) (*Resour
 		ResourceClass: resourceClass,
 		Description:   description,
 	}
-	req, err := c.rest.NewRequest(http.MethodPost, u, body)
+	req, err := c.rest.NewRequest(ctx, http.MethodPost, u, body)
 	if err != nil {
 		return nil, fmt.Errorf("runner: CreateResourceClass: building request: %w", err)
 	}
@@ -137,13 +138,13 @@ func (c *Client) CreateResourceClass(resourceClass, description string) (*Resour
 // DeleteResourceClass deletes the resource class with the given UUID.
 //
 // DELETE https://runner.circleci.com/api/v3/runner/resource/<id>
-func (c *Client) DeleteResourceClass(id string) error {
+func (c *Client) DeleteResourceClass(ctx context.Context, id string) error {
 	u, err := url.Parse("runner/resource/" + id)
 	if err != nil {
 		return fmt.Errorf("runner: building URL: %w", err)
 	}
 
-	req, err := c.rest.NewRequest(http.MethodDelete, u, nil)
+	req, err := c.rest.NewRequest(ctx, http.MethodDelete, u, nil)
 	if err != nil {
 		return fmt.Errorf("runner: DeleteResourceClass: building request: %w", err)
 	}

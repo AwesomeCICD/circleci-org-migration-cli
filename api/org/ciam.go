@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -26,13 +27,13 @@ type orgRoleGrantsResponse struct {
 // ListOrgRoleGrants returns all org-level CIAM role grants.
 //
 // Endpoint: GET https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants
-func (c *Client) ListOrgRoleGrants(orgID string) ([]OrgRoleGrant, error) {
+func (c *Client) ListOrgRoleGrants(ctx context.Context, orgID string) ([]OrgRoleGrant, error) {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/role-grants")
 	if err != nil {
 		return nil, fmt.Errorf("ListOrgRoleGrants: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListOrgRoleGrants: build request: %w", err)
 	}
@@ -48,14 +49,14 @@ func (c *Client) ListOrgRoleGrants(orgID string) ([]OrgRoleGrant, error) {
 //
 // Endpoint: PUT https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants/user/{userID}
 // Body: {"role": "<role>"}
-func (c *Client) SetOrgUserRole(orgID, userID, role string) error {
+func (c *Client) SetOrgUserRole(ctx context.Context, orgID, userID, role string) error {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/role-grants/user/" + url.PathEscape(userID))
 	if err != nil {
 		return fmt.Errorf("SetOrgUserRole: build URL: %w", err)
 	}
 
 	body := map[string]string{"role": role}
-	req, err := c.app.NewRequest("PUT", u, body)
+	req, err := c.app.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetOrgUserRole: build request: %w", err)
 	}
@@ -71,7 +72,7 @@ func (c *Client) SetOrgUserRole(orgID, userID, role string) error {
 //
 // Endpoint: POST https://app.circleci.com/private/ciam/orgs/{orgID}/groups
 // Body: {"orgId": "...", "name": "...", "description": "..."}
-func (c *Client) CreateGroup(orgID, name, description string) (*Group, error) {
+func (c *Client) CreateGroup(ctx context.Context, orgID, name, description string) (*Group, error) {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/groups")
 	if err != nil {
 		return nil, fmt.Errorf("CreateGroup: build URL: %w", err)
@@ -82,7 +83,7 @@ func (c *Client) CreateGroup(orgID, name, description string) (*Group, error) {
 		"name":        name,
 		"description": description,
 	}
-	req, err := c.app.NewRequest("POST", u, body)
+	req, err := c.app.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return nil, fmt.Errorf("CreateGroup: build request: %w", err)
 	}
@@ -98,14 +99,14 @@ func (c *Client) CreateGroup(orgID, name, description string) (*Group, error) {
 //
 // Endpoint: POST https://app.circleci.com/private/ciam/orgs/{orgID}/groups/{groupID}/add-users
 // Body: {"user_ids": [...]}
-func (c *Client) AddUsersToGroup(orgID, groupID string, userIDs []string) error {
+func (c *Client) AddUsersToGroup(ctx context.Context, orgID, groupID string, userIDs []string) error {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/groups/" + url.PathEscape(groupID) + "/add-users")
 	if err != nil {
 		return fmt.Errorf("AddUsersToGroup: build URL: %w", err)
 	}
 
 	body := map[string]any{"user_ids": userIDs}
-	req, err := c.app.NewRequest("POST", u, body)
+	req, err := c.app.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return fmt.Errorf("AddUsersToGroup: build request: %w", err)
 	}
@@ -133,13 +134,13 @@ type projectUserRoleGrantsResponse struct {
 // ListProjectUserRoleGrants returns all user-level CIAM role grants for a project.
 //
 // Endpoint: GET https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants
-func (c *Client) ListProjectUserRoleGrants(orgID, projectID string) ([]ProjectUserRoleGrant, error) {
+func (c *Client) ListProjectUserRoleGrants(ctx context.Context, orgID, projectID string) ([]ProjectUserRoleGrant, error) {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/projects/" + url.PathEscape(projectID) + "/role-grants")
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectUserRoleGrants: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectUserRoleGrants: build request: %w", err)
 	}
@@ -155,14 +156,14 @@ func (c *Client) ListProjectUserRoleGrants(orgID, projectID string) ([]ProjectUs
 //
 // Endpoint: PUT https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants/user/{userID}
 // Body: {"role": "<role>"}
-func (c *Client) SetProjectUserRole(orgID, projectID, userID, role string) error {
+func (c *Client) SetProjectUserRole(ctx context.Context, orgID, projectID, userID, role string) error {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/projects/" + url.PathEscape(projectID) + "/role-grants/user/" + url.PathEscape(userID))
 	if err != nil {
 		return fmt.Errorf("SetProjectUserRole: build URL: %w", err)
 	}
 
 	body := map[string]string{"role": role}
-	req, err := c.app.NewRequest("PUT", u, body)
+	req, err := c.app.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetProjectUserRole: build request: %w", err)
 	}
@@ -188,13 +189,13 @@ type projectGroupRoleGrantsResponse struct {
 // ListProjectGroupRoleGrants returns all group-level CIAM role grants for a project.
 //
 // Endpoint: GET https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups
-func (c *Client) ListProjectGroupRoleGrants(orgID, projectID string) ([]ProjectGroupRoleGrant, error) {
+func (c *Client) ListProjectGroupRoleGrants(ctx context.Context, orgID, projectID string) ([]ProjectGroupRoleGrant, error) {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/projects/" + url.PathEscape(projectID) + "/groups")
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectGroupRoleGrants: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListProjectGroupRoleGrants: build request: %w", err)
 	}
@@ -210,14 +211,14 @@ func (c *Client) ListProjectGroupRoleGrants(orgID, projectID string) ([]ProjectG
 //
 // Endpoint: POST https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups
 // Body: {"group_ids": [...], "role": "<role>"}
-func (c *Client) AddProjectGroupRole(orgID, projectID string, groupIDs []string, role string) error {
+func (c *Client) AddProjectGroupRole(ctx context.Context, orgID, projectID string, groupIDs []string, role string) error {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/projects/" + url.PathEscape(projectID) + "/groups")
 	if err != nil {
 		return fmt.Errorf("AddProjectGroupRole: build URL: %w", err)
 	}
 
 	body := map[string]any{"group_ids": groupIDs, "role": role}
-	req, err := c.app.NewRequest("POST", u, body)
+	req, err := c.app.NewRequest(ctx, "POST", u, body)
 	if err != nil {
 		return fmt.Errorf("AddProjectGroupRole: build request: %w", err)
 	}

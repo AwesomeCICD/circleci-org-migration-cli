@@ -319,11 +319,11 @@ type fakeDeps struct {
 	downloadErr  error
 }
 
-func (f *fakeDeps) TriggerPipelineRun(_, _, _, _ string, _ map[string]any) (string, error) {
+func (f *fakeDeps) TriggerPipelineRun(_ context.Context, _, _, _, _ string, _ map[string]any) (string, error) {
 	return f.triggerPipelineID, f.triggerErr
 }
 
-func (f *fakeDeps) GetPipelineWorkflows(_ string) ([]project.Workflow, error) {
+func (f *fakeDeps) GetPipelineWorkflows(_ context.Context, _ string) ([]project.Workflow, error) {
 	if f.workflowCallIdx >= len(f.workflowResponses) {
 		return nil, nil
 	}
@@ -336,15 +336,15 @@ func (f *fakeDeps) GetPipelineWorkflows(_ string) ([]project.Workflow, error) {
 	return f.workflowResponses[idx], err
 }
 
-func (f *fakeDeps) GetWorkflowJobs(_ string) ([]project.Job, error) {
+func (f *fakeDeps) GetWorkflowJobs(_ context.Context, _ string) ([]project.Job, error) {
 	return f.jobsResult, f.jobsErr
 }
 
-func (f *fakeDeps) ListJobArtifacts(_ string, _ int) ([]project.Artifact, error) {
+func (f *fakeDeps) ListJobArtifacts(_ context.Context, _ string, _ int) ([]project.Artifact, error) {
 	return f.artifactsResult, f.artifactsErr
 }
 
-func (f *fakeDeps) DownloadArtifact(_ string) ([]byte, error) {
+func (f *fakeDeps) DownloadArtifact(_ context.Context, _ string) ([]byte, error) {
 	return f.downloadData, f.downloadErr
 }
 

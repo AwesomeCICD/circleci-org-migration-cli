@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +65,7 @@ func TestCreateWebhook_HappyPath(t *testing.T) {
 		Events:    []string{"workflow-completed"},
 		VerifyTLS: &verifyTLS,
 	}
-	if err := c.CreateWebhook(destProjectID, wh); err != nil {
+	if err := c.CreateWebhook(context.Background(), destProjectID, wh); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -85,7 +86,7 @@ func TestCreateWebhook_VerifyTLSFalse_WhenNil(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	wh := Webhook{Name: "hook", URL: "https://example.com", Events: []string{"job-completed"}, VerifyTLS: nil}
-	if err := c.CreateWebhook("proj-id", wh); err != nil {
+	if err := c.CreateWebhook(context.Background(), "proj-id", wh); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -93,7 +94,7 @@ func TestCreateWebhook_VerifyTLSFalse_WhenNil(t *testing.T) {
 func TestCreateWebhook_EmptyProjectID_Error(t *testing.T) {
 	c := &Client{}
 	wh := Webhook{Name: "hook", URL: "https://example.com"}
-	if err := c.CreateWebhook("", wh); err == nil {
+	if err := c.CreateWebhook(context.Background(), "", wh); err == nil {
 		t.Fatal("expected error for empty destProjectID")
 	}
 }
@@ -106,7 +107,7 @@ func TestCreateWebhook_ServerError(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	wh := Webhook{Name: "hook", URL: "https://example.com", Events: []string{"workflow-completed"}}
-	if err := c.CreateWebhook("proj-id", wh); err == nil {
+	if err := c.CreateWebhook(context.Background(), "proj-id", wh); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }

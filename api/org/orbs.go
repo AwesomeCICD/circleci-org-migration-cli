@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -34,12 +35,12 @@ type orbListResponse struct {
 //
 // Endpoint: GET https://app.circleci.com/api/private/orb?org-id={orgUUID}
 // Pagination: append &page-token={next_page_token} for subsequent pages.
-func (c *Client) GetOrgOrbs(orgUUID string) ([]OrgOrb, error) {
+func (c *Client) GetOrgOrbs(ctx context.Context, orgUUID string) ([]OrgOrb, error) {
 	var all []OrgOrb
 	pageToken := ""
 
 	for {
-		raw, err := c.fetchOrbPage(orgUUID, pageToken)
+		raw, err := c.fetchOrbPage(ctx, orgUUID, pageToken)
 		if err != nil {
 			return nil, fmt.Errorf("GetOrgOrbs %s: %w", orgUUID, err)
 		}
@@ -54,7 +55,7 @@ func (c *Client) GetOrgOrbs(orgUUID string) ([]OrgOrb, error) {
 
 // fetchOrbPage fetches a single page of orbs. pageToken is empty for the first
 // page; subsequent pages pass the token from the previous response.
-func (c *Client) fetchOrbPage(orgUUID, pageToken string) (*orbListResponse, error) {
+func (c *Client) fetchOrbPage(ctx context.Context, orgUUID, pageToken string) (*orbListResponse, error) {
 	rawPath := "api/private/orb?org-id=" + url.QueryEscape(orgUUID)
 	if pageToken != "" {
 		rawPath += "&page-token=" + url.QueryEscape(pageToken)
@@ -64,7 +65,7 @@ func (c *Client) fetchOrbPage(orgUUID, pageToken string) (*orbListResponse, erro
 		return nil, fmt.Errorf("fetchOrbPage: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetchOrbPage: build request: %w", err)
 	}

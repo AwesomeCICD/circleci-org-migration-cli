@@ -4,6 +4,7 @@ package exporter_test
 // org orbs, release-tracker settings, and environment hierarchy.
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestOrgOrbs_Captured(t *testing.T) {
 		nil, nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestOrgOrbs_Empty_NotCaptured(t *testing.T) {
 		nil, nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestOrgOrbs_APIError_Warning(t *testing.T) {
 		nil, nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on orbs API error, got: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestReleaseTrackerSettings_Captured(t *testing.T) {
 		nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestReleaseTrackerSettings_NilResponse_NotCaptured(t *testing.T) {
 		nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestReleaseTrackerSettings_APIError_Warning(t *testing.T) {
 		nil,
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on release-tracker API error, got: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestEnvironmentHierarchy_Captured(t *testing.T) {
 		},
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestEnvironmentHierarchy_NilResponse_NotCaptured(t *testing.T) {
 		func(orgUUID string) (*org.EnvHierarchyConfig, error) { return nil, nil },
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestEnvironmentHierarchy_APIError_Warning(t *testing.T) {
 		},
 	)
 
-	m, err := ex.Export(newExportOpts)
+	m, err := ex.Export(context.Background(), newExportOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on environment-hierarchy API error, got: %v", err)
 	}

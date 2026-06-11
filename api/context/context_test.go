@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,7 +61,7 @@ func TestListContexts_OwnerID(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListContexts("org-uuid", "")
+	got, err := c.ListContexts(context.Background(), "org-uuid", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestListContexts_OwnerSlug(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListContexts("", "github/myorg")
+	got, err := c.ListContexts(context.Background(), "", "github/myorg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestListContexts_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListContexts("org-id", "")
+	got, err := c.ListContexts(context.Background(), "org-id", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestListContexts_Pagination(t *testing.T) {
 
 func TestListContexts_BothEmpty_Error(t *testing.T) {
 	c := &Client{} // no server needed
-	_, err := c.ListContexts("", "")
+	_, err := c.ListContexts(context.Background(), "", "")
 	if err == nil {
 		t.Fatal("expected error when both ownerID and ownerSlug are empty")
 	}
@@ -184,7 +185,7 @@ func TestListEnvVars_NamesOnly(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListEnvVars("ctx-123")
+	got, err := c.ListEnvVars(context.Background(), "ctx-123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestListEnvVars_JSONTag_Variable(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListEnvVars("ctx-x")
+	got, err := c.ListEnvVars(context.Background(), "ctx-x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestListRestrictions_IncludingGroup(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListRestrictions("ctx-abc")
+	got, err := c.ListRestrictions(context.Background(), "ctx-abc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestListRestrictions_JSONTags(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.ListRestrictions("ctx-z")
+	got, err := c.ListRestrictions(context.Background(), "ctx-z")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -4,6 +4,7 @@ package exporter_test
 // block-unregistered-users capture code paths in exportOrgSettings.
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestBudgets_OrgBudgetCaptured(t *testing.T) {
 		}, nil
 	}, nil)
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestBudgets_ProjectBudgetCaptured(t *testing.T) {
 		}, nil
 	}, nil)
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestBudgets_APIError_Warning(t *testing.T) {
 		return nil, errors.New("permission denied")
 	}, nil)
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on budget API error, got: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestBudgets_EmptyResponse_NilBudgets(t *testing.T) {
 		return []org.Budget{}, nil
 	}, nil)
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestBlockUnregisteredUsers_TrueCaptured(t *testing.T) {
 		return true, nil
 	})
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestBlockUnregisteredUsers_FalseCaptured(t *testing.T) {
 		return false, nil
 	})
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +205,7 @@ func TestBlockUnregisteredUsers_APIError_Warning(t *testing.T) {
 		return false, errors.New("feature unavailable")
 	})
 
-	m, err := ex.Export(budgetOpts)
+	m, err := ex.Export(context.Background(), budgetOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on block-unregistered-users API error, got: %v", err)
 	}

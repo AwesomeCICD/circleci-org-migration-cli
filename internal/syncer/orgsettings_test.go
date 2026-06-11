@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -80,7 +81,7 @@ type fakeOrgSettingsWriter struct {
 	releaseTrackerSets         int
 }
 
-func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flags map[string]bool) error {
+func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(_ context.Context, vcsType, orgName string, flags map[string]bool) error {
 	f.calls = append(f.calls, orgSettingsCall{"UpdateFeatureFlags", []string{vcsType, orgName}})
 	f.flagsWritten = append(f.flagsWritten, flags)
 	if f.updateFeatureFlags != nil {
@@ -89,7 +90,7 @@ func (f *fakeOrgSettingsWriter) UpdateFeatureFlags(vcsType, orgName string, flag
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetOIDCClaims(orgID string, audience []string, ttl string) error {
+func (f *fakeOrgSettingsWriter) SetOIDCClaims(_ context.Context, orgID string, audience []string, ttl string) error {
 	f.calls = append(f.calls, orgSettingsCall{"SetOIDCClaims", []string{orgID, ttl}})
 	f.oidcCalls++
 	if f.setOIDCClaims != nil {
@@ -101,7 +102,7 @@ func (f *fakeOrgSettingsWriter) SetOIDCClaims(orgID string, audience []string, t
 // GetURLOrbAllowList implements URLOrbAllowListGetter (optional capability).
 // Only active when f.getURLOrbAllowList is non-nil; otherwise the method is not
 // exposed (type assertion returns false).
-func (f *fakeOrgSettingsWriter) GetURLOrbAllowList(slugOrID string) ([]URLOrbAllowEntry, error) {
+func (f *fakeOrgSettingsWriter) GetURLOrbAllowList(_ context.Context, slugOrID string) ([]URLOrbAllowEntry, error) {
 	f.calls = append(f.calls, orgSettingsCall{"GetURLOrbAllowList", []string{slugOrID}})
 	f.urlOrbGetCalls++
 	if f.getURLOrbAllowList != nil {
@@ -110,7 +111,7 @@ func (f *fakeOrgSettingsWriter) GetURLOrbAllowList(slugOrID string) ([]URLOrbAll
 	return nil, nil
 }
 
-func (f *fakeOrgSettingsWriter) CreateURLOrbAllowEntry(slugOrID, name, prefix, auth string) error {
+func (f *fakeOrgSettingsWriter) CreateURLOrbAllowEntry(_ context.Context, slugOrID, name, prefix, auth string) error {
 	f.calls = append(f.calls, orgSettingsCall{"CreateURLOrbAllowEntry", []string{slugOrID, name, prefix, auth}})
 	f.urlOrbCalls++
 	if f.createURLOrbAllowEntry != nil {
@@ -122,7 +123,7 @@ func (f *fakeOrgSettingsWriter) CreateURLOrbAllowEntry(slugOrID, name, prefix, a
 // GetOTelExporters implements OTelExporterGetter (optional capability).
 // Only active when f.getOTelExporters is non-nil; otherwise the method is not
 // exposed (type assertion returns false).
-func (f *fakeOrgSettingsWriter) GetOTelExporters(orgID string) ([]OTelExporter, error) {
+func (f *fakeOrgSettingsWriter) GetOTelExporters(_ context.Context, orgID string) ([]OTelExporter, error) {
 	f.calls = append(f.calls, orgSettingsCall{"GetOTelExporters", []string{orgID}})
 	f.otelGetCalls++
 	if f.getOTelExporters != nil {
@@ -131,7 +132,7 @@ func (f *fakeOrgSettingsWriter) GetOTelExporters(orgID string) ([]OTelExporter, 
 	return nil, nil
 }
 
-func (f *fakeOrgSettingsWriter) PutPolicyBundle(ownerID string, policies map[string]string) error {
+func (f *fakeOrgSettingsWriter) PutPolicyBundle(_ context.Context, ownerID string, policies map[string]string) error {
 	f.calls = append(f.calls, orgSettingsCall{"PutPolicyBundle", []string{ownerID}})
 	f.policyPuts++
 	if f.putPolicyBundle != nil {
@@ -140,7 +141,7 @@ func (f *fakeOrgSettingsWriter) PutPolicyBundle(ownerID string, policies map[str
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetPolicyEnforcement(ownerID string, enabled bool) error {
+func (f *fakeOrgSettingsWriter) SetPolicyEnforcement(_ context.Context, ownerID string, enabled bool) error {
 	v := "false"
 	if enabled {
 		v = "true"
@@ -153,7 +154,7 @@ func (f *fakeOrgSettingsWriter) SetPolicyEnforcement(ownerID string, enabled boo
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
+func (f *fakeOrgSettingsWriter) CreateOTelExporter(_ context.Context, orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
 	ins := "false"
 	if insecure {
 		ins = "true"
@@ -166,7 +167,7 @@ func (f *fakeOrgSettingsWriter) CreateOTelExporter(orgID, endpoint, protocol str
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetContacts(orgID string, primary, security []string) error {
+func (f *fakeOrgSettingsWriter) SetContacts(_ context.Context, orgID string, primary, security []string) error {
 	f.calls = append(f.calls, orgSettingsCall{"SetContacts", []string{orgID}})
 	f.contactsCalls++
 	if f.setContacts != nil {
@@ -175,7 +176,7 @@ func (f *fakeOrgSettingsWriter) SetContacts(orgID string, primary, security []st
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetStorageRetention(orgUUID string, controls StorageRetentionArgs) error {
+func (f *fakeOrgSettingsWriter) SetStorageRetention(_ context.Context, orgUUID string, controls StorageRetentionArgs) error {
 	f.calls = append(f.calls, orgSettingsCall{"SetStorageRetention", []string{orgUUID}})
 	f.storageRetentionSets++
 	if f.setStorageRetention != nil {
@@ -184,7 +185,7 @@ func (f *fakeOrgSettingsWriter) SetStorageRetention(orgUUID string, controls Sto
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetBudget(orgUUID string, projectID *string, credits int) error {
+func (f *fakeOrgSettingsWriter) SetBudget(_ context.Context, orgUUID string, projectID *string, credits int) error {
 	pid := "<nil>"
 	if projectID != nil {
 		pid = *projectID
@@ -197,7 +198,7 @@ func (f *fakeOrgSettingsWriter) SetBudget(orgUUID string, projectID *string, cre
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetBlockUnregisteredUsers(orgUUID string, enabled bool) error {
+func (f *fakeOrgSettingsWriter) SetBlockUnregisteredUsers(_ context.Context, orgUUID string, enabled bool) error {
 	v := "false"
 	if enabled {
 		v = "true"
@@ -210,7 +211,7 @@ func (f *fakeOrgSettingsWriter) SetBlockUnregisteredUsers(orgUUID string, enable
 	return nil
 }
 
-func (f *fakeOrgSettingsWriter) SetReleaseTrackerSettings(orgUUID string, ttl string) error {
+func (f *fakeOrgSettingsWriter) SetReleaseTrackerSettings(_ context.Context, orgUUID string, ttl string) error {
 	f.calls = append(f.calls, orgSettingsCall{"SetReleaseTrackerSettings", []string{orgUUID, ttl}})
 	f.releaseTrackerSets++
 	if f.setReleaseTrackerSettings != nil {
@@ -295,7 +296,7 @@ func TestSyncOrgSettings_AuditLogConfigs_ManualNoWrite(t *testing.T) {
 	})
 
 	// Even with Apply=true, audit-log configs must never trigger a write.
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -339,7 +340,7 @@ func TestSyncOrgSettings_SSO_ManualNoWrite(t *testing.T) {
 	})
 
 	// Even with Apply=true, SSO must never trigger a write.
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,7 +375,7 @@ func TestSyncOrgSettings_SSO_NoneWhenNil(t *testing.T) {
 		FeatureFlags: map[string]bool{},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -397,7 +398,7 @@ func TestSyncOrgSettings_NilSettings_NoWrites(t *testing.T) {
 	sy := newOrgSettingsSyncer(fw)
 
 	m := orgSettingsManifest(nil) // no settings
-	rep, err := sy.SyncOrgSettings(m, nil, Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestSyncOrgSettings_NilWriter_NoError(t *testing.T) {
 		FeatureFlags: map[string]bool{"allow_private_orbs": true},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, nil, Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestSyncOrgSettings_ResolveOrgIDError(t *testing.T) {
 	sy := &Syncer{Org: fr, OrgSettings: fw}
 
 	m := orgSettingsManifest(&manifest.OrgSettings{})
-	_, err := sy.SyncOrgSettings(m, nil, Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, nil, Options{Apply: true})
 	if err == nil {
 		t.Fatal("expected error from ResolveOrgID failure, got nil")
 	}
@@ -460,7 +461,7 @@ func TestSyncOrgSettings_FeatureFlags_DangerFlagsSkipped(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +501,7 @@ func TestSyncOrgSettings_FeatureFlags_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -528,7 +529,7 @@ func TestSyncOrgSettings_FeatureFlags_ApplyTrue_WritesEachFlagSeparately(t *test
 		},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestSyncOrgSettings_FeatureFlags_WriteError_IsErrorAction(t *testing.T) {
 		FeatureFlags: map[string]bool{"allow_private_orbs": true},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("write error must not propagate, got: %v", err)
 	}
@@ -571,7 +572,7 @@ func TestSyncOrgSettings_FeatureFlags_CircleCIDestSlug_Manual(t *testing.T) {
 		FeatureFlags: map[string]bool{"allow_private_orbs": true},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("circleci/dest-uuid"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("circleci/dest-uuid"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -598,7 +599,7 @@ func TestSyncOrgSettings_OIDC_DryRunNoWrites(t *testing.T) {
 		OIDCTTL:      "1h",
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -622,7 +623,7 @@ func TestSyncOrgSettings_OIDC_ApplyTrue(t *testing.T) {
 		OIDCTTL:      "2h",
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -646,7 +647,7 @@ func TestSyncOrgSettings_OIDC_Empty_NoWrite(t *testing.T) {
 		FeatureFlags: map[string]bool{},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -669,7 +670,7 @@ func TestSyncOrgSettings_OIDC_WriteError_IsErrorAction(t *testing.T) {
 		OIDCTTL:      "1h",
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("OIDC error must not propagate, got: %v", err)
 	}
@@ -694,7 +695,7 @@ func TestSyncOrgSettings_URLOrbAllowList_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -720,7 +721,7 @@ func TestSyncOrgSettings_URLOrbAllowList_ApplyTrue(t *testing.T) {
 		},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -744,7 +745,7 @@ func TestSyncOrgSettings_URLOrbAllowList_WriteError_IsErrorAction(t *testing.T) 
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("URL-orb error must not propagate, got: %v", err)
 	}
@@ -768,7 +769,7 @@ func TestSyncOrgSettings_Policies_DryRunNoWrites(t *testing.T) {
 		PolicyEnforcementEnabled: boolPtr(true),
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -795,7 +796,7 @@ func TestSyncOrgSettings_Policies_ApplyTrue(t *testing.T) {
 		PolicyEnforcementEnabled: boolPtr(true),
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -820,7 +821,7 @@ func TestSyncOrgSettings_Policies_WriteError_IsErrorAction(t *testing.T) {
 		ConfigPolicies: map[string]string{"p": "rego"},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("policy write error must not propagate, got: %v", err)
 	}
@@ -843,7 +844,7 @@ func TestSyncOrgSettings_PolicyEnforcement_WriteError_IsErrorAction(t *testing.T
 		PolicyEnforcementEnabled: boolPtr(false),
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("enforcement write error must not propagate, got: %v", err)
 	}
@@ -863,7 +864,7 @@ func TestSyncOrgSettings_NoPolicies_NoPolicyEnforcement_NoWrites(t *testing.T) {
 		FeatureFlags: map[string]bool{},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -894,7 +895,7 @@ func TestSyncOrgSettings_MappingUsedForDestSlug(t *testing.T) {
 	m := orgSettingsManifest(nil)
 	mapping := mappingTo("gh/dest-org")
 
-	_, err := sy.SyncOrgSettings(m, mapping, Options{Apply: false})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -915,7 +916,7 @@ func TestSyncOrgSettings_Report_DestOrgSlugAndID(t *testing.T) {
 	m := orgSettingsManifest(nil)
 	mapping := mappingTo("gh/dest")
 
-	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -932,12 +933,12 @@ func TestSyncOrgSettings_AppliedField(t *testing.T) {
 	sy := newOrgSettingsSyncer(fw)
 	m := orgSettingsManifest(nil)
 
-	repDry, _ := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	repDry, _ := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if repDry.Applied {
 		t.Error("Applied should be false when Apply=false")
 	}
 
-	repApply, _ := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	repApply, _ := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if !repApply.Applied {
 		t.Error("Applied should be true when Apply=true")
 	}
@@ -957,7 +958,7 @@ func TestSyncOrgSettings_OTel_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -983,7 +984,7 @@ func TestSyncOrgSettings_OTel_ApplyTrue_Created(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1014,7 +1015,7 @@ func TestSyncOrgSettings_OTel_HeaderKeys_ManualAction(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1046,7 +1047,7 @@ func TestSyncOrgSettings_OTel_NoHeaders_NoManualAction(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1072,7 +1073,7 @@ func TestSyncOrgSettings_OTel_WriteError_IsErrorAction(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("OTel write error must not propagate, got: %v", err)
 	}
@@ -1091,7 +1092,7 @@ func TestSyncOrgSettings_OTel_Empty_NoWrites(t *testing.T) {
 		OTelExporters: []manifest.OTelExporter{}, // empty
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1116,7 +1117,7 @@ func TestSyncOrgSettings_Contacts_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1149,7 +1150,7 @@ func TestSyncOrgSettings_Contacts_ApplyTrue(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1181,7 +1182,7 @@ func TestSyncOrgSettings_Contacts_NilContacts_Skip(t *testing.T) {
 		Contacts:     nil,
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1200,7 +1201,7 @@ func TestSyncOrgSettings_Contacts_BothEmpty_Skip(t *testing.T) {
 		Contacts: &manifest.OrgContacts{Primary: []string{}, Security: []string{}},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1222,7 +1223,7 @@ func TestSyncOrgSettings_Contacts_WriteError_IsErrorAction(t *testing.T) {
 		Contacts: &manifest.OrgContacts{Primary: []string{"alice@example.com"}},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("contacts write error must not propagate, got: %v", err)
 	}
@@ -1249,7 +1250,7 @@ func TestSyncOrgSettings_StorageRetention_DryRunNoWrites(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1285,7 +1286,7 @@ func TestSyncOrgSettings_StorageRetention_ApplyTrue(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1321,7 +1322,7 @@ func TestSyncOrgSettings_StorageRetention_Nil_NoWrite(t *testing.T) {
 		// No StorageRetention.
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1345,7 +1346,7 @@ func TestSyncOrgSettings_StorageRetention_WriteError_IsErrorAction(t *testing.T)
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("retention write error must not propagate, got: %v", err)
 	}
@@ -1367,7 +1368,7 @@ func TestSyncOrgSettings_StorageRetention_ReportMentionsClamping(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1398,7 +1399,7 @@ func TestSyncOrgSettings_Orbs_ReportedAsManual(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1430,7 +1431,7 @@ func TestSyncOrgSettings_Orbs_DetailMentionsRepublish(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1454,7 +1455,7 @@ func TestSyncOrgSettings_Orbs_Empty_NoActions(t *testing.T) {
 		Orbs: []manifest.OrgOrb{},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1478,7 +1479,7 @@ func TestSyncOrgSettings_ReleaseTracker_DryRunNoWrites(t *testing.T) {
 		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1507,7 +1508,7 @@ func TestSyncOrgSettings_ReleaseTracker_ApplyTrue_Written(t *testing.T) {
 		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "2h"},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1530,7 +1531,7 @@ func TestSyncOrgSettings_ReleaseTracker_Nil_NoWrites(t *testing.T) {
 		ReleaseTracker: nil,
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1552,7 +1553,7 @@ func TestSyncOrgSettings_ReleaseTracker_WriteError_IsErrorAction(t *testing.T) {
 		ReleaseTracker: &manifest.ReleaseTrackerSettings{InconclusiveReleaseTTL: "1h"},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("release-tracker write error must not propagate, got: %v", err)
 	}
@@ -1582,7 +1583,7 @@ func TestSyncOrgSettings_EnvironmentHierarchy_ReportedAsManual(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1616,7 +1617,7 @@ func TestSyncOrgSettings_EnvironmentHierarchy_DetailMentionsRecreate(t *testing.
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1640,7 +1641,7 @@ func TestSyncOrgSettings_EnvironmentHierarchy_Nil_NoActions(t *testing.T) {
 		EnvironmentHierarchy: nil,
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1676,7 +1677,7 @@ func TestSyncOrgSettings_OTel_IdempotentRerun_SkipExisting(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1717,7 +1718,7 @@ func TestSyncOrgSettings_OTel_IdempotentRerun_NewExporterStillCreated(t *testing
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1764,7 +1765,7 @@ func TestSyncOrgSettings_OTel_DryRun_NoGetCall(t *testing.T) {
 		},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1797,7 +1798,7 @@ func TestSyncOrgSettings_URLOrb_IdempotentRerun_SkipExisting(t *testing.T) {
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1838,7 +1839,7 @@ func TestSyncOrgSettings_URLOrb_IdempotentRerun_NewEntryStillCreated(t *testing.
 		},
 	})
 
-	rep, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1875,7 +1876,7 @@ func TestSyncOrgSettings_URLOrb_DryRun_NoGetCall(t *testing.T) {
 		},
 	})
 
-	_, err := sy.SyncOrgSettings(m, mappingTo("gh/dest"), Options{Apply: false})
+	_, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1922,7 +1923,7 @@ func TestSyncOrgSettings_Budget_ProjectUUID_Applied(t *testing.T) {
 		Projects: map[string]string{srcProjUUID: destProjUUID},
 	}
 
-	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1972,7 +1973,7 @@ func TestSyncOrgSettings_Budget_ProjectSlug_Warning(t *testing.T) {
 		Projects: map[string]string{srcProjUUID: destSlugValue},
 	}
 
-	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: true})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2018,7 +2019,7 @@ func TestSyncOrgSettings_Budget_ProjectUUID_DryRun(t *testing.T) {
 		Projects: map[string]string{srcProjUUID: destProjUUID},
 	}
 
-	rep, err := sy.SyncOrgSettings(m, mapping, Options{Apply: false})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mapping, Options{Apply: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -48,13 +49,13 @@ func budgetPath(orgUUID, budgetID string) (*url.URL, error) {
 // includes the org-level budget (project_id == nil) and any per-project budgets.
 //
 // Endpoint: GET https://app.circleci.com/private/orgs/{orgUUID}/budgets
-func (c *Client) GetBudgets(orgUUID string) ([]Budget, error) {
+func (c *Client) GetBudgets(ctx context.Context, orgUUID string) ([]Budget, error) {
 	u, err := budgetsPath(orgUUID)
 	if err != nil {
 		return nil, fmt.Errorf("GetBudgets: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetBudgets: build request: %w", err)
 	}
@@ -70,14 +71,14 @@ func (c *Client) GetBudgets(orgUUID string) ([]Budget, error) {
 // org-level budget; pass a non-nil project UUID for a per-project budget.
 //
 // Endpoint: PUT https://app.circleci.com/private/orgs/{orgUUID}/budgets
-func (c *Client) SetBudget(orgUUID string, projectID *string, credits int) error {
+func (c *Client) SetBudget(ctx context.Context, orgUUID string, projectID *string, credits int) error {
 	u, err := budgetsPath(orgUUID)
 	if err != nil {
 		return fmt.Errorf("SetBudget: build URL: %w", err)
 	}
 
 	body := budgetSetRequest{Credits: credits, ProjectID: projectID}
-	req, err := c.app.NewRequest("PUT", u, body)
+	req, err := c.app.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetBudget: build request: %w", err)
 	}
@@ -92,13 +93,13 @@ func (c *Client) SetBudget(orgUUID string, projectID *string, credits int) error
 // DeleteBudget removes a budget entry identified by budgetID.
 //
 // Endpoint: DELETE https://app.circleci.com/private/orgs/{orgUUID}/budgets/{budgetID}
-func (c *Client) DeleteBudget(orgUUID, budgetID string) error {
+func (c *Client) DeleteBudget(ctx context.Context, orgUUID, budgetID string) error {
 	u, err := budgetPath(orgUUID, budgetID)
 	if err != nil {
 		return fmt.Errorf("DeleteBudget: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("DELETE", u, nil)
+	req, err := c.app.NewRequest(ctx, "DELETE", u, nil)
 	if err != nil {
 		return fmt.Errorf("DeleteBudget: build request: %w", err)
 	}

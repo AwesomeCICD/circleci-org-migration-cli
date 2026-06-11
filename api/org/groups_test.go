@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -44,7 +45,7 @@ func TestGetAuditLogConfigs_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	configs, err := c.GetAuditLogConfigs(orgID)
+	configs, err := c.GetAuditLogConfigs(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestGetAuditLogConfigs_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	configs, err := c.GetAuditLogConfigs("some-org")
+	configs, err := c.GetAuditLogConfigs(context.Background(), "some-org")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestGetAuditLogConfigs_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetAuditLogConfigs("some-org")
+	_, err := c.GetAuditLogConfigs(context.Background(), "some-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -153,7 +154,7 @@ func TestListGroups_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	groups, err := c.ListGroups(orgID)
+	groups, err := c.ListGroups(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestListGroups_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	groups, err := c.ListGroups("some-org")
+	groups, err := c.ListGroups(context.Background(), "some-org")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestListGroups_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.ListGroups("some-org")
+	_, err := c.ListGroups(context.Background(), "some-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

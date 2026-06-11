@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -75,7 +76,7 @@ type listTriggersResponse struct {
 // projectID and defID must be UUIDs.  The event_source field is a union
 // discriminated by provider; callers should inspect EventSource.Provider to
 // determine which sub-fields are populated.
-func (c *Client) ListTriggers(projectID, defID string) ([]Trigger, error) {
+func (c *Client) ListTriggers(ctx context.Context, projectID, defID string) ([]Trigger, error) {
 	var all []Trigger
 	pageToken := ""
 
@@ -93,7 +94,7 @@ func (c *Client) ListTriggers(projectID, defID string) ([]Trigger, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListTriggers: build request: %w", err)
 		}

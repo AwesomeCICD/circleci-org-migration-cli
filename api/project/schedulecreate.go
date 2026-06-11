@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -36,7 +37,7 @@ type createScheduleRequest struct {
 // provider) projects, schedules must be created via the Trigger API (a future
 // milestone) and this method should NOT be called.  The caller is responsible
 // for checking the destination provider before calling.
-func (c *Client) CreateSchedule(destSlug, name, description, _ string, timetable, parameters map[string]any) error {
+func (c *Client) CreateSchedule(ctx context.Context, destSlug, name, description, _ string, timetable, parameters map[string]any) error {
 	if destSlug == "" {
 		return fmt.Errorf("project: CreateSchedule requires destSlug")
 	}
@@ -54,7 +55,7 @@ func (c *Client) CreateSchedule(destSlug, name, description, _ string, timetable
 		Parameters:       parameters,
 	}
 
-	req, err := c.v2.NewRequest("POST", u, &body)
+	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
 		return fmt.Errorf("project: CreateSchedule: build request: %w", err)
 	}

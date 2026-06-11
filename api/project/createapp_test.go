@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -47,7 +48,7 @@ func TestCreateAppProject_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.CreateAppProject("org-uuid-abc", "myrepo")
+	got, err := c.CreateAppProject(context.Background(), "org-uuid-abc", "myrepo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestCreateAppProject_MissingArgsError(t *testing.T) {
 		{"org-uuid", ""},
 	}
 	for _, tc := range cases {
-		if _, err := c.CreateAppProject(tc.orgID, tc.name); err == nil {
+		if _, err := c.CreateAppProject(context.Background(), tc.orgID, tc.name); err == nil {
 			t.Errorf("CreateAppProject(%q,%q): expected error, got nil", tc.orgID, tc.name)
 		}
 	}
@@ -82,7 +83,7 @@ func TestCreateAppProject_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateAppProject("org-uuid-abc", "myrepo")
+	_, err := c.CreateAppProject(context.Background(), "org-uuid-abc", "myrepo")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -100,7 +101,7 @@ func TestCreateAppProject_PathEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.CreateAppProject("org/uuid", "repo"); err != nil {
+	if _, err := c.CreateAppProject(context.Background(), "org/uuid", "repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -146,7 +147,7 @@ func TestCreatePipelineDefinition_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	id, err := c.CreatePipelineDefinition("proj-uuid-123", PipelineDefinitionSpec{
+	id, err := c.CreatePipelineDefinition(context.Background(), "proj-uuid-123", PipelineDefinitionSpec{
 		Name:               "default",
 		ConfigProvider:     "github_app",
 		ConfigExternalID:   "98765",
@@ -172,7 +173,7 @@ func TestCreatePipelineDefinition_MissingArgsError(t *testing.T) {
 		{"proj-id", PipelineDefinitionSpec{Name: ""}},
 	}
 	for _, tc := range cases {
-		if _, err := c.CreatePipelineDefinition(tc.projectID, tc.spec); err == nil {
+		if _, err := c.CreatePipelineDefinition(context.Background(), tc.projectID, tc.spec); err == nil {
 			t.Errorf("CreatePipelineDefinition(%q, spec.Name=%q): expected error, got nil",
 				tc.projectID, tc.spec.Name)
 		}
@@ -193,7 +194,7 @@ func TestCreatePipelineDefinition_DescriptionOmitted(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if _, err := c.CreatePipelineDefinition("proj-id", PipelineDefinitionSpec{
+	if _, err := c.CreatePipelineDefinition(context.Background(), "proj-id", PipelineDefinitionSpec{
 		Name:               "noDesc",
 		ConfigProvider:     "github_app",
 		ConfigExternalID:   "1",
@@ -211,7 +212,7 @@ func TestCreatePipelineDefinition_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreatePipelineDefinition("proj-id", PipelineDefinitionSpec{
+	_, err := c.CreatePipelineDefinition(context.Background(), "proj-id", PipelineDefinitionSpec{
 		Name:             "default",
 		ConfigProvider:   "github_app",
 		ConfigExternalID: "1",
@@ -259,7 +260,7 @@ func TestCreateTrigger_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	id, err := c.CreateTrigger("proj-uuid-123", "def-uuid-456", TriggerSpec{
+	id, err := c.CreateTrigger(context.Background(), "proj-uuid-123", "def-uuid-456", TriggerSpec{
 		Provider:    "github_app",
 		ExternalID:  "11111",
 		EventPreset: "code_push",
@@ -280,7 +281,7 @@ func TestCreateTrigger_MissingArgsError(t *testing.T) {
 		{"proj-id", ""},
 	}
 	for _, tc := range cases {
-		if _, err := c.CreateTrigger(tc.projectID, tc.defID, TriggerSpec{}); err == nil {
+		if _, err := c.CreateTrigger(context.Background(), tc.projectID, tc.defID, TriggerSpec{}); err == nil {
 			t.Errorf("CreateTrigger(%q,%q): expected error, got nil", tc.projectID, tc.defID)
 		}
 	}
@@ -293,7 +294,7 @@ func TestCreateTrigger_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateTrigger("proj-id", "def-id", TriggerSpec{Provider: "github_app", ExternalID: "1"})
+	_, err := c.CreateTrigger(context.Background(), "proj-id", "def-id", TriggerSpec{Provider: "github_app", ExternalID: "1"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -326,7 +327,7 @@ func TestEnableTrigger_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.EnableTrigger("proj-uuid-123", "trigger-uuid-789"); err != nil {
+	if err := c.EnableTrigger(context.Background(), "proj-uuid-123", "trigger-uuid-789"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -338,7 +339,7 @@ func TestEnableTrigger_MissingArgsError(t *testing.T) {
 		{"proj-id", ""},
 	}
 	for _, tc := range cases {
-		if err := c.EnableTrigger(tc.projectID, tc.triggerID); err == nil {
+		if err := c.EnableTrigger(context.Background(), tc.projectID, tc.triggerID); err == nil {
 			t.Errorf("EnableTrigger(%q,%q): expected error, got nil", tc.projectID, tc.triggerID)
 		}
 	}
@@ -351,7 +352,7 @@ func TestEnableTrigger_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.EnableTrigger("proj-id", "trigger-id"); err == nil {
+	if err := c.EnableTrigger(context.Background(), "proj-id", "trigger-id"); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -372,14 +373,14 @@ func TestDeleteProject_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.DeleteProject("circleci/org-id/proj-id"); err != nil {
+	if err := c.DeleteProject(context.Background(), "circleci/org-id/proj-id"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestDeleteProject_MissingSlugError(t *testing.T) {
 	c := &Client{}
-	if err := c.DeleteProject(""); err == nil {
+	if err := c.DeleteProject(context.Background(), ""); err == nil {
 		t.Error("DeleteProject with empty slug: expected error, got nil")
 	}
 }
@@ -391,7 +392,7 @@ func TestDeleteProject_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.DeleteProject("gh/acme/web"); err == nil {
+	if err := c.DeleteProject(context.Background(), "gh/acme/web"); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -408,7 +409,7 @@ func TestDeleteProject_SlugPathEncoding(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.DeleteProject("gh/my org/my repo"); err != nil {
+	if err := c.DeleteProject(context.Background(), "gh/my org/my repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

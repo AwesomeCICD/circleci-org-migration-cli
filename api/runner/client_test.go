@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestGetResourceClassesByNamespace(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	items, err := c.GetResourceClassesByNamespace("acme")
+	items, err := c.GetResourceClassesByNamespace(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("GetResourceClassesByNamespace: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestGetResourceClassesByNamespace_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	items, err := c.GetResourceClassesByNamespace("empty-ns")
+	items, err := c.GetResourceClassesByNamespace(context.Background(), "empty-ns")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestCreateResourceClass(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	rc, err := c.CreateResourceClass("acme/new-runner", "brand new runner")
+	rc, err := c.CreateResourceClass(context.Background(), "acme/new-runner", "brand new runner")
 	if err != nil {
 		t.Fatalf("CreateResourceClass: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestDeleteResourceClass(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.DeleteResourceClass("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	err := c.DeleteResourceClass(context.Background(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	if err != nil {
 		t.Fatalf("DeleteResourceClass: %v", err)
 	}

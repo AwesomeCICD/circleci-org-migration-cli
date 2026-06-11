@@ -1,6 +1,7 @@
 package exporter_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
@@ -67,7 +68,7 @@ func TestExportCIAM_SkippedForGitHubOAuthOrg(t *testing.T) {
 		},
 	}
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/acme",
 		IncludeProjects: false,
 		IncludeContexts: false,
@@ -94,7 +95,7 @@ func TestExportCIAM_OrgRolesCaptured(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: false,
 		IncludeContexts: false,
@@ -137,7 +138,7 @@ func TestExportCIAM_GroupsCaptured_SkipsDefaultAllMembersGroup(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: false,
 		IncludeContexts: false,
@@ -179,7 +180,7 @@ func TestExportCIAM_ProjectUserGrantsCaptured(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: true,
 		IncludeContexts: false,
@@ -213,7 +214,7 @@ func TestExportCIAM_OrgRoleGrantsReadError_AddsWarning(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: false,
 		IncludeContexts: false,
@@ -247,7 +248,7 @@ func TestExportCIAM_NoCIAMData_FieldIsNil(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: false,
 		IncludeContexts: false,
@@ -286,7 +287,7 @@ func TestExportCIAM_ProjectGroupGrantsCapturedGroupNameResolved(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: true,
 		IncludeContexts: false,
@@ -331,7 +332,7 @@ func TestExportCIAM_ProjectGroupGrantsUnknownGroupIDFallsback(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: true,
 		IncludeContexts: false,
@@ -368,7 +369,7 @@ func TestExportCIAM_ProjectUserGrantsReadError_AddsWarning(t *testing.T) {
 	}
 
 	e := newCIAMExporter(f)
-	m, err := e.Export(exporter.Options{
+	m, err := e.Export(context.Background(), exporter.Options{
 		OrgSlug:         ciamOrgSlug,
 		IncludeProjects: true,
 		IncludeContexts: false,

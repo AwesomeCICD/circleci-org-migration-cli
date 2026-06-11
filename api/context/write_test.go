@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -48,7 +49,7 @@ func TestCreateContext_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	got, err := c.CreateContext("production", "org-uuid-123")
+	got, err := c.CreateContext(context.Background(), "production", "org-uuid-123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestCreateContext_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.CreateContext("some-ctx", "org-uuid")
+	_, err := c.CreateContext(context.Background(), "some-ctx", "org-uuid")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -81,7 +82,7 @@ func TestCreateContext_Error(t *testing.T) {
 
 func TestCreateContext_EmptyName(t *testing.T) {
 	c := &Client{}
-	_, err := c.CreateContext("", "org-uuid")
+	_, err := c.CreateContext(context.Background(), "", "org-uuid")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -89,7 +90,7 @@ func TestCreateContext_EmptyName(t *testing.T) {
 
 func TestCreateContext_EmptyOwnerID(t *testing.T) {
 	c := &Client{}
-	_, err := c.CreateContext("myctx", "")
+	_, err := c.CreateContext(context.Background(), "myctx", "")
 	if err == nil {
 		t.Fatal("expected error for empty ownerID")
 	}
@@ -135,7 +136,7 @@ func TestUpsertEnvVar_PutPathAndBody(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.UpsertEnvVar(contextID, varName, varValue); err != nil {
+	if err := c.UpsertEnvVar(context.Background(), contextID, varName, varValue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -149,7 +150,7 @@ func TestUpsertEnvVar_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.UpsertEnvVar("missing-ctx", "VAR", "val")
+	err := c.UpsertEnvVar(context.Background(), "missing-ctx", "VAR", "val")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -157,14 +158,14 @@ func TestUpsertEnvVar_Error(t *testing.T) {
 
 func TestUpsertEnvVar_EmptyContextID(t *testing.T) {
 	c := &Client{}
-	if err := c.UpsertEnvVar("", "VAR", "val"); err == nil {
+	if err := c.UpsertEnvVar(context.Background(), "", "VAR", "val"); err == nil {
 		t.Fatal("expected error for empty contextID")
 	}
 }
 
 func TestUpsertEnvVar_EmptyName(t *testing.T) {
 	c := &Client{}
-	if err := c.UpsertEnvVar("ctx-123", "", "val"); err == nil {
+	if err := c.UpsertEnvVar(context.Background(), "ctx-123", "", "val"); err == nil {
 		t.Fatal("expected error for empty name")
 	}
 }
@@ -210,7 +211,7 @@ func TestCreateRestriction_ProjectType(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateRestriction(contextID, restrictionType, restrictionValue); err != nil {
+	if err := c.CreateRestriction(context.Background(), contextID, restrictionType, restrictionValue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -244,7 +245,7 @@ func TestCreateRestriction_ExpressionType(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateRestriction(contextID, restrictionType, restrictionValue); err != nil {
+	if err := c.CreateRestriction(context.Background(), contextID, restrictionType, restrictionValue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -258,7 +259,7 @@ func TestCreateRestriction_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.CreateRestriction("ctx-123", "bad-type", "some-value")
+	err := c.CreateRestriction(context.Background(), "ctx-123", "bad-type", "some-value")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -266,14 +267,14 @@ func TestCreateRestriction_Error(t *testing.T) {
 
 func TestCreateRestriction_EmptyContextID(t *testing.T) {
 	c := &Client{}
-	if err := c.CreateRestriction("", "project", "proj-uuid"); err == nil {
+	if err := c.CreateRestriction(context.Background(), "", "project", "proj-uuid"); err == nil {
 		t.Fatal("expected error for empty contextID")
 	}
 }
 
 func TestCreateRestriction_EmptyType(t *testing.T) {
 	c := &Client{}
-	if err := c.CreateRestriction("ctx-123", "", "some-value"); err == nil {
+	if err := c.CreateRestriction(context.Background(), "ctx-123", "", "some-value"); err == nil {
 		t.Fatal("expected error for empty restrictionType")
 	}
 }
@@ -300,7 +301,7 @@ func TestDeleteRestriction_DeletePathAndMethod(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.DeleteRestriction(contextID, restrictionID); err != nil {
+	if err := c.DeleteRestriction(context.Background(), contextID, restrictionID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -314,7 +315,7 @@ func TestDeleteRestriction_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.DeleteRestriction("ctx-123", "missing-restr-id")
+	err := c.DeleteRestriction(context.Background(), "ctx-123", "missing-restr-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -325,14 +326,14 @@ func TestDeleteRestriction_Error(t *testing.T) {
 
 func TestDeleteRestriction_EmptyContextID(t *testing.T) {
 	c := &Client{}
-	if err := c.DeleteRestriction("", "restr-uuid"); err == nil {
+	if err := c.DeleteRestriction(context.Background(), "", "restr-uuid"); err == nil {
 		t.Fatal("expected error for empty contextID")
 	}
 }
 
 func TestDeleteRestriction_EmptyRestrictionID(t *testing.T) {
 	c := &Client{}
-	if err := c.DeleteRestriction("ctx-123", ""); err == nil {
+	if err := c.DeleteRestriction(context.Background(), "ctx-123", ""); err == nil {
 		t.Fatal("expected error for empty restrictionID")
 	}
 }

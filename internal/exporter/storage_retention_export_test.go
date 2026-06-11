@@ -4,6 +4,7 @@ package exporter_test
 // storage-retention capture code path in exportOrgSettings.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestStorageRetention_CapturedIntoManifest(t *testing.T) {
 		}, nil
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestStorageRetention_APIError_Warning(t *testing.T) {
 		return nil, errors.New("permission denied")
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("export must not fail on retention API error, got: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestStorageRetention_NilResponse_NoField(t *testing.T) {
 		return nil, nil // no retention configured
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestStorageRetention_WarningMentionsError(t *testing.T) {
 		return nil, errors.New("storage API unavailable")
 	})
 
-	m, err := ex.Export(retentionOpts)
+	m, err := ex.Export(context.Background(), retentionOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

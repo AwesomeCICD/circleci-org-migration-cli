@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -35,7 +36,7 @@ type listWebhooksResponse struct {
 //
 // projectID must be the UUID of the project (not the slug).  The scope-type is
 // always "project" for this helper.
-func (c *Client) ListWebhooks(projectID string) ([]Webhook, error) {
+func (c *Client) ListWebhooks(ctx context.Context, projectID string) ([]Webhook, error) {
 	var all []Webhook
 	pageToken := ""
 
@@ -49,7 +50,7 @@ func (c *Client) ListWebhooks(projectID string) ([]Webhook, error) {
 		}
 		u.RawQuery = q.Encode()
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListWebhooks: build request: %w", err)
 		}

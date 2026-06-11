@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -93,7 +94,7 @@ func TestSyncProjects_AppDest_OAuthSource_Synthesizes(t *testing.T) {
 	p := oauthSourceProject("web", "gh/acme/web", &manifest.AdvancedSettings{BuildPRsOnly: boolPtr(false)})
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestSyncProjects_AppDest_OAuthSource_PRsOnlyPreset(t *testing.T) {
 	p := oauthSourceProject("web", "gh/acme/web", &manifest.AdvancedSettings{BuildPRsOnly: boolPtr(true)})
 	m := projectManifest("gh/acme", p)
 
-	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
+	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotTrigSpec.EventPreset != "only-build-prs" {
@@ -169,7 +170,7 @@ func TestSyncProjects_AppDest_OAuthSource_DataLossWarnings(t *testing.T) {
 	})
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestSyncProjects_AppDest_OAuthSource_ForksReceiveSecrets(t *testing.T) {
 	})
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestSyncProjects_AppDest_OAuthSource_RepoNotFound_ManualSkip(t *testing.T) 
 	p := oauthSourceProject("web", "gh/acme/web", nil)
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestSyncProjects_AppDest_OAuthSource_DryRun_Plans(t *testing.T) {
 	p := oauthSourceProject("web", "gh/acme/web", nil)
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: false, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestSyncProjects_AppDest_AppSource_NotSynthesized(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "captured-ext-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	if _, err := sy.SyncProjects(m, nil, nil, Options{Apply: true}); err != nil {
+	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -338,7 +339,7 @@ func TestSyncProjects_AppDest_OAuthSource_NonGitHubSlug_Manual(t *testing.T) {
 		Org: manifest.OrgMapping{From: "bb/acme", To: "circleci/dest-org-id"},
 	}
 
-	rep, err := sy.SyncProjects(m, nil, mapping, Options{Apply: true})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mapping, Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestSyncProjects_AppDest_OAuthSource_PipelineDefRepoAccessError_Manual(t *t
 	p := oauthSourceProject("web", "gh/acme/web", nil)
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestSyncProjects_AppDest_OAuthSource_PipelineDefOtherError(t *testing.T) {
 	p := oauthSourceProject("web", "gh/acme/web", nil)
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -433,7 +434,7 @@ func TestSyncProjects_AppDest_OAuthSource_CreateTriggerError(t *testing.T) {
 	p := oauthSourceProject("web", "gh/acme/web", nil)
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

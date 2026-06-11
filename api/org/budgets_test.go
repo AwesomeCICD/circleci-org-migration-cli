@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func TestGetBudgets_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	budgets, err := c.GetBudgets(budgetOrgUUID)
+	budgets, err := c.GetBudgets(context.Background(), budgetOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestGetBudgets_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	budgets, err := c.GetBudgets(budgetOrgUUID)
+	budgets, err := c.GetBudgets(context.Background(), budgetOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestGetBudgets_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	_, err := c.GetBudgets(budgetOrgUUID)
+	_, err := c.GetBudgets(context.Background(), budgetOrgUUID)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -134,7 +135,7 @@ func TestSetBudget_OrgLevel(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBudget(budgetOrgUUID, nil, 2000000); err != nil {
+	if err := c.SetBudget(context.Background(), budgetOrgUUID, nil, 2000000); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -166,7 +167,7 @@ func TestSetBudget_ProjectLevel(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBudget(budgetOrgUUID, &projID, 75000); err != nil {
+	if err := c.SetBudget(context.Background(), budgetOrgUUID, &projID, 75000); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -185,7 +186,7 @@ func TestSetBudget_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBudget(budgetOrgUUID, nil, 0); err == nil {
+	if err := c.SetBudget(context.Background(), budgetOrgUUID, nil, 0); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -210,7 +211,7 @@ func TestDeleteBudget_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.DeleteBudget(budgetOrgUUID, budgetID); err != nil {
+	if err := c.DeleteBudget(context.Background(), budgetOrgUUID, budgetID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -222,7 +223,7 @@ func TestDeleteBudget_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.DeleteBudget(budgetOrgUUID, "missing-id"); err == nil {
+	if err := c.DeleteBudget(context.Background(), budgetOrgUUID, "missing-id"); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }

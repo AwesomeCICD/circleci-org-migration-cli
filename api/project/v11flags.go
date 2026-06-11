@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -28,13 +29,13 @@ type v11ProjectSettingsResponse struct {
 //
 // The slug is encoded using the same slugSubresource convention as other v1.1
 // calls (each component percent-encoded, literal '/' separators kept).
-func (c *Client) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error) {
+func (c *Client) GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error) {
 	u, err := slugSubresource(slug, "settings")
 	if err != nil {
 		return nil, fmt.Errorf("GetV11ProjectFeatureFlags: %w", err)
 	}
 
-	req, err := c.v11.NewRequest("GET", u, nil)
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetV11ProjectFeatureFlags: build request: %w", err)
 	}
@@ -66,7 +67,7 @@ func (c *Client) GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 //
 // Mirrors api/org UpdateFeatureFlags + snakeToKebab exactly, scoped to a
 // project.
-func (c *Client) SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error {
+func (c *Client) SetV11ProjectFeatureFlags(ctx context.Context, slug string, flags map[string]bool) error {
 	u, err := slugSubresource(slug, "settings")
 	if err != nil {
 		return fmt.Errorf("SetV11ProjectFeatureFlags: %w", err)
@@ -79,7 +80,7 @@ func (c *Client) SetV11ProjectFeatureFlags(slug string, flags map[string]bool) e
 	}
 
 	body := map[string]any{"feature_flags": kebab}
-	req, err := c.v11.NewRequest("PUT", u, body)
+	req, err := c.v11.NewRequest(ctx, "PUT", u, body)
 	if err != nil {
 		return fmt.Errorf("SetV11ProjectFeatureFlags: build request: %w", err)
 	}

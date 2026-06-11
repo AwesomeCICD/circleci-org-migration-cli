@@ -26,23 +26,23 @@ import (
 
 // PipelineRunner triggers an unversioned pipeline run and returns its UUID.
 type PipelineRunner interface {
-	TriggerPipelineRun(slug, definitionID, branch, configYAML string, params map[string]any) (string, error)
+	TriggerPipelineRun(ctx context.Context, slug, definitionID, branch, configYAML string, params map[string]any) (string, error)
 }
 
 // WorkflowPoller returns the current workflows for a pipeline.
 type WorkflowPoller interface {
-	GetPipelineWorkflows(pipelineID string) ([]project.Workflow, error)
+	GetPipelineWorkflows(ctx context.Context, pipelineID string) ([]project.Workflow, error)
 }
 
 // JobLister returns the jobs in a workflow.
 type JobLister interface {
-	GetWorkflowJobs(workflowID string) ([]project.Job, error)
+	GetWorkflowJobs(ctx context.Context, workflowID string) ([]project.Job, error)
 }
 
 // ArtifactFetcher lists and downloads job artifacts.
 type ArtifactFetcher interface {
-	ListJobArtifacts(slug string, jobNumber int) ([]project.Artifact, error)
-	DownloadArtifact(url string) ([]byte, error)
+	ListJobArtifacts(ctx context.Context, slug string, jobNumber int) ([]project.Artifact, error)
+	DownloadArtifact(ctx context.Context, url string) ([]byte, error)
 }
 
 // Deps bundles all API dependencies so callers can pass a single concrete
@@ -455,7 +455,7 @@ func CaptureWithDecrypt(
 
 	configYAML := buildExtractConfig(allVarNames, contextNames, &opts)
 
-	pipelineID, err := deps.TriggerPipelineRun(projectSlug, opts.DefinitionID, branch, configYAML, nil)
+	pipelineID, err := deps.TriggerPipelineRun(ctx, projectSlug, opts.DefinitionID, branch, configYAML, nil)
 	if err != nil {
 		if errors.Is(err, project.ErrPipelineSkipped) {
 			return nil, fmt.Errorf("extract.Capture: pipeline run was skipped by server — check api-trigger-with-config is enabled and the config is valid")
@@ -487,7 +487,7 @@ func CaptureWithDecrypt(
 	}
 
 	// Find the dump job in the workflow.
-	jobs, err := deps.GetWorkflowJobs(wf.ID)
+	jobs, err := deps.GetWorkflowJobs(ctx, wf.ID)
 	if err != nil {
 		return nil, fmt.Errorf("extract.Capture: list jobs: %w", err)
 	}
@@ -504,7 +504,7 @@ func CaptureWithDecrypt(
 	}
 
 	// List and download the secrets artifact.
-	artifacts, err := deps.ListJobArtifacts(projectSlug, dumpJob.JobNumber)
+	artifacts, err := deps.ListJobArtifacts(ctx, projectSlug, dumpJob.JobNumber)
 	if err != nil {
 		return nil, fmt.Errorf("extract.Capture: list artifacts: %w", err)
 	}
@@ -533,7 +533,7 @@ func CaptureWithDecrypt(
 		return nil, ErrNoArtifact
 	}
 
-	data, err := deps.DownloadArtifact(artifactURL)
+	data, err := deps.DownloadArtifact(ctx, artifactURL)
 	if err != nil {
 		return nil, fmt.Errorf("extract.Capture: download artifact: %w", err)
 	}
@@ -736,7 +736,7 @@ func CaptureSSHKeys(
 
 	configYAML := buildSSHKeyExtractConfig(keys, &opts)
 
-	pipelineID, err := deps.TriggerPipelineRun(projectSlug, opts.DefinitionID, branch, configYAML, nil)
+	pipelineID, err := deps.TriggerPipelineRun(ctx, projectSlug, opts.DefinitionID, branch, configYAML, nil)
 	if err != nil {
 		if errors.Is(err, project.ErrPipelineSkipped) {
 			return nil, fmt.Errorf("extract.CaptureSSHKeys: pipeline run was skipped — check api-trigger-with-config is enabled")
@@ -759,7 +759,7 @@ func CaptureSSHKeys(
 		return nil, fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
 	}
 
-	jobs, err := deps.GetWorkflowJobs(wf.ID)
+	jobs, err := deps.GetWorkflowJobs(ctx, wf.ID)
 	if err != nil {
 		return nil, fmt.Errorf("extract.CaptureSSHKeys: list jobs: %w", err)
 	}
@@ -774,7 +774,7 @@ func CaptureSSHKeys(
 		return nil, fmt.Errorf("extract.CaptureSSHKeys: job %q not found in workflow", sshKeyDumpJobName)
 	}
 
-	artifacts, err := deps.ListJobArtifacts(projectSlug, dumpJob.JobNumber)
+	artifacts, err := deps.ListJobArtifacts(ctx, projectSlug, dumpJob.JobNumber)
 	if err != nil {
 		return nil, fmt.Errorf("extract.CaptureSSHKeys: list artifacts: %w", err)
 	}
@@ -794,7 +794,7 @@ func CaptureSSHKeys(
 		return nil, fmt.Errorf("extract.CaptureSSHKeys: %w (want %q)", ErrNoArtifact, wantDest)
 	}
 
-	data, err := deps.DownloadArtifact(artifactURL)
+	data, err := deps.DownloadArtifact(ctx, artifactURL)
 	if err != nil {
 		return nil, fmt.Errorf("extract.CaptureSSHKeys: download artifact: %w", err)
 	}
@@ -823,7 +823,7 @@ func CaptureSSHKeys(
 // after several polls.
 func pollWorkflow(ctx context.Context, poller WorkflowPoller, pipelineID string, interval time.Duration) (project.Workflow, error) {
 	for {
-		workflows, err := poller.GetPipelineWorkflows(pipelineID)
+		workflows, err := poller.GetPipelineWorkflows(ctx, pipelineID)
 		if err != nil {
 			return project.Workflow{}, fmt.Errorf("GetPipelineWorkflows: %w", err)
 		}

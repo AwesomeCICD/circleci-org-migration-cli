@@ -1,6 +1,7 @@
 package exporter_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -16,7 +17,7 @@ type fakeRunnerAPI struct {
 	getResourceClasses func(namespace string) ([]apirunner.ResourceClass, error)
 }
 
-func (f *fakeRunnerAPI) GetResourceClassesByNamespace(namespace string) ([]apirunner.ResourceClass, error) {
+func (f *fakeRunnerAPI) GetResourceClassesByNamespace(_ context.Context, namespace string) ([]apirunner.ResourceClass, error) {
 	if f.getResourceClasses != nil {
 		return f.getResourceClasses(namespace)
 	}
@@ -43,7 +44,7 @@ func TestExport_Runner_NamespaceSet_Captured(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/acme",
 		RunnerNamespace: "acme",
 	})
@@ -79,7 +80,7 @@ func TestExport_Runner_EmptyNamespace_Skipped(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/acme",
 		RunnerNamespace: "", // empty → skip
 	})
@@ -100,7 +101,7 @@ func TestExport_Runner_NoRunnerClient_Skipped(t *testing.T) {
 	ex := minimalExporter()
 	// Runner is nil (default)
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/acme",
 		RunnerNamespace: "acme",
 	})
@@ -122,7 +123,7 @@ func TestExport_Runner_APIError_Warning(t *testing.T) {
 		},
 	}
 
-	m, err := ex.Export(exporter.Options{
+	m, err := ex.Export(context.Background(), exporter.Options{
 		OrgSlug:         "gh/acme",
 		RunnerNamespace: "acme",
 	})

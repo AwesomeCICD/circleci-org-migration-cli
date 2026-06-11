@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -32,7 +33,7 @@ type listEnvVarsResponse struct {
 //
 // The value field in each EnvVar is the API's masked representation
 // (e.g. "xxxx1234") and is never the real secret.
-func (c *Client) ListEnvVars(slug string) ([]EnvVar, error) {
+func (c *Client) ListEnvVars(ctx context.Context, slug string) ([]EnvVar, error) {
 	var all []EnvVar
 	pageToken := ""
 
@@ -47,7 +48,7 @@ func (c *Client) ListEnvVars(slug string) ([]EnvVar, error) {
 			u.RawQuery = q.Encode()
 		}
 
-		req, err := c.v2.NewRequest("GET", u, nil)
+		req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, fmt.Errorf("ListEnvVars: build request: %w", err)
 		}

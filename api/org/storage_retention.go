@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -58,13 +59,13 @@ func storageRetentionPath(orgUUID string) (*url.URL, error) {
 // Like the other private BFF endpoints (groups, SSO) this is served by
 // app.circleci.com, not circleci.com; the org client's app base URL handles
 // the host rewrite and the token travels in the Circle-Token header.
-func (c *Client) GetStorageRetention(orgUUID string) (*StorageRetention, error) {
+func (c *Client) GetStorageRetention(ctx context.Context, orgUUID string) (*StorageRetention, error) {
 	u, err := storageRetentionPath(orgUUID)
 	if err != nil {
 		return nil, fmt.Errorf("GetStorageRetention: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetStorageRetention: build request: %w", err)
 	}
@@ -84,13 +85,13 @@ func (c *Client) GetStorageRetention(orgUUID string) (*StorageRetention, error) 
 // Content; POST/PATCH are not routed (they 404 "no such page").
 //
 // Endpoint: PUT https://app.circleci.com/private/orgs/{orgUUID}/storage-retention-controls
-func (c *Client) SetStorageRetention(orgUUID string, controls StorageRetentionControls) error {
+func (c *Client) SetStorageRetention(ctx context.Context, orgUUID string, controls StorageRetentionControls) error {
 	u, err := storageRetentionPath(orgUUID)
 	if err != nil {
 		return fmt.Errorf("SetStorageRetention: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("PUT", u, controls)
+	req, err := c.app.NewRequest(ctx, "PUT", u, controls)
 	if err != nil {
 		return fmt.Errorf("SetStorageRetention: build request: %w", err)
 	}

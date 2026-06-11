@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -26,7 +27,7 @@ type Organization struct {
 // (%2F) before being embedded in the URL path.  This is confirmed by the API
 // spec: https://circleci.com/docs/api/v2/index.html – the parameter is a
 // single path component labelled "org-slug-or-id".
-func (c *Client) GetOrganization(slugOrID string) (*Organization, error) {
+func (c *Client) GetOrganization(ctx context.Context, slugOrID string) (*Organization, error) {
 	// The slug may contain a '/' (e.g. "gh/acme") that must travel as a single,
 	// percent-encoded path segment (gh%2Facme). Building the URL via url.Parse on
 	// the pre-escaped string sets both Path and RawPath, so ResolveReference and
@@ -37,7 +38,7 @@ func (c *Client) GetOrganization(slugOrID string) (*Organization, error) {
 		return nil, fmt.Errorf("GetOrganization: build URL for %q: %w", slugOrID, err)
 	}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrganization: build request: %w", err)
 	}
@@ -62,10 +63,10 @@ func (c *Client) GetOrganization(slugOrID string) (*Organization, error) {
 //
 // We map into []Organization (ignoring avatar_url which is not part of
 // Organization).
-func (c *Client) ListCollaborations() ([]Organization, error) {
+func (c *Client) ListCollaborations(ctx context.Context) ([]Organization, error) {
 	u := &url.URL{Path: "me/collaborations"}
 
-	req, err := c.v2.NewRequest("GET", u, nil)
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListCollaborations: build request: %w", err)
 	}
@@ -100,7 +101,7 @@ func (c *Client) ListCollaborations() ([]Organization, error) {
 //     return it directly.
 //  2. If slug has the form "circleci/<uuid>", extract and return the UUID.
 //  3. Otherwise call GetOrganization and return its ID field.
-func (c *Client) ResolveOrgID(slug string) (string, error) {
+func (c *Client) ResolveOrgID(ctx context.Context, slug string) (string, error) {
 	// Case 1: bare UUID.
 	if isBareUUID(slug) {
 		return slug, nil
@@ -112,7 +113,7 @@ func (c *Client) ResolveOrgID(slug string) (string, error) {
 	}
 
 	// Case 3: full slug lookup.
-	org, err := c.GetOrganization(slug)
+	org, err := c.GetOrganization(ctx, slug)
 	if err != nil {
 		return "", fmt.Errorf("ResolveOrgID %q: %w", slug, err)
 	}

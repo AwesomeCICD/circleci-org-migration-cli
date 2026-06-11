@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func TestGetBlockUnregisteredUsers_Enabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	enabled, err := c.GetBlockUnregisteredUsers(blockUsersOrgUUID)
+	enabled, err := c.GetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestGetBlockUnregisteredUsers_Disabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	enabled, err := c.GetBlockUnregisteredUsers(blockUsersOrgUUID)
+	enabled, err := c.GetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestGetBlockUnregisteredUsers_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if _, err := c.GetBlockUnregisteredUsers(blockUsersOrgUUID); err == nil {
+	if _, err := c.GetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -91,7 +92,7 @@ func TestSetBlockUnregisteredUsers_Enable(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBlockUnregisteredUsers(blockUsersOrgUUID, true); err != nil {
+	if err := c.SetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if receivedBody["enabled"] != true {
@@ -114,7 +115,7 @@ func TestSetBlockUnregisteredUsers_Disable(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBlockUnregisteredUsers(blockUsersOrgUUID, false); err != nil {
+	if err := c.SetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if receivedBody["enabled"] != false {
@@ -137,7 +138,7 @@ func TestSetBlockUnregisteredUsers_EmptyContentType(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBlockUnregisteredUsers(blockUsersOrgUUID, true); err != nil {
+	if err := c.SetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID, true); err != nil {
 		t.Fatalf("unexpected error for 200 with empty content-type/body: %v", err)
 	}
 }
@@ -149,7 +150,7 @@ func TestSetBlockUnregisteredUsers_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientWithAppServer(t, srv)
-	if err := c.SetBlockUnregisteredUsers(blockUsersOrgUUID, true); err == nil {
+	if err := c.SetBlockUnregisteredUsers(context.Background(), blockUsersOrgUUID, true); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }

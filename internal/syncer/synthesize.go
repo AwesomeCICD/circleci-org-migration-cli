@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -73,6 +74,7 @@ func oauthSourceFullName(slug string) (string, bool) {
 // preflight resolve pass, in which case no API writes occur and the planned
 // actions are recorded instead.
 func (s *Syncer) synthesizeOAuthPipelineDefinition(
+	ctx context.Context,
 	report *Report,
 	projectName, projectID string,
 	p manifest.Project,
@@ -88,10 +90,10 @@ func (s *Syncer) synthesizeOAuthPipelineDefinition(
 
 	// Emit data-loss / behavior-change warnings before creation so they surface
 	// even when the repo resolves and the definition is created.
-	s.warnOAuthOnlyFlags(report, projectName, p.Settings)
+	s.warnOAuthOnlyFlags(ctx, report, projectName, p.Settings)
 
 	target := projectName + "/def:" + synthDefName
-	extID, ok := s.resolveExternalID(report, target+"/config", fullName, "", mapping, opts)
+	extID, ok := s.resolveExternalID(ctx, report, target+"/config", fullName, "", mapping, opts)
 	if !ok {
 		// resolveExternalID already recorded a "manual"/"error" action (e.g. the
 		// repo was not found in the destination GitHub org). Skip onboarding.
@@ -119,7 +121,7 @@ func (s *Syncer) synthesizeOAuthPipelineDefinition(
 		CheckoutExternalID: extID,
 	}
 
-	defID, err := s.Projects.CreatePipelineDefinition(projectID, spec)
+	defID, err := s.Projects.CreatePipelineDefinition(ctx, projectID, spec)
 	if err != nil {
 		if isRepoAccessError(err) {
 			report.add("project-pipeline-def", target, "manual",
@@ -142,7 +144,7 @@ func (s *Syncer) synthesizeOAuthPipelineDefinition(
 		Disabled:    true,
 	}
 
-	trigID, err := s.Projects.CreateTrigger(projectID, defID, trigSpec)
+	trigID, err := s.Projects.CreateTrigger(ctx, projectID, defID, trigSpec)
 	if err != nil {
 		report.add("project-trigger", target+"/trigger:push", "error",
 			fmt.Sprintf("create trigger: %v", err))
@@ -162,7 +164,7 @@ func (s *Syncer) synthesizeOAuthPipelineDefinition(
 // warnOAuthOnlyFlags records "manual" actions for OAuth advanced-settings flags
 // that have no GitHub App equivalent, so onboarding does not silently change
 // behavior. It emits at most one action per applicable case.
-func (s *Syncer) warnOAuthOnlyFlags(report *Report, projectName string, set *manifest.AdvancedSettings) {
+func (s *Syncer) warnOAuthOnlyFlags(ctx context.Context, report *Report, projectName string, set *manifest.AdvancedSettings) {
 	if set == nil {
 		return
 	}

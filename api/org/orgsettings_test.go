@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestGetFeatureFlags_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	flags, err := c.GetFeatureFlags("github", "acme")
+	flags, err := c.GetFeatureFlags(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestGetFeatureFlags_EmptyFlags(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	flags, err := c.GetFeatureFlags("github", "acme")
+	flags, err := c.GetFeatureFlags(context.Background(), "github", "acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestGetFeatureFlags_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetFeatureFlags("github", "acme")
+	_, err := c.GetFeatureFlags(context.Background(), "github", "acme")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -132,7 +133,7 @@ func TestUpdateFeatureFlags_HappyPath_SnakeToKebabConversion(t *testing.T) {
 		"allow_uncertified_public_orbs": false,
 		"drop_all_build_requests":       false,
 	}
-	if err := c.UpdateFeatureFlags("github", "acme", flags); err != nil {
+	if err := c.UpdateFeatureFlags(context.Background(), "github", "acme", flags); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -163,7 +164,7 @@ func TestUpdateFeatureFlags_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.UpdateFeatureFlags("github", "acme", map[string]bool{"allow_private_orbs": true})
+	err := c.UpdateFeatureFlags(context.Background(), "github", "acme", map[string]bool{"allow_private_orbs": true})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -193,7 +194,7 @@ func TestGetOIDCClaims_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	audience, ttl, err := c.GetOIDCClaims(orgID)
+	audience, ttl, err := c.GetOIDCClaims(context.Background(), orgID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestGetOIDCClaims_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	audience, ttl, err := c.GetOIDCClaims("some-id")
+	audience, ttl, err := c.GetOIDCClaims(context.Background(), "some-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestGetOIDCClaims_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, _, err := c.GetOIDCClaims("missing-org")
+	_, _, err := c.GetOIDCClaims(context.Background(), "missing-org")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -264,7 +265,7 @@ func TestSetOIDCClaims_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.SetOIDCClaims(orgID, []string{"https://example.com"}, "2h"); err != nil {
+	if err := c.SetOIDCClaims(context.Background(), orgID, []string{"https://example.com"}, "2h"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -286,7 +287,7 @@ func TestSetOIDCClaims_NoOp_EmptyAudienceAndTTL(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.SetOIDCClaims("some-id", nil, ""); err != nil {
+	if err := c.SetOIDCClaims(context.Background(), "some-id", nil, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -298,7 +299,7 @@ func TestSetOIDCClaims_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetOIDCClaims("org-id", []string{"aud"}, "1h")
+	err := c.SetOIDCClaims(context.Background(), "org-id", []string{"aud"}, "1h")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -329,7 +330,7 @@ func TestGetURLOrbAllowList_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	entries, err := c.GetURLOrbAllowList(slugOrID)
+	entries, err := c.GetURLOrbAllowList(context.Background(), slugOrID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestGetURLOrbAllowList_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	entries, err := c.GetURLOrbAllowList("gh/acme")
+	entries, err := c.GetURLOrbAllowList(context.Background(), "gh/acme")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestGetURLOrbAllowList_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetURLOrbAllowList("gh/acme")
+	_, err := c.GetURLOrbAllowList(context.Background(), "gh/acme")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -394,7 +395,7 @@ func TestCreateURLOrbAllowEntry_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateURLOrbAllowEntry(orgID, "github-raw", "https://raw.githubusercontent.com/", "none"); err != nil {
+	if err := c.CreateURLOrbAllowEntry(context.Background(), orgID, "github-raw", "https://raw.githubusercontent.com/", "none"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -421,7 +422,7 @@ func TestCreateURLOrbAllowEntry_EscapedSlugPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.CreateURLOrbAllowEntry("gh/acme", "n", "p", "a"); err != nil {
+	if err := c.CreateURLOrbAllowEntry(context.Background(), "gh/acme", "n", "p", "a"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -433,7 +434,7 @@ func TestCreateURLOrbAllowEntry_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.CreateURLOrbAllowEntry("gh/acme", "", "bad-prefix", "bad-auth")
+	err := c.CreateURLOrbAllowEntry(context.Background(), "gh/acme", "", "bad-prefix", "bad-auth")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -462,7 +463,7 @@ func TestGetPolicyBundle_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	bundle, err := c.GetPolicyBundle(ownerID)
+	bundle, err := c.GetPolicyBundle(context.Background(), ownerID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -481,7 +482,7 @@ func TestGetPolicyBundle_Empty(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	bundle, err := c.GetPolicyBundle("some-owner")
+	bundle, err := c.GetPolicyBundle(context.Background(), "some-owner")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +501,7 @@ func TestGetPolicyBundle_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetPolicyBundle("owner-id")
+	_, err := c.GetPolicyBundle(context.Background(), "owner-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -533,7 +534,7 @@ func TestPutPolicyBundle_HappyPath(t *testing.T) {
 	policies := map[string]string{
 		"my_policy": "package org\ndefault allow = false",
 	}
-	if err := c.PutPolicyBundle(ownerID, policies); err != nil {
+	if err := c.PutPolicyBundle(context.Background(), ownerID, policies); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -553,7 +554,7 @@ func TestPutPolicyBundle_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.PutPolicyBundle("owner-id", map[string]string{"p": "rego"})
+	err := c.PutPolicyBundle(context.Background(), "owner-id", map[string]string{"p": "rego"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -579,7 +580,7 @@ func TestGetPolicyEnforcement_Enabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	enabled, err := c.GetPolicyEnforcement(ownerID)
+	enabled, err := c.GetPolicyEnforcement(context.Background(), ownerID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -595,7 +596,7 @@ func TestGetPolicyEnforcement_Disabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	enabled, err := c.GetPolicyEnforcement("owner-id")
+	enabled, err := c.GetPolicyEnforcement(context.Background(), "owner-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -611,7 +612,7 @@ func TestGetPolicyEnforcement_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.GetPolicyEnforcement("owner-id")
+	_, err := c.GetPolicyEnforcement(context.Background(), "owner-id")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -641,7 +642,7 @@ func TestSetPolicyEnforcement_EnableTrue(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.SetPolicyEnforcement(ownerID, true); err != nil {
+	if err := c.SetPolicyEnforcement(context.Background(), ownerID, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if receivedBody["enabled"] != true {
@@ -661,7 +662,7 @@ func TestSetPolicyEnforcement_DisableFalse(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	if err := c.SetPolicyEnforcement("owner-id", false); err != nil {
+	if err := c.SetPolicyEnforcement(context.Background(), "owner-id", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if receivedBody["enabled"] != false {
@@ -676,7 +677,7 @@ func TestSetPolicyEnforcement_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	err := c.SetPolicyEnforcement("owner-id", true)
+	err := c.SetPolicyEnforcement(context.Background(), "owner-id", true)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

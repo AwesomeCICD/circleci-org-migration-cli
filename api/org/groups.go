@@ -1,6 +1,7 @@
 package org
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 )
@@ -29,13 +30,13 @@ type groupsResponse struct {
 // NOTE: this is served by app.circleci.com (NOT circleci.com); the org client's
 // app base URL handles that host rewrite. The token travels via the Circle-Token
 // header like every other request.
-func (c *Client) ListGroups(orgID string) ([]Group, error) {
+func (c *Client) ListGroups(ctx context.Context, orgID string) ([]Group, error) {
 	u, err := url.Parse("private/ciam/orgs/" + url.PathEscape(orgID) + "/groups")
 	if err != nil {
 		return nil, fmt.Errorf("ListGroups: build URL: %w", err)
 	}
 
-	req, err := c.app.NewRequest("GET", u, nil)
+	req, err := c.app.NewRequest(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ListGroups: build request: %w", err)
 	}
