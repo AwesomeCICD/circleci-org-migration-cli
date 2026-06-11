@@ -34,13 +34,24 @@ func newSyncCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "sync --manifest <file> [--secrets <file>] [--apply]",
-		Short: "Apply a manifest to the destination org (contexts).",
+		Short: "Apply a manifest to the destination org (contexts, projects, and org settings).",
 		Long: `sync recreates exported data in the destination CircleCI organization.
 
 It reads the manifest (structure + variable names), an optional secret bundle
 (the plaintext values captured by the in-pipeline 'secrets' step), and an
 optional mapping file (source->destination org/project mapping; defaults to the
-same names). It is idempotent: existing contexts are reused by name.
+same names). It is idempotent: existing resources are reused by name where
+possible.
+
+Resources synced (in order):
+  • Org settings — feature flags, OIDC claims, URL-orb allow list, config
+    policies, OTel exporter, contacts, storage retention, budgets, release
+    tracker, and block-unregistered-users.
+  • Contexts — with environment variable values from the secret bundle.
+  • Projects — OAuth projects are recreated in a paused state; App projects
+    are created with a pipeline definition and trigger.
+  • Self-hosted runner resource classes — only when --dest-runner-namespace
+    is provided or the manifest contains runner classes.
 
 By default sync performs a DRY RUN and writes nothing — review the plan, then
 re-run with --apply. Group and project-type context restrictions are flagged
