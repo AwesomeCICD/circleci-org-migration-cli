@@ -24,3 +24,7 @@ coverage.html
 
 # Agent worktrees (transient; never commit)
 .claude/worktrees/
+
+# transient build-log redirect artifact
+build.err
+*.err
