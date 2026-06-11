@@ -38,38 +38,95 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
+# Software Bill of Materials, one per archive, generated with Syft.
+#
+# PREREQUISITE: the `syft` binary must be on PATH in the release job. It is NOT
+# bundled with GoReleaser — the release CI must install it (see
+# .circleci/continue_config.yml release job). Without syft on PATH the release
+# step fails, so the wiring is mandatory, not optional.
+#
+# Produces e.g. circleci-migrate_1.2.3_linux_amd64.tar.gz.sbom.json alongside
+# each archive, in CycloneDX JSON.
+sboms:
+  - id: archive
+    artifacts: archive
+    documents:
+      - '${artifact}.sbom.json'
+    args:
+      - '$artifact'
+      - '--output'
+      - 'cyclonedx-json=$document'
+
+# Keyless (OIDC) signing of all release artifacts (archives + checksums + SBOMs)
+# with Cosign. Signatures + certificates are uploaded as additional release
+# assets; verification needs no long-lived private key.
+#
+# PREREQUISITES (the release job must satisfy ALL of these or the release fails):
+#   1. The `cosign` binary must be on PATH (NOT bundled with GoReleaser — the
+#      release CI must install it; see .circleci/continue_config.yml).
+#   2. Keyless signing relies on an OIDC token. CircleCI exposes one as the
+#      env var CIRCLE_OIDC_TOKEN_V2; we pass it via `--identity-token` so cosign
+#      does not try to open an interactive browser flow (`COSIGN_EXPERIMENTAL`
+#      is no longer required on modern cosign for keyless blob signing).
+#   3. The job needs network access to Fulcio (signing cert) and Rekor
+#      (transparency log), which are the public Sigstore defaults.
+#
+# Verify a downloaded artifact with, e.g.:
+#   cosign verify-blob \
+#     --certificate circleci-migrate_1.2.3_linux_amd64.tar.gz.pem \
+#     --signature   circleci-migrate_1.2.3_linux_amd64.tar.gz.sig \
+#     --certificate-identity-regexp '.*' \
+#     --certificate-oidc-issuer https://oidc.circleci.com/org/<org-id> \
+#     circleci-migrate_1.2.3_linux_amd64.tar.gz
+signs:
+  - cmd: cosign
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    artifacts: all
+    output: true
+    args:
+      - 'sign-blob'
+      - '--yes'
+      - '--identity-token={{ .Env.CIRCLE_OIDC_TOKEN_V2 }}'
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+
 snapshot:
   # version_template is the v2 key (v1 used name_template).
   version_template: '{{ incpatch .Version }}-snapshot'
 
-brews:
-  # Homebrew formula for the circleci-migrate CLI binary.
-  #
-  # PREREQUISITES (publish is skipped until both exist — see skip_upload below):
-  #   1. The tap repo AwesomeCICD/homebrew-tap must exist (becomes
-  #      CircleCI-Labs/homebrew-tap on the Labs move).
-  #   2. A token with push access to the tap repo must be provided to GoReleaser
-  #      via repository.token (commonly a HOMEBREW_TAP_GITHUB_TOKEN /
-  #      GITHUB_TOKEN env var with push rights to the tap repo). The default
-  #      release GITHUB_TOKEN only has access to THIS repo, so a separate token
-  #      is required to push the formula to the tap.
-  - name: circleci-migrate
-    repository:
-      owner: AwesomeCICD # becomes CircleCI-Labs/homebrew-tap on the Labs move
-      name: homebrew-tap
-      branch: main
-    directory: Formula
-    homepage: https://github.com/AwesomeCICD/circleci-org-migration-cli
-    description: CLI to migrate CircleCI organizations (contexts, projects, secrets) between orgs
-    license: MIT
-    install: |
-      bin.install "circleci-migrate"
-    test: |
-      system "#{bin}/circleci-migrate version"
-    # `auto` skips the formula upload on snapshots/pre-releases and gracefully
-    # no-ops when the tap repo / push token are absent, so a release won't fail
-    # before AwesomeCICD/homebrew-tap exists and a token is wired up.
-    skip_upload: auto
+# ---------------------------------------------------------------------------
+# Homebrew tap — DISABLED, PENDING A REAL TAP REPO.
+# ---------------------------------------------------------------------------
+# The previous `brews:` block targeted AwesomeCICD/homebrew-tap, which does NOT
+# exist. It relied on `skip_upload: auto` to no-op, but that silently masks a
+# misconfiguration (and on a real, non-pre-release tag with a push token wired
+# up it would attempt an upload to a non-existent repo and fail). The block has
+# been removed rather than left in a half-broken state.
+#
+# TO RE-ENABLE Homebrew publishing, both of these must be true first:
+#   1. The tap repo exists, e.g. AwesomeCICD/homebrew-tap (becomes
+#      CircleCI-Labs/homebrew-tap on the Labs move).
+#   2. A token with push access to the tap repo is provided to GoReleaser via
+#      `repository.token` (commonly HOMEBREW_TAP_GITHUB_TOKEN). The default
+#      release GITHUB_TOKEN only has access to THIS repo.
+# Then restore a `brews:` block like:
+#   brews:
+#     - name: circleci-migrate
+#       repository:
+#         owner: AwesomeCICD
+#         name: homebrew-tap
+#         branch: main
+#         token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+#       directory: Formula
+#       homepage: https://github.com/AwesomeCICD/circleci-org-migration-cli
+#       description: CLI to migrate CircleCI organizations between orgs
+#       license: MIT
+#       install: |
+#         bin.install "circleci-migrate"
+#       test: |
+#         system "#{bin}/circleci-migrate version"
 
 release:
   # Owner and repo are inferred from the remote URL (temp home):
