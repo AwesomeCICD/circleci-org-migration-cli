@@ -335,6 +335,7 @@ func TestSecretsCapture_StorageValidation_UnknownValue(t *testing.T) {
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
 		"--storage", "invalid-storage",
+		"--no-encrypt", // opt out so we don't auto-generate a key file
 	)
 	if err == nil {
 		t.Fatal("expected error for unknown --storage value, got nil")
@@ -354,6 +355,7 @@ func TestSecretsCapture_StorageS3_RequiresBucket(t *testing.T) {
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
 		"--storage", "s3",
+		"--no-encrypt", // opt out so we don't auto-generate a key file
 		// no --s3-bucket
 	)
 	if err == nil {
@@ -364,20 +366,34 @@ func TestSecretsCapture_StorageS3_RequiresBucket(t *testing.T) {
 	}
 }
 
-func TestSecretsCapture_EncryptRequiresPublicKeyOrGenerate(t *testing.T) {
+// TestSecretsCapture_EncryptAutoGeneratesKey verifies that when --encrypt is
+// in effect (default) and no key flags are provided, capture auto-enables
+// --generate-key rather than failing. The test proceeds until the token check
+// (no fake server needed).
+func TestSecretsCapture_EncryptAutoGeneratesKey(t *testing.T) {
 	dir := t.TempDir()
 	m := captureTestManifest()
 	mPath := writeManifest(t, dir, "manifest.json", m)
 
-	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	// No token — command will fail at the token check, AFTER the auto-generate
+	// logic runs but BEFORE any file-write (resolveEncryptOpts is after token check).
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
 
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
-		"--encrypt",
-		// no --ssh-public-key or --generate-key
+		// --encrypt is default=true, no key flags supplied → should auto-generate
 	)
 	if err == nil {
-		t.Fatal("expected error when --encrypt without key, got nil")
+		t.Fatal("expected error (no token), got nil")
+	}
+	// Error must be about the token, not about a missing key.
+	if !strings.Contains(strings.ToLower(err.Error()), "token") {
+		t.Errorf("error should be missing-token; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "Requires --ssh-public-key") {
+		t.Errorf("--encrypt without a key should auto-generate, not fail; got: %v", err)
 	}
 }
 

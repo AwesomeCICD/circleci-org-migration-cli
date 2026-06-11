@@ -195,11 +195,130 @@ func TestSecretsCapture_FlagsRegistered(t *testing.T) {
 	required := []string{
 		"manifest", "output", "project", "context", "branch",
 		"enable-trigger", "poll-timeout", "skip-restricted-contexts",
+		"encrypt", "no-encrypt", "generate-key", "ssh-public-key", "ssh-private-key",
 	}
 	for _, name := range required {
 		if sub.Flags().Lookup(name) == nil {
 			t.Errorf("flag --%s not registered on 'secrets capture'", name)
 		}
+	}
+}
+
+// TestSecretsCapture_EncryptDefault verifies that --encrypt defaults to true.
+func TestSecretsCapture_EncryptDefault(t *testing.T) {
+	root := MakeTestCommands()
+	sub := findSubcommand(root, "secrets", "capture")
+	if sub == nil {
+		t.Fatal("'secrets capture' subcommand not found")
+	}
+	f := sub.Flags().Lookup("encrypt")
+	if f == nil {
+		t.Fatal("--encrypt flag not registered")
+	}
+	if f.DefValue != "true" {
+		t.Errorf("--encrypt default=%q, want true", f.DefValue)
+	}
+}
+
+// TestSecretsCapture_NoEncryptFlag verifies that --no-encrypt defaults to false.
+func TestSecretsCapture_NoEncryptFlag(t *testing.T) {
+	root := MakeTestCommands()
+	sub := findSubcommand(root, "secrets", "capture")
+	if sub == nil {
+		t.Fatal("'secrets capture' subcommand not found")
+	}
+	f := sub.Flags().Lookup("no-encrypt")
+	if f == nil {
+		t.Fatal("--no-encrypt flag not registered")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--no-encrypt default=%q, want false", f.DefValue)
+	}
+}
+
+// TestSecretsCapture_NoInput_RequiresExplicitEncryptChoice verifies that
+// --no-input without any explicit encryption flag returns an error naming the
+// available options.
+func TestSecretsCapture_NoInput_RequiresExplicitEncryptChoice(t *testing.T) {
+	dir := t.TempDir()
+	m := captureTestManifest()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, _, err := runCmd(t, "secrets", "capture",
+		"--manifest", mPath,
+		"--no-input",
+		// No --encrypt, --no-encrypt, --generate-key, or --ssh-public-key → must fail
+	)
+	if err == nil {
+		t.Fatal("expected error when --no-input without explicit encryption choice, got nil")
+	}
+	if !strings.Contains(err.Error(), "explicit encryption choice") {
+		t.Errorf("error %q should mention 'explicit encryption choice'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--no-encrypt") {
+		t.Errorf("error %q should mention '--no-encrypt'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--generate-key") {
+		t.Errorf("error %q should mention '--generate-key'", err.Error())
+	}
+}
+
+// TestSecretsCapture_NoInput_WithNoEncrypt_Succeeds_ToTokenCheck verifies that
+// --no-input --no-encrypt passes the encryption check and proceeds to the token
+// check (which will fail since no server is running — that's expected).
+func TestSecretsCapture_NoInput_WithNoEncrypt_Succeeds_ToTokenCheck(t *testing.T) {
+	dir := t.TempDir()
+	m := captureTestManifest()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	_, _, err := runCmd(t, "secrets", "capture",
+		"--manifest", mPath,
+		"--no-input",
+		"--no-encrypt",
+	)
+	// Must fail at token check, not at the "explicit encryption choice" check.
+	if err == nil {
+		t.Fatal("expected error (no token), got nil")
+	}
+	if strings.Contains(err.Error(), "explicit encryption choice") {
+		t.Errorf("--no-encrypt should satisfy the explicit choice requirement; got: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "token") {
+		t.Errorf("error should be about missing token; got: %v", err)
+	}
+}
+
+// TestSecretsCapture_NoInput_WithGenerateKey_Succeeds_ToTokenCheck verifies
+// that --no-input --generate-key also satisfies the explicit choice requirement.
+func TestSecretsCapture_NoInput_WithGenerateKey_Succeeds_ToTokenCheck(t *testing.T) {
+	dir := t.TempDir()
+	m := captureTestManifest()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	_, _, err := runCmd(t, "secrets", "capture",
+		"--manifest", mPath,
+		"--no-input",
+		"--generate-key",
+	)
+	// Must fail at token check, not at the "explicit encryption choice" check.
+	if err == nil {
+		t.Fatal("expected error (no token), got nil")
+	}
+	if strings.Contains(err.Error(), "explicit encryption choice") {
+		t.Errorf("--generate-key should satisfy the explicit choice requirement; got: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "token") {
+		t.Errorf("error should be about missing token; got: %v", err)
 	}
 }
 
@@ -267,6 +386,7 @@ func TestSecretsCapture_RestrictedContextWarning(t *testing.T) {
 		"--enable-trigger",
 		"--skip-restricted-contexts=true",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 
 	if !strings.Contains(stderr, "restrictions") {
@@ -301,6 +421,7 @@ func TestSecretsCapture_HappyPath(t *testing.T) {
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
@@ -324,7 +445,7 @@ func TestSecretsCapture_HappyPath(t *testing.T) {
 		t.Errorf("last flag PUT should be false (restore), got true")
 	}
 
-	// Stdout must have the artifact retention warning.
+	// Stdout must have the artifact retention warning (--no-encrypt was set).
 	if !strings.Contains(stderr, "artifact") {
 		t.Errorf("stderr %q missing artifact retention warning", stderr)
 	}
@@ -402,6 +523,7 @@ func TestSecretsCapture_FlagRestoredOnError(t *testing.T) {
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err == nil {
 		t.Fatal("expected error due to failed workflow, got nil")
@@ -474,6 +596,7 @@ func TestSecretsCapture_AllMembersRestrictionNotSkipped(t *testing.T) {
 		"--enable-trigger",
 		"--skip-restricted-contexts=true",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
@@ -574,6 +697,7 @@ func TestSecretsCapture_OrgLevelFlagEnabled_AndRestored(t *testing.T) {
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
@@ -631,6 +755,7 @@ func TestSecretsCapture_OrgLevelFlagAlreadyOn_NoExtraCall(t *testing.T) {
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -872,6 +997,7 @@ func TestSecretsCapture_RemoveRestrictions_DeleteBeforeRunRestoreAfter(t *testin
 		"--enable-trigger",
 		"--remove-restrictions",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
@@ -983,6 +1109,7 @@ func TestSecretsCapture_RemoveRestrictions_RestoreOnExtractionError(t *testing.T
 		"--enable-trigger",
 		"--remove-restrictions",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 
 	// Capture should fail because pipeline trigger failed.
@@ -1059,6 +1186,7 @@ func TestSecretsCapture_RemoveRestrictions_AllMembersNotTouched(t *testing.T) {
 		"--enable-trigger",
 		"--remove-restrictions",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
@@ -1118,6 +1246,7 @@ func TestSecretsCapture_RemoveRestrictionsOff_SkipBehaviorUnchanged(t *testing.T
 		// --remove-restrictions NOT set (default false)
 		"--skip-restricted-contexts=true",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
@@ -1274,6 +1403,7 @@ func TestSecretsCapture_ProjectLoopDoesNotAttachContexts(t *testing.T) {
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 		// Auto-picks gh/acme/web as host for context extraction.
 	)
 	if err != nil {
@@ -1347,6 +1477,7 @@ func TestSecretsCapture_ContextOnlyFlag_SkipsProjectLoop(t *testing.T) {
 		"--poll-timeout", "10s",
 		"--context", "deploy-ctx",
 		"--host-project", "gh/acme/web",
+		"--no-encrypt",
 		// No --project: per-project loop must be SKIPPED entirely.
 	)
 	if err != nil {
@@ -1416,6 +1547,7 @@ func TestSecretsCapture_DefaultScoping_SkipsEmptyProjectsAndContexts(t *testing.
 		"--host", srv.URL,
 		"--enable-trigger",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 		// No --context, no --project: defaults to with-values only.
 	)
 	if err != nil {
@@ -1515,6 +1647,7 @@ func TestSecretsCapture_RemoveRestrictions_DefaultGroupNeverTouched_E2E(t *testi
 		"--enable-trigger",
 		"--remove-restrictions",
 		"--poll-timeout", "10s",
+		"--no-encrypt",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
