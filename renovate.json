@@ -6,9 +6,14 @@
     ":semanticCommits"
   ],
   "labels": ["dependencies"],
-  "schedule": ["before 9am on monday"],
-  "prConcurrentLimit": 5,
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 0,
   "postUpdateOptions": ["gomodTidy"],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "labels": ["dependencies", "security", "priority:high"],
+    "automerge": false
+  },
   "packageRules": [
     {
       "matchManagers": ["gomod"],
