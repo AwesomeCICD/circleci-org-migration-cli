@@ -91,7 +91,7 @@ before syncing:
 export CIRCLECI_SOURCE_TOKEN=your-source-token
 
 circleci-migrate export \
-  --org gh/acme \
+  --source-org gh/acme \
   -o manifest.json \
   --report migration-report.md
 ```
@@ -100,7 +100,7 @@ For a GitHub App org:
 
 ```bash
 circleci-migrate export \
-  --org circleci/3ac9b843-7095-443e-bfb3-bd7037999ef5 \
+  --source-org circleci/3ac9b843-7095-443e-bfb3-bd7037999ef5 \
   -o manifest.json \
   --report migration-report.md
 ```
@@ -152,7 +152,6 @@ org, waits for it to complete, and downloads the merged secret bundle. No
 
 ```bash
 circleci-migrate secrets capture \
-  --org gh/acme \
   --source-token "$CIRCLECI_SOURCE_TOKEN" \
   --manifest manifest.json \
   --output secrets.json
@@ -164,14 +163,12 @@ running, you have two options:
 ```bash
 # Option: temporarily remove restrictions (restored after the run)
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest.json \
   --output secrets.json \
   --remove-restrictions
 
 # Option: skip restricted contexts entirely
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest.json \
   --output secrets.json \
   --skip-restricted-contexts
@@ -413,7 +410,7 @@ After applying, verify the destination org matches the source:
 
    ```bash
    circleci-migrate export \
-     --org gh/acme-new \
+     --source-org gh/acme-new \
      --source-token "$CIRCLECI_DEST_TOKEN" \
      -o manifest-dest.json \
      --report migration-report-dest.md
@@ -457,7 +454,7 @@ After applying, verify the destination org matches the source:
 Re-run any command with `--debug` to see full HTTP request/response detail:
 
 ```bash
-circleci-migrate export --org gh/acme --debug
+circleci-migrate export --source-org gh/acme --debug
 circleci-migrate sync --manifest manifest.json --debug
 ```
 
@@ -541,11 +538,11 @@ This produces a warning in the manifest and is expected behaviour — not an err
 circleci-migrate migrate
 
 # Export source org to disk
-circleci-migrate export --org gh/acme -o manifest.json --report migration-report.md
+circleci-migrate export --source-org gh/acme -o manifest.json --report migration-report.md
 
 # CLI-orchestrated secret capture (no config commit needed)
 circleci-migrate secrets capture \
-  --org gh/acme --manifest manifest.json --output secrets.json
+  --manifest manifest.json --output secrets.json
 
 # Dry run sync (no writes)
 circleci-migrate sync --manifest manifest.json --secrets secrets.json
@@ -563,7 +560,7 @@ circleci-migrate migrate \
   -o manifest.json --report migration-report.md
 
 # Re-export destination for diff-based validation
-circleci-migrate export --org gh/acme-new --source-token "$CIRCLECI_DEST_TOKEN" \
+circleci-migrate export --source-org gh/acme-new --source-token "$CIRCLECI_DEST_TOKEN" \
   -o manifest-dest.json
 
 # Inline private orb source (namespace overlap window)
