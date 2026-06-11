@@ -26,6 +26,10 @@ type Client struct {
 	BaseURL     *url.URL
 	circleToken string
 	client      *http.Client
+	// commandPath is the cobra CommandPath() of the active sub-command, e.g.
+	// "circleci-migrate export".  When non-empty it is forwarded as the
+	// Circleci-Cli-Command request header, mirroring the official circleci-cli.
+	commandPath string
 }
 
 // New constructs a Client from explicit parameters.
@@ -35,6 +39,14 @@ func New(baseURL *url.URL, token string, httpClient *http.Client) *Client {
 		circleToken: token,
 		client:      httpClient,
 	}
+}
+
+// SetCommandPath records the active cobra command path (e.g.
+// "circleci-migrate export") so that it can be forwarded to the API via the
+// Circleci-Cli-Command request header.  Call this from the command's
+// PersistentPreRunE using cmd.CommandPath().
+func (c *Client) SetCommandPath(path string) {
+	c.commandPath = path
 }
 
 // NewFromConfig constructs a Client from a settings.Config.  The token
@@ -99,6 +111,9 @@ func (c *Client) enrichRequestHeaders(req *http.Request, payload interface{}) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", version.UserAgent())
+	if c.commandPath != "" {
+		req.Header.Set("Circleci-Cli-Command", c.commandPath)
+	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

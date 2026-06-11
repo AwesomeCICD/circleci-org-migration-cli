@@ -30,7 +30,7 @@ Use "circleci-migrate [command] --help" for more information about a command.
       --debug                 Enable debug logging
       --dest-token string     API token for the destination org (env: CIRCLECI_DEST_TOKEN)
   -h, --help                  help for circleci-migrate
-      --host string           CircleCI host URL (env: CIRCLECI_HOST) (default "https://circleci.com")
+      --host string           CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST) (default "https://circleci.com")
       --source-token string   API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
       --token string          Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)
 ```
