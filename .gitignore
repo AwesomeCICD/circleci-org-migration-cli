@@ -18,6 +18,11 @@ coverage.html
 *.manifest.json
 /bin/circleci-migrate
 
+# age encryption keys (never commit)
+*.age
+/migration-identity.age
+/migration-recipient.txt
+
 # Packed orb — generated from orb/src/ by `circleci orb pack orb/src`
 # orb/src/ is the source of truth; this file is regenerated on demand.
 /orb/orb.yml
