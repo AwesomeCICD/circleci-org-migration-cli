@@ -398,12 +398,16 @@ func hasNonDefaultGroupRestrictions(m *manifest.Manifest) bool {
 // The list is data-driven: an item is included only when the manifest provides
 // the corresponding signal, with a small always-include baseline (secret values
 // and key regeneration always apply). Warning messages are pulled in where the
-// export recorded them.
+// export recorded them. Every item names resources by their human-readable name
+// (never a raw UUID), states what the source org had, and ends with a clickable
+// settings URL so operators can act without hunting.
 func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "\n### 3. Manual steps required\n\n")
 
 	var items []string
 	s := m.Source.Org.Settings
+	host := m.Source.Host
+	orgSlug := m.Source.Org.Slug
 
 	// Always: secret values must be captured and re-applied.
 	items = append(items, "**Context & project secret values** — CircleCI never exports env-var values. "+
@@ -414,20 +418,53 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	items = append(items, "**Checkout & SSH keys** — private key material is never exported. "+
 		"Regenerate deploy/checkout and user keys on the destination and update any VCS-side deploy keys.")
 
-	// Additional SSH keys — only when at least one project captured SSH key metadata.
+	// Additional SSH keys — per-project details when at least one project captured SSH key metadata.
 	if hasAdditionalSSHKeys(m) {
+		var perProject []string
+		for _, p := range m.Projects {
+			if len(p.SSHKeys) == 0 {
+				continue
+			}
+			name := projectDisplayName(p)
+			hostnames := sshKeyHostnames(p.SSHKeys)
+			settingsURL := projectSettingsURL(host, p.Slug, "ssh")
+			perProject = append(perProject, fmt.Sprintf(
+				"Project **%s** had %d additional SSH key(s) (hostname(s): %s) → %s (SSH Keys tab)",
+				name, len(p.SSHKeys), hostnames, settingsURL))
+		}
+		detail := strings.Join(perProject, "; ")
+		if detail == "" {
+			detail = "(see manifest for details)"
+		}
 		items = append(items, "**Additional SSH keys (private keys not exported)** — "+
 			"additional SSH key public metadata is captured in this manifest (hostname, fingerprint, public key), "+
 			"but the corresponding PRIVATE keys are never returned by the CircleCI API. "+
 			"Use the SSH-key extraction step to capture and transfer private key material, "+
-			"then re-add each key on the destination project under Project Settings → SSH Keys → Additional SSH Keys."+
+			"then re-add each key on the destination project under Project Settings → SSH Keys → Additional SSH Keys. "+
+			detail+"."+
 			warningSuffix(m, "ssh_keys_private_excluded"))
 	}
 
-	// Webhook signing secrets — only when webhooks were captured.
+	// Webhook signing secrets — per-project details when webhooks were captured.
 	if hasWebhooks(m) {
+		var perProject []string
+		for _, p := range m.Projects {
+			if len(p.Webhooks) == 0 {
+				continue
+			}
+			name := projectDisplayName(p)
+			settingsURL := projectSettingsURL(host, p.Slug, "webhooks")
+			perProject = append(perProject, fmt.Sprintf(
+				"Project **%s** had %d webhook(s) → %s (Webhooks tab)",
+				name, len(p.Webhooks), settingsURL))
+		}
+		detail := strings.Join(perProject, "; ")
+		if detail == "" {
+			detail = "(see manifest for details)"
+		}
 		items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are masked by the API and not exported; "+
-			"re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls."+
+			"re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls. "+
+			detail+"."+
 			warningSuffix(m, "webhook_signing_secret_excluded"))
 	}
 
@@ -443,23 +480,49 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// Org orbs — only when orbs were captured.
 	if s != nil && len(s.Orbs) > 0 {
 		ns := orDash(s.OrbNamespace)
+		orbsURL := orgSettingsURL(host, orgSlug, "orbs")
 		items = append(items, fmt.Sprintf(
 			"**Org orbs (%d orb(s), source namespace `%s`)** — orb source YAML is not exportable via REST API (GraphQL only) "+
 				"and the destination org has a different namespace; "+
-				"republish each orb under the destination namespace manually using `circleci orb publish`."+
+				"republish each orb under the destination namespace manually using `circleci orb publish`. "+
+				"→ %s (Orbs tab)"+
 				warningSuffix(m, "orbs_require_republish"),
-			len(s.Orbs), ns))
+			len(s.Orbs), ns, orbsURL))
 	}
 
-	// Budget enforcement=block — only when at least one block budget was captured.
+	// Budget enforcement=block — per-budget details when at least one block budget was captured.
 	if hasBudgetEnforcementBlock(m) {
+		var budgetDetails []string
+		if s != nil && s.Budgets != nil {
+			if s.Budgets.OrgBudget != nil && s.Budgets.OrgBudget.EnforcementType == "block" {
+				budgetDetails = append(budgetDetails, fmt.Sprintf(
+					"org-level budget (%d credits, enforcement=block)",
+					s.Budgets.OrgBudget.Credits))
+			}
+			for _, pb := range s.Budgets.ProjectBudgets {
+				if pb.EnforcementType != "block" {
+					continue
+				}
+				projName := projectNameByID(m, pb.ProjectID)
+				budgetDetails = append(budgetDetails, fmt.Sprintf(
+					"project **%s** (%d credits, enforcement=block)",
+					projName, pb.Credits))
+			}
+		}
+		// Budgets are managed under Plan → Credit Usage, not org settings.
+		planURL := appHost(host) + "/plan/" + orgSlug + "/credit-usage"
+		detail := ""
+		if len(budgetDetails) > 0 {
+			detail = " Items: " + strings.Join(budgetDetails, "; ") + "."
+		}
 		items = append(items, "**Budget enforcement mode** — one or more budgets have `enforcement_type=block`; "+
 			"the PUT budget endpoint only accepts credits and cannot set enforcement mode — "+
-			"re-apply block enforcement manually on the destination after sync."+
+			"re-apply block enforcement manually on the destination after sync."+detail+
+			" → "+planURL+" (Plan → Credit Usage tab)"+
 			warningSuffix(m, "budget_enforcement_block_not_transferred"))
 	}
 
-	// Group restrictions — only when non-default group restrictions are present.
+	// Group restrictions — per-context details when non-default group restrictions are present.
 	//
 	// Org-type matrix for context restriction_type:
 	//   project    — all org types (GitHub OAuth, standalone/circleci, Bitbucket)
@@ -471,29 +534,54 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// recreated by this tool.  They must always be re-applied manually on the
 	// destination org.
 	if hasNonDefaultGroupRestrictions(m) {
+		orgID := m.Source.Org.ID
+		var perContext []string
+		for _, c := range m.Contexts {
+			count := 0
+			for _, r := range c.Restrictions {
+				if r.Type == "group" && r.Value != orgID {
+					count++
+				}
+			}
+			if count == 0 {
+				continue
+			}
+			contextURL := orgSettingsURL(host, orgSlug, "contexts")
+			perContext = append(perContext, fmt.Sprintf(
+				"Context **%s** had %d group restriction(s) → %s (Contexts tab)",
+				c.Name, count, contextURL))
+		}
+		detail := strings.Join(perContext, "; ")
+		if detail == "" {
+			detail = "(see manifest for details)"
+		}
 		items = append(items, "**Context group restrictions (manual)** — one or more contexts have "+
 			"`group`-type restrictions. Group restrictions are only supported on GitHub OAuth orgs "+
 			"(`gh/…`); they cannot be created via the API on standalone (`circleci/…`) or Bitbucket orgs. "+
 			"VCS team IDs embedded in group restrictions are org-specific and do not map across orgs. "+
-			"Re-apply group restrictions manually on the destination after migration."+
+			"Re-apply group restrictions manually on the destination after migration. "+
+			detail+"."+
 			warningSuffix(m, "group_restriction"))
 	}
 
 	// SSO (SAML) — only when present.
 	if s != nil && s.SSO != nil {
 		realm := orDash(s.SSO.Realm)
+		ssoURL := orgSettingsURL(host, orgSlug, "single-sign-on")
 		items = append(items, fmt.Sprintf(
 			"**SSO (SAML)** — recreate manually (DNS TXT domain verification + IdP-side SAML app). "+
-				"Source: enforced=`%t`, realm=`%s`. Not automatable.%s",
-			s.SSO.Enforced, realm, warningSuffix(m, "sso")))
+				"Source: enforced=`%t`, realm=`%s`. Not automatable. → %s (Single Sign-On tab)%s",
+			s.SSO.Enforced, realm, ssoURL, warningSuffix(m, "sso")))
 	}
 
 	// Audit-log streaming — only when configs present.
 	if s != nil && len(s.AuditLogConfigs) > 0 {
+		securityURL := orgSettingsURL(host, orgSlug, "security")
 		items = append(items, fmt.Sprintf(
 			"**Audit-log streaming (%d config(s))** — the S3 ARN/region/bucket/endpoint point at the source AWS account, "+
-				"so recreate each stream against destination-owned, environment-specific infrastructure.%s",
-			len(s.AuditLogConfigs), warningSuffix(m, "audit-log", "audit_log")))
+				"so recreate each stream against destination-owned, environment-specific infrastructure. "+
+				"→ %s (Security tab)%s",
+			len(s.AuditLogConfigs), securityURL, warningSuffix(m, "audit-log", "audit_log")))
 	}
 
 	// OTel exporter header values — only when exporters present.
@@ -579,6 +667,90 @@ func SaveMarkdown(m *manifest.Manifest, path string) error {
 		return fmt.Errorf("writing audit report %s: %w", path, err)
 	}
 	return nil
+}
+
+// --- URL builders ----------------------------------------------------------
+
+// appHost returns the CircleCI app host for building settings URLs.
+// For circleci.com sources the canonical app is app.circleci.com; for server
+// deployments the source host itself is used.
+func appHost(sourceHost string) string {
+	if sourceHost == "https://circleci.com" || sourceHost == "http://circleci.com" ||
+		strings.TrimRight(sourceHost, "/") == "https://circleci.com" {
+		return "https://app.circleci.com"
+	}
+	if sourceHost == "" {
+		return "https://app.circleci.com"
+	}
+	return strings.TrimRight(sourceHost, "/")
+}
+
+// projectSettingsURL returns the CircleCI web-app URL for a project's settings
+// root. For VCS-slug projects (gh/<org>/<repo> or bb/<org>/<repo>) it uses the
+// documented /settings/project/:vcs/:org/:repo pattern. For standalone App
+// projects (circleci/<orgUUID>/<projUUID>) it links to the project settings
+// using the UUID segments.
+//
+// The tab parameter, when non-empty, appends "/<tab>" to the URL (e.g. "ssh",
+// "env-vars", "webhooks", "advanced"). If the deep-link path for a specific tab
+// is uncertain, pass "" and name the tab in prose instead.
+func projectSettingsURL(sourceHost, slug, tab string) string {
+	base := appHost(sourceHost)
+	parts := strings.SplitN(slug, "/", 3)
+	if len(parts) != 3 {
+		// Malformed slug — fall back to the projects list.
+		return base + "/projects"
+	}
+	prefix, orgPart, repoPart := parts[0], parts[1], parts[2]
+
+	var u string
+	switch prefix {
+	case "gh", "bb", "github", "bitbucket":
+		// VCS OAuth slug: /settings/project/<vcs>/<org>/<repo>
+		vcs := prefix
+		if vcs == "github" {
+			vcs = "gh"
+		} else if vcs == "bitbucket" {
+			vcs = "bb"
+		}
+		u = fmt.Sprintf("%s/settings/project/%s/%s/%s", base, vcs, orgPart, repoPart)
+	default:
+		// Standalone / App slug: circleci/<orgUUID>/<projUUID>
+		// Use the UUID-based settings path.
+		u = fmt.Sprintf("%s/settings/project/circleci/%s/%s", base, orgPart, repoPart)
+	}
+
+	if tab != "" {
+		u += "/" + tab
+	}
+	return u
+}
+
+// orgSettingsURL returns the CircleCI web-app URL for the org settings root (or
+// a named tab). For VCS-slug orgs (gh/<org>, bb/<org>) it uses
+// /settings/organization/<vcs>/<org>. For standalone (circleci/<uuid>) orgs it
+// uses /settings/organization/circleci/<uuid>. The tab parameter, when
+// non-empty, appends "/<tab>" (e.g. "contexts", "security"). Budget and
+// usage-controls live under /plan not /settings, so callers should pass "" and
+// name the tab in prose for those.
+func orgSettingsURL(sourceHost, orgSlug, tab string) string {
+	base := appHost(sourceHost)
+	parts := strings.SplitN(orgSlug, "/", 2)
+	if len(parts) != 2 {
+		return base + "/settings/organization"
+	}
+	prefix, name := parts[0], parts[1]
+	vcs := prefix
+	if vcs == "github" {
+		vcs = "gh"
+	} else if vcs == "bitbucket" {
+		vcs = "bb"
+	}
+	u := fmt.Sprintf("%s/settings/organization/%s/%s", base, vcs, name)
+	if tab != "" {
+		u += "/" + tab
+	}
+	return u
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -746,6 +918,53 @@ func hasBudgetEnforcementBlock(m *manifest.Manifest) bool {
 // from the "gh/" slug prefix (App / GitLab orgs use "circleci/").
 func isOAuthSource(m *manifest.Manifest) bool {
 	return strings.HasPrefix(m.Source.Org.Slug, "gh/")
+}
+
+// projectDisplayName returns the human-readable name for a project. It prefers
+// the Name field; falls back to the Slug when Name is empty.
+func projectDisplayName(p manifest.Project) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.Slug
+}
+
+// sshKeyHostnames returns a comma-separated list of unique hostnames from the
+// given SSH keys, replacing empty hostnames with "(global)". Used in the manual
+// steps section to tell operators which hosts need their keys re-added.
+func sshKeyHostnames(keys []manifest.ProjectSSHKey) string {
+	seen := map[string]struct{}{}
+	var hosts []string
+	for _, k := range keys {
+		h := k.Hostname
+		if h == "" {
+			h = "(global)"
+		}
+		if _, ok := seen[h]; !ok {
+			seen[h] = struct{}{}
+			hosts = append(hosts, h)
+		}
+	}
+	if len(hosts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(hosts, ", ")
+}
+
+// projectNameByID returns the human-readable name of the project whose
+// SourceID matches projID. When no match is found it falls back to the UUID
+// itself so the output is always actionable.
+func projectNameByID(m *manifest.Manifest, projID *string) string {
+	if projID == nil {
+		return "unknown"
+	}
+	id := *projID
+	for _, p := range m.Projects {
+		if p.SourceID == id {
+			return projectDisplayName(p)
+		}
+	}
+	return id // fallback: show the UUID rather than nothing
 }
 
 // sshPublicKeyPreview returns a short preview of an SSH public-key string for

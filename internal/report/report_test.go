@@ -1478,3 +1478,356 @@ func TestMarkdown_V11FeatureFlags_ExtraFlagsRendered(t *testing.T) {
 		t.Errorf("Markdown should show extra v1.1 feature flags; got:\n%s", md)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #142: actionable manual items — friendly names, details, settings URLs
+// ---------------------------------------------------------------------------
+
+// TestActionable_SettingsURL_AppHost verifies that circleci.com source produces
+// app.circleci.com links, while a server source uses the server host.
+func TestActionable_SettingsURL_AppHost(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceHost string
+		wantHost   string
+	}{
+		{"circleci.com", "https://circleci.com", "https://app.circleci.com"},
+		{"server", "https://circleci.example.com", "https://circleci.example.com"},
+		{"empty", "", "https://app.circleci.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &manifest.Manifest{
+				Source: manifest.Source{
+					Host: tc.sourceHost,
+					Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+				},
+				Projects: []manifest.Project{
+					{
+						Slug: "gh/acme/web",
+						Name: "web",
+						SSHKeys: []manifest.ProjectSSHKey{
+							{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+						},
+					},
+				},
+			}
+			md := report.Markdown(m)
+			if !strings.Contains(md, tc.wantHost) {
+				t.Errorf("expected host %q in output; got:\n%s", tc.wantHost, md[:min(800, len(md))])
+			}
+		})
+	}
+}
+
+// TestActionable_ProjectSettingsURL_VCSSlug verifies the /settings/project/:vcs/:org/:repo
+// pattern for VCS-slug projects (gh/...).
+func TestActionable_ProjectSettingsURL_VCSSlug(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Expect VCS-style project settings URL with "gh" prefix.
+	want := "https://app.circleci.com/settings/project/gh/acme/web"
+	if !strings.Contains(md, want) {
+		t.Errorf("expected project settings URL %q in output; got:\n%s", want, md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_ProjectSettingsURL_StandaloneSlug verifies the
+// /settings/project/circleci/<orgUUID>/<projUUID> URL for App-type projects.
+func TestActionable_ProjectSettingsURL_StandaloneSlug(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "myorg", Slug: "circleci/org-uuid-abc", ID: "org-uuid-abc"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:     "circleci/org-uuid-abc/proj-uuid-xyz",
+				Name:     "MyService",
+				SourceID: "proj-uuid-xyz",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "bitbucket.org", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Expect standalone project settings URL.
+	want := "https://app.circleci.com/settings/project/circleci/org-uuid-abc/proj-uuid-xyz"
+	if !strings.Contains(md, want) {
+		t.Errorf("expected standalone project settings URL %q in output; got:\n%s", want, md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_SSHKeys_FriendlyName verifies that the manual-steps SSH-key item
+// uses the project Name (not the raw UUID/slug) and includes the hostname.
+func TestActionable_SSHKeys_FriendlyName(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+					{Hostname: "bitbucket.org", Fingerprint: "fp2=", PublicKey: "ssh-rsa BBBB"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Must use friendly name "web", not slug "gh/acme/web".
+	if !strings.Contains(md, "Project **web**") {
+		t.Errorf("manual-step SSH key note should reference project by friendly name 'web'; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must state the count.
+	if !strings.Contains(md, "2 additional SSH key(s)") {
+		t.Errorf("manual-step SSH key note should state key count; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must list the hostname.
+	if !strings.Contains(md, "github.com") {
+		t.Errorf("manual-step SSH key note should include hostname 'github.com'; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must include a settings URL.
+	if !strings.Contains(md, "https://app.circleci.com/settings/project/gh/acme/web/ssh") {
+		t.Errorf("manual-step SSH key note should include SSH settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_Webhooks_FriendlyName verifies that the webhook manual step
+// uses the project Name and includes a settings URL.
+func TestActionable_Webhooks_FriendlyName(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/api",
+				Name: "api",
+				Webhooks: []manifest.Webhook{
+					{Name: "notify", URL: "https://hooks.example.com"},
+					{Name: "deploy", URL: "https://deploy.example.com"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Must use friendly name "api".
+	if !strings.Contains(md, "Project **api**") {
+		t.Errorf("webhook note should reference project by name 'api'; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must state count.
+	if !strings.Contains(md, "2 webhook(s)") {
+		t.Errorf("webhook note should state webhook count; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must include a settings URL for webhooks tab.
+	if !strings.Contains(md, "https://app.circleci.com/settings/project/gh/acme/api/webhooks") {
+		t.Errorf("webhook note should include webhooks settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_GroupRestriction_ContextName verifies that the group-restriction
+// manual step uses the context Name and a settings URL.
+func TestActionable_GroupRestriction_ContextName(t *testing.T) {
+	const orgID = "org-uuid-111"
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme", ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "deploy-prod",
+				SourceID: "ctx-1",
+				Restrictions: []manifest.Restriction{
+					{Type: "group", Value: "team-uuid-eng", Name: "engineering"},
+					{Type: "group", Value: "team-uuid-sec", Name: "security"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Must name the context.
+	if !strings.Contains(md, "Context **deploy-prod**") {
+		t.Errorf("group-restriction note should name context 'deploy-prod'; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must state restriction count.
+	if !strings.Contains(md, "2 group restriction(s)") {
+		t.Errorf("group-restriction note should state count; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must include org settings URL for contexts.
+	if !strings.Contains(md, "https://app.circleci.com/settings/organization/gh/acme/contexts") {
+		t.Errorf("group-restriction note should include contexts settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_BudgetBlock_Details verifies the budget enforcement step
+// includes per-budget details (credits, enforcement type) using project name.
+func TestActionable_BudgetBlock_Details(t *testing.T) {
+	pid := "proj-uuid-web"
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web", SourceID: "proj-uuid-web"},
+		},
+	}
+	m.Source.Org.Settings = &manifest.OrgSettings{
+		Budgets: &manifest.OrgBudgets{
+			OrgBudget: &manifest.BudgetEntry{Credits: 100000, EnforcementType: "block"},
+			ProjectBudgets: []manifest.BudgetEntry{
+				{Credits: 5000, EnforcementType: "block", ProjectID: &pid},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Must mention org budget.
+	if !strings.Contains(md, "100000 credits") {
+		t.Errorf("budget step should include org budget credits; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must use project name "web" not UUID "proj-uuid-web".
+	if !strings.Contains(md, "project **web**") {
+		t.Errorf("budget step should use project name 'web'; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must mention 5000 credits for the project budget.
+	if !strings.Contains(md, "5000 credits") {
+		t.Errorf("budget step should include project budget credits; got:\n%s", md[:min(800, len(md))])
+	}
+	// Must include the plan/credit-usage URL.
+	if !strings.Contains(md, "app.circleci.com/plan/gh/acme") {
+		t.Errorf("budget step should include plan URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_OrgOrbs_SettingsURL verifies the orbs manual step includes
+// the org settings URL for the Orbs tab.
+func TestActionable_OrgOrbs_SettingsURL(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+	}
+	m.Source.Org.Settings = &manifest.OrgSettings{
+		OrbNamespace: "acme-ns",
+		Orbs: []manifest.OrgOrb{
+			{OrbName: "acme-ns/my-orb", LatestVersionNumber: "1.0.0"},
+		},
+	}
+	md := report.Markdown(m)
+	// Must reference the org settings orbs URL.
+	if !strings.Contains(md, "https://app.circleci.com/settings/organization/gh/acme/orbs") {
+		t.Errorf("orbs step should include org settings orbs URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_SSO_SettingsURL verifies the SSO manual step includes the
+// org settings single-sign-on URL.
+func TestActionable_SSO_SettingsURL(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+	}
+	m.Source.Org.Settings = &manifest.OrgSettings{
+		SSO: &manifest.SSOSettings{Enforced: true, Realm: "acme-saml"},
+	}
+	md := report.Markdown(m)
+	if !strings.Contains(md, "https://app.circleci.com/settings/organization/gh/acme/single-sign-on") {
+		t.Errorf("SSO step should include single-sign-on settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_AuditLog_SecurityURL verifies the audit-log streaming step
+// includes the org settings security URL.
+func TestActionable_AuditLog_SecurityURL(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+	}
+	m.Source.Org.Settings = &manifest.OrgSettings{
+		AuditLogConfigs: []manifest.AuditLogConfig{{ID: "a1"}},
+	}
+	md := report.Markdown(m)
+	if !strings.Contains(md, "https://app.circleci.com/settings/organization/gh/acme/security") {
+		t.Errorf("audit-log step should include security settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_ServerHost_UsesServerURL verifies that a non-circleci.com
+// source host produces settings URLs rooted at that host (not app.circleci.com).
+func TestActionable_ServerHost_UsesServerURL(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.example.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme", ID: "org-uuid"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				Webhooks: []manifest.Webhook{
+					{Name: "notify", URL: "https://hooks.example.com"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "app.circleci.com") {
+		t.Errorf("server source should NOT produce app.circleci.com URLs; got:\n%s", md[:min(800, len(md))])
+	}
+	if !strings.Contains(md, "https://circleci.example.com/settings/project/gh/acme/web") {
+		t.Errorf("server source should produce server-host settings URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestActionable_StandaloneOrg_OrgSettingsURL verifies that the org settings
+// URL for a standalone (circleci/<uuid>) org uses the circleci prefix.
+func TestActionable_StandaloneOrg_OrgSettingsURL(t *testing.T) {
+	const orgID = "org-uuid-abc"
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "myorg", Slug: "circleci/" + orgID, ID: orgID},
+		},
+		Contexts: []manifest.Context{
+			{
+				Name:     "my-ctx",
+				SourceID: "ctx-1",
+				Restrictions: []manifest.Restriction{
+					{Type: "group", Value: "team-uuid", Name: "eng"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	// Org settings URL should use circleci/<uuid>.
+	want := "https://app.circleci.com/settings/organization/circleci/" + orgID + "/contexts"
+	if !strings.Contains(md, want) {
+		t.Errorf("standalone org should produce /settings/organization/circleci/<uuid>/contexts URL; got:\n%s", md[:min(800, len(md))])
+	}
+}
