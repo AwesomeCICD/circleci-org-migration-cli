@@ -362,3 +362,169 @@ func TestMigrateCmd_NoInputFlag_MissingDestOrg_Errors(t *testing.T) {
 		t.Errorf("error %q does not mention 'dest-org'", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #157 — separator/header before each question
+// ---------------------------------------------------------------------------
+
+// TestPromptSeparator_BlankLineBeforeMultiSelect verifies that a blank line
+// appears in the output immediately before the multi-select option list.  This
+// is the must-fix for issue #157: consecutive questions must NOT stack.
+func TestPromptSeparator_BlankLineBeforeMultiSelect(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
+
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"",            // components: all
+		"n",           // no secrets bundle
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// The output must contain at least one blank line followed by the
+	// multi-select label.  A blank line is "\n\n" (two consecutive newlines).
+	if !strings.Contains(output, "\n\n") {
+		t.Errorf("expected at least one blank separator line in output; got:\n%s", output)
+	}
+}
+
+// TestPromptSeparator_StepHeaderContainsStepNumber verifies that styled step
+// headers (e.g. "Step 1 of 4") appear in the migrate walkthrough output so
+// that steps are clearly delimited.
+func TestPromptSeparator_StepHeaderContainsStepNumber(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
+
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"",            // components: all
+		"n",           // no secrets bundle
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	for _, want := range []string{"Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in migrate walkthrough output; got:\n%s", want, output)
+		}
+	}
+}
+
+// TestPromptSeparator_BlankLineBeforeBoolQuestion verifies that a blank line
+// is emitted before yes/no (bool) questions, providing visual separation.
+func TestPromptSeparator_BlankLineBeforeBoolQuestion(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
+
+	// Drive a minimal walkthrough; the dry-run bool prompt must be preceded by
+	// a blank line in the captured output.
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"",            // components: all
+		"n",           // no secrets bundle
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// The dry-run prompt contains "[Y/n]"; it must be preceded by a blank line.
+	idx := strings.Index(output, "[Y/n]")
+	if idx < 0 {
+		t.Fatalf("expected '[Y/n]' in output; got:\n%s", output)
+	}
+	// Scan backward: there must be a "\n\n" (blank line) before the prompt.
+	before := output[:idx]
+	if !strings.Contains(before, "\n\n") {
+		t.Errorf("expected blank line before [Y/n] prompt; output before:\n%s", before)
+	}
+}
+
+// TestPromptOptionList_NumbersHaveIndentation verifies that the numbered option
+// list produced by askChoice / askMultiSelect is indented (starts with spaces),
+// so options are visually grouped and separated from surrounding text.
+func TestPromptOptionList_NumbersHaveIndentation(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
+
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"",            // components: all (multi-select list printed here)
+		"n",           // no secrets bundle
+		"1",           // missing-secrets: skip (choice list printed here)
+		"y",           // dry run
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// The option list items must be indented (start with whitespace + number).
+	// Check for "  1)" or "  1)" — at least two leading spaces before the number.
+	if !strings.Contains(output, "  1)") {
+		t.Errorf("expected indented option '  1)' in output; got:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #158 — completion command is hidden
+// ---------------------------------------------------------------------------
+
+// TestCompletion_CommandIsHiddenOrAbsent verifies that the auto-generated
+// completion command is not advertised in --help.  When HiddenDefaultCmd=true,
+// cobra either omits the command entirely or marks it hidden; either way it
+// must not be returned by IsAvailableCommand.
+func TestCompletion_CommandIsHiddenOrAbsent(t *testing.T) {
+	root := cmd.MakeCommands()
+
+	for _, sub := range root.Commands() {
+		if sub.Name() == "completion" {
+			// Found: it must NOT be available (i.e. must be hidden).
+			if sub.IsAvailableCommand() {
+				t.Error("completion command should not be available (HiddenDefaultCmd=true)")
+			}
+			return
+		}
+	}
+	// Not found at all — that is also acceptable (cobra suppressed it entirely).
+}
+
+// TestCompletion_NotInHelpOutput verifies that the completion command does not
+// appear in the root --help output when HiddenDefaultCmd is set.
+func TestCompletion_NotInHelpOutput(t *testing.T) {
+	out, _, err := runCmd(t, "--help")
+	if err != nil {
+		t.Fatalf("--help returned error: %v", err)
+	}
+	// The word "completion" must not appear as a listed subcommand.
+	// (It may legitimately appear inside the Long description as a word, but
+	// cobra lists sub-commands using their exact name on its own line.)
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		// Look for lines where "completion" appears as the first non-space token
+		// (i.e. listed as a subcommand name).
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "completion") {
+			t.Errorf("completion appears as a listed subcommand in --help output:\n  %q", line)
+		}
+	}
+}

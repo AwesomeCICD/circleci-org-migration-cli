@@ -273,6 +273,10 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 		},
 	}
 
+	// Hide the auto-generated completion command so it does not appear in
+	// --help output (it still works when invoked directly).
+	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+
 	// Apply the lipgloss-styled help function to the root command.
 	// All sub-commands inherit this via cobra's help propagation.
 	rootCmd.SetHelpFunc(styledHelpFunc(helpWidth()))

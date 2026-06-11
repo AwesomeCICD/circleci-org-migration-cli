@@ -241,12 +241,10 @@ func RunCaptureWalkthroughWith(
 	fmt.Fprintln(out, "triggers a run, and downloads the captured values automatically.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Tip: re-run with all flags set to bypass these prompts (CI-safe).")
-	fmt.Fprintln(out, "")
 
 	// ── Step 1: Manifest path ─────────────────────────────────────────────────
-	fmt.Fprintln(out, "Step 1 of 8 — Manifest")
+	printStepHeader(out, 1, 8, "Manifest")
 	fmt.Fprintln(out, "  The manifest records variable names for all contexts and projects.")
-	fmt.Fprintln(out, "")
 
 	var err error
 	if res.ManifestPath == "" {
@@ -269,10 +267,8 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 2: What to extract ───────────────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 2 of 8 — What to extract")
+	printStepHeader(out, 2, 8, "What to extract")
 	fmt.Fprintln(out, "  Select the contexts and/or projects to capture.")
-	fmt.Fprintln(out, "")
 
 	// Collect context names from manifest.
 	ctxOptions := make([]string, 0, len(m.Contexts))
@@ -359,12 +355,10 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 3: Host project for context extraction ───────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 3 of 8 — Host project for CONTEXT extraction")
+	printStepHeader(out, 3, 8, "Host project for CONTEXT extraction")
 	fmt.Fprintln(out, "  Context env vars are extracted by attaching the context to a pipeline run.")
 	fmt.Fprintln(out, "  You must choose which project's pipeline to run this under.")
 	fmt.Fprintln(out, "  (Any project works — build history doesn't matter, only the extraction does.)")
-	fmt.Fprintln(out, "")
 
 	hasContexts := len(res.ContextNames) > 0
 	if len(res.ContextNames) == 0 && len(ctxOptions) == 0 {
@@ -423,11 +417,9 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 4: Encryption ────────────────────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 4 of 8 — Encryption (RECOMMENDED)")
+	printStepHeader(out, 4, 8, "Encryption (RECOMMENDED)")
 	fmt.Fprintln(out, "  When enabled, the in-pipeline artifact is age-encrypted.")
 	fmt.Fprintln(out, "  Plaintext secrets NEVER persist in CircleCI artifact storage.")
-	fmt.Fprintln(out, "")
 
 	if !res.EncOpts.encrypt && res.EncOpts.sshPublicKey == "" && !res.EncOpts.generateKey {
 		doEncrypt, encErr := p.askBool("Encrypt the captured secrets?", true)
@@ -481,10 +473,8 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 5: Storage ───────────────────────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 5 of 8 — Storage")
+	printStepHeader(out, 5, 8, "Storage")
 	fmt.Fprintln(out, "  Where to store the (optionally encrypted) bundle after extraction.")
-	fmt.Fprintln(out, "")
 
 	if res.EncOpts.storage == "" {
 		storageChoice, storErr := p.askChoice(
@@ -523,12 +513,10 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 6: Artifact retention ────────────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 6 of 8 — Artifact retention (security)")
+	printStepHeader(out, 6, 8, "Artifact retention (security)")
 	fmt.Fprintln(out, "  Setting retention to 1 day minimises how long secrets linger in artifacts.")
 	fmt.Fprintln(out, "  NOTE: this lowers the ENTIRE ORG's artifact retention, not just this job.")
 	fmt.Fprintln(out, "  The prior value is logged so you can restore it manually afterwards.")
-	fmt.Fprintln(out, "")
 
 	if res.ArtifactRetentionDays == 0 {
 		setRetention, retErr := p.askBool("Set artifact retention to 1 day (recommended minimum)?", true)
@@ -543,10 +531,8 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 7: Output path and branch ───────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 7 of 8 — Output path and branch")
+	printStepHeader(out, 7, 8, "Output path and branch")
 	fmt.Fprintln(out, "  Choose where to write the local secrets bundle and which branch to run on.")
-	fmt.Fprintln(out, "")
 
 	if res.Output == "" {
 		outputVal, outErr := p.askWithDefault("Output bundle path", "secrets.json")
@@ -575,12 +561,10 @@ func RunCaptureWalkthroughWith(
 	}
 
 	// ── Step 8: Enable trigger ────────────────────────────────────────────────
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Step 8 of 8 — Enable api-trigger-with-config")
+	printStepHeader(out, 8, 8, "Enable api-trigger-with-config")
 	fmt.Fprintln(out, "  The extraction pipeline uses an inline (unversioned) config trigger.")
 	fmt.Fprintln(out, "  If the project does not have api-trigger-with-config enabled, the CLI can")
 	fmt.Fprintln(out, "  enable it temporarily and restore the original setting after capture.")
-	fmt.Fprintln(out, "")
 
 	if !res.EnableTrigger {
 		doEnable, enErr := p.askBool(
