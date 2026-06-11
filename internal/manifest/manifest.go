@@ -482,6 +482,30 @@ type Project struct {
 
 	// Followed records whether the source token's user follows this project.
 	Followed *bool `json:"followed,omitempty"`
+
+	// APITokens captures the metadata (label + scope) for each project API
+	// token configured on the project (Project Settings → API Permissions).
+	// Token VALUES are NEVER returned by the CircleCI list API and are
+	// intentionally excluded — they must be recreated on the destination
+	// project and every consumer repointed to the new values.
+	APITokens []ProjectAPIToken `json:"api_tokens,omitempty"`
+}
+
+// ProjectAPIToken is the metadata for one project API token captured from the
+// source org. The token VALUE is never included — it is only returned once at
+// creation time and cannot be retrieved afterwards. Consumers of the token
+// must be repointed to a newly-created token on the destination project.
+//
+// Scopes (CircleCI UI label → API value):
+//
+//	Status    → "status"
+//	Read Only → "view-builds"
+//	Admin     → "all"
+type ProjectAPIToken struct {
+	// Label is the human-readable name given to the token.
+	Label string `json:"label"`
+	// Scope is one of "status", "view-builds", or "all".
+	Scope string `json:"scope"`
 }
 
 // ProjectSSHKey is the PUBLIC metadata for one additional SSH key on a project.

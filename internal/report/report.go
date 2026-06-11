@@ -679,6 +679,38 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 			len(s.Groups), joinNames(names)))
 	}
 
+	// Project API tokens — per-project details when tokens were captured.
+	// Token values are not retrievable after creation, so each token must be
+	// recreated on the destination project and every consumer repointed.
+	if hasAPITokens(m) {
+		var perProject []string
+		for _, p := range m.Projects {
+			if len(p.APITokens) == 0 {
+				continue
+			}
+			name := projectDisplayName(p)
+			settingsURL := projectSettingsURL(host, p.Slug, "api")
+			labels := make([]string, 0, len(p.APITokens))
+			for _, t := range p.APITokens {
+				labels = append(labels, fmt.Sprintf("%s (%s)", t.Label, t.Scope))
+			}
+			perProject = append(perProject, fmt.Sprintf(
+				"Project **%s** had %d token(s): %s → %s (API Permissions tab)",
+				name, len(p.APITokens), strings.Join(labels, ", "), settingsURL))
+		}
+		detail := strings.Join(perProject, "; ")
+		if detail == "" {
+			detail = "(see manifest for details)"
+		}
+		items = append(items, "**Project API tokens (values not recoverable)** — "+
+			"project API token values are returned only once at creation time and cannot be retrieved afterwards. "+
+			"Recreate each token on the destination project (Project Settings → API Permissions) and repoint "+
+			"every consumer to the new token value. "+
+			"See https://circleci.com/docs/guides/toolkit/managing-api-tokens/ for details. "+
+			detail+"."+
+			warningSuffix(m, "api_tokens_values_excluded"))
+	}
+
 	// App-destination repo connection — relevant whenever App pipeline definitions exist.
 	if hasPipelineDefinitions(m) {
 		items = append(items, "**Repository connections (App destinations)** — repos must already exist and be connected to "+
@@ -909,6 +941,17 @@ func hasAdditionalSSHKeys(m *manifest.Manifest) bool {
 func hasWebhooks(m *manifest.Manifest) bool {
 	for _, p := range m.Projects {
 		if len(p.Webhooks) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAPITokens reports whether any project in the manifest has at least one
+// project API token captured.
+func hasAPITokens(m *manifest.Manifest) bool {
+	for _, p := range m.Projects {
+		if len(p.APITokens) > 0 {
 			return true
 		}
 	}

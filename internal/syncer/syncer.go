@@ -92,6 +92,10 @@ type ProjectWriter interface {
 	ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error)
 	AddAdditionalSSHKey(slug, hostname, privateKey string) error
 
+	// Project API token management (optional auto-create path).
+	ListProjectTokens(slug string) ([]project.ProjectAPIToken, error)
+	CreateProjectToken(slug, scope, label string) (string, error)
+
 	// App-org (circleci/ vcs_type) project management.
 	CreateAppProject(orgID, name string) (*project.Project, error)
 	CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error)
@@ -150,6 +154,16 @@ type Options struct {
 	// manifest contains runner classes, each is flagged as needing manual
 	// recreation (the syncer never guesses the destination namespace).
 	DestRunnerNamespace string
+	// CreateProjectTokens controls whether captured project API tokens are
+	// automatically recreated on the destination project. Default false —
+	// creating a token mints a NEW one-time secret and every consumer must be
+	// repointed; the default behaviour is to surface a manual step instead.
+	//
+	// When true AND Apply is true, the syncer calls CreateProjectToken for each
+	// captured token that does not already exist by label+scope on the destination,
+	// and prints the plaintext values to stderr with a "save these now" notice.
+	// The plaintext values are NEVER written to stdout, JSON output, or log files.
+	CreateProjectTokens bool
 }
 
 func (o Options) placeholder() string {
@@ -581,6 +595,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, destProj.ID, opts)
 		s.syncProjectV11Flags(report, p, dst, opts)
+		s.syncProjectAPITokens(report, p, dst, opts)
 	}
 	return report, nil
 }
@@ -629,6 +644,7 @@ func (s *Syncer) syncAppProject(
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, existing.ID, opts)
 		s.syncProjectV11Flags(report, p, dst, opts)
+		s.syncProjectAPITokens(report, p, dst, opts)
 		return
 	}
 
@@ -665,6 +681,7 @@ func (s *Syncer) syncAppProject(
 		s.syncProjectSchedules(report, p, drySlug, opts)
 		s.syncProjectOIDCClaims(report, p, drySlug, destOrgID, "", opts)
 		s.syncProjectV11Flags(report, p, drySlug, opts)
+		s.syncProjectAPITokens(report, p, drySlug, opts)
 		return
 	}
 
@@ -704,6 +721,7 @@ func (s *Syncer) syncAppProject(
 	s.syncProjectSchedules(report, p, newSlug, opts)
 	s.syncProjectOIDCClaims(report, p, newSlug, destOrgID, newProjectID, opts)
 	s.syncProjectV11Flags(report, p, newSlug, opts)
+	s.syncProjectAPITokens(report, p, newSlug, opts)
 }
 
 // syncAppPipelineDefinition creates one pipeline definition plus its triggers
@@ -1162,6 +1180,88 @@ func isRepoAccessError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "does not have access to repository") ||
 		strings.Contains(msg, "installation does not have access")
+}
+
+// syncProjectAPITokens handles project API token sync for a single project.
+//
+// Default behaviour (opts.CreateProjectTokens == false): emit a "manual" action
+// for each captured token so the operator knows to recreate them.
+//
+// Optional behaviour (opts.CreateProjectTokens == true AND opts.Apply == true):
+// for each captured token, check whether a token with the same label+scope
+// already exists on the destination project (idempotent skip if so), then call
+// CreateProjectToken and print the NEW plaintext value to s.Out (stderr) with a
+// "save these now" header. Values are NEVER written to any log, stdout, or JSON
+// output stream.
+func (s *Syncer) syncProjectAPITokens(report *Report, p manifest.Project, dst string, opts Options) {
+	if len(p.APITokens) == 0 {
+		return
+	}
+
+	if !opts.CreateProjectTokens {
+		// Default: flag each token as requiring manual recreation.
+		for _, t := range p.APITokens {
+			target := dst + "/api-token:" + t.Label
+			report.add("project-api-token", target, "manual",
+				fmt.Sprintf("API token %q (scope %s) must be recreated manually on the destination project and every consumer repointed — values are not recoverable", t.Label, t.Scope))
+		}
+		return
+	}
+
+	// --create-project-tokens is set.
+	// Check which tokens already exist on the destination (idempotent).
+	existingByLabelScope := map[string]bool{}
+	if opts.Apply {
+		existing, lerr := s.Projects.ListProjectTokens(dst)
+		if lerr != nil {
+			clog.Debugf("could not list existing project tokens on %s: %v", dst, lerr)
+			// Do not abort — proceed and let create calls fail/succeed individually.
+		} else {
+			for _, ex := range existing {
+				existingByLabelScope[ex.Label+"\x00"+ex.Scope] = true
+			}
+		}
+	}
+
+	var createdTokens []string // label:value pairs, only in apply mode
+
+	for _, t := range p.APITokens {
+		target := dst + "/api-token:" + t.Label
+		key := t.Label + "\x00" + t.Scope
+
+		if existingByLabelScope[key] {
+			report.add("project-api-token", target, "exists",
+				fmt.Sprintf("API token %q (scope %s) already exists on destination — skipping (idempotent)", t.Label, t.Scope))
+			continue
+		}
+
+		if !opts.Apply {
+			report.add("project-api-token", target, "created",
+				fmt.Sprintf("would create API token %q (scope %s) — new value printed to stderr once on apply", t.Label, t.Scope))
+			continue
+		}
+
+		plaintext, cerr := s.Projects.CreateProjectToken(dst, t.Scope, t.Label)
+		if cerr != nil {
+			report.add("project-api-token", target, "error",
+				fmt.Sprintf("create API token %q (scope %s): %v", t.Label, t.Scope, cerr))
+			continue
+		}
+		report.add("project-api-token", target, "created",
+			fmt.Sprintf("created API token %q (scope %s) — new plaintext value printed to stderr", t.Label, t.Scope))
+		createdTokens = append(createdTokens, fmt.Sprintf("  project %s | label: %s | scope: %s | token: %s", dst, t.Label, t.Scope, plaintext))
+	}
+
+	// Print plaintext values to the operator output stream (stderr) ONCE.
+	// Never to stdout / JSON; never to a log file.
+	if len(createdTokens) > 0 && s.Out != nil {
+		fmt.Fprintf(s.Out, "\n*** SAVE THESE PROJECT API TOKEN VALUES NOW — they cannot be re-read ***\n")
+		fmt.Fprintf(s.Out, "*** Repoint every consumer of each source token to the new value.    ***\n\n")
+		for _, line := range createdTokens {
+			fmt.Fprintln(s.Out, line)
+		}
+		fmt.Fprintf(s.Out, "\n*** End of new project API token values ***\n\n")
+	}
 }
 
 func dryRunSuffix(apply bool) string {

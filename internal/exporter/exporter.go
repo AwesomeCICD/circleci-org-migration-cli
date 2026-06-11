@@ -82,6 +82,10 @@ type ProjectAPI interface {
 	ListPipelineDefinitions(projectID string) ([]project.PipelineDefinition, error)
 	// ListTriggers returns all triggers for the given pipeline definition.
 	ListTriggers(projectID, defID string) ([]project.Trigger, error)
+	// ListProjectTokens returns the metadata (ID, label, scope) for every API
+	// token configured on a project. Token values are never returned by the
+	// list API. On error the caller should record a non-fatal warning.
+	ListProjectTokens(slug string) ([]project.ProjectAPIToken, error)
 }
 
 // Options configures an export run.
@@ -429,6 +433,23 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 
 	if p.ID != "" {
 		e.exportPipelineDefinitions(m, mp, p.ID)
+	}
+
+	// Project API tokens (metadata only — label + scope; values are never
+	// returned by the list API). Non-fatal on error: a warning is added and
+	// the export continues so partial data is not silently dropped.
+	if apiTokens, aterr := e.Projects.ListProjectTokens(mp.Slug); aterr != nil {
+		m.AddWarning("project:"+mp.Slug, "api_tokens_unreadable",
+			fmt.Sprintf("could not list project API tokens: %v", aterr))
+	} else if len(apiTokens) > 0 {
+		for _, t := range apiTokens {
+			mp.APITokens = append(mp.APITokens, manifest.ProjectAPIToken{
+				Label: t.Label,
+				Scope: t.Scope,
+			})
+		}
+		m.AddWarning("project:"+mp.Slug, "api_tokens_values_excluded",
+			fmt.Sprintf("%d project API token(s) captured (label+scope only); token values are not retrievable — recreate them on the destination project and repoint every consumer", len(apiTokens)))
 	}
 }
 
