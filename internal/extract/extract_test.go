@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -505,5 +506,471 @@ func TestCapture_BadArtifactJSON(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected JSON parse error, got nil")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildSSHKeyExtractConfig unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildSSHKeyExtractConfig_ContainsJobName(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	if !strings.Contains(cfg, sshKeyDumpJobName) {
+		t.Errorf("config does not contain SSH key job name %q:\n%s", sshKeyDumpJobName, cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_ContainsDockerImage(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	if !strings.Contains(cfg, "cimg/base:current") {
+		t.Errorf("config does not contain expected docker image:\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_NoCheckoutStep(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	// The checkout step must never appear — it would materialise the deploy key.
+	if strings.Contains(cfg, "- checkout") {
+		t.Errorf("config must NOT contain a checkout step (would materialise deploy key):\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_AddSSHKeys_ExplicitFingerprints(t *testing.T) {
+	keys := []SSHKeyInput{
+		{Fingerprint: "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=", Hostname: "github.com"},
+		{Fingerprint: "XYZabc123def456=", Hostname: "bitbucket.org"},
+	}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+
+	// Must have add_ssh_keys step.
+	if !strings.Contains(cfg, "add_ssh_keys:") {
+		t.Errorf("config missing add_ssh_keys step:\n%s", cfg)
+	}
+	// Each fingerprint must appear with "SHA256:" prefix.
+	for _, k := range keys {
+		want := `"SHA256:` + k.Fingerprint + `"`
+		if !strings.Contains(cfg, want) {
+			t.Errorf("config missing fingerprint %q:\n%s", want, cfg)
+		}
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_MatchByRecomputedSHA256(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "example.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+
+	// Script must compute SHA256 fingerprint via ssh-keygen -E sha256.
+	if !strings.Contains(cfg, "ssh-keygen") {
+		t.Errorf("config missing ssh-keygen command for fingerprint computation:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "sha256") {
+		t.Errorf("config missing sha256 in ssh-keygen invocation:\n%s", cfg)
+	}
+	// Match step: the script must look up the fingerprint in a catalog.
+	if !strings.Contains(cfg, "FP_TO_HOST") {
+		t.Errorf("config missing FP_TO_HOST lookup map:\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_HostnameEmbedded(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "deploy.example.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	// The hostname must appear in the FP_TO_HOST initialisation.
+	if !strings.Contains(cfg, "deploy.example.com") {
+		t.Errorf("config missing hostname 'deploy.example.com':\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_StoreArtifact(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	if !strings.Contains(cfg, "store_artifacts") {
+		t.Errorf("config missing store_artifacts step:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, sshKeyArtifactPath) {
+		t.Errorf("config missing artifact path %q:\n%s", sshKeyArtifactPath, cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_IsValidYAMLish(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+	if !strings.HasPrefix(cfg, "version: 2.1") {
+		t.Errorf("config must start with 'version: 2.1':\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "jobs:") {
+		t.Errorf("config missing 'jobs:' section:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "workflows:") {
+		t.Errorf("config missing 'workflows:' section:\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_WithEncryption(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	opts := &Options{EncryptRecipient: "age1fakepublickey"}
+	cfg := buildSSHKeyExtractConfig(keys, opts)
+
+	// Must embed the public key.
+	if !strings.Contains(cfg, "age1fakepublickey") {
+		t.Errorf("config missing embedded recipient key:\n%s", cfg)
+	}
+	// Must have bundle-encrypt step.
+	if !strings.Contains(cfg, "bundle-encrypt") {
+		t.Errorf("config missing bundle-encrypt step:\n%s", cfg)
+	}
+	// Must store the .age artifact.
+	if !strings.Contains(cfg, sshKeyArtifactPathAge) {
+		t.Errorf("config missing .age artifact path:\n%s", cfg)
+	}
+	// Must have trap for plaintext cleanup.
+	wantTrap := "trap 'rm -f " + sshKeyArtifactPath + "' EXIT"
+	if !strings.Contains(cfg, wantTrap) {
+		t.Errorf("config missing trap for plaintext cleanup:\n%s", cfg)
+	}
+	// Trap must appear before bundle-encrypt.
+	trapIdx := strings.Index(cfg, "trap 'rm -f")
+	encryptIdx := strings.Index(cfg, "bundle-encrypt")
+	if trapIdx < 0 || encryptIdx < 0 || trapIdx > encryptIdx {
+		t.Errorf("trap must appear before bundle-encrypt; trapIdx=%d encryptIdx=%d", trapIdx, encryptIdx)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_WithEncryption_ArtifactIsAge(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	opts := &Options{EncryptRecipient: "age1fake"}
+	cfg := buildSSHKeyExtractConfig(keys, opts)
+
+	// The store_artifacts path must be the .age file, not the plaintext.
+	if !strings.Contains(cfg, "circleci-migrate-sshkeys.json.age") {
+		t.Errorf("store_artifacts must use .age path when encryption is on:\n%s", cfg)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_InstallStepPresent(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "abc123=", Hostname: "github.com"}}
+	cfg := buildSSHKeyExtractConfigWithVersion(keys, nil, "v0.4.0")
+
+	// Install step must be present (needed for bundle-encrypt even when
+	// encryption is not requested, in case it is added later).
+	if !strings.Contains(cfg, "Install circleci-migrate") {
+		t.Errorf("config missing Install circleci-migrate step:\n%s", cfg)
+	}
+	// Install step must appear before the collect step.
+	installIdx := strings.Index(cfg, "Install circleci-migrate")
+	collectIdx := strings.Index(cfg, "Collect SSH private keys")
+	if installIdx < 0 || collectIdx < 0 || installIdx > collectIdx {
+		t.Errorf("install step must appear before collect step; installIdx=%d collectIdx=%d", installIdx, collectIdx)
+	}
+}
+
+func TestBuildSSHKeyExtractConfig_MultipleKeys(t *testing.T) {
+	keys := []SSHKeyInput{
+		{Fingerprint: "fp1aaa=", Hostname: "github.com"},
+		{Fingerprint: "fp2bbb=", Hostname: "bitbucket.org"},
+		{Fingerprint: "fp3ccc=", Hostname: ""},
+	}
+	cfg := buildSSHKeyExtractConfig(keys, nil)
+
+	for _, k := range keys {
+		want := `"SHA256:` + k.Fingerprint + `"`
+		if !strings.Contains(cfg, want) {
+			t.Errorf("config missing fingerprint %q:\n%s", want, cfg)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CaptureSSHKeys happy-path and error tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// sshKeyPayload builds the JSON artifact body for SSH key capture tests.
+func sshKeyPayload(t *testing.T, keys []manifest.BundleSSHKey) []byte {
+	t.Helper()
+	data, err := json.Marshal(keys)
+	if err != nil {
+		t.Fatalf("marshal ssh key payload: %v", err)
+	}
+	return data
+}
+
+func TestCaptureSSHKeys_HappyPath(t *testing.T) {
+	want := []manifest.BundleSSHKey{
+		{
+			Fingerprint: "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=",
+			Hostname:    "github.com",
+			PrivateKey:  "PLACEHOLDER-PRIVATE-KEY-NOT-REAL",
+		},
+	}
+
+	deps := &fakeDeps{
+		triggerPipelineID: "pipe-ssh-1",
+		workflowResponses: [][]project.Workflow{
+			{{ID: "wf-ssh-1", Name: "extract-ssh", Status: "running"}},
+			{{ID: "wf-ssh-1", Name: "extract-ssh", Status: "success"}},
+		},
+		jobsResult: []project.Job{
+			{Name: sshKeyDumpJobName, JobNumber: 7, Status: "success"},
+		},
+		artifactsResult: []project.Artifact{
+			{
+				Path: sshKeyArtifactPath,
+				URL:  "https://circle-artifacts.com/0/circleci-migrate-sshkeys.json",
+			},
+		},
+		downloadData: sshKeyPayload(t, want),
+	}
+
+	keys := []SSHKeyInput{
+		{
+			Fingerprint: "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=",
+			Hostname:    "github.com",
+		},
+	}
+
+	got, err := CaptureSSHKeys(
+		context.Background(),
+		deps,
+		"gh/acme/web",
+		keys,
+		Options{DefinitionID: "def-ssh-1", Branch: "main", PollInterval: time.Millisecond},
+		"",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 SSH key, got %d", len(got))
+	}
+	if got[0].Fingerprint != want[0].Fingerprint {
+		t.Errorf("Fingerprint: got %q want %q", got[0].Fingerprint, want[0].Fingerprint)
+	}
+	if got[0].Hostname != want[0].Hostname {
+		t.Errorf("Hostname: got %q want %q", got[0].Hostname, want[0].Hostname)
+	}
+	if got[0].PrivateKey != want[0].PrivateKey {
+		t.Errorf("PrivateKey: got %q want %q", got[0].PrivateKey, want[0].PrivateKey)
+	}
+}
+
+func TestCaptureSSHKeys_EmptyKeys_ReturnsNil(t *testing.T) {
+	// When no keys are requested, CaptureSSHKeys returns (nil, nil) without
+	// triggering any pipeline.
+	deps := &fakeDeps{}
+	got, err := CaptureSSHKeys(
+		context.Background(),
+		deps,
+		"gh/acme/web",
+		nil, // no keys
+		Options{DefinitionID: "def-1"},
+		"",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error for empty keys: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty key list, got %v", got)
+	}
+}
+
+func TestCaptureSSHKeys_MissingDefinitionID_Error(t *testing.T) {
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(context.Background(), &fakeDeps{}, "gh/acme/web", keys, Options{}, "")
+	if err == nil {
+		t.Fatal("expected error when DefinitionID is empty, got nil")
+	}
+	if !strings.Contains(err.Error(), "DefinitionID") {
+		t.Errorf("error %q does not mention DefinitionID", err.Error())
+	}
+}
+
+func TestCaptureSSHKeys_WorkflowFailed(t *testing.T) {
+	deps := &fakeDeps{
+		triggerPipelineID: "pipe-1",
+		workflowResponses: [][]project.Workflow{
+			{{ID: "wf-1", Name: "extract-ssh", Status: "failed"}},
+		},
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1", PollInterval: time.Millisecond},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected error on failed workflow, got nil")
+	}
+}
+
+func TestCaptureSSHKeys_NoArtifact_Error(t *testing.T) {
+	deps := &fakeDeps{
+		triggerPipelineID: "pipe-1",
+		workflowResponses: [][]project.Workflow{
+			{{ID: "wf-1", Name: "extract-ssh", Status: "success"}},
+		},
+		jobsResult:      []project.Job{{Name: sshKeyDumpJobName, JobNumber: 1, Status: "success"}},
+		artifactsResult: []project.Artifact{},
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1", PollInterval: time.Millisecond},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected ErrNoArtifact, got nil")
+	}
+}
+
+func TestCaptureSSHKeys_BadArtifactJSON(t *testing.T) {
+	deps := &fakeDeps{
+		triggerPipelineID: "pipe-1",
+		workflowResponses: [][]project.Workflow{
+			{{ID: "wf-1", Name: "extract-ssh", Status: "success"}},
+		},
+		jobsResult: []project.Job{{Name: sshKeyDumpJobName, JobNumber: 1, Status: "success"}},
+		artifactsResult: []project.Artifact{
+			{Path: sshKeyArtifactPath, URL: "https://circle-artifacts.com/0/circleci-migrate-sshkeys.json"},
+		},
+		downloadData: []byte("NOT_JSON"),
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1", PollInterval: time.Millisecond},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected JSON parse error, got nil")
+	}
+}
+
+func TestCaptureSSHKeys_PipelineSkipped(t *testing.T) {
+	deps := &fakeDeps{
+		triggerErr: project.ErrPipelineSkipped,
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1"},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected error on skipped pipeline, got nil")
+	}
+}
+
+func TestCaptureSSHKeys_TriggerError(t *testing.T) {
+	deps := &fakeDeps{
+		triggerErr: fmt.Errorf("network error"),
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1"},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected trigger error, got nil")
+	}
+}
+
+func TestCaptureSSHKeys_JobNotFound(t *testing.T) {
+	deps := &fakeDeps{
+		triggerPipelineID: "pipe-1",
+		workflowResponses: [][]project.Workflow{
+			{{ID: "wf-1", Name: "extract-ssh", Status: "success"}},
+		},
+		jobsResult: []project.Job{
+			{Name: "some-other-job", JobNumber: 1, Status: "success"},
+		},
+	}
+	keys := []SSHKeyInput{{Fingerprint: "fp1=", Hostname: "github.com"}}
+	_, err := CaptureSSHKeys(
+		context.Background(), deps, "gh/acme/web", keys,
+		Options{DefinitionID: "def-1", PollInterval: time.Millisecond},
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected error when SSH key dump job not found, got nil")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// manifest.SecretBundle SSH-key helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBundleAddSSHKey_Idempotent(t *testing.T) {
+	b := manifest.NewSecretBundle()
+	key := manifest.BundleSSHKey{
+		Fingerprint: "fp1=",
+		Hostname:    "github.com",
+		PrivateKey:  "PLACEHOLDER-KEY-MATERIAL",
+	}
+
+	b.AddSSHKey("gh/acme/web", key)
+	b.AddSSHKey("gh/acme/web", key) // duplicate — should be skipped
+
+	if len(b.SSHKeys["gh/acme/web"]) != 1 {
+		t.Errorf("expected 1 key after duplicate add, got %d", len(b.SSHKeys["gh/acme/web"]))
+	}
+}
+
+func TestBundleAddSSHKey_MultipleKeys(t *testing.T) {
+	b := manifest.NewSecretBundle()
+	b.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp1=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-1"})
+	b.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp2=", Hostname: "bitbucket.org", PrivateKey: "PLACEHOLDER-KEY-2"})
+
+	if len(b.SSHKeys["gh/acme/web"]) != 2 {
+		t.Errorf("expected 2 keys, got %d", len(b.SSHKeys["gh/acme/web"]))
+	}
+}
+
+func TestBundleAddSSHKey_MultipleProjects(t *testing.T) {
+	b := manifest.NewSecretBundle()
+	b.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp1=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-1"})
+	b.AddSSHKey("gh/acme/api", manifest.BundleSSHKey{Fingerprint: "fp2=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-2"})
+
+	if len(b.SSHKeys["gh/acme/web"]) != 1 {
+		t.Errorf("expected 1 key for web, got %d", len(b.SSHKeys["gh/acme/web"]))
+	}
+	if len(b.SSHKeys["gh/acme/api"]) != 1 {
+		t.Errorf("expected 1 key for api, got %d", len(b.SSHKeys["gh/acme/api"]))
+	}
+}
+
+func TestBundleMerge_MergesSSHKeys(t *testing.T) {
+	a := manifest.NewSecretBundle()
+	a.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp1=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-1"})
+
+	b := manifest.NewSecretBundle()
+	b.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp2=", Hostname: "bitbucket.org", PrivateKey: "PLACEHOLDER-KEY-2"})
+	b.AddSSHKey("gh/acme/api", manifest.BundleSSHKey{Fingerprint: "fp3=", Hostname: "gitlab.com", PrivateKey: "PLACEHOLDER-KEY-3"})
+
+	a.Merge(b)
+
+	if len(a.SSHKeys["gh/acme/web"]) != 2 {
+		t.Errorf("expected 2 keys for web after merge, got %d", len(a.SSHKeys["gh/acme/web"]))
+	}
+	if len(a.SSHKeys["gh/acme/api"]) != 1 {
+		t.Errorf("expected 1 key for api after merge, got %d", len(a.SSHKeys["gh/acme/api"]))
+	}
+}
+
+func TestBundleMerge_SSHKeyDuplicatesDeduped(t *testing.T) {
+	a := manifest.NewSecretBundle()
+	a.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp1=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-1"})
+
+	b := manifest.NewSecretBundle()
+	// Same fingerprint as in a — must be deduplicated on merge.
+	b.AddSSHKey("gh/acme/web", manifest.BundleSSHKey{Fingerprint: "fp1=", Hostname: "github.com", PrivateKey: "PLACEHOLDER-KEY-1"})
+
+	a.Merge(b)
+
+	if len(a.SSHKeys["gh/acme/web"]) != 1 {
+		t.Errorf("expected 1 key after merging duplicate, got %d", len(a.SSHKeys["gh/acme/web"]))
 	}
 }
