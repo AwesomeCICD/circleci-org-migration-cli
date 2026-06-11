@@ -1061,3 +1061,183 @@ func TestMarkdown_GroupRestriction_ManualNote_PullsWarning(t *testing.T) {
 		t.Errorf("Markdown should include the warning message text; got:\n%s", md)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional SSH key rendering
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_SSHKeys_RenderedPerProject verifies that when a project has
+// additional SSH keys, the report includes a section with hostname,
+// fingerprint, and public-key preview for each key.
+func TestMarkdown_SSHKeys_RenderedPerProject(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{
+						Hostname:    "github.com",
+						Fingerprint: "Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=",
+						PublicKey:   "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC user@host",
+					},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Additional SSH keys",
+		"github.com",
+		"Cv1BbZPFHMZzCPx+1CsJqO0kRBIlOm7DEqR/jPbHnBg=",
+		"ssh-rsa AAAAB3NzaC1yc2EAAAA", // preview truncated
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing %q in SSH keys section; got:\n%s", want, md[:min(500, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_SSHKeys_GlobalHostFallback verifies that an SSH key with an
+// empty hostname is rendered as "(global)" in the report.
+func TestMarkdown_SSHKeys_GlobalHostFallback(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA..."},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+	if !strings.Contains(md, "(global)") {
+		t.Errorf("Markdown should render empty hostname as (global); got:\n%s", md[:min(500, len(md))])
+	}
+}
+
+// TestMarkdown_SSHKeys_NoSectionWhenAbsent verifies that projects without
+// additional SSH keys do not render the SSH keys section.
+func TestMarkdown_SSHKeys_NoSectionWhenAbsent(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web", SSHKeys: nil},
+		},
+	}
+
+	md := report.Markdown(m)
+	if strings.Contains(md, "Additional SSH keys") {
+		t.Errorf("Markdown should NOT render SSH keys section when no keys present; got:\n%s", md[:min(500, len(md))])
+	}
+}
+
+// TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent verifies that the manual
+// steps section includes a note about private SSH keys not being exported
+// when at least one project has additional SSH keys.
+func TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA..."},
+				},
+			},
+		},
+		Warnings: []manifest.Warning{
+			{
+				Scope:   "project:gh/acme/web",
+				Code:    "ssh_keys_private_excluded",
+				Message: "1 additional SSH key(s) captured (public metadata only)",
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Additional SSH keys (private keys not exported)",
+		"PRIVATE keys are never returned",
+		"SSH-key extraction step",
+		"export note:",
+		"1 additional SSH key(s) captured (public metadata only)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown manual-steps missing %q; got:\n%s", want, md[:min(800, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_ManualSteps_SSHKeysNoteAbsentWhenNoKeys verifies that the
+// additional-SSH-keys manual-steps note is NOT emitted when no project has
+// additional SSH keys.
+func TestMarkdown_ManualSteps_SSHKeysNoteAbsentWhenNoKeys(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web"},
+		},
+	}
+
+	md := report.Markdown(m)
+	if strings.Contains(md, "Additional SSH keys (private keys not exported)") {
+		t.Errorf("Manual-steps SSH-key note should be absent when no SSH keys in manifest; got note in:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestMarkdown_SSHKeys_PublicKeyPreviewTruncated verifies that a long public
+// key is truncated to a preview in the rendered output.
+func TestMarkdown_SSHKeys_PublicKeyPreviewTruncated(t *testing.T) {
+	longKey := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7e8+longkeygoeshere user@host.example.com"
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "test.host", Fingerprint: "fp=", PublicKey: longKey},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	// The full key must NOT appear verbatim (it is longer than the preview limit).
+	if strings.Contains(md, longKey) {
+		t.Errorf("Full public key should not appear in report (should be truncated); found in:\n%s", md[:min(800, len(md))])
+	}
+	// The truncation marker must be present.
+	if !strings.Contains(md, "...") {
+		t.Errorf("Truncation marker '...' missing from SSH key preview in report")
+	}
+}
