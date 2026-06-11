@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
@@ -20,6 +21,17 @@ func Execute() error {
 	return MakeCommands().Execute()
 }
 
+// resolveHost returns the best available CircleCI host from the environment.
+// CIRCLECI_CLI_HOST (the official circleci-cli variable) takes precedence;
+// CIRCLECI_HOST is accepted as a legacy alias.  Returns empty string if
+// neither is set so the caller can fall back to the compiled-in default.
+func resolveHost() string {
+	if h := os.Getenv("CIRCLECI_CLI_HOST"); h != "" {
+		return h
+	}
+	return os.Getenv("CIRCLECI_HOST")
+}
+
 // MakeCommands builds and returns the root cobra.Command with all
 // sub-commands registered.  It is a standalone constructor so that tests and
 // other callers can obtain a fresh command tree without side-effects.
@@ -34,7 +46,7 @@ func MakeCommands() *cobra.Command {
 	// Token env fallbacks are deliberately NOT seeded here — doing so would make
 	// the secret value the flag's default and leak it into --help output. They
 	// are resolved in PersistentPreRunE instead (after flag parsing).
-	if h := os.Getenv("CIRCLECI_HOST"); h != "" {
+	if h := resolveHost(); h != "" {
 		rootOptions.Host = h
 	}
 
@@ -84,10 +96,17 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 		},
 	}
 
+	// SetFlagErrorFunc provides a consistent error message + usage hint when a
+	// flag cannot be parsed (e.g. unknown flag, wrong type).  Mirrors the
+	// official circleci-cli behaviour so error output is uniform.
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\nRun '%s --help' for usage.", err, cmd.CommandPath())
+	})
+
 	// Persistent (global) flags — available to every sub-command.
 	pf := rootCmd.PersistentFlags()
 	pf.StringVar(&rootOptions.Host, "host", rootOptions.Host,
-		"CircleCI host URL (env: CIRCLECI_HOST)")
+		"CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST)")
 	// Token flags default to "" (never the env value) so --help never prints a
 	// secret. The env fallback is applied in PersistentPreRunE.
 	pf.StringVar(&rootOptions.Token, "token", "",
