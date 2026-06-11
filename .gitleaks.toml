@@ -17,3 +17,16 @@ string literals. No real credentials live in these files.
 paths = [
   '''internal/exporter/sso_export_test\.go''',
 ]
+
+[[allowlists]]
+description = """
+Additional-SSH-key test fixtures. These test files contain synthetic, throwaway
+SSH private keys used only to verify that the CLI forwards/round-trips key
+material (POST .../ssh-key, bundle, sync re-add). They are not real credentials
+— the private-key detector cannot tell a fake test key from a real one, so the
+generated test keys trip it. No real keys live in these files.
+"""
+paths = [
+  '''api/project/sshkey_test\.go''',
+  '''internal/syncer/projects_test\.go''',
+]
