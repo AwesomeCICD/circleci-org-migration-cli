@@ -6,7 +6,7 @@
 # publish job. The production publish job is gated by version-tag filter only.
 #
 # Workflow summary:
-#   ci          — quality + security → tests → build (branch pipelines, unchanged)
+#   ci          — fail-fast DAG: build+lint+coverage → test+security → e2e
 #   release     — goreleaser (tag-only, unchanged)
 #   orb-publish — dev publish (branch, orb changed) + prod publish (tag-only)
 #
@@ -29,13 +29,16 @@
 #   - JUnit test results (gotestsum) + coverage artifacts
 #   - dedicated security stage (govulncheck, gosec, gitleaks, trivy)
 #
-# Workflow stages (DAG):
-#   Stage 1 — quality + security gates (parallel, no prerequisites):
-#             lint, security-vuln, security-sast, security-secrets, security-trivy
-#   Stage 2 — test, coverage, e2e (require all of stage 1):
-#             test, coverage, e2e
-#   Stage 3 — cross-platform build matrix (requires test to pass):
-#             build
+# Workflow stages (DAG) — fail-fast:
+#   Wave A — build matrix, lint, coverage (parallel, no prerequisites):
+#             Build: linux/amd64, Build: linux/arm64,
+#             Build: darwin/amd64, Build: darwin/arm64,
+#             Lint, Coverage (85% gate)
+#   Wave B — test + security (require ALL of Wave A):
+#             Unit Tests (race), Security: govulncheck, Security: gosec (SAST),
+#             Security: gitleaks, Security: Trivy
+#   Wave C — e2e (requires ALL of Wave B, uses binary persisted by build):
+#             E2E Smoke (built binary)
 version: 2.1
 
 parameters:
@@ -100,7 +103,7 @@ commands:
 
 jobs:
   # ===========================================================================
-  # STAGE 1 — Quality + Security (run first, in parallel)
+  # WAVE A — Lint (run in parallel with build matrix + coverage, no prerequisites)
   # ===========================================================================
 
   lint:
@@ -143,6 +146,36 @@ jobs:
               exit 1
             fi
             echo "docs-check: OK (no diff)"
+
+  # ===========================================================================
+  # WAVE A — Coverage (run in parallel with build matrix + lint, no prerequisites)
+  # ===========================================================================
+
+  coverage:
+    executor: go
+    steps:
+      - checkout
+      - go/mod-download-cached
+      - run:
+          name: Run full test suite with coverage
+          command: |
+            # Single container — collect coverage across all packages at once.
+            # Do NOT split here; partial per-container profiles cannot be easily
+            # merged and would give a misleading total.
+            CGO_ENABLED=1 go test -covermode=atomic -coverprofile=coverage.out ./...
+      - run:
+          name: Coverage report + threshold gate
+          command: |
+            go tool cover -html=coverage.out -o coverage.html
+            go tool cover -func=coverage.out | tail -1
+            ./scripts/check-coverage.sh coverage.out
+      - store_artifacts:
+          path: coverage.html
+          destination: coverage.html
+
+  # ===========================================================================
+  # WAVE B — Security scanners (require ALL of Wave A)
+  # ===========================================================================
 
   security-vuln:
     executor: go
@@ -265,7 +298,7 @@ jobs:
           hide-progress: true
 
   # ===========================================================================
-  # STAGE 2 — Test, Coverage, E2E (require ALL of stage 1)
+  # WAVE B — Test (requires ALL of Wave A)
   # ===========================================================================
 
   test:
@@ -302,49 +335,28 @@ jobs:
           path: test-results
           destination: test-results
 
-  coverage:
-    executor: go
-    steps:
-      - checkout
-      - go/mod-download-cached
-      - run:
-          name: Run full test suite with coverage
-          command: |
-            # Single container — collect coverage across all packages at once.
-            # Do NOT split here; partial per-container profiles cannot be easily
-            # merged and would give a misleading total.
-            CGO_ENABLED=1 go test -covermode=atomic -coverprofile=coverage.out ./...
-      - run:
-          name: Coverage report + threshold gate
-          command: |
-            go tool cover -html=coverage.out -o coverage.html
-            go tool cover -func=coverage.out | tail -1
-            ./scripts/check-coverage.sh coverage.out
-      - store_artifacts:
-          path: coverage.html
-          destination: coverage.html
+  # ===========================================================================
+  # WAVE C — E2E smoke test (requires ALL of Wave B; uses binary from workspace)
+  # ===========================================================================
 
   # E2E binary smoke test — no tokens, no network required.
-  # Builds the real binary and exercises CLI entry points + the secrets-extract
-  # path against a tiny in-memory fixture manifest.
+  # Uses the linux/amd64 binary persisted to workspace by the build matrix job.
+  # Exercises CLI entry points + the secrets-extract path against a tiny
+  # in-memory fixture manifest.
   # TODO: add a live-org e2e suite (against a dedicated test org with scoped
   #       tokens) once secret management for CI is in place.
   e2e:
     executor: go
     steps:
       - checkout
-      - go/mod-download-cached
-      - run:
-          name: Build binary
-          command: |
-            mkdir -p bin
-            go build -o bin/circleci-migrate .
+      - attach_workspace:
+          at: .
       - run:
           name: Smoke — version + help
           command: |
-            ./bin/circleci-migrate version
-            ./bin/circleci-migrate --help
-            ./bin/circleci-migrate export --help
+            ./bin/linux/amd64/circleci-migrate version
+            ./bin/linux/amd64/circleci-migrate --help
+            ./bin/linux/amd64/circleci-migrate export --help
       - run:
           name: Smoke — secrets extract (fixture, no network)
           command: |
@@ -354,7 +366,7 @@ jobs:
             printf '%s' '{"schema_version":"1","source":{"host":"https://circleci.com","org":{"slug":"gh/test-org","name":"test-org"}},"contexts":[{"name":"e2e-ctx","environment_variables":[{"name":"E2E_SECRET_VAR"}]}],"projects":[]}' > e2e-tmp/manifest.json
             # Supply the variable value via the environment (as a real job would).
             E2E_SECRET_VAR=supersecret \
-              ./bin/circleci-migrate secrets extract \
+              ./bin/linux/amd64/circleci-migrate secrets extract \
                 --manifest e2e-tmp/manifest.json \
                 --context e2e-ctx \
                 --output e2e-tmp/secrets.json
@@ -364,7 +376,8 @@ jobs:
             echo "E2E smoke test passed."
 
   # ===========================================================================
-  # STAGE 3 — Cross-platform build matrix (requires test)
+  # WAVE A — Cross-platform build matrix (parallel with lint + coverage)
+  # Persists each built binary to workspace for downstream consumers (e2e).
   # ===========================================================================
 
   build:
@@ -382,13 +395,18 @@ jobs:
       - run:
           name: Build << parameters.goos >>/<< parameters.goarch >>
           command: |
-            out="dist/circleci-migrate-<< parameters.goos >>-<< parameters.goarch >>"
+            out="bin/<< parameters.goos >>/<< parameters.goarch >>/circleci-migrate"
+            mkdir -p "$(dirname "$out")"
             GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
               go build -trimpath -o "$out" .
             ls -lh "$out"
+      - persist_to_workspace:
+          root: .
+          paths:
+            - bin/<< parameters.goos >>/<< parameters.goarch >>/circleci-migrate
       - store_artifacts:
-          path: dist
-          destination: binaries
+          path: bin/<< parameters.goos >>/<< parameters.goarch >>
+          destination: binaries/<< parameters.goos >>/<< parameters.goarch >>
 
   # ===========================================================================
   # RELEASE-PLEASE — automated release PR + GitHub Release creation
@@ -572,51 +590,91 @@ workflows:
   ci:
     jobs:
       # -----------------------------------------------------------------------
-      # Stage 1: quality + security gates — all run in parallel, no prerequisites
-      # -----------------------------------------------------------------------
-      - lint
-      - security-vuln
-      - security-sast
-      - security-secrets
-      - security-trivy
-
-      # -----------------------------------------------------------------------
-      # Stage 2: test, coverage, e2e — require ALL stage-1 jobs to pass first
-      # -----------------------------------------------------------------------
-      - test:
-          requires:
-            - lint
-            - security-vuln
-            - security-sast
-            - security-secrets
-            - security-trivy
-      - coverage:
-          requires:
-            - lint
-            - security-vuln
-            - security-sast
-            - security-secrets
-            - security-trivy
-      - e2e:
-          requires:
-            - lint
-            - security-vuln
-            - security-sast
-            - security-secrets
-            - security-trivy
-
-      # -----------------------------------------------------------------------
-      # Stage 3: cross-platform build matrix — requires test (not coverage/e2e,
-      # so a coverage regression doesn't block artifact production)
+      # Wave A: build matrix + lint + coverage — all run in parallel, no prerequisites.
+      # A compile/lint/coverage failure short-circuits before the heavy
+      # test/security jobs start (fail-fast).
       # -----------------------------------------------------------------------
       - build:
-          name: build-<< matrix.goos >>-<< matrix.goarch >>
-          requires:
-            - test
+          name: "Build: << matrix.goos >>/<< matrix.goarch >>"
           matrix:
             parameters:
               goos: [linux, darwin]
               goarch: [amd64, arm64]
+
+      - lint:
+          name: Lint
+
+      - coverage:
+          name: "Coverage (85% gate)"
+
+      # -----------------------------------------------------------------------
+      # Wave B: test + security — require ALL Wave A jobs to pass first.
+      # A test/security failure short-circuits before e2e starts (fail-fast).
+      # -----------------------------------------------------------------------
+      - test:
+          name: "Unit Tests (race)"
+          requires:
+            - "Build: linux/amd64"
+            - "Build: linux/arm64"
+            - "Build: darwin/amd64"
+            - "Build: darwin/arm64"
+            - Lint
+            - "Coverage (85% gate)"
+
+      - security-vuln:
+          name: "Security: govulncheck"
+          requires:
+            - "Build: linux/amd64"
+            - "Build: linux/arm64"
+            - "Build: darwin/amd64"
+            - "Build: darwin/arm64"
+            - Lint
+            - "Coverage (85% gate)"
+
+      - security-sast:
+          name: "Security: gosec (SAST)"
+          requires:
+            - "Build: linux/amd64"
+            - "Build: linux/arm64"
+            - "Build: darwin/amd64"
+            - "Build: darwin/arm64"
+            - Lint
+            - "Coverage (85% gate)"
+
+      - security-secrets:
+          name: "Security: gitleaks"
+          requires:
+            - "Build: linux/amd64"
+            - "Build: linux/arm64"
+            - "Build: darwin/amd64"
+            - "Build: darwin/arm64"
+            - Lint
+            - "Coverage (85% gate)"
+
+      - security-trivy:
+          name: "Security: Trivy"
+          requires:
+            - "Build: linux/amd64"
+            - "Build: linux/arm64"
+            - "Build: darwin/amd64"
+            - "Build: darwin/arm64"
+            - Lint
+            - "Coverage (85% gate)"
+
+      # -----------------------------------------------------------------------
+      # Wave C: e2e — requires ALL Wave B jobs.
+      # Uses the linux/amd64 binary persisted to workspace by the build matrix.
+      # The workspace is available because build (Wave A) is a transitive
+      # prerequisite via Wave B → Wave A.
+      # -----------------------------------------------------------------------
+      - e2e:
+          name: "E2E Smoke (built binary)"
+          requires:
+            - "Unit Tests (race)"
+            - "Security: govulncheck"
+            - "Security: gosec (SAST)"
+            - "Security: gitleaks"
+            - "Security: Trivy"
 
   # ---------------------------------------------------------------------------
   # Release workflow — fires ONLY on version tags (v*), never on branches.
