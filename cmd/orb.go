@@ -97,9 +97,9 @@ Example:
 				return fmt.Errorf("--config is required")
 			}
 
-			token := rootOptions.Token
+			token := rootOptions.SourceTokenOrDefault()
 			if token == "" {
-				return fmt.Errorf("no API token: set --token or CIRCLECI_CLI_TOKEN")
+				return noSourceTokenError()
 			}
 
 			data, err := os.ReadFile(configPath)
