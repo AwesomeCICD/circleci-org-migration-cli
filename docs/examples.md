@@ -30,7 +30,7 @@ organizations use the GitHub OAuth integration.
 
 ```bash
 circleci-migrate export \
-  --org gh/acme \
+  --source-org gh/acme \
   --output manifest.json \
   --report migration-report.md
 ```
@@ -128,7 +128,7 @@ DST_UUID="22222222-2222-2222-2222-222222222222"
 
 ```bash
 circleci-migrate export \
-  --org "circleci/$SRC_UUID" \
+  --source-org "circleci/$SRC_UUID" \
   --output manifest.json \
   --report migration-report.md
 ```
@@ -227,9 +227,8 @@ Destination side:
 
 ```bash
 # Export and capture for the OAuth side
-circleci-migrate export --org gh/acme -o manifest-oauth.json --report report-oauth.md
+circleci-migrate export --source-org gh/acme -o manifest-oauth.json --report report-oauth.md
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest-oauth.json \
   --output secrets-oauth.json
 
@@ -248,7 +247,7 @@ DST_UUID="22222222-2222-2222-2222-222222222222"
 
 # Export and capture for the App side
 circleci-migrate export \
-  --org "circleci/$SRC_UUID" \
+  --source-org "circleci/$SRC_UUID" \
   -o manifest-app.json \
   --report report-app.md
 
@@ -288,7 +287,7 @@ DST_UUID="22222222-2222-2222-2222-222222222222"
 
 # Export the OAuth source
 circleci-migrate export \
-  --org gh/acme \
+  --source-org gh/acme \
   --output manifest.json \
   --report migration-report.md
 
@@ -296,7 +295,6 @@ circleci-migrate export \
 
 # Capture secrets
 circleci-migrate secrets capture \
-  --org gh/acme \
   --manifest manifest.json \
   --output secrets.json
 
@@ -524,7 +522,7 @@ Or using separate `export` / `sync` steps:
 ```bash
 # Export (no GitHub token needed for export)
 circleci-migrate export \
-  --org "circleci/$SRC_UUID" \
+  --source-org "circleci/$SRC_UUID" \
   --output manifest.json
 
 # Sync — supply the GitHub token so the tool can resolve new repo IDs
@@ -551,7 +549,7 @@ lookup, you must supply the runner namespace name explicitly.
 
 ```bash
 circleci-migrate export \
-  --org gh/acme \
+  --source-org gh/acme \
   --runner-namespace acme-runners \
   --output manifest.json \
   --report migration-report.md

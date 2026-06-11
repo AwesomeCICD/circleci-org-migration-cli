@@ -547,6 +547,8 @@ func RunMigrateWalkthroughWith(
 	printSubStepHeader(out, "3a", 4, "Secrets bundle")
 	fmt.Fprintln(out, "  A captured secrets bundle supplies plaintext env-var values during sync.")
 	fmt.Fprintln(out, "  Produce one with 'secrets capture' before running migrate.")
+	fmt.Fprintln(out, "  Answering 'no' proceeds with NO secret values: the walkthrough will not")
+	fmt.Fprintln(out, "  auto-load secrets.json, and variable values are handled per step 3b below.")
 	var useBundle bool
 	useBundle, err = p.askBool("Do you have a captured secrets bundle to provide?", false)
 	if err != nil {
@@ -606,6 +608,13 @@ func RunMigrateWalkthroughWith(
 			return
 		}
 	}
+
+	// End-of-walkthrough pointer to advanced flags not covered by the prompts.
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  Advanced options not covered above (set via flags, re-run with --help):")
+	fmt.Fprintln(out, "    --runner-namespace / --dest-runner-namespace  migrate self-hosted runner resource classes")
+	fmt.Fprintln(out, "    --dest-github-org                             when repos moved to a new GitHub org (App orgs)")
+	fmt.Fprintln(out, "    --mapping                                     per-project source->destination slug overrides")
 
 	outSourceOrg = sourceOrg
 	outDestOrg = destOrg

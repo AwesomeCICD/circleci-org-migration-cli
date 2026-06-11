@@ -17,12 +17,12 @@ environment variables, and more — from one CircleCI organisation to another.
 Typical workflow:
 .IP "  1." 5
 Export the source organisation to a local manifest file:
-   circleci-migrate export --source-token $SRC_TOKEN --org gh/myorg
+   circleci-migrate export --source-token $SRC_TOKEN --source-org gh/myorg
 .IP "  2." 5
 (Optional) Review or edit the manifest.
 .IP "  3." 5
 Sync the manifest into the destination organisation (the destination org is
- inferred from the manifest; no --org flag is needed):
+ inferred from the manifest; no --source-org flag is needed):
    circleci-migrate sync  --dest-token $DST_TOKEN --manifest manifest.json --apply
 
 .PP
