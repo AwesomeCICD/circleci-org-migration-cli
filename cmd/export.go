@@ -2,6 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
@@ -84,6 +89,134 @@ func buildExportSummary(m *manifest.Manifest, manifestPath, reportPath string) E
 	}
 }
 
+// usagePollInterval is the time between status polls for the async usage export
+// job.  It is a package-level variable so tests can override it.
+var usagePollInterval = 10 * time.Second
+
+// downloadUsageFile fetches a single pre-signed URL and saves it to outDir,
+// using the last path segment of the URL (before the query string) as the
+// filename.  Returns the written path on success.
+func downloadUsageFile(rawURL, outDir string) (string, error) {
+	// Derive the local filename from the URL path component.  Pre-signed S3 URLs
+	// look like "…/usage-123.csv.gz?X-Amz-…".  We parse the URL properly to
+	// extract just the path, then take its base (last segment).
+	base := usageFileBase(rawURL)
+	dest := filepath.Join(outDir, base)
+
+	// #nosec G107 -- URL comes from the CircleCI API; not user-controlled
+	resp, err := http.Get(rawURL) //nolint:noctx
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("download %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+
+	f, err := os.Create(dest) // #nosec G304 -- dest is constructed from outDir + API filename
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", dest, err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", fmt.Errorf("write %s: %w", dest, err)
+	}
+	return dest, nil
+}
+
+// usageFileBase returns a safe local filename for a pre-signed download URL.
+// It parses the URL to extract the last path segment.  If no usable segment can
+// be found (root path, unparseable URL, etc.) it falls back to "usage.csv.gz".
+func usageFileBase(rawURL string) string {
+	// Prefer proper URL parsing so we correctly handle any scheme/host/path.
+	if parsed, err := url.Parse(rawURL); err == nil {
+		if seg := filepath.Base(parsed.Path); seg != "" && seg != "." && seg != "/" {
+			return seg
+		}
+	}
+	return "usage.csv.gz"
+}
+
+// parseURLForFilename extracts the path component of rawURL (stripping the
+// query string) so we can derive a safe local filename.
+func parseURLForFilename(rawURL string) (string, error) {
+	// Strip query string by splitting on '?'
+	path := rawURL
+	if idx := findByte(rawURL, '?'); idx >= 0 {
+		path = rawURL[:idx]
+	}
+	return path, nil
+}
+
+// findByte returns the index of the first occurrence of b in s, or -1 if not
+// found.  It avoids importing strings for a single-byte search.
+func findByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+// runUsageExport orchestrates the full async usage-export flow: submit the job,
+// poll until completed (or timeout), then download all CSVs to outDir.
+// Errors are non-fatal: they are written to errOut and the function returns.
+func runUsageExport(orgClient *org.Client, orgID, start, end, outDir string, timeout time.Duration, errOut io.Writer) {
+	fmt.Fprintf(errOut, "\nNote: usage data is a local baseline snapshot — it does NOT transfer to the destination org.\n")
+
+	jobID, err := orgClient.CreateUsageExportJob(orgID, start, end)
+	if err != nil {
+		fmt.Fprintf(errOut, "Warning: usage export job creation failed: %v\n", err)
+		return
+	}
+	fmt.Fprintf(errOut, "Usage export job created: %s (polling for completion...)\n", jobID)
+
+	deadline := time.Now().Add(timeout)
+	var downloadURLs []string
+	for {
+		state, urls, pollErr := orgClient.GetUsageExportJob(orgID, jobID)
+		if pollErr != nil {
+			fmt.Fprintf(errOut, "Warning: usage export poll failed: %v\n", pollErr)
+			return
+		}
+		switch state {
+		case "completed":
+			downloadURLs = urls
+			goto download
+		case "failed", "error":
+			fmt.Fprintf(errOut, "Warning: usage export job %s ended with state %q — skipping download.\n", jobID, state)
+			return
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(errOut, "Warning: usage export job %s did not complete within %s — skipping download.\n", jobID, timeout)
+			return
+		}
+		time.Sleep(usagePollInterval)
+	}
+
+download:
+	if len(downloadURLs) == 0 {
+		fmt.Fprintf(errOut, "Warning: usage export job completed but returned no download URLs.\n")
+		return
+	}
+
+	if mkErr := os.MkdirAll(outDir, 0o750); mkErr != nil {
+		fmt.Fprintf(errOut, "Warning: could not create usage output dir %s: %v\n", outDir, mkErr)
+		return
+	}
+
+	for _, u := range downloadURLs {
+		path, dlErr := downloadUsageFile(u, outDir)
+		if dlErr != nil {
+			fmt.Fprintf(errOut, "Warning: usage download failed: %v\n", dlErr)
+			continue
+		}
+		fmt.Fprintf(errOut, "Usage data saved: %s\n", path)
+	}
+}
+
 func newExportCommand() *cobra.Command {
 	var (
 		orgSlug         string
@@ -96,6 +229,11 @@ func newExportCommand() *cobra.Command {
 		skipExtras      bool
 		runnerNamespace string
 		jsonOutput      bool
+		// Usage export flags (opt-in; data stays local, never transferred to dest).
+		includeUsage bool
+		usageStart   string
+		usageEnd     string
+		usageTimeout time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -117,11 +255,25 @@ Self-hosted runner resource classes live under a namespace on runner.circleci.co
 Pass --runner-namespace to capture them. The namespace must be supplied explicitly
 because there is no clean org→namespace lookup in the CircleCI API.
 
+USAGE DATA SNAPSHOT (opt-in):
+
+Pass --include-usage to also request a historical usage report from the CircleCI
+Usage API. The report is downloaded as gzip-compressed CSV files to a "usage/"
+sub-directory next to the manifest. The window defaults to the last 30 days; use
+--usage-start / --usage-end (RFC 3339) to override. The maximum window is 31 days
+(enforced by the API).
+
+IMPORTANT: usage data is a local baseline/record only. It does NOT transfer to
+the destination organisation during sync or migrate. If the usage export fails or
+times out, the main export succeeds and a warning is printed.
+
 Examples:
   circleci-migrate export --source-org gh/acme --source-token $SRC_TOKEN
   circleci-migrate export --source-org gh/acme -o acme.json --report acme-audit.md
   circleci-migrate export --source-org gh/acme --project gh/acme/web --project gh/acme/api
-  circleci-migrate export --source-org gh/acme --runner-namespace acme`,
+  circleci-migrate export --source-org gh/acme --runner-namespace acme
+  circleci-migrate export --source-org gh/acme --include-usage
+  circleci-migrate export --source-org gh/acme --include-usage --usage-start 2026-01-01T00:00:00Z --usage-end 2026-01-31T23:59:59Z`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Merge values from hidden alias --projects (StringSlice, comma-or-repeat)
 			// into the canonical --project list.
@@ -184,6 +336,45 @@ Examples:
 				return err
 			}
 
+			// ── Optional usage export (opt-in; does NOT transfer to dest) ────────
+			if includeUsage {
+				// Resolve the org ID needed by the usage export API.
+				orgID, idErr := orgClient.ResolveOrgID(orgSlug)
+				if idErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not resolve org ID for usage export: %v\n", idErr)
+				} else {
+					// Default window: last 30 days.
+					end := time.Now().UTC()
+					start := end.Add(-30 * 24 * time.Hour)
+
+					if usageStart != "" {
+						if t, parseErr := time.Parse(time.RFC3339, usageStart); parseErr == nil {
+							start = t
+						} else {
+							fmt.Fprintf(cmd.ErrOrStderr(), "Warning: --usage-start %q is not RFC3339; using default.\n", usageStart)
+						}
+					}
+					if usageEnd != "" {
+						if t, parseErr := time.Parse(time.RFC3339, usageEnd); parseErr == nil {
+							end = t
+						} else {
+							fmt.Fprintf(cmd.ErrOrStderr(), "Warning: --usage-end %q is not RFC3339; using default.\n", usageEnd)
+						}
+					}
+
+					usageDir := filepath.Join(filepath.Dir(output), "usage")
+					runUsageExport(
+						orgClient,
+						orgID,
+						start.Format(time.RFC3339),
+						end.Format(time.RFC3339),
+						usageDir,
+						usageTimeout,
+						cmd.ErrOrStderr(),
+					)
+				}
+			}
+
 			out := cmd.OutOrStdout()
 			if jsonOutput {
 				summary := buildExportSummary(m, output, reportPath)
@@ -215,6 +406,21 @@ Examples:
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+
+	// Usage export flags (opt-in; data is local-only, never transferred to dest).
+	f.BoolVar(&includeUsage, "include-usage", false,
+		"(Opt-in) Request a historical usage report from the CircleCI Usage API and download the CSV files "+
+			"to a 'usage/' sub-directory next to the manifest. "+
+			"This data is a local baseline/record only — it does NOT transfer to the destination org.")
+	f.StringVar(&usageStart, "usage-start", "",
+		"Start of the usage report window in RFC 3339 format (default: 30 days ago). "+
+			"The window may not exceed 31 days. Only used when --include-usage is set.")
+	f.StringVar(&usageEnd, "usage-end", "",
+		"End of the usage report window in RFC 3339 format (default: now). "+
+			"Only used when --include-usage is set.")
+	f.DurationVar(&usageTimeout, "usage-timeout", 10*time.Minute,
+		"Maximum time to wait for the usage export job to complete before giving up. "+
+			"Only used when --include-usage is set.")
 
 	// Hidden back-compat aliases — old invocations must still work.
 	f.StringVar(&orgSlug, "org", "",
