@@ -139,8 +139,25 @@ optional mapping file (source->destination org/project mapping; defaults to the
 same names). It is idempotent: existing resources are reused by name where
 possible.
 
-The destination org is inferred from the manifest; use --mapping to override
-or rename the destination org and/or individual projects.
+The destination org defaults to the SOURCE org from the manifest. To target a
+DIFFERENT org you MUST pass --mapping with org.to set — otherwise sync runs
+against your own source org (a prominent warning is printed in that case).
+
+--mapping file schema (JSON):
+  {
+    "org": { "from": "gh/acme", "to": "gh/acme-new" },
+    "projects": { "gh/acme/web": "gh/acme-new/web" },
+    "github_org": { "from": "acme", "to": "acme-new" }
+  }
+Only "org.to" is required to retarget the destination org. "projects" remaps
+individual project slugs (needed for GitHub App destinations whose slug is
+"circleci/<org-id>/<project-id>"); "github_org" rewrites repo owners when repos
+moved to a new GitHub org.
+
+Secrets: env-var VALUES come from the captured secret bundle (--secrets). With
+--apply but NO bundle, contexts/projects are created with EMPTY env-var values
+that you must fill in manually — run 'circleci-migrate secrets capture' first to
+capture the plaintext values, then pass --secrets <bundle>.
 
 Resources synced (in order):
   • Org settings — feature flags, OIDC claims, URL-orb allow list, config
@@ -160,8 +177,9 @@ source-org IDs).
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable
 builds (follow the project, which installs the webhook and may trigger an
-initial build). Pass --yes / -y to auto-confirm without a prompt, or run without
-a TTY and later re-run with --apply --yes to enable builds.
+initial build). --yes / -y only matters together with --apply: it auto-confirms
+enabling builds without the interactive prompt (it has no effect in a dry run).
+Without a TTY, builds are not enabled unless --yes is passed.
 
 When the manifest contains self-hosted runner resource classes, pass
 --dest-runner-namespace to recreate them in the destination namespace. If the
@@ -172,7 +190,8 @@ Examples:
   circleci-migrate sync --manifest manifest.json --secrets secrets.json
   circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
-  circleci-migrate sync --manifest manifest.json --apply --yes
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --secrets secrets.json --apply --yes
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
   circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Resolve the GitHub token from the env after parsing so the flag
@@ -204,6 +223,48 @@ Examples:
 			if mappingPath != "" {
 				if mapping, err = manifest.LoadMapping(mappingPath); err != nil {
 					return err
+				}
+			}
+
+			// Resolve the destination org up front so it is shown clearly at the
+			// START of the run (not only mid-output), and warn loudly when it is
+			// the SAME org as the source (the default when no --mapping is given).
+			sourceSlug := m.Source.Org.Slug
+			destSlug := sourceSlug
+			if mapping != nil && mapping.Org.To != "" {
+				destSlug = mapping.Org.To
+			}
+			errW := cmd.ErrOrStderr()
+			runMode := "DRY RUN"
+			if apply {
+				runMode = "APPLY"
+			}
+			fmt.Fprintf(errW, "Destination org: %s (%s)\n", destSlug, runMode)
+			sameOrg := slugsEqual(destSlug, sourceSlug) ||
+				(m.Source.Org.ID != "" && slugsEqual(destSlug, m.Source.Org.ID))
+			if sameOrg {
+				fmt.Fprintf(errW,
+					"⚠ Destination is the SAME org as the source (%s). "+
+						"Pass --mapping with org.to=<dest-slug> to retarget.\n",
+					destSlug)
+				// Under --apply with a TTY, require explicit confirmation before
+				// writing to the source org. Without a TTY, warn loudly only.
+				if apply {
+					fi, _ := os.Stdin.Stat()
+					isTTY := fi != nil && fi.Mode()&os.ModeCharDevice != 0
+					if isTTY && !yes {
+						fmt.Fprintf(errW, "Apply changes to the SOURCE org %s anyway? [y/N]: ", destSlug)
+						scanner := bufio.NewScanner(os.Stdin)
+						confirmed := false
+						if scanner.Scan() {
+							ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
+							confirmed = ans == "y" || ans == "yes"
+						}
+						if !confirmed {
+							fmt.Fprintf(errW, "Aborted (destination equals source).\n")
+							return nil
+						}
+					}
 				}
 			}
 
@@ -327,11 +388,18 @@ Examples:
 
 	f := cmd.Flags()
 	f.StringVar(&manifestPath, "manifest", "", "Path to the export manifest (required)")
-	f.StringVar(&secretsPath, "secrets", "secrets.json", "Path to the captured secret bundle (optional)")
-	f.StringVar(&mappingPath, "mapping", "", "Path to a source->destination mapping file (optional)")
+	f.StringVar(&secretsPath, "secrets", "secrets.json", "Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them.")
+	f.StringVar(&mappingPath, "mapping", "",
+		`Path to a source->destination mapping file (JSON). REQUIRED to change the destination org name; without it sync targets the SOURCE org. Schema: `+
+			`{ "org": {"from":"gh/acme","to":"gh/acme-new"}, "projects": {"gh/acme/web":"gh/acme-new/web"}, "github_org": {"from":"acme","to":"acme-new"} }. `+
+			`Only org.to is required to retarget; projects/github_org are optional.`)
 	f.BoolVar(&apply, "apply", false, "Write changes to the destination (default: dry run)")
-	f.BoolVarP(&yes, "yes", "y", false, "Auto-confirm enabling builds after project creation (skip the interactive prompt)")
-	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip, "How to handle variables with no captured value: skip|placeholder")
+	f.BoolVarP(&yes, "yes", "y", false, "Only with --apply: auto-confirm enabling builds after project creation (skip the interactive prompt). No effect in a dry run.")
+	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip,
+		"How to handle variables with no captured value: 'skip' omits the variable entirely; "+
+			"'placeholder' creates the variable with a placeholder value. Use 'placeholder' for "+
+			"restricted contexts whose values cannot be captured, so the variable name exists and "+
+			"can be filled in manually later.")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
@@ -849,6 +917,14 @@ func buildCtxByName(m *manifest.Manifest) map[string]manifest.Context {
 		out[c.Name] = c
 	}
 	return out
+}
+
+// slugsEqual reports whether two org slugs/ids refer to the same org, ignoring
+// case and surrounding whitespace. Empty strings never match.
+func slugsEqual(a, b string) bool {
+	a = strings.TrimSpace(strings.ToLower(a))
+	b = strings.TrimSpace(strings.ToLower(b))
+	return a != "" && a == b
 }
 
 // syncProjectDisplayName returns the human-readable name for a project in sync

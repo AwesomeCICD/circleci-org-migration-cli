@@ -223,3 +223,73 @@ func TestSyncCmd_SkipOrgSettings_FlagAccepted(t *testing.T) {
 		t.Logf("error (expected token error): %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// destination == source warning (#165)
+// ---------------------------------------------------------------------------
+
+// writeMappingFile writes a mapping JSON with org.to set to dst and returns the
+// path.
+func writeMappingFile(t *testing.T, dir, from, to string) string {
+	t.Helper()
+	m := map[string]any{
+		"schema_version": "1",
+		"org":            map[string]any{"from": from, "to": to},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal mapping: %v", err)
+	}
+	path := filepath.Join(dir, "mapping.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write mapping: %v", err)
+	}
+	return path
+}
+
+// TestSyncCmd_SameOrgWarning_NoMapping verifies that when no --mapping is given,
+// the destination defaults to the source org and a prominent warning plus the
+// resolved destination line are printed to stderr (dry run). The warning fires
+// before any network call, so the later (expected) network failure is fine.
+func TestSyncCmd_SameOrgWarning_NoMapping(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-for-test")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+
+	_, stderr, _ := runSyncCmd(t, "--manifest", mPath)
+	if !strings.Contains(stderr, "Destination org: gh/testorg") {
+		t.Errorf("stderr should print the resolved destination org up front; got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "SAME org as the source") {
+		t.Errorf("stderr should warn that destination equals source; got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "--mapping") {
+		t.Errorf("warning should mention --mapping as the fix; got:\n%s", stderr)
+	}
+}
+
+// TestSyncCmd_NoSameOrgWarning_WithMapping verifies that when --mapping retargets
+// org.to to a different org, the same-org warning is NOT printed and the dest
+// line shows the mapped destination.
+func TestSyncCmd_NoSameOrgWarning_WithMapping(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-for-test")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	dir := t.TempDir()
+	mPath := writeTinyManifest(t, dir)
+	mapPath := writeMappingFile(t, dir, "gh/testorg", "gh/testorg-new")
+
+	_, stderr, _ := runSyncCmd(t, "--manifest", mPath, "--mapping", mapPath)
+	if !strings.Contains(stderr, "Destination org: gh/testorg-new") {
+		t.Errorf("stderr should print the mapped destination org; got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "SAME org as the source") {
+		t.Errorf("no same-org warning expected with a retargeting mapping; got:\n%s", stderr)
+	}
+}

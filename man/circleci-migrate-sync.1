@@ -20,8 +20,27 @@ same names). It is idempotent: existing resources are reused by name where
 possible.
 
 .PP
-The destination org is inferred from the manifest; use --mapping to override
-or rename the destination org and/or individual projects.
+The destination org defaults to the SOURCE org from the manifest. To target a
+DIFFERENT org you MUST pass --mapping with org.to set — otherwise sync runs
+against your own source org (a prominent warning is printed in that case).
+
+.PP
+--mapping file schema (JSON):
+  {
+    "org": { "from": "gh/acme", "to": "gh/acme-new" },
+    "projects": { "gh/acme/web": "gh/acme-new/web" },
+    "github_org": { "from": "acme", "to": "acme-new" }
+  }
+Only "org.to" is required to retarget the destination org. "projects" remaps
+individual project slugs (needed for GitHub App destinations whose slug is
+"circleci//"); "github_org" rewrites repo owners when repos
+moved to a new GitHub org.
+
+.PP
+Secrets: env-var VALUES come from the captured secret bundle (--secrets). With
+--apply but NO bundle, contexts/projects are created with EMPTY env-var values
+that you must fill in manually — run 'circleci-migrate secrets capture' first to
+capture the plaintext values, then pass --secrets \&.
 
 .PP
 Resources synced (in order):
@@ -44,8 +63,9 @@ source-org IDs).
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable
 builds (follow the project, which installs the webhook and may trigger an
-initial build). Pass --yes / -y to auto-confirm without a prompt, or run without
-a TTY and later re-run with --apply --yes to enable builds.
+initial build). --yes / -y only matters together with --apply: it auto-confirms
+enabling builds without the interactive prompt (it has no effect in a dry run).
+Without a TTY, builds are not enabled unless --yes is passed.
 
 .PP
 When the manifest contains self-hosted runner resource classes, pass
@@ -58,7 +78,8 @@ Examples:
   circleci-migrate sync --manifest manifest.json --secrets secrets.json
   circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
-  circleci-migrate sync --manifest manifest.json --apply --yes
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --secrets secrets.json --apply --yes
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
   circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply
 
 
@@ -96,15 +117,15 @@ Examples:
 
 .PP
 \fB--mapping\fP=""
-	Path to a source->destination mapping file (optional)
+	Path to a source->destination mapping file (JSON). REQUIRED to change the destination org name; without it sync targets the SOURCE org. Schema: { "org": {"from":"gh/acme","to":"gh/acme-new"}, "projects": {"gh/acme/web":"gh/acme-new/web"}, "github_org": {"from":"acme","to":"acme-new"} }. Only org.to is required to retarget; projects/github_org are optional.
 
 .PP
 \fB--missing-secrets\fP="skip"
-	How to handle variables with no captured value: skip|placeholder
+	How to handle variables with no captured value: 'skip' omits the variable entirely; 'placeholder' creates the variable with a placeholder value. Use 'placeholder' for restricted contexts whose values cannot be captured, so the variable name exists and can be filled in manually later.
 
 .PP
 \fB--secrets\fP="secrets.json"
-	Path to the captured secret bundle (optional)
+	Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them.
 
 .PP
 \fB--skip-contexts\fP[=false]
@@ -124,7 +145,7 @@ Examples:
 
 .PP
 \fB-y\fP, \fB--yes\fP[=false]
-	Auto-confirm enabling builds after project creation (skip the interactive prompt)
+	Only with --apply: auto-confirm enabling builds after project creation (skip the interactive prompt). No effect in a dry run.
 
 
 .SH OPTIONS INHERITED FROM PARENT COMMANDS
