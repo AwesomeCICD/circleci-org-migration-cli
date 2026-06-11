@@ -665,13 +665,15 @@ func buildSSHKeyExtractConfigWithVersion(keys []SSHKeyInput, opts *Options, ver 
                 continue
               fi
               host="${FP_TO_HOST[$fp]}"
-              # Read private key contents (no echo — avoid leaking to log)
-              privkey=$(cat "$f")
-              # Append JSON object to results array using jq
+              # Read the private key with jq --rawfile so the file is captured
+              # VERBATIM, including the trailing newline. (A command substitution
+              # like $(cat "$f") strips trailing newlines, producing an invalid
+              # OpenSSH key that ssh-keygen/CircleCI reject.) No echo — the key
+              # is never printed to the log.
               results=$(printf '%s' "$results" | jq \
                 --arg fp  "$fp" \
                 --arg hn  "$host" \
-                --arg pk  "$privkey" \
+                --rawfile pk "$f" \
                 '. += [{"fingerprint":$fp,"hostname":$hn,"private_key":$pk}]')
             done
             printf '%s\n' "$results" > ` + sshKeyArtifactPath + "\n")
