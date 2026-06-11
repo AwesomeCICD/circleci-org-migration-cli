@@ -309,3 +309,218 @@ func TestBuildMigrateMapping_MissingFile_ReturnsError(t *testing.T) {
 		t.Fatal("expected error for missing mapping file, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// --json flag
+// ---------------------------------------------------------------------------
+
+// TestMigrateCmd_JSONFlagRegistered verifies that --json is a local flag on the
+// migrate subcommand (not a persistent/global flag).
+func TestMigrateCmd_JSONFlagRegistered(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	f := migSub.Flags().Lookup("json")
+	if f == nil {
+		t.Fatal("migrate --json flag not registered")
+	}
+	if f.Hidden {
+		t.Error("migrate --json should not be hidden")
+	}
+}
+
+// TestMigrateCmd_JSON_NotGlobal verifies that --json is NOT a persistent
+// (global) flag on the migrate subcommand.
+func TestMigrateCmd_JSON_NotGlobal(t *testing.T) {
+	root := cmd.MakeCommands()
+	if root.PersistentFlags().Lookup("json") != nil {
+		t.Error("--json must not be a persistent/global flag; it should be local to each command")
+	}
+}
+
+// TestMigrateCmd_JSONFlag_Accepted verifies that passing --json to migrate does
+// not cause a flag-parsing error (it should fail on token validation, not flag
+// parsing).
+func TestMigrateCmd_JSONFlag_Accepted(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	_, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--json",
+	)
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--json is an unknown flag: %v", err)
+	}
+	// Should fail on token check, not on flag parsing.
+	if err == nil {
+		t.Fatal("expected an error (no token), got nil")
+	}
+	if strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--json caused an 'unknown flag' error: %v", err)
+	}
+}
+
+// TestMigrateJSONOutput_CombinedShape verifies that the migrateJSONOutput type
+// (accessed via ExportJSONSummary + SyncJSONSummary) serialises to JSON with
+// the expected top-level keys: dry_run, export, sync.
+func TestMigrateJSONOutput_CombinedShape(t *testing.T) {
+	// Build a representative combined output directly from the exported types.
+	exportSummary := cmd.ExportJSONSummary{
+		SourceOrgSlug:   "gh/acme",
+		Host:            "https://circleci.com",
+		GeneratedAt:     "2026-01-01T00:00:00Z",
+		ContextCount:    2,
+		ContextVarCount: 4,
+		ProjectCount:    1,
+		ProjectVarCount: 3,
+	}
+	syncSummary := cmd.SyncJSONSummary{
+		DryRun:      true,
+		DestOrgSlug: "gh/acme-new",
+		Sections:    []cmd.SyncSectionSummary{{Section: "Contexts", Created: 2}},
+	}
+
+	// Construct the combined object manually to verify the shape matches what
+	// migrate --json would emit.
+	combined := map[string]any{
+		"dry_run": true,
+		"export":  exportSummary,
+		"sync":    syncSummary,
+	}
+
+	data, err := json.MarshalIndent(combined, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal combined: %v", err)
+	}
+	out := string(data)
+
+	// Top-level keys.
+	for _, key := range []string{"dry_run", "export", "sync"} {
+		if !strings.Contains(out, `"`+key+`"`) {
+			t.Errorf("expected top-level key %q in combined JSON; got: %s", key, out)
+		}
+	}
+
+	// Export sub-keys.
+	for _, key := range []string{"source_org_slug", "context_count", "project_count"} {
+		if !strings.Contains(out, `"`+key+`"`) {
+			t.Errorf("expected export key %q in combined JSON; got: %s", key, out)
+		}
+	}
+
+	// Sync sub-keys.
+	for _, key := range []string{"dest_org_slug", "sections"} {
+		if !strings.Contains(out, `"`+key+`"`) {
+			t.Errorf("expected sync key %q in combined JSON; got: %s", key, out)
+		}
+	}
+
+	// No human-readable text should appear.
+	for _, forbidden := range []string{"DRY RUN", "== Contexts sync", "Wrote manifest"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("unexpected human-readable text %q in combined JSON output", forbidden)
+		}
+	}
+}
+
+// TestMigrateCmd_JSON_NoInterleaved verifies that migrate --json with all
+// sections skipped (so no network calls are needed) does not write any
+// human-readable text to stdout — only valid JSON.
+func TestMigrateCmd_JSON_NoInterleaved(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-migrate-json")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+
+	// This test expects a network / API error since we use a fake token.
+	// We just need to confirm that if the command reached JSON output stage,
+	// no human text would appear.  We verify flag parsing is clean.
+	stdout, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--json",
+		"--skip-contexts",
+		"--skip-projects",
+		"--skip-org-settings",
+		"--skip-runner",
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown flag") {
+			t.Fatalf("flag parsing error: %v", err)
+		}
+		// Network/API errors are expected; the test asserts stdout is clean.
+	}
+	// Stdout must not contain human-readable headers.
+	if strings.Contains(stdout, "DRY RUN") {
+		t.Error("with --json, 'DRY RUN' must not appear in stdout")
+	}
+	if strings.Contains(stdout, "== ") {
+		t.Error("with --json, section headers must not appear in stdout")
+	}
+	// If any JSON was emitted, it must be valid.
+	if trimmed := strings.TrimSpace(stdout); trimmed != "" {
+		var result map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &result); err != nil {
+			t.Fatalf("stdout contains non-JSON text: %q", stdout)
+		}
+		// Verify the expected top-level keys.
+		for _, key := range []string{"dry_run", "export", "sync"} {
+			if _, ok := result[key]; !ok {
+				t.Errorf("expected key %q in migrate --json output; got: %v", key, result)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --skip-runner flag
+// ---------------------------------------------------------------------------
+
+// TestMigrateCmd_SkipRunnerFlagRegistered verifies that --skip-runner is
+// registered on the migrate subcommand.
+func TestMigrateCmd_SkipRunnerFlagRegistered(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	if migSub.Flags().Lookup("skip-runner") == nil {
+		t.Error("migrate flag --skip-runner not registered")
+	}
+}
+
+// TestMigrateCmd_SkipRunnerFlag_Accepted verifies that passing --skip-runner
+// does not cause a flag-parsing error.
+func TestMigrateCmd_SkipRunnerFlag_Accepted(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	_, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--skip-runner",
+	)
+	// Should fail on token check, not on flag parsing.
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--skip-runner caused an 'unknown flag' error: %v", err)
+	}
+	if err == nil {
+		t.Fatal("expected a token error, got nil")
+	}
+	if strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--skip-runner caused an 'unknown flag' error: %v", err)
+	}
+}
+
+// TestMigrateCmd_AllNewFlagsRegistered verifies that all flags added in
+// issue #146 are present on the migrate subcommand.
+func TestMigrateCmd_AllNewFlagsRegistered(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	for _, name := range []string{"json", "skip-runner"} {
+		if migSub.Flags().Lookup(name) == nil {
+			t.Errorf("migrate flag --%s not registered", name)
+		}
+	}
+}

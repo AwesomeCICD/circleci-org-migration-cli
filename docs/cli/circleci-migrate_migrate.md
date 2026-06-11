@@ -73,6 +73,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
       --github-token string            GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).
   -h, --help                           help for migrate
+      --json                           Print a machine-readable JSON summary to stdout instead of the human-readable output; progress is written to stderr
       --mapping string                 Path to a source->destination mapping file (optional)
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")
       --no-input                       Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
@@ -84,6 +85,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-extras                    Skip checkout keys, webhooks, and schedules
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
       --skip-projects                  Skip exporting and syncing projects
+      --skip-runner                    Skip exporting and syncing self-hosted runner resource classes
       --source-org string              Source organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)
   -y, --yes                            Auto-confirm enabling builds after project creation (skip the interactive prompt)
 ```

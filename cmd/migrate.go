@@ -33,10 +33,12 @@ func newMigrateCommand() *cobra.Command {
 		skipProjects        bool
 		skipOrgSettings     bool
 		skipExtras          bool
+		skipRunner          bool
 		output              string
 		reportPath          string
 		runnerNamespace     string
 		destRunnerNamespace string
+		jsonOutput          bool
 	)
 
 	cmd := &cobra.Command{
@@ -154,6 +156,13 @@ Examples:
 				return fmt.Errorf("no destination API token: set --dest-token, --token, CIRCLECI_DEST_TOKEN, or CIRCLECI_CLI_TOKEN")
 			}
 
+			// When --json is set, suppress all human/progress output on stdout;
+			// route any progress to stderr instead.
+			progressOut := cmd.OutOrStdout()
+			if jsonOutput {
+				progressOut = cmd.ErrOrStderr()
+			}
+
 			// --- step 1: export from source org -------------------------------
 			srcOrgClient, err := org.NewClient(rootOptions, srcToken)
 			if err != nil {
@@ -175,7 +184,9 @@ Examples:
 				Out:      cmd.ErrOrStderr(),
 			}
 
-			if runnerNamespace != "" {
+			// Wire up the runner client for the source when needed (skipped when
+			// --skip-runner is set).
+			if !skipRunner && runnerNamespace != "" {
 				srcRunnerClient, rerr := runner.NewClient(rootOptions, srcToken)
 				if rerr != nil {
 					return fmt.Errorf("creating source runner client: %w", rerr)
@@ -189,28 +200,35 @@ Examples:
 				IncludeContexts: !skipContexts,
 				IncludeProjects: !skipProjects,
 				IncludeExtras:   !skipExtras,
-				RunnerNamespace: runnerNamespace,
+				RunnerNamespace: func() string {
+					if skipRunner {
+						return ""
+					}
+					return runnerNamespace
+				}(),
 			})
 			if err != nil {
 				return err
 			}
 			m.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 
-			fmt.Fprint(cmd.OutOrStdout(), report.Summary(m))
+			if !jsonOutput {
+				fmt.Fprint(progressOut, report.Summary(m))
+			}
 
 			// --- optional manifest/report saves (best-effort) -----------------
 			if output != "" {
 				if saveErr := m.Save(output); saveErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing manifest: %v\n", saveErr)
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Wrote manifest to      %s\n", output)
+					fmt.Fprintf(progressOut, "Wrote manifest to      %s\n", output)
 				}
 			}
 			if reportPath != "" {
 				if saveErr := report.SaveMarkdown(m, reportPath); saveErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing audit report: %v\n", saveErr)
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Wrote audit report to  %s\n", reportPath)
+					fmt.Fprintf(progressOut, "Wrote audit report to  %s\n", reportPath)
 				}
 			}
 
@@ -254,8 +272,9 @@ Examples:
 				DestRunnerNamespace: destRunnerNamespace,
 			}
 
-			// Wire up the runner client for the destination when needed.
-			if destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0 {
+			// Wire up the runner client for the destination when needed and not
+			// skipped.
+			if !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0) {
 				dstRunnerClient, rerr := runner.NewClient(rootOptions, dstToken)
 				if rerr != nil {
 					return fmt.Errorf("creating destination runner client: %w", rerr)
@@ -263,38 +282,64 @@ Examples:
 				sy.Runner = dstRunnerClient
 			}
 
+			// Accumulate section reports for --json output.
+			repsBySection := make(map[string]*syncer.Report)
+
 			if !skipOrgSettings {
 				rep, syncErr := sy.SyncOrgSettings(m, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Org Settings", rep, m)
+				repsBySection["Org Settings"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Org Settings", rep, m)
+				}
 			}
 			if !skipContexts {
 				rep, syncErr := sy.SyncContexts(m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Contexts", rep, m)
+				repsBySection["Contexts"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Contexts", rep, m)
+				}
 			}
 			if !skipProjects {
 				rep, syncErr := sy.SyncProjects(m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Projects", rep, m)
-				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, false); enableErr != nil {
+				repsBySection["Projects"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Projects", rep, m)
+				}
+				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); enableErr != nil {
 					return enableErr
 				}
 			}
 
-			// Runner resource classes.
-			if len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "" {
+			// Runner resource classes (skipped when --skip-runner is set).
+			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
 				rep, syncErr := sy.SyncRunnerResourceClasses(m, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Runner Resource Classes", rep, m)
+				repsBySection["Runner Resource Classes"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Runner Resource Classes", rep, m)
+				}
+			}
+
+			if jsonOutput {
+				exportSummary := buildExportSummary(m, output, reportPath)
+				syncSummary := buildSyncSummary(apply, repsBySection)
+				combined := migrateJSONOutput{
+					DryRun: !apply,
+					Export: exportSummary,
+					Sync:   syncSummary,
+				}
+				return marshalJSON(cmd.OutOrStdout(), combined)
 			}
 			return nil
 		},
@@ -333,6 +378,10 @@ Examples:
 		"Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
 	f.BoolVar(&skipExtras, "skip-extras", false,
 		"Skip checkout keys, webhooks, and schedules")
+	f.BoolVar(&skipRunner, "skip-runner", false,
+		"Skip exporting and syncing self-hosted runner resource classes")
+	f.BoolVar(&jsonOutput, "json", false,
+		"Print a machine-readable JSON summary to stdout instead of the human-readable output; progress is written to stderr")
 	f.StringVarP(&output, "output", "o", "",
 		"Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)")
 	f.StringVar(&reportPath, "report", "",
@@ -596,6 +645,19 @@ func componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras boo
 		return "(none)"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// migrateJSONOutput is the combined machine-readable result of a migrate
+// command when --json is set. It contains a top-level dry_run flag plus
+// the export and sync summaries, reusing the same types as the standalone
+// export/sync commands.
+type migrateJSONOutput struct {
+	// DryRun is true when --apply was not set (no changes were written).
+	DryRun bool `json:"dry_run"`
+	// Export contains the export phase summary.
+	Export ExportJSONSummary `json:"export"`
+	// Sync contains the sync phase summary.
+	Sync SyncJSONSummary `json:"sync"`
 }
 
 // BuildMigrateMapping returns the manifest.Mapping to use during sync.
