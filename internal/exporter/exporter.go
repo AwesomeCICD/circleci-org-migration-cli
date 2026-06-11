@@ -199,6 +199,10 @@ func (e *Exporter) exportRunnerResourceClasses(m *manifest.Manifest, opts Option
 			Name:        rc.ResourceClass,
 			Description: rc.Description,
 		})
+		// Runner agent registration tokens are never retrievable via API.
+		// Each resource class needs fresh tokens issued on the destination namespace.
+		m.AddWarning("runner:"+rc.ResourceClass, "runner_agent_token_excluded",
+			fmt.Sprintf("runner resource class %q captured; agent registration tokens are not retrievable via API — issue new tokens on the destination namespace after recreating the class", rc.ResourceClass))
 	}
 
 	clog.Debugf("captured %d runner resource class(es) for namespace %s", len(classes), opts.RunnerNamespace)
@@ -329,7 +333,9 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 			}
 		}
 
-		// Per-project v1.1 feature flags (best-effort).
+		// Per-project v1.1 feature flags (best-effort). The full map is stored in
+		// V11FeatureFlags; the two well-known keys are also copied into the
+		// existing explicit fields for backward compatibility.
 		if flags, ferr := e.Projects.GetV11ProjectFeatureFlags(slug); ferr != nil {
 			m.AddWarning("project:"+slug, "v11_feature_flags_unreadable", fmt.Sprintf("could not read project v1.1 feature flags: %v", ferr))
 		} else if len(flags) > 0 {
@@ -344,6 +350,8 @@ func (e *Exporter) exportProjects(m *manifest.Manifest, opts Options, o *org.Org
 				v := v
 				mp.Settings.DropAllBuildRequests = &v
 			}
+			// Store the full map so additional flags are not silently dropped.
+			mp.Settings.V11FeatureFlags = flags
 		}
 
 		m.Projects = append(m.Projects, mp)
@@ -393,6 +401,13 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 			for _, h := range hooks {
 				mp.Webhooks = append(mp.Webhooks, manifest.Webhook{Name: h.Name, URL: h.URL, Events: h.Events, VerifyTLS: h.VerifyTLS})
 			}
+			// Warn once per project when webhooks are present: signing secrets are
+			// masked by the API and cannot be exported. HMAC-validating receivers
+			// will reject calls until the secret is re-set on the destination.
+			if len(hooks) > 0 {
+				m.AddWarning("project:"+mp.Slug, "webhook_signing_secret_excluded",
+					fmt.Sprintf("%d webhook(s) captured; signing secrets are not exported by the API — re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls", len(hooks)))
+			}
 		}
 	}
 
@@ -402,6 +417,7 @@ func (e *Exporter) exportProjectExtras(m *manifest.Manifest, mp *manifest.Projec
 		for _, s := range scheds {
 			mp.Schedules = append(mp.Schedules, manifest.Schedule{
 				Name: s.Name, Description: s.Description, Timetable: s.Timetable, Parameters: s.Parameters,
+				ActorLogin: s.Actor.Login,
 			})
 		}
 	}
@@ -795,6 +811,17 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 				WorkspaceDays: c.WorkspaceDays,
 				ArtifactDays:  c.ArtifactDays,
 			}
+			// Also capture plan limits so operators know the destination plan's
+			// bounds before applying sync. Zero-value bounds (unset by server) are
+			// not stored to avoid misleading output.
+			l := sr.Limits
+			if l.Cache.Max > 0 || l.Workspace.Max > 0 || l.Artifact.Max > 0 {
+				s.StorageRetentionLimits = &manifest.StorageRetentionLimits{
+					Cache:     manifest.StorageRetentionBound{Min: l.Cache.Min, Max: l.Cache.Max},
+					Workspace: manifest.StorageRetentionBound{Min: l.Workspace.Min, Max: l.Workspace.Max},
+					Artifact:  manifest.StorageRetentionBound{Min: l.Artifact.Min, Max: l.Artifact.Max},
+				}
+			}
 			hasAny = true
 			clog.Debugf("storage retention: cache=%d workspace=%d artifact=%d",
 				c.CacheDays, c.WorkspaceDays, c.ArtifactDays)
@@ -819,6 +846,19 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 					ob.OrgBudget = &entry
 				} else {
 					ob.ProjectBudgets = append(ob.ProjectBudgets, entry)
+				}
+				// Warn when enforcement=block: the PUT budget endpoint only accepts
+				// credits (+ optional project_id); enforcement_type cannot be set
+				// programmatically, so block enforcement must be re-applied manually.
+				if b.EnforcementType == "block" {
+					scope := "org"
+					desc := "org-level budget"
+					if b.ProjectID != nil {
+						scope = "org"
+						desc = fmt.Sprintf("project budget (project_id=%s)", *b.ProjectID)
+					}
+					m.AddWarning(scope, "budget_enforcement_block_not_transferred",
+						fmt.Sprintf("%s has enforcement_type=block; the PUT budget endpoint only accepts credits — enforcement mode must be set manually on the destination", desc))
 				}
 			}
 			s.Budgets = ob
@@ -857,8 +897,26 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 					Description:         orb.Description,
 				})
 			}
+			// Emit a single warning for the org: orb source YAML is not exported
+			// (GraphQL-only) and the destination org has a different namespace.
+			// The captured list is a republish runbook reference only.
+			m.AddWarning("org", "orbs_require_republish",
+				fmt.Sprintf("%d org orb(s) captured for reference; orb source YAML is not exportable via REST API (GraphQL only) and the destination org has a different namespace — republish each orb under the destination namespace manually", len(orbs)))
 			hasAny = true
 			clog.Debugf("org orbs: captured %d orb(s)", len(orbs))
+		}
+
+		// Derive the org's orb namespace (best-effort; no new GraphQL needed).
+		// For GitHub OAuth orgs ("gh/<name>") the namespace is conventionally the
+		// org name. For circleci-type orgs, use the org name (may differ from
+		// the namespace in practice, but it's the best we can do without GraphQL).
+		if o.Name != "" {
+			s.OrbNamespace = o.Name
+		} else if _, name, ok := splitOrgSlug(orgSlug, o.VCSType); ok {
+			s.OrbNamespace = name
+		}
+		if s.OrbNamespace != "" {
+			hasAny = true
 		}
 
 		// Release-tracker org settings (best-effort; on error warn and continue).

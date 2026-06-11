@@ -149,6 +149,24 @@ func Markdown(m *manifest.Manifest) string {
 		}
 		if len(p.Schedules) > 0 {
 			fmt.Fprintf(&b, "- Schedules: %d\n", len(p.Schedules))
+			for _, sched := range p.Schedules {
+				if sched.ActorLogin != "" {
+					fmt.Fprintf(&b, "  - `%s` (actor: `%s`)\n", sched.Name, sched.ActorLogin)
+				}
+			}
+		}
+		if p.Settings != nil && len(p.Settings.V11FeatureFlags) > 0 {
+			// Show any flags not already shown via the explicit settings fields.
+			var extra []string
+			for k, v := range p.Settings.V11FeatureFlags {
+				if k != "api-trigger-with-config" && k != "drop-all-build-requests" {
+					extra = append(extra, fmt.Sprintf("%s=%t", k, v))
+				}
+			}
+			if len(extra) > 0 {
+				sort.Strings(extra)
+				fmt.Fprintf(&b, "- Additional v1.1 feature flags: %s\n", strings.Join(extra, ", "))
+			}
 		}
 		fmt.Fprintf(&b, "\n")
 	}
@@ -206,7 +224,14 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 	}
 
 	if r := s.StorageRetention; r != nil {
-		fmt.Fprintf(b, "### Storage retention\n\n- Artifacts: %d day(s)\n- Workspaces: %d day(s)\n- Caches: %d day(s)\n\n", r.ArtifactDays, r.WorkspaceDays, r.CacheDays)
+		fmt.Fprintf(b, "### Storage retention\n\n- Artifacts: %d day(s)\n- Workspaces: %d day(s)\n- Caches: %d day(s)\n", r.ArtifactDays, r.WorkspaceDays, r.CacheDays)
+		if lim := s.StorageRetentionLimits; lim != nil {
+			fmt.Fprintf(b, "- Plan limits — artifacts: %d–%d day(s), workspaces: %d–%d day(s), caches: %d–%d day(s)\n",
+				lim.Artifact.Min, lim.Artifact.Max,
+				lim.Workspace.Min, lim.Workspace.Max,
+				lim.Cache.Min, lim.Cache.Max)
+		}
+		fmt.Fprintf(b, "\n")
 	}
 
 	if bgt := s.Budgets; bgt != nil && (bgt.OrgBudget != nil || len(bgt.ProjectBudgets) > 0) {
@@ -293,10 +318,13 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 
 	// Namespaces / orbs — ALWAYS shown (even when none) so it's explicit.
 	fmt.Fprintf(b, "### Namespaces & orbs\n\n")
+	if s.OrbNamespace != "" {
+		fmt.Fprintf(b, "- Source orb namespace: `%s`\n", s.OrbNamespace)
+	}
 	if len(s.Orbs) == 0 {
 		fmt.Fprintf(b, "- No published orbs / claimed namespace for this org.\n\n")
 	} else {
-		fmt.Fprintf(b, "%d published orb(s) — recreate manually under the destination namespace (orb source is not migrated):\n\n", len(s.Orbs))
+		fmt.Fprintf(b, "\n%d published orb(s) — orb source YAML is not exportable via REST API (GraphQL only); republish each under the destination namespace manually:\n\n", len(s.Orbs))
 		for _, o := range s.Orbs {
 			vis := "public"
 			if o.IsPrivate {
@@ -396,9 +424,40 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 			warningSuffix(m, "ssh_keys_private_excluded"))
 	}
 
-	// Always: webhook signing secrets.
-	items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are not exported; "+
-		"regenerate them on the destination and update the receiving systems.")
+	// Webhook signing secrets — only when webhooks were captured.
+	if hasWebhooks(m) {
+		items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are masked by the API and not exported; "+
+			"re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls."+
+			warningSuffix(m, "webhook_signing_secret_excluded"))
+	}
+
+	// Runner agent tokens — only when runner resource classes were captured.
+	if len(m.RunnerResourceClasses) > 0 {
+		items = append(items, fmt.Sprintf(
+			"**Runner agent tokens (%d resource class(es))** — agent registration tokens are never retrievable via API; "+
+				"issue new tokens on the destination namespace (`%s`) after recreating each resource class."+
+				warningSuffix(m, "runner_agent_token_excluded"),
+			len(m.RunnerResourceClasses), orDash(m.RunnerNamespace)))
+	}
+
+	// Org orbs — only when orbs were captured.
+	if s != nil && len(s.Orbs) > 0 {
+		ns := orDash(s.OrbNamespace)
+		items = append(items, fmt.Sprintf(
+			"**Org orbs (%d orb(s), source namespace `%s`)** — orb source YAML is not exportable via REST API (GraphQL only) "+
+				"and the destination org has a different namespace; "+
+				"republish each orb under the destination namespace manually using `circleci orb publish`."+
+				warningSuffix(m, "orbs_require_republish"),
+			len(s.Orbs), ns))
+	}
+
+	// Budget enforcement=block — only when at least one block budget was captured.
+	if hasBudgetEnforcementBlock(m) {
+		items = append(items, "**Budget enforcement mode** — one or more budgets have `enforcement_type=block`; "+
+			"the PUT budget endpoint only accepts credits and cannot set enforcement mode — "+
+			"re-apply block enforcement manually on the destination after sync."+
+			warningSuffix(m, "budget_enforcement_block_not_transferred"))
+	}
 
 	// Group restrictions — only when non-default group restrictions are present.
 	//
@@ -647,6 +706,36 @@ func hasPipelineDefinitions(m *manifest.Manifest) bool {
 func hasAdditionalSSHKeys(m *manifest.Manifest) bool {
 	for _, p := range m.Projects {
 		if len(p.SSHKeys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWebhooks reports whether any project in the manifest has at least one
+// webhook captured.
+func hasWebhooks(m *manifest.Manifest) bool {
+	for _, p := range m.Projects {
+		if len(p.Webhooks) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBudgetEnforcementBlock reports whether any captured budget entry has
+// EnforcementType == "block".
+func hasBudgetEnforcementBlock(m *manifest.Manifest) bool {
+	s := m.Source.Org.Settings
+	if s == nil || s.Budgets == nil {
+		return false
+	}
+	b := s.Budgets
+	if b.OrgBudget != nil && b.OrgBudget.EnforcementType == "block" {
+		return true
+	}
+	for _, pb := range b.ProjectBudgets {
+		if pb.EnforcementType == "block" {
 			return true
 		}
 	}
