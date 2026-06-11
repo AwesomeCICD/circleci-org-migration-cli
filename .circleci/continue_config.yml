@@ -72,6 +72,16 @@ executors:
     resource_class: medium
     environment:
       CGO_ENABLED: "0"
+  # gosec's SSA/type analysis is memory-hungry and grew past medium's 4GB as the
+  # module's dependency graph expanded (e.g. lipgloss, x/term), causing the
+  # security-sast scan to thrash/OOM and stall past the 10m no-output limit.
+  # Give the SAST job 8GB so the scan completes in seconds again.
+  go-large:
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: large
+    environment:
+      CGO_ENABLED: "0"
   base:
     docker:
       - image: cimg/base:current
@@ -148,7 +158,8 @@ jobs:
           command: govulncheck ./...
 
   security-sast:
-    executor: go
+    # gosec needs >4GB on the current dependency graph; run on the 8GB executor.
+    executor: go-large
     steps:
       - checkout
       - go/mod-download-cached
@@ -181,6 +192,9 @@ jobs:
             - /usr/local/bin/gosec
       - run:
           name: gosec (SAST)
+          # Safety net: don't let a transient slow scan trip the 10m no-output
+          # default. With the 8GB executor the scan completes in well under this.
+          no_output_timeout: 20m
           command: |
             mkdir -p test-results
             status=0
