@@ -452,6 +452,41 @@ func (a orgSettingsAdapter) SetPolicyEnforcement(ownerID string, enabled bool) e
 func (a orgSettingsAdapter) CreateOTelExporter(orgID, endpoint, protocol string, insecure bool, headers map[string]string) error {
 	return a.c.CreateOTelExporter(orgID, endpoint, protocol, insecure, headers)
 }
+
+// GetURLOrbAllowList + GetOTelExporters satisfy the syncer's optional
+// *Getter interfaces so re-running `sync --apply` is idempotent (skips
+// already-present URL-orb entries / OTel exporters instead of duplicating).
+func (a orgSettingsAdapter) GetURLOrbAllowList(slugOrID string) ([]syncer.URLOrbAllowEntry, error) {
+	entries, err := a.c.GetURLOrbAllowList(slugOrID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]syncer.URLOrbAllowEntry, len(entries))
+	for i, e := range entries {
+		out[i] = syncer.URLOrbAllowEntry{ID: e.ID, Name: e.Name, Prefix: e.Prefix, Auth: e.Auth}
+	}
+	return out, nil
+}
+
+func (a orgSettingsAdapter) GetOTelExporters(orgID string) ([]syncer.OTelExporter, error) {
+	exporters, err := a.c.GetOTelExporters(orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]syncer.OTelExporter, len(exporters))
+	for i, e := range exporters {
+		out[i] = syncer.OTelExporter{ID: e.ID, Endpoint: e.Endpoint, Protocol: e.Protocol, Insecure: e.Insecure, Headers: e.Headers}
+	}
+	return out, nil
+}
+
+// Compile-time assertions that the adapter provides the optional idempotency
+// getters the syncer type-asserts for.
+var (
+	_ syncer.URLOrbAllowListGetter = orgSettingsAdapter{}
+	_ syncer.OTelExporterGetter    = orgSettingsAdapter{}
+)
+
 func (a orgSettingsAdapter) SetContacts(orgID string, primary, security []string) error {
 	return a.c.SetContacts(orgID, primary, security)
 }
