@@ -8,6 +8,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+// setenv sets an environment variable for the duration of a test, restoring
+// the original value (or unsetting it) via t.Cleanup.
+func setenv(t *testing.T, key, val string) {
+	t.Helper()
+	t.Setenv(key, val)
+}
+
+// ---------------------------------------------------------------------------
 // NewConfig
 // ---------------------------------------------------------------------------
 
@@ -47,6 +58,10 @@ func TestSourceTokenOrDefault_FallsBackToToken(t *testing.T) {
 }
 
 func TestSourceTokenOrDefault_BothEmpty(t *testing.T) {
+	// Ensure all token env vars are cleared so the test is deterministic.
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 	cfg := &settings.Config{}
 	if got := cfg.SourceTokenOrDefault(); got != "" {
 		t.Errorf("SourceTokenOrDefault() = %q; want empty string", got)
@@ -72,6 +87,10 @@ func TestDestTokenOrDefault_FallsBackToToken(t *testing.T) {
 }
 
 func TestDestTokenOrDefault_BothEmpty(t *testing.T) {
+	// Ensure all token env vars are cleared so the test is deterministic.
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 	cfg := &settings.Config{}
 	if got := cfg.DestTokenOrDefault(); got != "" {
 		t.Errorf("DestTokenOrDefault() = %q; want empty string", got)
@@ -140,4 +159,64 @@ func TestServerURL_BadHost(t *testing.T) {
 	// still produce a valid-looking result.  We mostly verify no panic and
 	// that the result is predictable; an error is also acceptable.
 	_, _ = cfg.ServerURL()
+}
+
+// ---------------------------------------------------------------------------
+// TokenOrDefault — CIRCLE_TOKEN fallback (circleci run migrate)
+// ---------------------------------------------------------------------------
+
+func TestTokenOrDefault_CircleToken_UsedWhenNothingElseSet(t *testing.T) {
+	// CIRCLE_TOKEN is injected by `circleci run migrate`; it should be used
+	// when neither the cfg.Token field nor CIRCLECI_CLI_TOKEN is set.
+	setenv(t, "CIRCLECI_CLI_TOKEN", "")
+	setenv(t, "CIRCLE_TOKEN", "circle-run-tok")
+	cfg := &settings.Config{}
+	if got := cfg.TokenOrDefault(); got != "circle-run-tok" {
+		t.Errorf("TokenOrDefault() = %q; want %q", got, "circle-run-tok")
+	}
+}
+
+func TestTokenOrDefault_CircleCLIToken_WinsOverCircleToken(t *testing.T) {
+	// CIRCLECI_CLI_TOKEN must take precedence over the lower-priority
+	// CIRCLE_TOKEN fallback.
+	setenv(t, "CIRCLECI_CLI_TOKEN", "cli-tok")
+	setenv(t, "CIRCLE_TOKEN", "circle-run-tok")
+	cfg := &settings.Config{}
+	if got := cfg.TokenOrDefault(); got != "cli-tok" {
+		t.Errorf("TokenOrDefault() = %q; want %q (CIRCLECI_CLI_TOKEN must win)", got, "cli-tok")
+	}
+}
+
+func TestTokenOrDefault_FlagToken_WinsOverCircleToken(t *testing.T) {
+	// An explicit cfg.Token (set from --token flag) must win over everything.
+	setenv(t, "CIRCLECI_CLI_TOKEN", "")
+	setenv(t, "CIRCLE_TOKEN", "circle-run-tok")
+	cfg := &settings.Config{Token: "flag-tok"}
+	if got := cfg.TokenOrDefault(); got != "flag-tok" {
+		t.Errorf("TokenOrDefault() = %q; want %q (flag must win)", got, "flag-tok")
+	}
+}
+
+func TestSourceTokenOrDefault_CircleToken_FallsThrough(t *testing.T) {
+	// CIRCLE_TOKEN should be reachable through SourceTokenOrDefault when all
+	// higher-precedence values are absent.
+	setenv(t, "CIRCLECI_CLI_TOKEN", "")
+	setenv(t, "CIRCLECI_SOURCE_TOKEN", "")
+	setenv(t, "CIRCLE_TOKEN", "circle-run-tok")
+	cfg := &settings.Config{}
+	if got := cfg.SourceTokenOrDefault(); got != "circle-run-tok" {
+		t.Errorf("SourceTokenOrDefault() = %q; want %q", got, "circle-run-tok")
+	}
+}
+
+func TestDestTokenOrDefault_CircleToken_FallsThrough(t *testing.T) {
+	// CIRCLE_TOKEN should be reachable through DestTokenOrDefault when all
+	// higher-precedence values are absent.
+	setenv(t, "CIRCLECI_CLI_TOKEN", "")
+	setenv(t, "CIRCLECI_DEST_TOKEN", "")
+	setenv(t, "CIRCLE_TOKEN", "circle-run-tok")
+	cfg := &settings.Config{}
+	if got := cfg.DestTokenOrDefault(); got != "circle-run-tok" {
+		t.Errorf("DestTokenOrDefault() = %q; want %q", got, "circle-run-tok")
+	}
 }

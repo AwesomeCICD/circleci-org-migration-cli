@@ -290,6 +290,7 @@ func TestPrompt_TokenPrompts_WhenNotSetInEnv(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Provide token values inline in the scripted input.
 	input := "gh/acme\ngh/acme-new\nmy-src-token\nmy-dst-token\nall\nn\nskip\ny\n"
@@ -305,6 +306,7 @@ func TestPrompt_TokenPrompts_EmptyThenValid(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Empty source token → re-prompt; second entry is valid.
 	input := "gh/acme\ngh/acme-new\n\nmy-src-token\nmy-dst-token\nall\nn\nskip\ny\n"
@@ -333,6 +335,7 @@ func TestMigrateCmd_NoInputFlag_MissingOrg_Errors(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--no-input")
 	if err == nil {
@@ -349,6 +352,7 @@ func TestMigrateCmd_NoInputFlag_MissingDestOrg_Errors(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--no-input", "--source-org", "gh/acme")
 	if err == nil {

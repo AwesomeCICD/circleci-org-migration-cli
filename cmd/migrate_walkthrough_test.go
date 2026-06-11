@@ -223,6 +223,7 @@ func TestMigrateCmd_NoInput_BothOrgsProvided(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t,
 		"--no-input",
@@ -247,6 +248,7 @@ func TestMigrateCmd_InvalidMissingSecrets_NoInput(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t,
 		"--no-input",

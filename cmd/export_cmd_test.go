@@ -19,6 +19,7 @@ func TestExportCommand_NoOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "") // also clear the circleci run fallback
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -39,10 +40,11 @@ func TestExportCommand_NoOrg_ReturnsError(t *testing.T) {
 // "export --source-org gh/x" with no API token available returns an error
 // mentioning "token".
 func TestExportCommand_NoToken_ReturnsError(t *testing.T) {
-	// Ensure no token env vars are set.
+	// Ensure no token env vars are set — including the circleci run fallback.
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -67,6 +69,7 @@ func TestExportCommand_TokenFromEnv_Proceeds(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token-for-test")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -88,6 +91,7 @@ func TestExportCommand_SourceTokenFromEnv_Proceeds(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-source-token")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -153,6 +157,7 @@ func TestExportCommand_OrgAlias_WorksLikeSourceOrg(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -181,6 +186,7 @@ func TestExportCommand_ProjectsAliasAcceptsComma(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -205,6 +211,7 @@ func TestExportCommand_ProjectFlagCanRepeat(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	root := cmd.MakeCommands()
 	var outBuf, errBuf strings.Builder
@@ -231,6 +238,7 @@ func TestExportCommand_SourceOrgAndOrgAreEquivalent(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	for _, flagName := range []string{"--source-org", "--org"} {
 		t.Run(flagName, func(t *testing.T) {

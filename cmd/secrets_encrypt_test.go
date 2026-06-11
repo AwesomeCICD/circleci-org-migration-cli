@@ -380,6 +380,7 @@ func TestSecretsCapture_EncryptAutoGeneratesKey(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
