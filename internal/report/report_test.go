@@ -258,10 +258,11 @@ func TestMarkdown_ContainsContextEntry(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
 
-	if !strings.Contains(md, "### `deploy-prod`") {
+	// Context headers now include a link: ["`deploy-prod`"](url)
+	if !strings.Contains(md, "`deploy-prod`") {
 		t.Errorf("Markdown missing context entry for deploy-prod")
 	}
-	if !strings.Contains(md, "### `staging`") {
+	if !strings.Contains(md, "`staging`") {
 		t.Errorf("Markdown missing context entry for staging")
 	}
 }
@@ -352,14 +353,15 @@ func TestMarkdown_ContainsProjectExtras(t *testing.T) {
 	m := buildManifest()
 	md := report.Markdown(m)
 
-	if !strings.Contains(md, "Checkout keys: 1") {
-		t.Errorf("Markdown missing checkout keys count")
+	// Checkout keys, webhooks, and schedules now render detailed subsections.
+	if !strings.Contains(md, "Checkout keys (1)") {
+		t.Errorf("Markdown missing checkout keys section")
 	}
-	if !strings.Contains(md, "Webhooks: 1") {
-		t.Errorf("Markdown missing webhooks count")
+	if !strings.Contains(md, "Webhooks (1)") {
+		t.Errorf("Markdown missing webhooks section")
 	}
-	if !strings.Contains(md, "Schedules: 1") {
-		t.Errorf("Markdown missing schedules count")
+	if !strings.Contains(md, "Schedules (1)") {
+		t.Errorf("Markdown missing schedules section")
 	}
 }
 
@@ -1204,9 +1206,9 @@ func TestMarkdown_ManualSteps_SSHKeysNoteWhenPresent(t *testing.T) {
 	md := report.Markdown(m)
 
 	for _, want := range []string{
-		"Additional SSH keys (private keys not exported)",
+		"Additional SSH keys",
 		"PRIVATE keys are never returned",
-		"SSH-key extraction step",
+		"secrets capture",
 		"export note:",
 		"1 additional SSH key(s) captured (public metadata only)",
 	} {
@@ -1231,7 +1233,8 @@ func TestMarkdown_ManualSteps_SSHKeysNoteAbsentWhenNoKeys(t *testing.T) {
 	}
 
 	md := report.Markdown(m)
-	if strings.Contains(md, "Additional SSH keys (private keys not exported)") {
+	// The "Automatable with `--ssh-keys`" label only appears in the manual steps when SSH keys exist.
+	if strings.Contains(md, "Automatable with `--ssh-keys`") {
 		t.Errorf("Manual-steps SSH-key note should be absent when no SSH keys in manifest; got note in:\n%s", md[:min(800, len(md))])
 	}
 }
@@ -1936,6 +1939,559 @@ func TestMarkdown_CIAMSection_ProjectGroupGrantsRendered(t *testing.T) {
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("CIAM project group grants section missing %q", want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: pipeline definitions + triggers per project (#A1)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_PipelineDefinitions_Rendered verifies that App-pipeline definitions
+// and their triggers are rendered in the per-project section.
+func TestMarkdown_PipelineDefinitions_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "circleci/org-uuid"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "circleci/org-uuid/proj-uuid",
+				Name: "MyService",
+				PipelineDefinitions: []manifest.PipelineDefinition{
+					{
+						Name:        "default",
+						Description: "main pipeline",
+						ConfigSource: manifest.PipelineSource{
+							Provider:     "github_app",
+							RepoFullName: "acme/myservice",
+							FilePath:     ".circleci/config.yml",
+						},
+						CheckoutSource: manifest.PipelineSource{
+							Provider:     "github_app",
+							RepoFullName: "acme/myservice",
+						},
+						Triggers: []manifest.Trigger{
+							{
+								Name:      "push-trigger",
+								EventName: "push",
+								Disabled:  false,
+								EventSource: manifest.TriggerEventSource{
+									Provider:     "github_app",
+									RepoFullName: "acme/myservice",
+								},
+							},
+							{
+								Name:      "schedule-trigger",
+								EventName: "schedule",
+								Disabled:  true,
+								EventSource: manifest.TriggerEventSource{
+									Provider:     "schedule",
+									ScheduleCron: "0 2 * * *",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Pipeline definitions (1)",
+		"**`default`**",
+		"main pipeline",
+		"Config source:",
+		"provider: `github_app`",
+		"repo: `acme/myservice`",
+		"file: `.circleci/config.yml`",
+		"Checkout source:",
+		"Triggers (2)",
+		"`push-trigger`",
+		"event=`push`",
+		"`schedule-trigger`",
+		"*(disabled)*",
+		"cron: `0 2 * * *`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("pipeline definitions section missing %q; snippet:\n%s", want, md[:min(1500, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_PipelineDefinitions_AbsentWhenNone verifies no pipeline section
+// when no pipeline definitions are captured.
+func TestMarkdown_PipelineDefinitions_AbsentWhenNone(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{Slug: "gh/o/web", Name: "web"},
+		},
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "Pipeline definitions") {
+		t.Errorf("Pipeline definitions section should not appear when no definitions captured")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: summary table clarification (#A2)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_SummaryTable_Legend verifies the legend is present below the table.
+func TestMarkdown_SummaryTable_Legend(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"env-var names (values captured separately)",
+		"Legend:",
+		"circleci-migrate secrets capture",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Summary table legend missing %q", want)
+		}
+	}
+}
+
+// TestMarkdown_SummaryTable_NoRawVariableNamesColumn verifies the old confusing
+// "Variable names" column header is gone.
+func TestMarkdown_SummaryTable_NoRawVariableNamesColumn(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	if strings.Contains(md, "| Variable names |") {
+		t.Errorf("Summary table should not have raw 'Variable names' column header")
+	}
+}
+
+// TestMarkdown_SummaryTable_RunnerClassesRow verifies runner resource classes appear
+// in the summary table when captured.
+func TestMarkdown_SummaryTable_RunnerClassesRow(t *testing.T) {
+	m := &manifest.Manifest{
+		Source:          manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		RunnerNamespace: "my-ns",
+		RunnerResourceClasses: []manifest.RunnerResourceClass{
+			{Name: "my-ns/runner-a", Description: "fast runner"},
+		},
+	}
+	md := report.Markdown(m)
+	if !strings.Contains(md, "Runner resource classes") {
+		t.Errorf("Summary table should include runner resource classes row when present")
+	}
+	if !strings.Contains(md, "my-ns") {
+		t.Errorf("Summary table runner row should reference namespace")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: context and project settings links (#A3)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_ContextHeader_HasLink verifies context headers include a link
+// to the org contexts settings page.
+func TestMarkdown_ContextHeader_HasLink(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod", EnvVars: []manifest.ContextEnvVar{{Name: "KEY"}}},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Should link to org contexts settings.
+	want := "https://app.circleci.com/settings/organization/gh/acme/contexts"
+	if !strings.Contains(md, want) {
+		t.Errorf("Context header should contain link to contexts settings URL %q; got:\n%s", want, md[:min(800, len(md))])
+	}
+}
+
+// TestMarkdown_ProjectHeader_HasLink verifies project headers include a link
+// to the project settings page.
+func TestMarkdown_ProjectHeader_HasLink(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web"},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Should link to project settings.
+	want := "https://app.circleci.com/settings/project/gh/acme/web"
+	if !strings.Contains(md, want) {
+		t.Errorf("Project header should contain link to project settings URL %q; got:\n%s", want, md[:min(800, len(md))])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: friendly names — no raw UUIDs as headings (#A5)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_NoRawUUIDInProjectHeading verifies that when a project has a Name,
+// the heading shows the name rather than a raw UUID slug.
+func TestMarkdown_NoRawUUIDInProjectHeading(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "myorg", Slug: "circleci/org-uuid-abc"}},
+		Projects: []manifest.Project{
+			{
+				Slug:     "circleci/org-uuid-abc/proj-uuid-xyz",
+				Name:     "FriendlyServiceName",
+				SourceID: "proj-uuid-xyz",
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	// Must show friendly name in heading.
+	if !strings.Contains(md, "FriendlyServiceName") {
+		t.Errorf("Project heading should contain friendly name 'FriendlyServiceName'; got:\n%s", md[:min(500, len(md))])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: automatable items labeled (#A6)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_AutomatableLabel_SecretValues verifies that the context/project
+// secret-values manual step is labeled as automatable with the exact CLI command.
+func TestMarkdown_AutomatableLabel_SecretValues(t *testing.T) {
+	m := buildManifest()
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Automatable",
+		"circleci-migrate secrets capture",
+		"--manifest manifest.json",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Secret values manual step missing automatable label %q", want)
+		}
+	}
+}
+
+// TestMarkdown_AutomatableLabel_SSHKeys verifies the SSH-keys manual step is
+// labeled as automatable with `--ssh-keys` when SSH keys are present.
+func TestMarkdown_AutomatableLabel_SSHKeys(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "acme", Slug: "gh/acme"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web", Name: "web",
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Hostname: "github.com", Fingerprint: "fp=", PublicKey: "ssh-rsa AAAA"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "Automatable with `--ssh-keys`") {
+		t.Errorf("SSH keys manual step should be labeled as automatable with --ssh-keys; got:\n%s", md[:min(800, len(md))])
+	}
+}
+
+// TestMarkdown_ManualLabel_WebhookSecrets verifies webhook signing secrets are
+// labeled as manual (not automatable).
+func TestMarkdown_ManualLabel_WebhookSecrets(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web", Name: "web",
+				Webhooks: []manifest.Webhook{{Name: "n", URL: "https://h.example.com"}},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	if !strings.Contains(md, "Webhook signing secrets") {
+		t.Errorf("Webhook signing secrets step should be present")
+	}
+	if !strings.Contains(md, "[manual]") {
+		t.Errorf("Webhook signing secrets should be labeled [manual]")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: detailed cutover runbook with real commands (#C)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_CutoverRunbook_HasActualCommands verifies the cutover runbook
+// includes actual CLI commands in shell code blocks.
+func TestMarkdown_CutoverRunbook_HasActualCommands(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "acme", Slug: "gh/acme"},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"circleci-migrate export --source-org acme",
+		"circleci-migrate secrets capture --manifest manifest.json",
+		"circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply",
+		"```sh",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Cutover runbook missing actual command %q; got:\n%s", want, md[:min(1200, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_CutoverRunbook_UsesOrgName verifies the export command uses
+// the org name (not slug) when a name is available.
+func TestMarkdown_CutoverRunbook_UsesOrgName(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Org: manifest.Org{Name: "MyOrg", Slug: "circleci/uuid-abc"},
+		},
+	}
+	md := report.Markdown(m)
+
+	// The export command should use the org Name, not the slug.
+	if !strings.Contains(md, "circleci-migrate export --source-org MyOrg") {
+		t.Errorf("Export command should use org Name 'MyOrg'; got:\n%s", md[:min(1200, len(md))])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: runner resource classes dedicated section
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_RunnerResourceClasses_Section verifies the dedicated runner
+// resource classes section is rendered when classes are captured.
+func TestMarkdown_RunnerResourceClasses_Section(t *testing.T) {
+	m := &manifest.Manifest{
+		Source:          manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		RunnerNamespace: "my-ns",
+		RunnerResourceClasses: []manifest.RunnerResourceClass{
+			{Name: "my-ns/fast-runner", Description: "4-core runner"},
+			{Name: "my-ns/slow-runner", Description: ""},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"## Runner resource classes",
+		"my-ns/fast-runner",
+		"4-core runner",
+		"my-ns/slow-runner",
+		"Agent registration tokens are not transferable",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Runner resource classes section missing %q; got:\n%s", want, md[:min(1000, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_RunnerResourceClasses_AbsentWhenNone verifies no runner section
+// when no classes were captured.
+func TestMarkdown_RunnerResourceClasses_AbsentWhenNone(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "## Runner resource classes") {
+		t.Errorf("Runner resource classes section should not appear when no classes captured")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: per-project OIDC claims (#A4)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_ProjectOIDC_Rendered verifies per-project OIDC claims appear.
+func TestMarkdown_ProjectOIDC_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug:         "gh/o/web",
+				Name:         "web",
+				OIDCAudience: []string{"https://my.audience.example"},
+				OIDCTTL:      "2h",
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"OIDC custom claims",
+		"https://my.audience.example",
+		"2h",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Project OIDC section missing %q; got:\n%s", want, md[:min(800, len(md))])
+		}
+	}
+}
+
+// TestMarkdown_ProjectOIDC_AbsentWhenNone verifies no per-project OIDC line
+// appears for projects that don't have OIDC claims configured.
+func TestMarkdown_ProjectOIDC_AbsentWhenNone(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{Slug: "gh/o/web", Name: "web"},
+		},
+	}
+	md := report.Markdown(m)
+	// The per-project OIDC line is "- OIDC custom claims: audience=...".
+	// This is more specific than just "OIDC" which also appears in the runbook prose.
+	if strings.Contains(md, "- OIDC custom claims: audience=") {
+		t.Errorf("Per-project OIDC line should not appear when no OIDC configured on project")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: project API tokens rendered (#A4)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_ProjectAPITokens_Rendered verifies project API tokens (label +
+// scope) appear in the per-project section.
+func TestMarkdown_ProjectAPITokens_Rendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				APITokens: []manifest.ProjectAPIToken{
+					{Label: "Deploy Bot", Scope: "all"},
+					{Label: "Status Check", Scope: "status"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"API tokens (2",
+		"Deploy Bot",
+		"scope: `all`",
+		"Status Check",
+		"scope: `status`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Project API tokens section missing %q; got:\n%s", want, md[:min(800, len(md))])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: detailed webhook rendering (#A4)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_Webhooks_DetailedRendering verifies webhook URL and events appear
+// in the per-project section.
+func TestMarkdown_Webhooks_DetailedRendering(t *testing.T) {
+	verifyTLS := true
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				Webhooks: []manifest.Webhook{
+					{
+						Name:      "deploy-hook",
+						URL:       "https://deploy.example.com/hook",
+						Events:    []string{"workflow-completed", "job-completed"},
+						VerifyTLS: &verifyTLS,
+					},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Webhooks (1)",
+		"deploy-hook",
+		"https://deploy.example.com/hook",
+		"workflow-completed",
+		"verify_tls: `true`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Webhook detail missing %q; got:\n%s", want, md[:min(800, len(md))])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: detailed checkout key rendering (#A4)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_CheckoutKeys_DetailedRendering verifies checkout key type and
+// fingerprint appear in the per-project section.
+func TestMarkdown_CheckoutKeys_DetailedRendering(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				CheckoutKeys: []manifest.CheckoutKey{
+					{Type: "deploy-key", Fingerprint: "aa:bb:cc:dd", Preferred: true},
+					{Type: "github-user-key", Fingerprint: "ee:ff:00:11", Preferred: false},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Checkout keys (2)",
+		"deploy-key",
+		"aa:bb:cc:dd",
+		"(preferred)",
+		"github-user-key",
+		"ee:ff:00:11",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Checkout keys detail missing %q; got:\n%s", want, md[:min(800, len(md))])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #156: detailed schedule rendering (#A4)
+// ---------------------------------------------------------------------------
+
+// TestMarkdown_Schedules_DetailedRendering verifies schedule description appears.
+func TestMarkdown_Schedules_DetailedRendering(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "gh/o"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/o/web",
+				Name: "web",
+				Schedules: []manifest.Schedule{
+					{Name: "nightly-build", Description: "runs every night", ActorLogin: "bot-user"},
+				},
+			},
+		},
+	}
+	md := report.Markdown(m)
+
+	for _, want := range []string{
+		"Schedules (1)",
+		"nightly-build",
+		"runs every night",
+		"actor: `bot-user`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Schedule detail missing %q; got:\n%s", want, md[:min(800, len(md))])
 		}
 	}
 }

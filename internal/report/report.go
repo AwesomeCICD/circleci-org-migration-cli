@@ -29,8 +29,8 @@ func Summary(m *manifest.Manifest) string {
 
 	cv := countContextVars(m)
 	pv := countProjectVars(m)
-	fmt.Fprintf(&b, "\n  Contexts   : %d  (%d variable name(s))\n", len(m.Contexts), cv)
-	fmt.Fprintf(&b, "  Projects   : %d  (%d variable name(s))\n", len(m.Projects), pv)
+	fmt.Fprintf(&b, "\n  Contexts   : %d  (%d env-var name(s), no values)\n", len(m.Contexts), cv)
+	fmt.Fprintf(&b, "  Projects   : %d  (%d env-var name(s), no values)\n", len(m.Projects), pv)
 
 	byCode := warningsByCode(m)
 	fmt.Fprintf(&b, "  Warnings   : %d\n", len(m.Warnings))
@@ -70,107 +70,27 @@ func Markdown(m *manifest.Manifest) string {
 	}
 
 	fmt.Fprintf(&b, "\n## Summary\n\n")
-	fmt.Fprintf(&b, "| Resource | Count | Variable names |\n|---|---:|---:|\n")
-	fmt.Fprintf(&b, "| Contexts | %d | %d |\n", len(m.Contexts), countContextVars(m))
-	fmt.Fprintf(&b, "| Projects | %d | %d |\n", len(m.Projects), countProjectVars(m))
+	fmt.Fprintf(&b, "| Resource | Count | Detail |\n|---|---:|---|\n")
+	fmt.Fprintf(&b, "| Contexts | %d | %d env-var names (values captured separately) |\n", len(m.Contexts), countContextVars(m))
+	fmt.Fprintf(&b, "| Projects | %d | %d env-var names (values captured separately) |\n", len(m.Projects), countProjectVars(m))
+	if len(m.RunnerResourceClasses) > 0 {
+		fmt.Fprintf(&b, "| Runner resource classes | %d | namespace: `%s` |\n", len(m.RunnerResourceClasses), orDash(m.RunnerNamespace))
+	}
 	fmt.Fprintf(&b, "| Warnings | %d | |\n", len(m.Warnings))
+	fmt.Fprintf(&b, "\n> **Legend:** Env-var names are captured but values are intentionally excluded (CircleCI never returns them via API).\n")
+	fmt.Fprintf(&b, "> Run `circleci-migrate secrets capture` to collect values in-pipeline, then supply the bundle to `sync`.\n")
 
 	// Org settings — everything readable at the org level.
 	writeOrgSettings(&b, m)
 
 	// Contexts
-	fmt.Fprintf(&b, "\n## Contexts\n\n")
-	if len(m.Contexts) == 0 {
-		fmt.Fprintf(&b, "_None._\n")
-	}
-	for _, c := range m.Contexts {
-		fmt.Fprintf(&b, "### `%s`\n\n", c.Name)
-		fmt.Fprintf(&b, "- Environment variables (%d): %s\n", len(c.EnvVars), joinNames(contextVarNames(c)))
-		if len(c.Restrictions) > 0 {
-			fmt.Fprintf(&b, "- Restrictions:\n")
-			for _, r := range c.Restrictions {
-				label := r.Name
-				if label == "" {
-					label = r.Value
-				}
-				fmt.Fprintf(&b, "  - `%s`: %s\n", r.Type, label)
-			}
-		}
-		if len(c.SecurityGroups) > 0 {
-			names := make([]string, 0, len(c.SecurityGroups))
-			for _, g := range c.SecurityGroups {
-				names = append(names, g.Name)
-			}
-			fmt.Fprintf(&b, "- Security groups: %s\n", joinNames(names))
-		}
-		fmt.Fprintf(&b, "\n")
-	}
+	writeContexts(&b, m)
 
 	// Projects
-	fmt.Fprintf(&b, "## Projects\n\n")
-	if len(m.Projects) == 0 {
-		fmt.Fprintf(&b, "_None._\n")
-	}
-	for _, p := range m.Projects {
-		// Show the human-readable Name primarily; fall back to Slug when Name is
-		// empty (older manifests or synthesised project entries).
-		projectHeader := p.Name
-		if projectHeader == "" {
-			projectHeader = p.Slug
-		} else {
-			projectHeader = fmt.Sprintf("%s (`%s`)", p.Name, p.Slug)
-		}
-		fmt.Fprintf(&b, "### %s\n\n", projectHeader)
-		if repoLine := projectRepoLine(p.VCS); repoLine != "" {
-			fmt.Fprintf(&b, "- Repository: %s\n", repoLine)
-		}
-		if p.VCS.DefaultBranch != "" {
-			fmt.Fprintf(&b, "- Default branch: `%s`\n", p.VCS.DefaultBranch)
-		}
-		fmt.Fprintf(&b, "- Environment variables (%d): %s\n", len(p.EnvVars), joinNames(projectVarNames(p)))
-		if p.Settings != nil {
-			fmt.Fprintf(&b, "- Advanced settings: %s\n", joinNames(setSettings(p.Settings)))
-		}
-		if len(p.CheckoutKeys) > 0 {
-			fmt.Fprintf(&b, "- Checkout keys: %d\n", len(p.CheckoutKeys))
-		}
-		if len(p.SSHKeys) > 0 {
-			fmt.Fprintf(&b, "- Additional SSH keys (%d):\n", len(p.SSHKeys))
-			for _, k := range p.SSHKeys {
-				host := k.Hostname
-				if host == "" {
-					host = "(global)"
-				}
-				pubKeyPreview := sshPublicKeyPreview(k.PublicKey)
-				fmt.Fprintf(&b, "  - host: `%s`, fingerprint: `%s`, key: `%s`\n", host, orDash(k.Fingerprint), pubKeyPreview)
-			}
-		}
-		if len(p.Webhooks) > 0 {
-			fmt.Fprintf(&b, "- Webhooks: %d\n", len(p.Webhooks))
-		}
-		if len(p.Schedules) > 0 {
-			fmt.Fprintf(&b, "- Schedules: %d\n", len(p.Schedules))
-			for _, sched := range p.Schedules {
-				if sched.ActorLogin != "" {
-					fmt.Fprintf(&b, "  - `%s` (actor: `%s`)\n", sched.Name, sched.ActorLogin)
-				}
-			}
-		}
-		if p.Settings != nil && len(p.Settings.V11FeatureFlags) > 0 {
-			// Show any flags not already shown via the explicit settings fields.
-			var extra []string
-			for k, v := range p.Settings.V11FeatureFlags {
-				if k != "api-trigger-with-config" && k != "drop-all-build-requests" {
-					extra = append(extra, fmt.Sprintf("%s=%t", k, v))
-				}
-			}
-			if len(extra) > 0 {
-				sort.Strings(extra)
-				fmt.Fprintf(&b, "- Additional v1.1 feature flags: %s\n", strings.Join(extra, ", "))
-			}
-		}
-		fmt.Fprintf(&b, "\n")
-	}
+	writeProjects(&b, m)
+
+	// Runner resource classes — dedicated section when captured.
+	writeRunnerResourceClasses(&b, m)
 
 	// Warnings
 	fmt.Fprintf(&b, "## Warnings & manual follow-ups\n\n")
@@ -192,6 +112,254 @@ func Markdown(m *manifest.Manifest) string {
 	writeRunbook(&b, m)
 
 	return b.String()
+}
+
+// writeContexts renders the "## Contexts" section with per-context subsections
+// including env-var names, restrictions, security groups, and settings links.
+func writeContexts(b *strings.Builder, m *manifest.Manifest) {
+	host := m.Source.Host
+	orgSlug := m.Source.Org.Slug
+
+	fmt.Fprintf(b, "\n## Contexts\n\n")
+	if len(m.Contexts) == 0 {
+		fmt.Fprintf(b, "_None._\n")
+	}
+	for _, c := range m.Contexts {
+		ctxURL := orgSettingsURL(host, orgSlug, "contexts")
+		fmt.Fprintf(b, "### [`%s`](%s)\n\n", c.Name, ctxURL)
+		fmt.Fprintf(b, "- Environment variables (%d): %s\n", len(c.EnvVars), joinNames(contextVarNames(c)))
+		if len(c.Restrictions) > 0 {
+			fmt.Fprintf(b, "- Restrictions:\n")
+			for _, r := range c.Restrictions {
+				label := r.Name
+				if label == "" {
+					label = r.Value
+				}
+				fmt.Fprintf(b, "  - `%s`: %s\n", r.Type, label)
+			}
+		}
+		if len(c.SecurityGroups) > 0 {
+			names := make([]string, 0, len(c.SecurityGroups))
+			for _, g := range c.SecurityGroups {
+				names = append(names, g.Name)
+			}
+			fmt.Fprintf(b, "- Security groups: %s\n", joinNames(names))
+		}
+		fmt.Fprintf(b, "\n")
+	}
+}
+
+// writeProjects renders the "## Projects" section with per-project subsections
+// including all captured fields: env-vars, settings, checkout keys, schedules,
+// webhooks, SSH keys, pipeline definitions + triggers, OIDC claims, API tokens.
+func writeProjects(b *strings.Builder, m *manifest.Manifest) {
+	host := m.Source.Host
+
+	fmt.Fprintf(b, "## Projects\n\n")
+	if len(m.Projects) == 0 {
+		fmt.Fprintf(b, "_None._\n")
+	}
+	for _, p := range m.Projects {
+		// Header: friendly Name with link to project settings; fall back to Slug.
+		projSettingsURL := projectSettingsURL(host, p.Slug, "")
+		projectHeader := p.Name
+		if projectHeader == "" {
+			projectHeader = p.Slug
+		} else {
+			projectHeader = fmt.Sprintf("%s (`%s`)", p.Name, p.Slug)
+		}
+		fmt.Fprintf(b, "### [%s](%s)\n\n", projectHeader, projSettingsURL)
+		if repoLine := projectRepoLine(p.VCS); repoLine != "" {
+			fmt.Fprintf(b, "- Repository: %s\n", repoLine)
+		}
+		if p.VCS.DefaultBranch != "" {
+			fmt.Fprintf(b, "- Default branch: `%s`\n", p.VCS.DefaultBranch)
+		}
+		fmt.Fprintf(b, "- Environment variables (%d): %s\n", len(p.EnvVars), joinNames(projectVarNames(p)))
+		if p.Settings != nil {
+			fmt.Fprintf(b, "- Advanced settings: %s\n", joinNames(setSettings(p.Settings)))
+		}
+
+		// Checkout keys — type + fingerprint + preferred flag.
+		if len(p.CheckoutKeys) > 0 {
+			fmt.Fprintf(b, "- Checkout keys (%d):\n", len(p.CheckoutKeys))
+			for _, k := range p.CheckoutKeys {
+				preferred := ""
+				if k.Preferred {
+					preferred = " (preferred)"
+				}
+				fmt.Fprintf(b, "  - type: `%s`, fingerprint: `%s`%s\n", k.Type, orDash(k.Fingerprint), preferred)
+			}
+		}
+
+		// Additional SSH keys — hostname + fingerprint + public-key preview.
+		if len(p.SSHKeys) > 0 {
+			fmt.Fprintf(b, "- Additional SSH keys (%d):\n", len(p.SSHKeys))
+			for _, k := range p.SSHKeys {
+				host := k.Hostname
+				if host == "" {
+					host = "(global)"
+				}
+				pubKeyPreview := sshPublicKeyPreview(k.PublicKey)
+				fmt.Fprintf(b, "  - host: `%s`, fingerprint: `%s`, key: `%s`\n", host, orDash(k.Fingerprint), pubKeyPreview)
+			}
+		}
+
+		// Webhooks — name, URL, events.
+		if len(p.Webhooks) > 0 {
+			fmt.Fprintf(b, "- Webhooks (%d):\n", len(p.Webhooks))
+			for _, wh := range p.Webhooks {
+				verifyTLS := ""
+				if wh.VerifyTLS != nil {
+					verifyTLS = fmt.Sprintf(", verify_tls: `%t`", *wh.VerifyTLS)
+				}
+				events := "_none_"
+				if len(wh.Events) > 0 {
+					events = joinNames(wh.Events)
+				}
+				fmt.Fprintf(b, "  - `%s` → `%s` (events: %s%s)\n", wh.Name, wh.URL, events, verifyTLS)
+			}
+		}
+
+		// Schedules — name, description, actor login.
+		if len(p.Schedules) > 0 {
+			fmt.Fprintf(b, "- Schedules (%d):\n", len(p.Schedules))
+			for _, sched := range p.Schedules {
+				desc := ""
+				if sched.Description != "" {
+					desc = fmt.Sprintf(": %s", sched.Description)
+				}
+				actor := ""
+				if sched.ActorLogin != "" {
+					actor = fmt.Sprintf(" (actor: `%s`)", sched.ActorLogin)
+				}
+				fmt.Fprintf(b, "  - `%s`%s%s\n", sched.Name, desc, actor)
+			}
+		}
+
+		// Pipeline definitions (App projects only).
+		if len(p.PipelineDefinitions) > 0 {
+			writePipelineDefinitions(b, p.PipelineDefinitions)
+		}
+
+		// Per-project OIDC custom claims.
+		if len(p.OIDCAudience) > 0 || p.OIDCTTL != "" {
+			fmt.Fprintf(b, "- OIDC custom claims: audience=%s, TTL=`%s`\n",
+				joinNames(p.OIDCAudience), orDash(p.OIDCTTL))
+		}
+
+		// Project API tokens (label + scope; values never available).
+		if len(p.APITokens) > 0 {
+			fmt.Fprintf(b, "- API tokens (%d, values not recoverable):\n", len(p.APITokens))
+			for _, t := range p.APITokens {
+				fmt.Fprintf(b, "  - `%s` (scope: `%s`)\n", t.Label, t.Scope)
+			}
+		}
+
+		if p.Settings != nil && len(p.Settings.V11FeatureFlags) > 0 {
+			// Show any flags not already shown via the explicit settings fields.
+			var extra []string
+			for k, v := range p.Settings.V11FeatureFlags {
+				if k != "api-trigger-with-config" && k != "drop-all-build-requests" {
+					extra = append(extra, fmt.Sprintf("%s=%t", k, v))
+				}
+			}
+			if len(extra) > 0 {
+				sort.Strings(extra)
+				fmt.Fprintf(b, "- Additional v1.1 feature flags: %s\n", strings.Join(extra, ", "))
+			}
+		}
+		fmt.Fprintf(b, "\n")
+	}
+}
+
+// writePipelineDefinitions renders the pipeline definitions subsection for a
+// project, including config source, checkout source, and all attached triggers.
+func writePipelineDefinitions(b *strings.Builder, defs []manifest.PipelineDefinition) {
+	fmt.Fprintf(b, "- Pipeline definitions (%d):\n", len(defs))
+	for _, def := range defs {
+		desc := ""
+		if def.Description != "" {
+			desc = fmt.Sprintf(" — %s", def.Description)
+		}
+		fmt.Fprintf(b, "  - **`%s`**%s\n", def.Name, desc)
+
+		// Config source
+		if def.ConfigSource.Provider != "" || def.ConfigSource.RepoFullName != "" || def.ConfigSource.FilePath != "" {
+			cs := def.ConfigSource
+			parts := []string{}
+			if cs.Provider != "" {
+				parts = append(parts, fmt.Sprintf("provider: `%s`", cs.Provider))
+			}
+			if cs.RepoFullName != "" {
+				parts = append(parts, fmt.Sprintf("repo: `%s`", cs.RepoFullName))
+			}
+			if cs.FilePath != "" {
+				parts = append(parts, fmt.Sprintf("file: `%s`", cs.FilePath))
+			}
+			fmt.Fprintf(b, "    - Config source: %s\n", strings.Join(parts, ", "))
+		}
+
+		// Checkout source (only shown when non-empty)
+		if def.CheckoutSource.Provider != "" || def.CheckoutSource.RepoFullName != "" {
+			cs := def.CheckoutSource
+			parts := []string{}
+			if cs.Provider != "" {
+				parts = append(parts, fmt.Sprintf("provider: `%s`", cs.Provider))
+			}
+			if cs.RepoFullName != "" {
+				parts = append(parts, fmt.Sprintf("repo: `%s`", cs.RepoFullName))
+			}
+			fmt.Fprintf(b, "    - Checkout source: %s\n", strings.Join(parts, ", "))
+		}
+
+		// Triggers
+		if len(def.Triggers) > 0 {
+			fmt.Fprintf(b, "    - Triggers (%d):\n", len(def.Triggers))
+			for _, tr := range def.Triggers {
+				disabled := ""
+				if tr.Disabled {
+					disabled = " *(disabled)*"
+				}
+				event := tr.EventName
+				if event == "" {
+					event = orDash(tr.EventPreset)
+				}
+				provider := tr.EventSource.Provider
+				repo := tr.EventSource.RepoFullName
+				extra := ""
+				if tr.EventSource.ScheduleCron != "" {
+					extra = fmt.Sprintf(", cron: `%s`", tr.EventSource.ScheduleCron)
+				}
+				if tr.EventSource.WebhookSender != "" {
+					extra = fmt.Sprintf(", sender: `%s`", tr.EventSource.WebhookSender)
+				}
+				repoStr := ""
+				if repo != "" {
+					repoStr = fmt.Sprintf(" (`%s`)", repo)
+				}
+				fmt.Fprintf(b, "      - `%s`%s: event=`%s`, provider=`%s`%s%s\n",
+					tr.Name, disabled, event, provider, repoStr, extra)
+			}
+		}
+	}
+}
+
+// writeRunnerResourceClasses renders a dedicated "## Runner resource classes"
+// section when at least one class was captured.
+func writeRunnerResourceClasses(b *strings.Builder, m *manifest.Manifest) {
+	if len(m.RunnerResourceClasses) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n## Runner resource classes\n\n")
+	if m.RunnerNamespace != "" {
+		fmt.Fprintf(b, "- Source namespace: `%s`\n", m.RunnerNamespace)
+	}
+	fmt.Fprintf(b, "\n| Class | Description |\n|---|---|\n")
+	for _, rc := range m.RunnerResourceClasses {
+		fmt.Fprintf(b, "| `%s` | %s |\n", rc.Name, orDash(rc.Description))
+	}
+	fmt.Fprintf(b, "\n_Agent registration tokens are not transferable — issue new tokens on the destination namespace after recreating each class._\n\n")
 }
 
 // writeOrgSettings renders the "## Org settings" section: every org-level
@@ -397,19 +565,36 @@ func writeRunbook(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "This report is your migration plan. Work through the steps below in order;\n")
 	fmt.Fprintf(b, "the manual steps and data-loss notes are tailored to what this export contains.\n")
 
-	writeCutoverOrder(b)
+	writeCutoverOrder(b, m)
 	writeAutomatedBySync(b)
 	writeManualSteps(b, m)
 	writeDataLoss(b, m)
 	writeExternalPins(b)
 }
 
-// writeCutoverOrder renders the recommended, numbered cutover sequence.
-func writeCutoverOrder(b *strings.Builder) {
+// writeCutoverOrder renders the recommended, numbered cutover sequence with
+// actual commands using the real source/dest slugs from the manifest.
+func writeCutoverOrder(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "\n### 1. Recommended cutover order\n\n")
-	fmt.Fprintf(b, "1. **Export the source org** — done; this report is the result. Review it before continuing.\n")
-	fmt.Fprintf(b, "2. **Capture secret values** — run the in-pipeline `secrets` orb/step (or `secrets capture`) in the source org to collect context and project env-var values. They are never exported via the API.\n")
-	fmt.Fprintf(b, "3. **`sync --apply`** — creates the destination resources. New projects are created **paused**: App triggers are disabled and OAuth onboarding is not followed, so no builds run yet.\n")
+
+	orgSlug := m.Source.Org.Slug
+	orgName := m.Source.Org.Name
+	if orgName == "" {
+		orgName = orgSlug
+	}
+	// Use friendly org name for the export flag; fall back to slug.
+	exportArg := orgName
+	if exportArg == "" || exportArg == "—" {
+		exportArg = "<source-org>"
+	}
+
+	fmt.Fprintf(b, "1. **Export the source org** — done; this report is the result. Review it before continuing.\n\n")
+	fmt.Fprintf(b, "   ```sh\n   circleci-migrate export --source-org %s -o manifest.json\n   ```\n\n", exportArg)
+	fmt.Fprintf(b, "2. **Capture secret values** — run in-pipeline in the source org to collect context and project env-var values plus optional SSH private keys. Values are never returned via the API.\n\n")
+	fmt.Fprintf(b, "   ```sh\n   circleci-migrate secrets capture --manifest manifest.json --ssh-keys -o secrets.json\n   ```\n\n")
+	fmt.Fprintf(b, "   _(The `--ssh-keys` flag captures additional SSH private key material. Omit if no additional SSH keys are needed.)_\n\n")
+	fmt.Fprintf(b, "3. **`sync --apply`** — creates the destination resources. New projects are created **paused**: App triggers are disabled and OAuth onboarding is not followed, so no builds run yet.\n\n")
+	fmt.Fprintf(b, "   ```sh\n   circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply\n   ```\n\n")
 	fmt.Fprintf(b, "4. **Validate the destination** — confirm contexts, env-var names, project settings, webhooks, schedules, and group restrictions look correct against this report.\n")
 	fmt.Fprintf(b, "5. **Enable builds** — turn the destination live (`sync --yes`, the interactive prompt, or re-enable triggers / follow projects).\n")
 	fmt.Fprintf(b, "6. **Rotate the captured secrets** — once builds are healthy, rotate every value you captured in step 2 and delete the extraction artifacts (`secrets.json` and any logs).\n")
@@ -455,6 +640,8 @@ func hasNonDefaultGroupRestrictions(m *manifest.Manifest) bool {
 // export recorded them. Every item names resources by their human-readable name
 // (never a raw UUID), states what the source org had, and ends with a clickable
 // settings URL so operators can act without hunting.
+//
+// Automatable items are labeled with the exact CLI command to use.
 func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "\n### 3. Manual steps required\n\n")
 
@@ -464,12 +651,16 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	orgSlug := m.Source.Org.Slug
 
 	// Always: secret values must be captured and re-applied.
-	items = append(items, "**Context & project secret values** — CircleCI never exports env-var values. "+
-		"Capture them with the in-pipeline `secrets` step in the source org, supply the bundle to `sync`, then rotate them after cutover."+
+	// These ARE automatable via secrets capture.
+	items = append(items, "**Context & project secret values** [\U0001f916 Automatable]:\n  "+
+		"CircleCI never exports env-var values via API. Capture them with:\n  "+
+		"```sh\n  circleci-migrate secrets capture --manifest manifest.json -o secrets.json\n  ```\n  "+
+		"Then supply the bundle: `circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply`. "+
+		"Rotate all values after cutover."+
 		warningSuffix(m, "context_values_excluded", "project_values_excluded"))
 
 	// Always: checkout / SSH keys cannot be transferred.
-	items = append(items, "**Checkout & SSH keys** — private key material is never exported. "+
+	items = append(items, "**Checkout & SSH keys** [manual] — private key material is never exported. "+
 		"Regenerate deploy/checkout and user keys on the destination and update any VCS-side deploy keys.")
 
 	// Additional SSH keys — per-project details when at least one project captured SSH key metadata.
@@ -490,11 +681,12 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if detail == "" {
 			detail = "(see manifest for details)"
 		}
-		items = append(items, "**Additional SSH keys (private keys not exported)** — "+
-			"additional SSH key public metadata is captured in this manifest (hostname, fingerprint, public key), "+
+		items = append(items, "**Additional SSH keys** [\U0001f916 Automatable with `--ssh-keys`]:\n  "+
+			"Additional SSH key public metadata is captured in this manifest (hostname, fingerprint, public key), "+
 			"but the corresponding PRIVATE keys are never returned by the CircleCI API. "+
-			"Use the SSH-key extraction step to capture and transfer private key material, "+
-			"then re-add each key on the destination project under Project Settings → SSH Keys → Additional SSH Keys. "+
+			"Capture and transfer private key material with:\n  "+
+			"```sh\n  circleci-migrate secrets capture --manifest manifest.json --ssh-keys -o secrets.json\n  ```\n  "+
+			"Then re-add each key via: `circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply`. "+
 			detail+"."+
 			warningSuffix(m, "ssh_keys_private_excluded"))
 	}
@@ -516,7 +708,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if detail == "" {
 			detail = "(see manifest for details)"
 		}
-		items = append(items, "**Webhook signing secrets** — outbound webhook signing secrets are masked by the API and not exported; "+
+		items = append(items, "**Webhook signing secrets** [manual] — outbound webhook signing secrets are masked by the API and not exported; "+
 			"re-set each webhook's signing secret on the destination so HMAC-validating receivers continue to accept calls. "+
 			detail+"."+
 			warningSuffix(m, "webhook_signing_secret_excluded"))
@@ -525,7 +717,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// Runner agent tokens — only when runner resource classes were captured.
 	if len(m.RunnerResourceClasses) > 0 {
 		items = append(items, fmt.Sprintf(
-			"**Runner agent tokens (%d resource class(es))** — agent registration tokens are never retrievable via API; "+
+			"**Runner agent tokens (%d resource class(es))** [manual] — agent registration tokens are never retrievable via API; "+
 				"issue new tokens on the destination namespace (`%s`) after recreating each resource class."+
 				warningSuffix(m, "runner_agent_token_excluded"),
 			len(m.RunnerResourceClasses), orDash(m.RunnerNamespace)))
@@ -536,7 +728,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		ns := orDash(s.OrbNamespace)
 		orbsURL := orgSettingsURL(host, orgSlug, "orbs")
 		items = append(items, fmt.Sprintf(
-			"**Org orbs (%d orb(s), source namespace `%s`)** — orb source YAML is not exportable via REST API (GraphQL only) "+
+			"**Org orbs (%d orb(s), source namespace `%s`)** [manual] — orb source YAML is not exportable via REST API (GraphQL only) "+
 				"and the destination org has a different namespace; "+
 				"republish each orb under the destination namespace manually using `circleci orb publish`. "+
 				"→ %s (Orbs tab)"+
@@ -569,7 +761,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if len(budgetDetails) > 0 {
 			detail = " Items: " + strings.Join(budgetDetails, "; ") + "."
 		}
-		items = append(items, "**Budget enforcement mode** — one or more budgets have `enforcement_type=block`; "+
+		items = append(items, "**Budget enforcement mode** [manual] — one or more budgets have `enforcement_type=block`; "+
 			"the PUT budget endpoint only accepts credits and cannot set enforcement mode — "+
 			"re-apply block enforcement manually on the destination after sync."+detail+
 			" → "+planURL+" (Plan → Credit Usage tab)"+
@@ -623,7 +815,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		realm := orDash(s.SSO.Realm)
 		ssoURL := orgSettingsURL(host, orgSlug, "single-sign-on")
 		items = append(items, fmt.Sprintf(
-			"**SSO (SAML)** — recreate manually (DNS TXT domain verification + IdP-side SAML app). "+
+			"**SSO (SAML)** [manual] — recreate manually (DNS TXT domain verification + IdP-side SAML app). "+
 				"Source: enforced=`%t`, realm=`%s`. Not automatable. → %s (Single Sign-On tab)%s",
 			s.SSO.Enforced, realm, ssoURL, warningSuffix(m, "sso")))
 	}
@@ -632,7 +824,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	if s != nil && len(s.AuditLogConfigs) > 0 {
 		securityURL := orgSettingsURL(host, orgSlug, "security")
 		items = append(items, fmt.Sprintf(
-			"**Audit-log streaming (%d config(s))** — the S3 ARN/region/bucket/endpoint point at the source AWS account, "+
+			"**Audit-log streaming (%d config(s))** [manual] — the S3 ARN/region/bucket/endpoint point at the source AWS account, "+
 				"so recreate each stream against destination-owned, environment-specific infrastructure. "+
 				"→ %s (Security tab)%s",
 			len(s.AuditLogConfigs), securityURL, warningSuffix(m, "audit-log", "audit_log")))
@@ -641,7 +833,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	// OTel exporter header values — only when exporters present.
 	if s != nil && len(s.OTelExporters) > 0 {
 		items = append(items, fmt.Sprintf(
-			"**OpenTelemetry exporter headers (%d exporter(s))** — header values are redacted by the server and cannot be replayed. "+
+			"**OpenTelemetry exporter headers (%d exporter(s))** [manual] — header values are redacted by the server and cannot be replayed. "+
 				"`sync` creates the exporters without headers; re-add the secret header values manually.",
 			len(s.OTelExporters)))
 	}
@@ -702,7 +894,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		if detail == "" {
 			detail = "(see manifest for details)"
 		}
-		items = append(items, "**Project API tokens (values not recoverable)** — "+
+		items = append(items, "**Project API tokens (values not recoverable)** [manual] — "+
 			"project API token values are returned only once at creation time and cannot be retrieved afterwards. "+
 			"Recreate each token on the destination project (Project Settings → API Permissions) and repoint "+
 			"every consumer to the new token value. "+
