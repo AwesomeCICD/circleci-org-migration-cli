@@ -11,6 +11,10 @@ migrate launches a guided walkthrough that prompts for each required value and
 lets you choose which parts of the org to migrate. This interactive mode is
 designed for first-time use and manual one-off migrations.
 
+NOTE: interactive prompts are written to stderr; if you pipe stdout while
+relying on the guided prompts, use a TTY for stdin — piping stdin triggers
+non-TTY mode and skips all prompts (use --no-input to make this explicit).
+
 When --source-org and --dest-org are provided, migrate runs non-interactively
 using only the supplied flags — suitable for scripting and CI pipelines. Pass
 --no-input (or run with stdin redirected / piped) to make the command error

@@ -10,6 +10,9 @@ CircleCI masks environment-variable values everywhere in its API, so 'export'
 captures only their names. The 'secrets' subcommands recover those values by
 running a pipeline inside CircleCI and reading the variables from the job env.
 
+NOTE: 'secrets extract' is designed to run INSIDE a CircleCI job (not locally).
+For the recommended local workflow, use 'secrets capture' instead.
+
 RECOMMENDED PATH — 'secrets capture' (CLI-orchestrated, no committed config):
 
   circleci-migrate secrets capture
@@ -62,6 +65,6 @@ Subcommands:
 * [circleci-migrate](circleci-migrate.md)	 - Migrate data between CircleCI organisations.
 * [circleci-migrate secrets capture](circleci-migrate_secrets_capture.md)	 - Capture secret values by running an unversioned pipeline inside CircleCI (RECOMMENDED).
 * [circleci-migrate secrets decrypt](circleci-migrate_secrets_decrypt.md)	 - Decrypt an age-encrypted secret bundle.
-* [circleci-migrate secrets extract](circleci-migrate_secrets_extract.md)	 - Capture a context's or project's secret values from the job environment.
+* [circleci-migrate secrets extract](circleci-migrate_secrets_extract.md)	 - Extract secret values from the current job environment (for use in orb/pipeline jobs).
 * [circleci-migrate secrets merge](circleci-migrate_secrets_merge.md)	 - Merge multiple secret bundles into one.
 

@@ -154,3 +154,29 @@ func TestRootCommand_HelpDoesNotError(t *testing.T) {
 		t.Fatalf("--help returned error: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Exit-code normalisation (issue #78)
+// ---------------------------------------------------------------------------
+
+// TestExecute_ReturnsErrorOnBadArgs verifies that Execute() returns a non-nil
+// error when a subcommand is invoked with invalid arguments. main.go maps this
+// to os.Exit(1) — not os.Exit(-1) / os.Exit(255).
+func TestExecute_ReturnsErrorOnBadArgs(t *testing.T) {
+	// "secrets merge" with no positional args must return an error so that main
+	// calls os.Exit(1). The exit code itself cannot be tested in-process, but
+	// we confirm the error path is taken.
+	_, _, err := runCmd(t, "secrets", "merge")
+	if err == nil {
+		t.Fatal("expected Execute to return an error for 'secrets merge' with no args")
+	}
+}
+
+// TestExecute_NoErrorOnHelp verifies that --help does NOT return an error,
+// consistent with standard CLI behaviour (exit 0 on --help).
+func TestExecute_NoErrorOnHelp(t *testing.T) {
+	_, _, err := runCmd(t, "secrets", "merge", "--help")
+	if err != nil {
+		t.Fatalf("'secrets merge --help' should return no error, got: %v", err)
+	}
+}

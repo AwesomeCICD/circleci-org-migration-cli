@@ -14,6 +14,10 @@ triggers a run inside CircleCI, and downloads the captured values automatically.
   launch the guided walkthrough. It prompts for each option with sensible defaults
   and explicit guidance on host-project selection for context extraction.
 
+NOTE: interactive prompts are written to stderr; if you pipe stdout while
+relying on the guided prompts, use a TTY for stdin — piping stdin triggers
+non-TTY mode and all flags must be supplied explicitly.
+
   For the orb-based alternative (committed config), see:
     circleci-migrate orb inline --help
     circleci-migrate secrets extract --help

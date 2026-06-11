@@ -3,6 +3,7 @@ package cmd_test
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/cmd"
@@ -53,7 +54,29 @@ func TestSecretsMerge_RequiresArgs(t *testing.T) {
 	c.SetArgs([]string{"secrets", "merge", "-o", "out.json"})
 	c.SetOut(&bytes.Buffer{})
 	c.SetErr(&bytes.Buffer{})
-	if err := c.Execute(); err == nil {
+	err := c.Execute()
+	if err == nil {
 		t.Fatal("expected error when no bundle files are given")
+	}
+	// Error must name the positional argument and point to --help.
+	if !strings.Contains(err.Error(), "bundle.json") {
+		t.Errorf("error %q does not mention '<bundle.json>'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--help") {
+		t.Errorf("error %q does not mention '--help'", err.Error())
+	}
+}
+
+func TestSecretsDecrypt_RequiresArg(t *testing.T) {
+	_, _, err := runCmd(t, "secrets", "decrypt", "--identity-file", "key.age")
+	if err == nil {
+		t.Fatal("expected error when no bundle.age path is given")
+	}
+	// Error must name the positional argument and point to --help.
+	if !strings.Contains(err.Error(), "bundle.age") {
+		t.Errorf("error %q does not mention '<bundle.age>'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--help") {
+		t.Errorf("error %q does not mention '--help'", err.Error())
 	}
 }
