@@ -48,6 +48,29 @@ Or without `make`:
 go build -o bin/circleci-migrate .
 ```
 
+**Requirements:** Go 1.26 or later.
+
+### Regenerating generated docs
+
+The CLI reference under `docs/cli/` and the man pages under `man/` are auto-generated
+from the command tree. Regenerate them after any command, flag, or description change:
+
+```bash
+make docs           # regenerates docs/cli/ and man/ (builds the binary first)
+```
+
+CI runs `make docs-check` to fail the build if committed docs are stale. Always
+run `make docs` and commit the result alongside any command/flag changes.
+
+### Regenerating the demo gif
+
+The `docs/demo.gif` is generated from `docs/demo.tape` using
+[vhs](https://github.com/charmbracelet/vhs):
+
+```bash
+make demo-gif       # requires vhs: brew install charmbracelet/tap/vhs
+```
+
 ### Running the full local validation suite
 
 ```bash
@@ -63,6 +86,9 @@ make ci-local       # everything CI runs: verify + cover + security + config-val
 | `make test` | Run the full test suite with the race detector (`go test -race ./...`). |
 | `make vet` | Run `go vet ./...`. |
 | `make fmt` | Auto-format all Go source files with `gofmt`. |
+| `make docs` | Regenerate `docs/cli/` and `man/` from the current command tree. |
+| `make docs-check` | Regenerate docs and fail if committed versions are stale (used by CI). |
+| `make demo-gif` | Regenerate `docs/demo.gif` from `docs/demo.tape` (requires `vhs`). |
 | `make fmt-check` | Check gofmt without writing (used by CI lint job). |
 | `make tidy` | Run `go mod tidy`. |
 | `make cover` | Tests + coverage profile + HTML report + threshold gate. |
