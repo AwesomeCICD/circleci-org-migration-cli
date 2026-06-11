@@ -53,9 +53,7 @@ Examples:
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Merge values from hidden alias --projects (StringSlice, comma-or-repeat)
 			// into the canonical --project list.
-			for _, s := range projectsAlias {
-				projectSlugs = append(projectSlugs, s)
-			}
+			projectSlugs = append(projectSlugs, projectsAlias...)
 
 			if orgSlug == "" {
 				return fmt.Errorf("--source-org is required (e.g. --source-org gh/acme)")
