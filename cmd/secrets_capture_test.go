@@ -196,6 +196,7 @@ func TestSecretsCapture_FlagsRegistered(t *testing.T) {
 		"manifest", "output", "project", "context", "branch",
 		"enable-trigger", "poll-timeout", "skip-restricted-contexts",
 		"encrypt", "no-encrypt", "generate-key", "ssh-public-key", "ssh-private-key",
+		"yes",
 	}
 	for _, name := range required {
 		if sub.Flags().Lookup(name) == nil {
@@ -324,6 +325,108 @@ func TestSecretsCapture_NoInput_WithGenerateKey_Succeeds_ToTokenCheck(t *testing
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fail-closed unattended capture-all guard (#164)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestGuardUnattendedCaptureAll exercises the guard logic directly (no network).
+func TestGuardUnattendedCaptureAll(t *testing.T) {
+	cases := []struct {
+		name             string
+		wantsInteraction bool
+		contextChanged   bool
+		projectChanged   bool
+		assumeYes        bool
+		noInput          bool
+		wantErr          bool
+	}{
+		{name: "non-interactive, no scope, no opt-in => error", wantErr: true},
+		{name: "interactive walkthrough => ok", wantsInteraction: true},
+		{name: "scoped by --context => ok", contextChanged: true},
+		{name: "scoped by --project => ok", projectChanged: true},
+		{name: "--yes opt-in => ok", assumeYes: true},
+		{name: "--no-input opt-in => ok", noInput: true},
+		{name: "scoped AND opt-in => ok", projectChanged: true, assumeYes: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := cmd.GuardUnattendedCaptureAll(
+				tc.wantsInteraction, tc.contextChanged, tc.projectChanged, tc.assumeYes, tc.noInput,
+			)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if tc.wantErr {
+				// Error must spell out the three options.
+				for _, want := range []string{"--context", "--project", "--yes", "--no-input", "interactive"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err.Error(), want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestSecretsCapture_UnattendedCaptureAll_FailsClosed verifies that a
+// non-interactive run with --manifest but no --context/--project and no opt-in
+// fails closed via the command (before any network call).
+func TestSecretsCapture_UnattendedCaptureAll_FailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	m := captureTestManifest()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	_, _, err := runCmd(t, "secrets", "capture",
+		"--manifest", mPath,
+		"--no-encrypt", // satisfies the encryption-choice path; should not be reached
+	)
+	if err == nil {
+		t.Fatal("expected fail-closed error for unattended capture-all, got nil")
+	}
+	if !strings.Contains(err.Error(), "unattended capture-all") {
+		t.Errorf("error %q should mention 'unattended capture-all'", err.Error())
+	}
+	for _, want := range []string{"--context", "--project", "--yes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err.Error(), want)
+		}
+	}
+}
+
+// TestSecretsCapture_UnattendedCaptureAll_YesProceeds verifies that --yes
+// acknowledges the unattended capture-all so the run proceeds past the guard
+// (here it then fails at the missing-token check, confirming the guard passed).
+func TestSecretsCapture_UnattendedCaptureAll_YesProceeds(t *testing.T) {
+	dir := t.TempDir()
+	m := captureTestManifest()
+	mPath := writeManifest(t, dir, "manifest.json", m)
+
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	_, _, err := runCmd(t, "secrets", "capture",
+		"--manifest", mPath,
+		"--no-encrypt",
+		"--yes",
+	)
+	if err == nil {
+		t.Fatal("expected error (no token) after the guard passed, got nil")
+	}
+	if strings.Contains(err.Error(), "unattended capture-all") {
+		t.Errorf("--yes should pass the capture-all guard; got: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "token") {
+		t.Errorf("error should be about the missing token; got: %v", err)
+	}
+}
+
 func TestSecretsCapture_NoToken_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	m := captureTestManifest()
@@ -334,7 +437,9 @@ func TestSecretsCapture_NoToken_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
 	t.Setenv("CIRCLE_TOKEN", "")
 
-	_, _, err := runCmd(t, "secrets", "capture", "--manifest", mPath)
+	// --yes acknowledges the unattended capture-all so the run proceeds past the
+	// fail-closed guard (#164) to the token check this test exercises.
+	_, _, err := runCmd(t, "secrets", "capture", "--manifest", mPath, "--yes")
 	if err == nil {
 		t.Fatal("expected error when no token set, got nil")
 	}
@@ -383,6 +488,7 @@ func TestSecretsCapture_RestrictedContextWarning(t *testing.T) {
 
 	_, stderr, _ := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -419,6 +525,7 @@ func TestSecretsCapture_HappyPath(t *testing.T) {
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -521,6 +628,7 @@ func TestSecretsCapture_FlagRestoredOnError(t *testing.T) {
 	// The command should return an error (workflow failed) but still restore.
 	_, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -593,6 +701,7 @@ func TestSecretsCapture_AllMembersRestrictionNotSkipped(t *testing.T) {
 
 	_, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -695,6 +804,7 @@ func TestSecretsCapture_OrgLevelFlagEnabled_AndRestored(t *testing.T) {
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -753,6 +863,7 @@ func TestSecretsCapture_OrgLevelFlagAlreadyOn_NoExtraCall(t *testing.T) {
 
 	_, _, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -994,6 +1105,7 @@ func TestSecretsCapture_RemoveRestrictions_DeleteBeforeRunRestoreAfter(t *testin
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1106,6 +1218,7 @@ func TestSecretsCapture_RemoveRestrictions_RestoreOnExtractionError(t *testing.T
 
 	_, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1183,6 +1296,7 @@ func TestSecretsCapture_RemoveRestrictions_AllMembersNotTouched(t *testing.T) {
 
 	_, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1242,6 +1356,7 @@ func TestSecretsCapture_RemoveRestrictionsOff_SkipBehaviorUnchanged(t *testing.T
 
 	_, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1401,6 +1516,7 @@ func TestSecretsCapture_ProjectLoopDoesNotAttachContexts(t *testing.T) {
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1473,6 +1589,7 @@ func TestSecretsCapture_ContextOnlyFlag_SkipsProjectLoop(t *testing.T) {
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1545,6 +1662,7 @@ func TestSecretsCapture_DefaultScoping_SkipsEmptyProjectsAndContexts(t *testing.
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
@@ -1644,6 +1762,7 @@ func TestSecretsCapture_RemoveRestrictions_DefaultGroupNeverTouched_E2E(t *testi
 
 	stdout, stderr, err := runCmd(t,
 		"secrets", "capture",
+		"--yes",
 		"--manifest", mPath,
 		"--output", outPath,
 		"--host", srv.URL,
