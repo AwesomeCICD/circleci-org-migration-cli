@@ -35,3 +35,6 @@ secrets.json
 # transient build-log redirect artifact
 build.err
 *.err
+
+# Internal handoff notes (AI session logs); kept locally, never committed
+HANDOFF.md
