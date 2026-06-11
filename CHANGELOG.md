@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.0...v0.8.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **cli:** correctness & cleanup (Phase 1) ([#181](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/181)) ([#197](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/197)) ([8f6230f](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/8f6230fb7fc6b40088319b3b046122b3a84f4d15))
+
 ## [0.8.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.7.0...v0.8.0) (2026-06-11)
 
 
