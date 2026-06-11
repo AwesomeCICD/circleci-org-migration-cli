@@ -36,14 +36,25 @@ func NewConfig() *Config {
 	return cfg
 }
 
-// TokenOrDefault returns the shared Token, falling back to the
-// CIRCLECI_CLI_TOKEN environment variable. Token flags default to "" (so the
-// secret never appears in --help); the env fallback is resolved here.
+// TokenOrDefault returns the shared Token, falling back through the
+// environment in priority order:
+//  1. cfg.Token (set by --token flag)
+//  2. CIRCLECI_CLI_TOKEN (our primary env var)
+//  3. CIRCLE_TOKEN (injected by `circleci run migrate` — lowest precedence)
+//
+// Token flags default to "" (so the secret never appears in --help); the env
+// fallback is resolved here.
 func (cfg *Config) TokenOrDefault() string {
 	if cfg.Token != "" {
 		return cfg.Token
 	}
-	return os.Getenv("CIRCLECI_CLI_TOKEN")
+	if v := os.Getenv("CIRCLECI_CLI_TOKEN"); v != "" {
+		return v
+	}
+	// CIRCLE_TOKEN is injected by the official circleci-cli when invoked as
+	// `circleci run migrate ...`. It carries the user's CLI-configured token
+	// and is intentionally the lowest-precedence fallback.
+	return os.Getenv("CIRCLE_TOKEN")
 }
 
 // SourceTokenOrDefault returns SourceToken when set, then the

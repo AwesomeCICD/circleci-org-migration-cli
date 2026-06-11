@@ -193,6 +193,7 @@ func TestOrbInline_RequiresToken(t *testing.T) {
 	// Clear all token env vars to ensure no token is available.
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	cfgPath := writeConfig(t, sampleConfig)
 	_, _, err := runCmd(t, "orb", "inline", "--config", cfgPath)
@@ -212,6 +213,7 @@ func TestOrbInline_AcceptsSourceToken(t *testing.T) {
 	// Set only CIRCLECI_SOURCE_TOKEN — no CIRCLECI_CLI_TOKEN.
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-source-token")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	withFakeOrbSource(t, map[string]string{
 		"myns/foo@1.2.3":      fooOrbSource,

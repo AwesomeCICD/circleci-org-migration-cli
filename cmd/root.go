@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -25,14 +26,35 @@ func Execute() error {
 }
 
 // resolveHost returns the best available CircleCI host from the environment.
-// CIRCLECI_CLI_HOST (the official circleci-cli variable) takes precedence;
-// CIRCLECI_HOST is accepted as a legacy alias.  Returns empty string if
-// neither is set so the caller can fall back to the compiled-in default.
+// Priority order (highest to lowest):
+//  1. CIRCLECI_CLI_HOST — the official circleci-cli variable
+//  2. CIRCLECI_HOST — legacy alias
+//  3. CIRCLE_URL — injected by `circleci run migrate`; only scheme+host is
+//     used (path components, if any, are stripped) so a full server URL like
+//     "https://circleci.com/api/..." works correctly.
+//
+// Returns empty string if none is set so the caller falls back to the
+// compiled-in default.
 func resolveHost() string {
 	if h := os.Getenv("CIRCLECI_CLI_HOST"); h != "" {
 		return h
 	}
-	return os.Getenv("CIRCLECI_HOST")
+	if h := os.Getenv("CIRCLECI_HOST"); h != "" {
+		return h
+	}
+	// CIRCLE_URL is injected by the official circleci-cli when invoked as
+	// `circleci run migrate ...`. Parse it and keep only the scheme+host so
+	// downstream code that constructs API paths against this value is not
+	// confused by an unexpected path prefix.
+	if raw := os.Getenv("CIRCLE_URL"); raw != "" {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" {
+			return u.Scheme + "://" + u.Host
+		}
+		// If it has no scheme (e.g. "circleci.com"), return as-is so the
+		// caller receives something usable rather than an empty string.
+		return raw
+	}
+	return ""
 }
 
 // helpWidth returns a sensible terminal width for help rendering.
@@ -222,8 +244,18 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 			// Resolve token fallbacks from the environment AFTER flag parsing so
 			// secret values never appear as flag defaults in --help. An explicit
 			// flag always wins; otherwise fall back to the matching env var.
+			//
+			// Token precedence (highest → lowest):
+			//   --token / --source-token / --dest-token (explicit flags)
+			//   → CIRCLECI_CLI_TOKEN / CIRCLECI_SOURCE_TOKEN / CIRCLECI_DEST_TOKEN
+			//   → CIRCLE_TOKEN (injected by `circleci run migrate`)
 			if rootOptions.Token == "" {
 				rootOptions.Token = os.Getenv("CIRCLECI_CLI_TOKEN")
+			}
+			if rootOptions.Token == "" {
+				// CIRCLE_TOKEN is injected by the official circleci-cli when
+				// invoked as `circleci run migrate ...`.
+				rootOptions.Token = os.Getenv("CIRCLE_TOKEN")
 			}
 			if rootOptions.SourceToken == "" {
 				rootOptions.SourceToken = os.Getenv("CIRCLECI_SOURCE_TOKEN")
@@ -255,11 +287,11 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 	// Persistent (global) flags — available to every sub-command.
 	pf := rootCmd.PersistentFlags()
 	pf.StringVar(&rootOptions.Host, "host", rootOptions.Host,
-		"CircleCI host URL (env: CIRCLECI_CLI_HOST or CIRCLECI_HOST)")
+		"CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)")
 	// Token flags default to "" (never the env value) so --help never prints a
 	// secret. The env fallback is applied in PersistentPreRunE.
 	pf.StringVar(&rootOptions.Token, "token", "",
-		"Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN)")
+		"Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)")
 	pf.StringVar(&rootOptions.SourceToken, "source-token", "",
 		"API token for the source org (env: CIRCLECI_SOURCE_TOKEN)")
 	pf.StringVar(&rootOptions.DestToken, "dest-token", "",

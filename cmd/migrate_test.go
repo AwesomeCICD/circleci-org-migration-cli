@@ -100,6 +100,7 @@ func TestMigrateCmd_NoSourceOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--no-input")
 	if err == nil {
@@ -117,6 +118,7 @@ func TestMigrateCmd_NoDestOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--no-input", "--source-org", "gh/acme")
 	if err == nil {
@@ -135,6 +137,7 @@ func TestMigrateCmd_NoSourceToken_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--source-org", "gh/acme", "--dest-org", "gh/acme-new")
 	if err == nil {
@@ -155,6 +158,7 @@ func TestMigrateCmd_NoDestToken_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-source-token")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--source-org", "gh/acme", "--dest-org", "gh/acme-new")
 	if err == nil {
@@ -175,6 +179,7 @@ func TestMigrateCmd_InvalidMissingSecrets_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t,
 		"--source-org", "gh/acme",
@@ -197,6 +202,7 @@ func TestMigrateCmd_SourceTokenFromEnv_PassesSourceTokenCheck(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-token")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--source-org", "gh/acme", "--dest-org", "gh/acme-new")
 	if err == nil {
@@ -219,6 +225,7 @@ func TestMigrateCmd_SharedTokenFallback(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-shared-token")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runMigrateCmd(t, "--source-org", "gh/acme", "--dest-org", "gh/acme-new")
 	// Both early token-validation guards should pass; we expect a downstream

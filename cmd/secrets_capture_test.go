@@ -276,6 +276,7 @@ func TestSecretsCapture_NoInput_WithNoEncrypt_Succeeds_ToTokenCheck(t *testing.T
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
@@ -304,6 +305,7 @@ func TestSecretsCapture_NoInput_WithGenerateKey_Succeeds_ToTokenCheck(t *testing
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runCmd(t, "secrets", "capture",
 		"--manifest", mPath,
@@ -330,6 +332,7 @@ func TestSecretsCapture_NoToken_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	_, _, err := runCmd(t, "secrets", "capture", "--manifest", mPath)
 	if err == nil {

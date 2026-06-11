@@ -132,6 +132,7 @@ func TestMigrateCommand_NoSourceOrg_ReturnsError(t *testing.T) {
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
 
 	// --no-input prevents the interactive walkthrough from triggering (the test
 	// process stdin may appear as a char device depending on the OS/runner).

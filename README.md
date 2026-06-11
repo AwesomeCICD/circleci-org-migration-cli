@@ -479,14 +479,56 @@ See [docs/examples.md](docs/examples.md) for complete worked examples of each mi
 
 ---
 
+## Using `circleci run migrate` (plugin invocation)
+
+`circleci-migrate` is also available as a plugin to the official
+[circleci CLI](https://circleci.com/docs/local-cli/). When you run:
+
+```bash
+circleci run migrate export --org gh/acme
+circleci run migrate sync   --manifest manifest.json --apply
+circleci run migrate migrate
+```
+
+the `circleci` CLI looks up `circleci-migrate` on your `PATH` and execs it,
+forwarding all arguments and injecting several `CIRCLE_*` environment variables
+— including `CIRCLE_TOKEN` (your configured API token) and `CIRCLE_URL` (your
+configured host). This means **no extra token or host flags are required** when
+you are already authenticated with the `circleci` CLI.
+
+**Requirements:**
+
+- The `circleci` CLI must be new enough to support the `run` sub-command.
+- The `circleci-migrate` binary must be on your `PATH`. Homebrew and the
+  prebuilt release tarballs install it as `circleci-migrate`, so this works
+  automatically after `brew install AwesomeCICD/tap/circleci-migrate`.
+- Note: bare `circleci migrate` (without `run`) is **not** supported — it would
+  require the command to be merged into the upstream circleci-cli source tree.
+
+The standalone invocation (`circleci-migrate export ...`) continues to work
+exactly as before and is unaffected by this feature.
+
+### Token and host precedence when using `circleci run migrate`
+
+The `CIRCLE_TOKEN` and `CIRCLE_URL` variables injected by `circleci run` are
+the **lowest-priority** fallbacks; any explicit flag or higher-priority env var
+still wins:
+
+```
+Token  : --token/--source-token/--dest-token > CIRCLECI_CLI_TOKEN/CIRCLECI_SOURCE_TOKEN/CIRCLECI_DEST_TOKEN > CIRCLE_TOKEN
+Host   : --host > CIRCLECI_CLI_HOST > CIRCLECI_HOST > CIRCLE_URL (scheme+host only) > https://circleci.com
+```
+
+---
+
 ## Global flags
 
 These flags are available on every sub-command. Environment variables are read before flag parsing, so they act as defaults that CLI flags can override.
 
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
-| `--host` | `CIRCLECI_HOST` | `https://circleci.com` | CircleCI host URL (useful for Server installs) |
-| `--token` | `CIRCLECI_CLI_TOKEN` | | Personal API token — fallback for both orgs |
+| `--host` | `CIRCLECI_CLI_HOST`, `CIRCLECI_HOST`, or `CIRCLE_URL` | `https://circleci.com` | CircleCI host URL (useful for Server installs; `CIRCLE_URL` is injected by `circleci run`) |
+| `--token` | `CIRCLECI_CLI_TOKEN` or `CIRCLE_TOKEN` | | Personal API token — fallback for both orgs (`CIRCLE_TOKEN` injected by `circleci run`) |
 | `--source-token` | `CIRCLECI_SOURCE_TOKEN` | | API token for the source org (read operations) |
 | `--dest-token` | `CIRCLECI_DEST_TOKEN` | | API token for the destination org (write operations) |
 | `--debug` | | `false` | Enable verbose HTTP request/response logging |
