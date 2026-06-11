@@ -30,15 +30,16 @@ graph TD
     end
 
     subgraph api ["api/ (thin HTTP clients)"]
-        ORG_API["org<br/>v2: GetOrg, ResolveOrgID<br/>v1.1: GetOrgSettings<br/>CIAM: groups, SSO"]
+        ORG_API["org<br/>v2: GetOrg, ResolveOrgID, Usage export<br/>v1.1: GetOrgSettings<br/>CIAM: groups, SSO, org/project role-grants"]
         CTX_API["context<br/>v2: List, Create, UpsertEnvVar<br/>ListRestrictions, CreateRestriction"]
-        PROJ_API["project<br/>v2: GetProject, CreateProjectShell<br/>CreateAppProject, PipelineDefs, Triggers<br/>ListEnvVars, Settings, Follow<br/>v1.1: ListFollowedProjects<br/>private: ListOrgProjects"]
+        PROJ_API["project<br/>v2: GetProject, CreateProjectShell<br/>CreateAppProject, PipelineDefs, Triggers<br/>ListEnvVars, Settings, Follow, OIDC<br/>v1.1: ListFollowedProjects, flags,<br/>additional SSH keys, API tokens<br/>private: ListOrgProjects"]
+        RUNNER_API["runner<br/>v3 on runner.circleci.com<br/>resource classes (list/create/delete)"]
         PIPELINE_API["pipeline<br/>v2: TriggerWithConfig, GetStatus<br/>ListWorkflows, ListJobArtifacts"]
         REST["rest<br/>Shared HTTP client<br/>Circle-Token header<br/>JSON encode / decode"]
         GRAPHQL["graphql<br/>graphql-unstable endpoint<br/>OrbSource query"]
     end
 
-    CIRCLE_API["CircleCI API<br/>circleci.com/api/v2<br/>circleci.com/api/v1.1<br/>circleci.com/api/private<br/>circleci.com/graphql-unstable<br/>app.circleci.com/private/ciam"]
+    CIRCLE_API["CircleCI API<br/>circleci.com/api/v2<br/>circleci.com/api/v1.1<br/>circleci.com/api/private<br/>circleci.com/graphql-unstable<br/>runner.circleci.com/api/v3<br/>app.circleci.com/private/ciam"]
     GITHUB_API["GitHub REST API<br/>api.github.com/repos"]
 
     ROOT --> EXPORT
@@ -59,11 +60,13 @@ graph TD
     EXPORTER --> ORG_API
     EXPORTER --> CTX_API
     EXPORTER --> PROJ_API
+    EXPORTER --> RUNNER_API
     EXPORTER --> MANIFEST
 
     SYNCER --> ORG_API
     SYNCER --> CTX_API
     SYNCER --> PROJ_API
+    SYNCER --> RUNNER_API
     SYNCER --> MANIFEST
     SYNCER --> GITHUB_PKG
 
@@ -79,6 +82,7 @@ graph TD
     ORG_API --> REST
     CTX_API --> REST
     PROJ_API --> REST
+    RUNNER_API --> REST
     PIPELINE_API --> REST
     GRAPHQL --> REST
 
@@ -111,10 +115,12 @@ flowchart TD
     SAVE --> DST_CLIENTS
 
     DST_CLIENTS["Build destination API clients<br/>(dest token)"]
-    DST_CLIENTS --> SYNC_ORG["SyncOrgSettings<br/>(feature flags, OIDC, URL-orb, policies, OTel, contacts)"]
+    DST_CLIENTS --> SYNC_ORG["SyncOrgSettings<br/>(feature flags, OIDC, URL-orb, policies, OTel,<br/>contacts, retention, budgets, release-tracker)"]
     SYNC_ORG --> SYNC_CTX["SyncContexts<br/>(create / reuse contexts, set vars, add restrictions)"]
-    SYNC_CTX --> SYNC_PROJ["SyncProjects<br/>(create / configure projects)"]
-    SYNC_PROJ --> ENABLE["handleEnableBuilds<br/>(follow OAuth / enable App triggers)"]
+    SYNC_CTX --> SYNC_PROJ["SyncProjects<br/>(create / configure projects, SSH keys, tokens)"]
+    SYNC_PROJ --> SYNC_RUNNER["SyncRunnerClasses<br/>(when --dest-runner-namespace set)"]
+    SYNC_RUNNER --> SYNC_CIAM["SyncCIAM<br/>(standalone circleci/ orgs:<br/>org roles + groups automated,<br/>per-project grants manual)"]
+    SYNC_CIAM --> ENABLE["handleEnableBuilds<br/>(follow OAuth / enable App triggers)"]
     ENABLE --> END([Done])
 ```
 
@@ -239,7 +245,24 @@ Key properties of the export phase:
 
 ---
 
-## Phase 2 — In-pipeline secret extraction
+## Phase 2 — Secret-value capture
+
+CircleCI never returns env-var values over the API, so capturing them requires
+running inside a CircleCI pipeline. There are two ways to do this:
+
+1. **`secrets capture` (recommended)** — CLI-orchestrated. The CLI generates an
+   ephemeral pipeline config, submits it inline, polls, and downloads the
+   bundle. No config is committed to the repo. See
+   [`secrets capture` — CLI-orchestrated flow](#secrets-capture--cli-orchestrated-flow-recommended)
+   below.
+2. **Orb / `secrets extract` (alternative)** — commit a `.circleci/config.yml`
+   that uses the `circleci-org-migration` orb to run one extract job per context
+   plus a merge job. Use this when you prefer a committed, reviewable config or
+   need a matrix fan-out. Documented immediately below.
+
+Both produce the same `secrets.json` bundle for the sync phase.
+
+### Orb / `secrets extract` flow (alternative)
 
 ```mermaid
 flowchart TD
@@ -283,12 +306,12 @@ bundles into a single `secrets.json` using `secrets merge`.
 
 ---
 
-## `secrets capture` — CLI-orchestrated flow
+### `secrets capture` — CLI-orchestrated flow (recommended)
 
-`secrets capture` achieves the same result as the orb-based Phase 2 without
-requiring a committed `.circleci/config.yml`. The entire pipeline is generated
-at runtime and submitted as an inline (unversioned) config via the v2 Pipelines
-API.
+`secrets capture` is the recommended capture path. It achieves the same result
+as the orb-based flow without requiring a committed `.circleci/config.yml`: the
+entire pipeline is generated at runtime and submitted as an inline (unversioned)
+config via the v2 Pipelines API.
 
 ```mermaid
 flowchart TD
@@ -314,7 +337,7 @@ flowchart TD
     DOWNLOAD --> DONE([Done — secrets.json ready for sync])
 ```
 
-Key differences from the orb-based approach:
+Why this is the recommended path (vs. the orb-based alternative):
 
 - No `.circleci/config.yml` is committed to the repository.
 - The inline config is ephemeral — it exists only for the duration of the run.
@@ -336,7 +359,7 @@ flowchart TD
 
     LOAD --> RESOLVE["Resolve destination org slug to UUID<br/>GET /api/v2/organization/slug"]
 
-    RESOLVE --> ORG_SETTINGS["Sync org settings<br/>(feature flags, OIDC, URL-orb allow list,<br/>config policies, OTel exporters, contacts)<br/>Skipped with --skip-org-settings"]
+    RESOLVE --> ORG_SETTINGS["Sync org settings<br/>(feature flags, OIDC, URL-orb allow list,<br/>config policies, OTel exporters, contacts,<br/>storage retention, budgets, release-tracker)<br/>Skipped with --skip-org-settings"]
 
     ORG_SETTINGS --> LIST_CTX["List existing contexts in destination org<br/>GET /api/v2/context?owner-id=dest-id"]
 

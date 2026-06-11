@@ -11,8 +11,8 @@ the manual steps and data-loss notes that apply to your org.
 - [Worked examples for every migration type](examples.md)
 - [CLI reference (auto-generated, all flags)](cli/README.md)
 - [Man pages](../man/)
+- [API usage reference (every endpoint the CLI calls)](api-usage.md)
 - [Contributing and development guide](../CONTRIBUTING.md)
-- [`.claude/skills/circleci-migration`](../.claude/skills/) — Claude Code skill for AI-assisted migrations
 
 ---
 
@@ -139,19 +139,23 @@ Repoint everything that references the old org (see [Section 5](#5-update-extern
 - Contexts and their environment variables (names; values from the capture step).
 - Context expression restrictions and group restrictions (mapped onto destination CIAM groups by name).
 - Project settings, environment variables, webhooks, and scheduled pipelines.
+- Project additional SSH keys — re-uploaded by fingerprint match (skipped with `--skip-extras`). The private key material must be supplied; see manual steps.
 - Project- and org-level OIDC custom claims (audience / TTL).
 - Project pipeline definitions and triggers (GitHub App orgs; triggers created disabled).
+- **CIAM org-level roles and groups** (standalone `circleci/`-type orgs only): groups are recreated and org roles are assigned for users who already exist in the destination org (matched by email). Skipped with `--skip-ciam`. Per-project CIAM grants are **manual** (see [#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179) and Section 3).
 - Org settings:
   - v1.1 feature flags
   - URL-orb allow list
   - Config policies (Rego, Scale plan only)
   - OTel exporter configurations (header values redacted — see manual steps)
   - Technical and security contacts
+  - Storage / artifact retention
   - Spend budgets
   - Block-unregistered-users flag
   - Release-tracker settings
-- Self-hosted runner resource classes (when `--runner-namespace` / `--dest-runner-namespace` are supplied).
+- Self-hosted runner **resource classes** (when `--runner-namespace` on export and `--dest-runner-namespace` on sync are supplied). Definitions only — runner instances and registration tokens do not transfer.
 - Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.
+- Project **API tokens** — only when `--create-project-tokens` is set; each recreated token mints a NEW one-time secret, so every consumer must be repointed. Off by default (manual steps emitted instead).
 
 ---
 
@@ -161,10 +165,23 @@ Which of these apply depends on your source org; the per-export report lists onl
 the relevant ones.
 
 - **Context & project secret values** — never exported automatically. Capture
-  them in the source via `secrets capture` or the orb, supply the bundle to
-  `sync`, then rotate after cutover.
-- **Checkout & SSH keys** — private key material is never exported. Regenerate
-  deploy/checkout and user keys on the destination and update VCS-side deploy keys.
+  them in the source via `secrets capture` (recommended) or the orb, supply the
+  bundle to `sync`, then rotate after cutover.
+- **Checkout keys & additional SSH keys** — private key material is never
+  exported by any API. Checkout/deploy keys must be regenerated on the
+  destination (and updated VCS-side). Additional SSH keys are re-uploaded only
+  if you supply the private key material to `sync`; otherwise regenerate them.
+- **Per-project CIAM role grants** — user and group grants on individual
+  projects are reported as `manual` because the destination project UUID is not
+  reliably mappable from the source. Recreate them on the destination project
+  ([#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179)).
+  Org-level CIAM roles/groups *are* automated (standalone orgs).
+- **Unmatched CIAM users** — org-role grants are only applied for users who
+  already exist in the destination org. Add the user to the destination org
+  first, then re-run `sync --apply`.
+- **Project API tokens** — recreated only with `--create-project-tokens`; by
+  default they are reported as manual. Recreating a token mints a NEW value, so
+  repoint every consumer of the old token.
 - **Webhook signing secrets** — not exported; regenerate and update receivers.
 - **SSO (SAML)** — recreate manually (DNS TXT domain verification + IdP-side SAML
   app). Not automatable.
@@ -186,19 +203,26 @@ the relevant ones.
 
 ---
 
-## 4. Does not transfer / data loss
+## 4. What does NOT transfer (canonical list)
 
-- **Identifiers change.** Project, context, and pipeline UUIDs are reassigned by
-  the destination; anything hard-coding a source UUID must be updated.
-- **Captured secrets must be rotated.** Treat every captured value as exposed
-  once it has been written to a file or artifact, even if encrypted.
-- **Cross-type moves lose settings.** OAuth → App drops fork-PR builds, the OSS
-  flag, and `pr_only_branch_overrides` (no App equivalent). Multiple App pipeline
-  definitions cannot collapse into a single OAuth config.
-- **Checkout key private material** is never exportable via any API. Regenerate
-  deploy keys on the destination.
-- **Additional SSH keys** (project SSH keys added manually beyond checkout keys)
-  are not available via the API and cannot be migrated.
+This is the single canonical "does not transfer / data loss" reference for
+`circleci-migrate`. Other docs link here rather than duplicating it.
+
+| Item | Why it does not transfer | What to do |
+|---|---|---|
+| **Identifiers (project / context / pipeline UUIDs)** | Reassigned by the destination org. | Update anything that hard-codes a source UUID. |
+| **Secret values** | Masked by the API; only captured plaintext (via `secrets capture`/orb) can be synced. | Capture, sync, then **rotate** — treat every captured value as exposed once written to a file or artifact, even if encrypted. |
+| **Checkout / deploy key private material** | Never exportable via any API. | Regenerate deploy keys on the destination and update the VCS side. |
+| **Additional SSH key private material** | Public key + fingerprint export, but private keys are never returned. | Re-upload by supplying the private key to `sync`, or regenerate. |
+| **Webhook signing (HMAC) secrets** | Not exported. | Regenerate and update receivers after sync creates the webhooks. |
+| **Project API token values** | Returned only once at creation. | Recreate with `--create-project-tokens` (mints NEW values) and repoint consumers, or recreate manually. |
+| **Per-project CIAM role grants** | Destination project UUID not reliably mappable ([#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179)). | Recreate user/group grants on the destination project. |
+| **CIAM org roles for users not yet in the dest org** | Roles can only be assigned to existing destination members. | Add the user first, then re-run `sync --apply`. |
+| **SSO (SAML) configuration** | Requires DNS TXT verification + IdP-side setup; not automatable. | Recreate manually. |
+| **Audit-log streaming, OTel exporter headers** | Point at source-owned infra / server-redacted. | Recreate against destination infra; re-add OTel headers manually. |
+| **Usage data** | Local baseline only (`--include-usage`). | Not synced — retained as a source-org record. |
+| **Runner instances & registration tokens** | Only resource-class *definitions* transfer. | Re-register runners against the destination resource classes. |
+| **Cross-type settings (OAuth → App)** | No App equivalent for fork-PR builds, the OSS flag, or `pr_only_branch_overrides`; multiple App pipeline definitions cannot collapse into one OAuth config. | Reconfigure manually where an equivalent exists. |
 
 ---
 
