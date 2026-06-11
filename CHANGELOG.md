@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.6.0...v0.7.0) (2026-06-11)
+
+
+### Features
+
+* capture project API tokens; document recreation; optional --create-project-tokens ([#154](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/154)) ([c052f75](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c052f759b669dd3f93bbefc8825a7c5d024e0c71)), closes [#132](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/132)
+* **export:** optional --include-usage data snapshot (opt-in; does not transfer) ([#161](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/161)) ([3d874df](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/3d874df211167ffbd09648aaeb8bcf01e47dba28)), closes [#152](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/152)
+* migrate CIAM roles, groups, and project role-grants for standalone orgs ([#151](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/151)) ([f3514bf](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/f3514bf11e035afce1bcabb699202a4327567927)), closes [#134](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/134)
+* **report:** render all captured data (pipelines/triggers/…); links, clearer summary, automatable callouts, detailed cutover ([#162](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/162)) ([f03d346](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/f03d3467cb25c37a63dc533d386f1a512fc742d3)), closes [#156](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/156)
+
+
+### Bug Fixes
+
+* **cli:** separate + style interactive prompts (circleci-cli feel); hide completion ([#159](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/159)) ([30a1afb](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/30a1afb3796bef55413d55221a989f2d574fe93c)), closes [#157](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/157) [#158](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/158)
+
 ## [0.6.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.5.0...v0.6.0) (2026-06-11)
 
 
