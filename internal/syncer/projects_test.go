@@ -1650,9 +1650,10 @@ func TestSyncProjects_APITriggerFlag_Set(t *testing.T) {
 	}
 }
 
-// TestSyncProjects_DropAllBuildRequests_Skipped verifies that drop_all_build_requests
-// is NEVER applied and always produces a "manual" warning action.
-func TestSyncProjects_DropAllBuildRequests_Skipped(t *testing.T) {
+// TestSyncProjects_DropAllBuildRequests_TrueEmitsManual verifies that when
+// drop_all_build_requests is true, a "manual" warning is emitted and the flag
+// is never written to the destination.
+func TestSyncProjects_DropAllBuildRequests_TrueEmitsManual(t *testing.T) {
 	fp := &fakeProjectWriter{}
 	sy := newSyncerProjects(fp)
 
@@ -1682,7 +1683,40 @@ func TestSyncProjects_DropAllBuildRequests_Skipped(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected a 'manual' project-flag action for drop_all_build_requests")
+		t.Error("expected a 'manual' project-flag action when drop_all_build_requests=true")
+	}
+}
+
+// TestSyncProjects_DropAllBuildRequests_FalseNoNoise verifies that when
+// drop_all_build_requests is false (its default/non-set value), NO manual
+// warning action is emitted — only non-danger flags should generate noise.
+func TestSyncProjects_DropAllBuildRequests_FalseNoNoise(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	falseVal := false
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			DropAllBuildRequests: &falseVal,
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetV11ProjectFeatureFlags") {
+		t.Error("SetV11ProjectFeatureFlags must NOT be called for drop_all_build_requests (danger flag, even when false)")
+	}
+
+	for _, a := range actionsOfKind(rep, "project-flag") {
+		if a.Status == "manual" {
+			t.Errorf("no manual action expected when drop_all_build_requests=false, got action: %+v", a)
+		}
 	}
 }
 
