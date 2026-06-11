@@ -17,6 +17,97 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// SyncJSONSummary is the machine-readable result of a sync command when --json
+// is set. Only names and counts are included — no secret values.
+type SyncJSONSummary struct {
+	// DryRun is true when --apply was not set (no changes were written).
+	DryRun bool `json:"dry_run"`
+	// DestOrgSlug is the destination organization slug.
+	DestOrgSlug string `json:"dest_org_slug,omitempty"`
+	// Sections holds per-resource-type sync results.
+	Sections []SyncSectionSummary `json:"sections"`
+	// Warnings lists items that need manual attention (status "manual" or
+	// "error"), without any secret values.
+	Warnings []syncWarning `json:"warnings,omitempty"`
+}
+
+// SyncSectionSummary holds the counts for one resource type (e.g. "Contexts").
+type SyncSectionSummary struct {
+	// Section is the resource type name (e.g. "Contexts", "Projects",
+	// "Org Settings", "Runner Resource Classes").
+	Section string `json:"section"`
+	// Created is the number of resources created (or that would be created in
+	// dry-run mode).
+	Created int `json:"created"`
+	// Exists is the number of resources that already existed and were reused.
+	Exists int `json:"exists"`
+	// Set is the number of resources that were updated or set.
+	Set int `json:"set"`
+	// Skipped is the number of resources that were skipped.
+	Skipped int `json:"skipped"`
+	// Manual is the number of resources flagged for manual recreation.
+	Manual int `json:"manual"`
+	// Error is the number of resources that encountered an error.
+	Error int `json:"error"`
+}
+
+// syncWarning is a safe, secret-free item requiring manual attention.
+type syncWarning struct {
+	Section string `json:"section"`
+	Status  string `json:"status"` // "manual" | "error"
+	Target  string `json:"target"`
+	Detail  string `json:"detail"`
+}
+
+// buildSyncSummary accumulates per-section reports into a SyncJSONSummary.
+// repsBySection maps section name → its Report. apply mirrors the --apply flag.
+func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJSONSummary {
+	summary := SyncJSONSummary{
+		DryRun:   !apply,
+		Sections: make([]SyncSectionSummary, 0, len(repsBySection)),
+	}
+
+	// Use the dest slug from the first non-empty report.
+	for _, rep := range repsBySection {
+		if rep != nil && rep.DestOrgSlug != "" {
+			summary.DestOrgSlug = rep.DestOrgSlug
+			break
+		}
+	}
+
+	// Stable section order matches the sync execution order.
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes"}
+	for _, section := range sectionOrder {
+		rep, ok := repsBySection[section]
+		if !ok || rep == nil {
+			continue
+		}
+		counts := rep.Counts()
+		sec := SyncSectionSummary{
+			Section: section,
+			Created: counts["created"],
+			Exists:  counts["exists"],
+			Set:     counts["set"],
+			Skipped: counts["skipped"],
+			Manual:  counts["manual"],
+			Error:   counts["error"],
+		}
+		summary.Sections = append(summary.Sections, sec)
+
+		for _, a := range rep.Actions {
+			if a.Status == "manual" || a.Status == "error" {
+				summary.Warnings = append(summary.Warnings, syncWarning{
+					Section: section,
+					Status:  a.Status,
+					Target:  a.Target,
+					Detail:  a.Detail,
+				})
+			}
+		}
+	}
+	return summary
+}
+
 func newSyncCommand() *cobra.Command {
 	var (
 		manifestPath        string
@@ -31,6 +122,7 @@ func newSyncCommand() *cobra.Command {
 		githubToken         string
 		destGitHubOrg       string
 		destRunnerNamespace string
+		jsonOutput          bool
 	)
 
 	cmd := &cobra.Command{
@@ -150,26 +242,38 @@ Examples:
 				sy.Runner = runnerClient
 			}
 
+			// Accumulate section reports for --json output.
+			repsBySection := make(map[string]*syncer.Report)
+
 			if !skipOrgSettings {
 				rep, err := sy.SyncOrgSettings(m, mapping, opts)
 				if err != nil {
 					return err
 				}
-				printSyncReport(cmd, "Org Settings", rep)
+				repsBySection["Org Settings"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Org Settings", rep)
+				}
 			}
 			if !skipContexts {
 				rep, err := sy.SyncContexts(m, bundle, mapping, opts)
 				if err != nil {
 					return err
 				}
-				printSyncReport(cmd, "Contexts", rep)
+				repsBySection["Contexts"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Contexts", rep)
+				}
 			}
 			if !skipProjects {
 				rep, err := sy.SyncProjects(m, bundle, mapping, opts)
 				if err != nil {
 					return err
 				}
-				printSyncReport(cmd, "Projects", rep)
+				repsBySection["Projects"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Projects", rep)
+				}
 
 				// Handle the enable-builds (follow) step for paused projects.
 				if err := handleEnableBuilds(cmd, sy, rep, apply, yes); err != nil {
@@ -183,7 +287,15 @@ Examples:
 				if err != nil {
 					return err
 				}
-				printSyncReport(cmd, "Runner Resource Classes", rep)
+				repsBySection["Runner Resource Classes"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Runner Resource Classes", rep)
+				}
+			}
+
+			if jsonOutput {
+				summary := buildSyncSummary(apply, repsBySection)
+				return marshalJSON(cmd.OutOrStdout(), summary)
 			}
 
 			return nil
@@ -200,6 +312,8 @@ Examples:
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
+	f.BoolVar(&jsonOutput, "json", false,
+		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",
 		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
