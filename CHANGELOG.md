@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.1...v0.8.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **release:** disable cosign keyless signing that aborted the goreleaser release ([#216](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/216)) ([33e5b00](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/33e5b005759c848e903fcc328aeaab96f5cf7bfb))
+
 ## [0.8.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.0...v0.8.1) (2026-06-11)
 
 
