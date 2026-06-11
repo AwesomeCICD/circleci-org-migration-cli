@@ -14,12 +14,14 @@ coverage.html
 # Generated CLI output (manifests, reports, secret bundles) — never commit
 /manifest.json
 /migration-report.md
-/secrets.json
+secrets.json
+**/secrets.json
 *.manifest.json
 /bin/circleci-migrate
 
-# age encryption keys (never commit)
+# age encryption keys & encrypted bundles (never commit, in any directory)
 *.age
+*.identity
 /migration-identity.age
 /migration-recipient.txt
 

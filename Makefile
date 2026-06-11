@@ -207,9 +207,18 @@ orb-publish-dev: orb-validate
 		awesomecicd/circleci-org-migration@dev:manual-$$(date +%s) \
 		--token "$$CIRCLE_TOKEN"
 
+# clean-outputs deletes generated CLI output and real-data artifacts that may
+# be left in the working tree by local runs (all gitignored). Safe to run any
+# time — it only removes generated files, never source/test/doc files.
+.PHONY: clean-outputs
+clean-outputs:
+	rm -rf bin/
+	rm -f manifest.json migration-report.md coverage.html coverage.out
+	rm -f *.manifest.json secrets.json *.age
+
 .PHONY: clean
-clean:
-	rm -rf bin/ dist/ coverage.out coverage.html test-results/ *.sarif
+clean: clean-outputs
+	rm -rf dist/ test-results/ *.sarif
 
 demo-gif: build ## Regenerate the README demo gif (requires vhs: https://github.com/charmbracelet/vhs)
 	@command -v vhs >/dev/null 2>&1 || { echo "vhs not found — install from https://github.com/charmbracelet/vhs"; exit 1; }
