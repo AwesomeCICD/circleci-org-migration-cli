@@ -43,6 +43,9 @@ optional mapping file (source->destination org/project mapping; defaults to the
 same names). It is idempotent: existing resources are reused by name where
 possible.
 
+The destination org is inferred from the manifest; use --mapping to override
+or rename the destination org and/or individual projects.
+
 Resources synced (in order):
   • Org settings — feature flags, OIDC claims, URL-orb allow list, config
     policies, OTel exporter, contacts, storage retention, budgets, release

@@ -28,6 +28,9 @@ CircleCI masks environment-variable values everywhere in its API, so 'export'
 captures only their names. The 'secrets' subcommands recover those values by
 running a pipeline inside CircleCI and reading the variables from the job env.
 
+NOTE: 'secrets extract' is designed to run INSIDE a CircleCI job (not locally).
+For the recommended local workflow, use 'secrets capture' instead.
+
 RECOMMENDED PATH — 'secrets capture' (CLI-orchestrated, no committed config):
 
   circleci-migrate secrets capture
@@ -90,7 +93,12 @@ Example:
   circleci-migrate secrets merge -o secrets.json artifacts/*/secrets.json
   circleci-migrate secrets merge --encrypt --recipient-file ~/.ssh/id_ed25519.pub \
     -o secrets.json artifacts/*/secrets.json`,
-		Args: cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("at least one <bundle.json> path is required — run '%s --help' for usage", cmd.CommandPath())
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			merged := manifest.NewSecretBundle()
 			for _, path := range args {
@@ -168,7 +176,7 @@ func newSecretsExtractCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "extract --manifest <file> (--context <name> | --project <slug>)",
-		Short: "Capture a context's or project's secret values from the job environment.",
+		Short: "Extract secret values from the current job environment (for use in orb/pipeline jobs).",
 		Long: `extract reads the variable names for one context or project from the
 manifest, looks each value up in the current environment, and records the
 found values in a secret bundle (merging into an existing bundle if present).
@@ -295,7 +303,15 @@ commit it to version control, and delete it once the sync is complete.
 Examples:
   circleci-migrate secrets decrypt --identity-file ~/.ssh/id_ed25519 bundle.age
   circleci-migrate secrets decrypt --identity-file identity.age -o secrets.json bundle.age`,
-		Args: cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("<bundle.age> path is required — run '%s --help' for usage", cmd.CommandPath())
+			}
+			if len(args) > 1 {
+				return fmt.Errorf("accepts 1 <bundle.age> path, received %d — run '%s --help' for usage", len(args), cmd.CommandPath())
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			inputPath := args[0]
 

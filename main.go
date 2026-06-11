@@ -9,6 +9,6 @@ import (
 func main() {
 	// See cmd/root.go for Execute().
 	if err := cmd.Execute(); err != nil {
-		os.Exit(-1)
+		os.Exit(1)
 	}
 }

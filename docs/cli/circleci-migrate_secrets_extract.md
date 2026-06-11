@@ -1,6 +1,6 @@
 ## circleci-migrate secrets extract
 
-Capture a context's or project's secret values from the job environment.
+Extract secret values from the current job environment (for use in orb/pipeline jobs).
 
 ### Synopsis
 
