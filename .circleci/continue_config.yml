@@ -491,7 +491,7 @@ jobs:
           name: Install cosign (pinned v2.4.1)
           command: |
             # renovate: datasource=github-releases depName=sigstore/cosign
-            ver=2.4.1
+            ver=2.6.3
             curl -sfL "https://github.com/sigstore/cosign/releases/download/v${ver}/cosign-linux-amd64" \
               -o /tmp/cosign
             sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
@@ -500,7 +500,7 @@ jobs:
           name: Install syft (pinned v1.18.1)
           command: |
             # renovate: datasource=github-releases depName=anchore/syft
-            ver=1.18.1
+            ver=1.45.1
             curl -sfL "https://github.com/anchore/syft/releases/download/v${ver}/syft_${ver}_linux_amd64.tar.gz" \
               | sudo tar -xz -C /usr/local/bin syft
             syft version
