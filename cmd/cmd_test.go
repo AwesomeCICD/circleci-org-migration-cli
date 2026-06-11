@@ -180,3 +180,106 @@ func TestExecute_NoErrorOnHelp(t *testing.T) {
 		t.Fatalf("'secrets merge --help' should return no error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Lipgloss-styled help (issue #108)
+// ---------------------------------------------------------------------------
+
+// TestHelp_ContainsExpectedSections verifies that the lipgloss-styled help
+// renderer includes all expected section headings and key content words.
+// The test captures output from the in-process command so it exercises the
+// real SetHelpFunc path without spawning a subprocess.
+func TestHelp_ContainsExpectedSections(t *testing.T) {
+	out, _, err := runCmd(t, "--help")
+	if err != nil {
+		t.Fatalf("--help returned error: %v", err)
+	}
+
+	// Global Flags only appear for sub-commands (root has no parent).
+	sections := []string{
+		"circleci-migrate",
+		"Usage:",
+		"Available Commands:",
+		"Flags:",
+	}
+
+	for _, want := range sections {
+		if !strings.Contains(out, want) {
+			t.Errorf("--help output missing section %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+// TestHelp_ContainsSubcommandNames verifies that visible sub-commands appear
+// in the root help output.
+func TestHelp_ContainsSubcommandNames(t *testing.T) {
+	out, _, err := runCmd(t, "--help")
+	if err != nil {
+		t.Fatalf("--help returned error: %v", err)
+	}
+
+	for _, sub := range []string{"export", "sync", "migrate", "version", "secrets", "orb"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("--help output missing subcommand %q\ngot:\n%s", sub, out)
+		}
+	}
+}
+
+// TestHelp_NoANSIEscapeCodes verifies that help output written to a non-TTY
+// writer contains no ANSI escape sequences (lipgloss colour/bold codes).
+// The runCmd helper captures output in a bytes.Buffer (not a TTY), so lipgloss
+// should auto-strip all colour codes, giving clean plain text.
+func TestHelp_NoANSIEscapeCodes(t *testing.T) {
+	out, _, err := runCmd(t, "--help")
+	if err != nil {
+		t.Fatalf("--help returned error: %v", err)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("--help output contains ANSI escape codes when written to a non-TTY buffer:\n%q", out[:min(200, len(out))])
+	}
+}
+
+// TestHelp_SubcommandInheritsStyle verifies that a sub-command also produces
+// styled help (section headers present) and no ANSI codes on a non-TTY writer.
+func TestHelp_SubcommandInheritsStyle(t *testing.T) {
+	out, _, err := runCmd(t, "export", "--help")
+	if err != nil {
+		t.Fatalf("export --help returned error: %v", err)
+	}
+
+	for _, want := range []string{"circleci-migrate export", "Usage:", "Flags:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("export --help missing %q\ngot:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("export --help contains ANSI codes on non-TTY writer")
+	}
+}
+
+// TestHelp_WorkflowExamplesPresent checks that the Typical workflow examples
+// in the Long description are preserved in the root help output.
+func TestHelp_WorkflowExamplesPresent(t *testing.T) {
+	out, _, err := runCmd(t, "--help")
+	if err != nil {
+		t.Fatalf("--help returned error: %v", err)
+	}
+	for _, phrase := range []string{
+		"Typical workflow",
+		"Export the source organisation",
+		"--source-token",
+		"--dest-token",
+	} {
+		if !strings.Contains(out, phrase) {
+			t.Errorf("--help output missing expected phrase %q", phrase)
+		}
+	}
+}
+
+// min is a local helper for Go versions before 1.21 where min is not built-in.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

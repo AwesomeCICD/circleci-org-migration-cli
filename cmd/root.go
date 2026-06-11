@@ -6,10 +6,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // rootOptions holds the runtime configuration shared across all sub-commands.
@@ -30,6 +33,148 @@ func resolveHost() string {
 		return h
 	}
 	return os.Getenv("CIRCLECI_HOST")
+}
+
+// helpWidth returns a sensible terminal width for help rendering.
+// Falls back to 120 when stdout is not a TTY (e.g. piped output).
+func helpWidth() int {
+	const defaultWidth = 120
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return defaultWidth
+	}
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err == nil && w > 0 && w < defaultWidth {
+		return w
+	}
+	return defaultWidth
+}
+
+// styledHelpFunc returns a cobra help function that renders help output with
+// lipgloss styling, matching the visual style of the official circleci-cli.
+// When stdout is not a TTY, lipgloss automatically strips ANSI escape codes so
+// piped output (e.g. "--help | cat") is always clean plain text.
+func styledHelpFunc(width int) func(*cobra.Command, []string) {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.AdaptiveColor{Light: "#003740", Dark: "#3B6385"}).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#003740", Dark: "#3B6385"}).
+		Margin(1, 0, 0, 0).
+		Padding(0, 1)
+
+	subCmdNameStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#161616", Dark: "#FFFFFF"}).
+		Padding(0, 4)
+
+	subCmdDescStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#161616", Dark: "#FFFFFF"}).
+		Bold(true)
+
+	textStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#161616", Dark: "#FFFFFF"})
+
+	_ = width // width is available for future border/wrap use
+
+	return func(cmd *cobra.Command, _ []string) {
+		var b strings.Builder
+
+		// Command path + short description header.
+		b.WriteString(titleStyle.Render(cmd.CommandPath()))
+		b.WriteString("\n")
+
+		// Long description, or short if no long description.
+		desc := strings.TrimSpace(cmd.Long)
+		if desc == "" {
+			desc = strings.TrimSpace(cmd.Short)
+		}
+		if desc != "" {
+			b.WriteString(textStyle.Render(desc))
+			b.WriteString("\n")
+		}
+
+		// Aliases.
+		if len(cmd.Aliases) > 0 {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Aliases:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Padding(0, 2).Render(cmd.NameAndAliases()))
+			b.WriteString("\n")
+		}
+
+		// Usage line.
+		if cmd.Runnable() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Usage:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Padding(0, 2).Render(cmd.UseLine()))
+			b.WriteString("\n")
+		} else if cmd.HasAvailableSubCommands() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Usage:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Padding(0, 2).Render(cmd.CommandPath() + " [command]"))
+			b.WriteString("\n")
+		}
+
+		// Examples.
+		if cmd.HasExample() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Examples:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Render(cmd.Example))
+			b.WriteString("\n")
+		}
+
+		// Available sub-commands.
+		if cmd.HasAvailableSubCommands() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Available Commands:"))
+			b.WriteString("\n")
+			for _, sub := range cmd.Commands() {
+				if !sub.IsAvailableCommand() {
+					continue
+				}
+				namePart := subCmdNameStyle.Render(sub.Name())
+				// Pad so descriptions line up; NamePadding accounts for the
+				// longest sibling name.
+				pad := sub.NamePadding() - len(sub.Name())
+				if pad < 1 {
+					pad = 1
+				}
+				descPart := subCmdDescStyle.PaddingLeft(pad).Render(sub.Short)
+				b.WriteString(namePart + descPart + "\n")
+			}
+		}
+
+		// Local flags.
+		if cmd.HasAvailableLocalFlags() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Flags:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Render(cmd.LocalFlags().FlagUsages()))
+		}
+
+		// Inherited (global) flags.
+		if cmd.HasAvailableInheritedFlags() {
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Global Flags:"))
+			b.WriteString("\n")
+			b.WriteString(textStyle.Render(cmd.InheritedFlags().FlagUsages()))
+		}
+
+		// Footer hint.
+		if cmd.HasAvailableSubCommands() {
+			b.WriteString("\n")
+			b.WriteString(textStyle.Faint(true).Render(
+				fmt.Sprintf(`Use "%s [command] --help" for more information about a command.`, cmd.CommandPath()),
+			))
+			b.WriteString("\n")
+		}
+
+		// Write to the command's output writer so tests can capture it.
+		fmt.Fprintln(cmd.OutOrStdout(), b.String())
+	}
 }
 
 // MakeCommands builds and returns the root cobra.Command with all
@@ -95,6 +240,10 @@ Use "circleci-migrate [command] --help" for more information about a command.`,
 			return nil
 		},
 	}
+
+	// Apply the lipgloss-styled help function to the root command.
+	// All sub-commands inherit this via cobra's help propagation.
+	rootCmd.SetHelpFunc(styledHelpFunc(helpWidth()))
 
 	// SetFlagErrorFunc provides a consistent error message + usage hint when a
 	// flag cannot be parsed (e.g. unknown flag, wrong type).  Mirrors the
