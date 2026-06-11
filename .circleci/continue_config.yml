@@ -484,7 +484,7 @@ jobs:
           name: Install cosign (pinned v2.4.1)
           command: |
             # renovate: datasource=github-releases depName=sigstore/cosign
-            ver=2.4.1
+            ver=3.1.1
             curl -sfL "https://github.com/sigstore/cosign/releases/download/v${ver}/cosign-linux-amd64" \
               -o /tmp/cosign
             sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
