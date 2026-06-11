@@ -183,6 +183,9 @@ func Markdown(m *manifest.Manifest) string {
 		}
 	}
 
+	// CIAM roles and groups — circleci-type orgs only.
+	writeCIAMSection(&b, m)
+
 	// Cutover runbook — the operator-facing checklist the customer follows to
 	// finish the migration. Everything below the warnings table is derived from
 	// the manifest plus the set of known manual/limitation facts.
@@ -337,6 +340,55 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 	}
 }
 
+// writeCIAMSection renders the CIAM roles and groups section of the report.
+// Only shown for circleci-type source orgs where CIAM data was captured.
+func writeCIAMSection(b *strings.Builder, m *manifest.Manifest) {
+	if m.CIAM == nil {
+		return
+	}
+	fmt.Fprintf(b, "\n## CIAM roles and groups\n\n")
+	fmt.Fprintf(b, "_Only present for standalone (`circleci`-type) orgs. Users are identified by email; groups by name._\n\n")
+	fmt.Fprintf(b, "Reference: [Manage roles and permissions](https://circleci.com/docs/guides/permissions-authentication/manage-roles-and-permissions/) | [Manage groups](https://circleci.com/docs/guides/permissions-authentication/manage-groups/)\n\n")
+
+	ciam := m.CIAM
+
+	if len(ciam.OrgRoles) > 0 {
+		fmt.Fprintf(b, "### Org-level roles (%d)\n\n", len(ciam.OrgRoles))
+		fmt.Fprintf(b, "| Email | Username | Role |\n|---|---|---|\n")
+		for _, r := range ciam.OrgRoles {
+			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", r.Email, orDash(r.Username), r.Role)
+		}
+		fmt.Fprintf(b, "\n")
+	}
+
+	if len(ciam.Groups) > 0 {
+		fmt.Fprintf(b, "### CIAM groups (%d)\n\n", len(ciam.Groups))
+		fmt.Fprintf(b, "| Name | Description | Member count |\n|---|---|---:|\n")
+		for _, g := range ciam.Groups {
+			fmt.Fprintf(b, "| `%s` | %s | %d |\n", g.Name, orDash(g.Description), len(g.MemberEmails))
+		}
+		fmt.Fprintf(b, "\n_Note: group membership is not available from the groups list API. Membership must be verified and recreated manually on the destination._\n\n")
+	}
+
+	if len(ciam.ProjectUserGrants) > 0 {
+		fmt.Fprintf(b, "### Per-project user role grants (%d)\n\n", len(ciam.ProjectUserGrants))
+		fmt.Fprintf(b, "| Project | Email | Role |\n|---|---|---|\n")
+		for _, g := range ciam.ProjectUserGrants {
+			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", g.ProjectName, g.Email, g.Role)
+		}
+		fmt.Fprintf(b, "\n")
+	}
+
+	if len(ciam.ProjectGroupGrants) > 0 {
+		fmt.Fprintf(b, "### Per-project group role grants (%d)\n\n", len(ciam.ProjectGroupGrants))
+		fmt.Fprintf(b, "| Project | Group | Role |\n|---|---|---|\n")
+		for _, g := range ciam.ProjectGroupGrants {
+			fmt.Fprintf(b, "| `%s` | `%s` | `%s` |\n", g.ProjectName, g.GroupName, g.Role)
+		}
+		fmt.Fprintf(b, "\n")
+	}
+}
+
 // writeRunbook appends the customer-facing cutover runbook to b: the recommended
 // order, what sync automates, the manual steps (data-driven from the manifest),
 // what does not transfer, and the external-pin reminder.
@@ -373,6 +425,7 @@ func writeAutomatedBySync(b *strings.Builder) {
 	fmt.Fprintf(b, "- Org settings: feature flags, OIDC, URL-orb allow list, config policies, technical/security contacts.\n")
 	fmt.Fprintf(b, "- Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.\n")
 	fmt.Fprintf(b, "- Context group restrictions, mapped onto destination CIAM groups.\n")
+	fmt.Fprintf(b, "- CIAM roles, groups, and per-project role grants (standalone circleci-type orgs only; users matched by email).\n")
 }
 
 // hasNonDefaultGroupRestrictions reports whether any context in the manifest
@@ -630,6 +683,32 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	if hasPipelineDefinitions(m) {
 		items = append(items, "**Repository connections (App destinations)** — repos must already exist and be connected to "+
 			"the destination CircleCI GitHub App, or project onboarding is skipped. Connect them before `sync --apply`.")
+	}
+
+	// CIAM roles and groups — only for circleci-type orgs where CIAM was captured.
+	if m.CIAM != nil {
+		rolesURL := "https://circleci.com/docs/guides/permissions-authentication/manage-roles-and-permissions/"
+		groupsURL := "https://circleci.com/docs/guides/permissions-authentication/manage-groups/"
+		items = append(items, fmt.Sprintf(
+			"**CIAM user invitations (standalone orgs)** — `sync` applies org and project roles only for "+
+				"users already present in the destination org (matched by email). Users not yet in the "+
+				"destination org must be **invited first** before their roles can be assigned — "+
+				"there is no bulk-invite API for circleci-type orgs. "+
+				"After inviting users, re-run `sync` to apply their roles. "+
+				"Refs: [Manage roles](%s) | [Manage groups](%s)",
+			rolesURL, groupsURL))
+
+		if len(m.CIAM.Groups) > 0 {
+			groupNames := make([]string, 0, len(m.CIAM.Groups))
+			for _, g := range m.CIAM.Groups {
+				groupNames = append(groupNames, g.Name)
+			}
+			items = append(items, fmt.Sprintf(
+				"**CIAM groups (%d group(s))** — `sync` creates groups by name; group **membership** "+
+					"is not available from the groups list API and must be verified and set manually: %s. "+
+					"→ [Manage groups](%s)",
+				len(m.CIAM.Groups), joinNames(groupNames), groupsURL))
+		}
 	}
 
 	for _, it := range items {

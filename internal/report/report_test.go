@@ -1831,3 +1831,111 @@ func TestActionable_StandaloneOrg_OrgSettingsURL(t *testing.T) {
 		t.Errorf("standalone org should produce /settings/organization/circleci/<uuid>/contexts URL; got:\n%s", md[:min(800, len(md))])
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CIAM section tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMarkdown_CIAMSection_NilCIAM_NotPresent(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM:   nil,
+	}
+	md := report.Markdown(m)
+	if strings.Contains(md, "## CIAM roles and groups") {
+		t.Error("CIAM section should not appear when CIAM is nil")
+	}
+}
+
+func TestMarkdown_CIAMSection_OrgRolesRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			OrgRoles: []manifest.CIAMOrgRole{
+				{Email: "alice@example.com", Username: "alice", Role: "org-admin"},
+				{Email: "bob@example.com", Username: "", Role: "org-viewer"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{
+		"## CIAM roles and groups",
+		"### Org-level roles (2)",
+		"alice@example.com",
+		"org-admin",
+		"bob@example.com",
+		"org-viewer",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("CIAM org roles section missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_CIAMSection_GroupsRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			Groups: []manifest.CIAMGroup{
+				{Name: "security-team", Description: "Security team"},
+				{Name: "dev-team"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{
+		"### CIAM groups (2)",
+		"security-team",
+		"Security team",
+		"dev-team",
+		"group membership is not available",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("CIAM groups section missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_CIAMSection_ProjectUserGrantsRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			ProjectUserGrants: []manifest.CIAMProjectUserGrant{
+				{ProjectName: "my-project", Email: "alice@example.com", Role: "project-admin"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{
+		"### Per-project user role grants (1)",
+		"my-project",
+		"alice@example.com",
+		"project-admin",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("CIAM project user grants section missing %q", want)
+		}
+	}
+}
+
+func TestMarkdown_CIAMSection_ProjectGroupGrantsRendered(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{Name: "o", Slug: "circleci/org-id"}},
+		CIAM: &manifest.CIAMData{
+			ProjectGroupGrants: []manifest.CIAMProjectGroupGrant{
+				{ProjectName: "my-project", GroupName: "security-team", Role: "project-contributor"},
+			},
+		},
+	}
+	md := report.Markdown(m)
+	for _, want := range []string{
+		"### Per-project group role grants (1)",
+		"my-project",
+		"security-team",
+		"project-contributor",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("CIAM project group grants section missing %q", want)
+		}
+	}
+}

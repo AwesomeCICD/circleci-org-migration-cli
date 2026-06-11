@@ -17,25 +17,28 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeOrgAPI struct {
-	getOrganization           func(slugOrID string) (*org.Organization, error)
-	getOrgSettings            func(vcsType, orgName string) (*org.OrgSettings, error)
-	getFeatureFlags           func(vcsType, orgName string) (map[string]bool, error)
-	getOIDCClaims             func(orgID string) ([]string, string, error)
-	getURLOrbAllowList        func(slugOrID string) ([]org.URLOrbAllowEntry, error)
-	getPolicyBundle           func(ownerID string) (map[string]string, error)
-	getPolicyEnf              func(ownerID string) (bool, error)
-	getAuditLogConfigs        func(orgID string) ([]org.AuditLogConfig, error)
-	getSSOEnforced            func(orgID string) (bool, error)
-	getSSOConnection          func(orgID string) (map[string]any, bool, error)
-	getOTelExporters          func(orgID string) ([]org.OTelExporter, error)
-	getContacts               func(orgID string) ([]string, []string, error)
-	listGroups                func(orgID string) ([]org.Group, error)
-	getStorageRetention       func(orgUUID string) (*org.StorageRetention, error)
-	getBudgets                func(orgUUID string) ([]org.Budget, error)
-	getBlockUnregisteredUsers func(orgUUID string) (bool, error)
-	getOrgOrbs                func(orgUUID string) ([]org.OrgOrb, error)
-	getReleaseTrackerSettings func(orgUUID string) (*org.ReleaseTrackerSettings, error)
-	getEnvironmentHierarchy   func(orgUUID string) (*org.EnvHierarchyConfig, error)
+	getOrganization            func(slugOrID string) (*org.Organization, error)
+	getOrgSettings             func(vcsType, orgName string) (*org.OrgSettings, error)
+	getFeatureFlags            func(vcsType, orgName string) (map[string]bool, error)
+	getOIDCClaims              func(orgID string) ([]string, string, error)
+	getURLOrbAllowList         func(slugOrID string) ([]org.URLOrbAllowEntry, error)
+	getPolicyBundle            func(ownerID string) (map[string]string, error)
+	getPolicyEnf               func(ownerID string) (bool, error)
+	getAuditLogConfigs         func(orgID string) ([]org.AuditLogConfig, error)
+	getSSOEnforced             func(orgID string) (bool, error)
+	getSSOConnection           func(orgID string) (map[string]any, bool, error)
+	getOTelExporters           func(orgID string) ([]org.OTelExporter, error)
+	getContacts                func(orgID string) ([]string, []string, error)
+	listGroups                 func(orgID string) ([]org.Group, error)
+	getStorageRetention        func(orgUUID string) (*org.StorageRetention, error)
+	getBudgets                 func(orgUUID string) ([]org.Budget, error)
+	getBlockUnregisteredUsers  func(orgUUID string) (bool, error)
+	getOrgOrbs                 func(orgUUID string) ([]org.OrgOrb, error)
+	getReleaseTrackerSettings  func(orgUUID string) (*org.ReleaseTrackerSettings, error)
+	getEnvironmentHierarchy    func(orgUUID string) (*org.EnvHierarchyConfig, error)
+	listOrgRoleGrants          func(orgID string) ([]org.OrgRoleGrant, error)
+	listProjectUserRoleGrants  func(orgID, projectID string) ([]org.ProjectUserRoleGrant, error)
+	listProjectGroupRoleGrants func(orgID, projectID string) ([]org.ProjectGroupRoleGrant, error)
 }
 
 func (f *fakeOrgAPI) GetOrganization(slugOrID string) (*org.Organization, error) {
@@ -167,6 +170,27 @@ func (f *fakeOrgAPI) GetReleaseTrackerSettings(orgUUID string) (*org.ReleaseTrac
 func (f *fakeOrgAPI) GetEnvironmentHierarchy(orgUUID string) (*org.EnvHierarchyConfig, error) {
 	if f.getEnvironmentHierarchy != nil {
 		return f.getEnvironmentHierarchy(orgUUID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) ListOrgRoleGrants(orgID string) ([]org.OrgRoleGrant, error) {
+	if f.listOrgRoleGrants != nil {
+		return f.listOrgRoleGrants(orgID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) ListProjectUserRoleGrants(orgID, projectID string) ([]org.ProjectUserRoleGrant, error) {
+	if f.listProjectUserRoleGrants != nil {
+		return f.listProjectUserRoleGrants(orgID, projectID)
+	}
+	return nil, nil
+}
+
+func (f *fakeOrgAPI) ListProjectGroupRoleGrants(orgID, projectID string) ([]org.ProjectGroupRoleGrant, error) {
+	if f.listProjectGroupRoleGrants != nil {
+		return f.listProjectGroupRoleGrants(orgID, projectID)
 	}
 	return nil, nil
 }
