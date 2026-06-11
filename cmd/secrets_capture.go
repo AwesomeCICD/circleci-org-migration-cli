@@ -626,6 +626,43 @@ func RunCaptureWalkthroughWith(
 	return res, nil
 }
 
+// GuardUnattendedCaptureAll fails closed when a non-interactive 'secrets
+// capture' run would sweep EVERY context/project with values and trigger real
+// extraction pipelines without an explicit opt-in (#164).
+//
+// It returns an error only when ALL of the following hold:
+//   - wantsInteraction is false (no guided walkthrough — manifest/flags supplied
+//     or stdin is not a TTY),
+//   - neither --context nor --project was explicitly set (contextChanged and
+//     projectChanged are both false), so capture would default to capture-all,
+//   - and the caller passed no explicit unattended opt-in (neither --yes nor
+//     --no-input).
+//
+// In every other case it returns nil and capture proceeds.
+//
+// It is exported so cmd_test can unit-test the guard directly without a live run.
+func GuardUnattendedCaptureAll(wantsInteraction, contextChanged, projectChanged, assumeYes, noInput bool) error {
+	if wantsInteraction {
+		// Guided walkthrough will scope/confirm interactively.
+		return nil
+	}
+	if contextChanged || projectChanged {
+		// Caller scoped the capture explicitly.
+		return nil
+	}
+	if assumeYes || noInput {
+		// Caller explicitly acknowledged the unattended capture-all.
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to run an unattended capture-all: no --context or --project was given, " +
+			"so capture would select EVERY context and project with values and trigger real " +
+			"CircleCI extraction pipelines. Choose one of:\n" +
+			"  1. pass --context and/or --project to scope exactly what is captured;\n" +
+			"  2. pass --yes (or --no-input) to acknowledge an unattended capture-all;\n" +
+			"  3. run on an interactive TTY (omit --manifest) for the guided walkthrough")
+}
+
 // newSecretsCaptureCommand builds the "secrets capture" subcommand.
 func newSecretsCaptureCommand() *cobra.Command {
 	var (
@@ -639,6 +676,7 @@ func newSecretsCaptureCommand() *cobra.Command {
 		skipRestrictedCtxs    bool
 		removeRestrictions    bool
 		noInput               bool
+		assumeYes             bool // explicit opt-in to unattended capture-all (no --context/--project)
 		noEncrypt             bool // explicit opt-out; overrides the encrypt=true default
 		pollTimeout           time.Duration
 		artifactRetentionDays int
@@ -659,9 +697,24 @@ triggers a run inside CircleCI, and downloads the captured values automatically.
   launch the guided walkthrough. It prompts for each option with sensible defaults
   and explicit guidance on host-project selection for context extraction.
 
-NOTE: interactive prompts are written to stderr; if you pipe stdout while
-relying on the guided prompts, use a TTY for stdin — piping stdin triggers
-non-TTY mode and all flags must be supplied explicitly.
+NON-INTERACTIVE MODE & THE CAPTURE-ALL GUARD:
+  Only --manifest is strictly required. Once --manifest is supplied (or stdin is
+  not a TTY) capture runs non-interactively and does NOT launch the guided
+  walkthrough. By default, when neither --context nor --project is given, capture
+  would select EVERY context and project that has at least one env var in the
+  manifest and trigger a REAL CircleCI extraction pipeline for each one.
+
+  To prevent accidental org-wide extraction (e.g. from a piped or recorded
+  session), an unattended capture-all is FAIL-CLOSED: if the run is
+  non-interactive, neither --context nor --project is set, and you have NOT
+  passed --yes (or --no-input), capture errors out instead of triggering
+  pipelines. You then have three options:
+    1. Pass --context and/or --project to scope exactly what is captured.
+    2. Pass --yes (or --no-input) to acknowledge an unattended capture-all.
+    3. Run on an interactive TTY (no --manifest) for the guided walkthrough.
+
+  Interactive prompts are written to stderr; if you pipe stdout while relying on
+  the guided prompts, use a TTY for stdin — piping stdin triggers non-TTY mode.
 
   For the orb-based alternative (committed config), see:
     circleci-migrate orb inline --help
@@ -882,6 +935,24 @@ Examples:
 
 			// ── Validate storage flags ────────────────────────────────────────
 			if err := validateStorageFlags(&encOpts); err != nil {
+				return err
+			}
+
+			// ── Fail-closed guard: unattended capture-all (#164) ──────────────
+			// Once flag/storage/token validation has passed but BEFORE any
+			// CircleCI client is created or any extraction pipeline is triggered,
+			// refuse to proceed when the run is non-interactive, neither --context
+			// nor --project scoped it, and no explicit unattended opt-in (--yes or
+			// --no-input) was given. Without this guard a piped/recorded/CI session
+			// could accidentally sweep EVERY context/project with values and fire
+			// real extraction pipelines org-wide.
+			if err := GuardUnattendedCaptureAll(
+				wantsInteraction,
+				cmd.Flags().Changed("context"),
+				cmd.Flags().Changed("project"),
+				assumeYes,
+				noInput,
+			); err != nil {
 				return err
 			}
 
@@ -1171,6 +1242,10 @@ WARNING: --no-encrypt was set. The secret bundle contains PLAINTEXT secrets.
 		"Temporarily remove real context restrictions before extraction and restore them afterwards (requires explicit opt-in)")
 	f.BoolVar(&noInput, "no-input", false,
 		"Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)")
+	f.BoolVarP(&assumeYes, "yes", "y", false,
+		"Acknowledge an unattended capture-all when neither --context nor --project is given. "+
+			"Without this (or --no-input) a non-interactive run that would sweep EVERY context/project "+
+			"with values fails closed instead of triggering real extraction pipelines.")
 	f.DurationVar(&pollTimeout, "poll-timeout", 10*time.Minute,
 		"Maximum time to wait for each pipeline to complete (0 = no timeout)")
 	f.IntVar(&artifactRetentionDays, "artifact-retention-days", 0,
