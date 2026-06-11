@@ -107,7 +107,8 @@ make ci-local       # everything CI runs: verify + cover + security + config-val
 | `make orb-shellcheck` | Run `shellcheck` against `orb/src/scripts/*.sh`. |
 | `make orb-test` | `orb-validate` + `orb-shellcheck` — full local orb regression. |
 | `make orb-publish-dev` | Pack, validate, and publish a dev-labelled orb for manual testing. |
-| `make clean` | Remove `bin/`, `dist/`, `coverage.out`, `coverage.html`, test results. |
+| `make clean-outputs` | Delete generated/real-data CLI artifacts (`bin/`, `manifest.json`, `migration-report.md`, coverage files, `secrets.json`, `*.age`). |
+| `make clean` | `clean-outputs` + remove `dist/`, test results, `*.sarif`. |
 
 ---
 
@@ -229,6 +230,21 @@ chunk init               # (optional) wire pre-commit / agent hooks
 `chunk` runs the configured shell commands locally; it does not execute the
 `.circleci/config.yml` jobs. For a faithful local run of the actual pipeline
 jobs, `circleci local execute` is an option (Docker executor only, no caching).
+
+### Pruning agent worktrees
+
+AI-agent workflows create transient git worktrees under `.claude/worktrees/`
+(gitignored). These accumulate over time and slow down `find`/IDE indexing.
+Once an agent branch has merged (or been abandoned), remove its worktree:
+
+```bash
+git worktree prune                       # drop admin entries for deleted dirs
+git worktree remove .claude/worktrees/<dir>   # remove a specific worktree
+git worktree list                        # review what remains
+```
+
+Only remove worktrees you know are finished — `git worktree prune` itself is
+always safe (it only cleans up entries whose directory is already gone).
 
 ---
 
