@@ -3,9 +3,14 @@ version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
+    - contextcheck
     - errcheck
+    - gocritic
     - govet
     - ineffassign
+    - misspell
+    - nilerr
     - staticcheck
     - unused
 
@@ -19,7 +24,12 @@ linters:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
-
+    gocritic:
+      disabled-checks:
+        # ifElseChain only fires on heterogeneous-condition chains here (each
+        # branch tests a different expression, not one value) where an
+        # equivalent `switch {}` reads no better; not worth the churn.
+        - ifElseChain
   exclusions:
     rules:
       - path: _test\.go
@@ -29,8 +39,6 @@ linters:
       # Style suggestions, not errors.
       - linters: [staticcheck]
         text: "ST1023"
-      - linters: [staticcheck]
-        text: "ST1005"
       - linters: [staticcheck]
         text: "QF"
 

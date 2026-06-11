@@ -1952,8 +1952,12 @@ func TestMarkdown_CIAM_OrgAutomated_ProjectManual(t *testing.T) {
 		},
 	}
 	md := report.Markdown(m)
-	automated := md[strings.Index(md, "### 2. Automated by"):strings.Index(md, "### 3. Manual steps")]
-	manual := md[strings.Index(md, "### 3. Manual steps"):]
+	manualIdx := strings.Index(md, "### 3. Manual steps")
+	if manualIdx < 0 {
+		t.Fatalf("manual steps section not found in report:\n%s", md)
+	}
+	automated := md[strings.Index(md, "### 2. Automated by"):manualIdx]
+	manual := md[manualIdx:]
 	if !strings.Contains(automated, "CIAM **org-level** role grants") {
 		t.Error("org-level CIAM roles must be listed as automated by sync --apply")
 	}
