@@ -647,7 +647,7 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			s.URLOrbAllowList = append(s.URLOrbAllowList, manifest.URLOrbAllowEntry{
 				Name:   entry.Name,
 				Prefix: entry.Prefix,
-				Auth:   entry.Auth,
+				Auth:   redactURLOrbAuth(entry.Auth),
 			})
 		}
 		hasAny = true
@@ -700,18 +700,27 @@ func (e *Exporter) exportOrgSettings(m *manifest.Manifest, o *org.Organization, 
 			hasAny = true
 		}
 
-		// OTel exporters (EXPERIMENTAL; up to 5 per org). Header values are
-		// redacted by the server and captured for reference only.
+		// OTel exporters (EXPERIMENTAL; up to 5 per org). Header values may
+		// contain auth tokens (e.g. "Authorization: Bearer <token>") and are
+		// redacted client-side before being written to the manifest. Key names
+		// are preserved so the operator knows which headers were configured.
 		if exporters, oerr := e.Org.GetOTelExporters(o.ID); oerr != nil {
 			m.AddWarning("org", "otel_exporters_unreadable", fmt.Sprintf("could not read OTel exporters: %v", oerr))
 		} else if len(exporters) > 0 {
 			for _, ex := range exporters {
-				s.OTelExporters = append(s.OTelExporters, manifest.OTelExporter{
+				redactedHeaders, redactedHdrKeys := redactOTelHeaders(ex.Headers)
+				me := manifest.OTelExporter{
 					Endpoint: ex.Endpoint,
 					Protocol: ex.Protocol,
 					Insecure: ex.Insecure,
-					Headers:  ex.Headers,
-				})
+					Headers:  redactedHeaders,
+				}
+				s.OTelExporters = append(s.OTelExporters, me)
+				if len(redactedHdrKeys) > 0 {
+					m.AddWarning("org", "otel_header_redacted", fmt.Sprintf(
+						"redacted %d OTel exporter header value(s) for %q (header names preserved): %s",
+						len(redactedHdrKeys), ex.Endpoint, strings.Join(redactedHdrKeys, ", ")))
+				}
 			}
 			hasAny = true
 		}
@@ -928,13 +937,28 @@ var ssoSensitiveKeySubstrings = []string{
 // list of keys that were redacted. Field names are preserved (so the manifest
 // still documents WHICH IdP fields existed) but their values never leak into
 // the manifest, which is contractually free of secret values.
+//
+// The function recurses into nested map[string]any values so that secret fields
+// inside nested objects (e.g. idp_config.private_key, nested *_cert/*_secret)
+// are also redacted by the same key-substring rules.
 func redactSSOConnection(conn map[string]any) (map[string]any, []string) {
+	return redactSSOConnectionInto(conn, "")
+}
+
+// redactSSOConnectionInto is the recursive implementation of redactSSOConnection.
+// keyPrefix is used only to build dotted key paths for the returned redactedKeys
+// list (e.g. "idp_config.private_key"). At the top level it is empty.
+func redactSSOConnectionInto(conn map[string]any, keyPrefix string) (map[string]any, []string) {
 	if conn == nil {
 		return nil, nil
 	}
 	out := make(map[string]any, len(conn))
 	var redactedKeys []string
 	for k, v := range conn {
+		fullKey := k
+		if keyPrefix != "" {
+			fullKey = keyPrefix + "." + k
+		}
 		lk := strings.ToLower(k)
 		sensitive := false
 		for _, sub := range ssoSensitiveKeySubstrings {
@@ -945,13 +969,74 @@ func redactSSOConnection(conn map[string]any) (map[string]any, []string) {
 		}
 		if sensitive {
 			out[k] = ssoRedactionPlaceholder
-			redactedKeys = append(redactedKeys, k)
+			redactedKeys = append(redactedKeys, fullKey)
+		} else if nested, ok := v.(map[string]any); ok {
+			// Recurse into nested objects so sub-fields are also redacted.
+			redactedNested, nestedKeys := redactSSOConnectionInto(nested, fullKey)
+			out[k] = redactedNested
+			redactedKeys = append(redactedKeys, nestedKeys...)
 		} else {
 			out[k] = v
 		}
 	}
 	sort.Strings(redactedKeys)
 	return out, redactedKeys
+}
+
+// otelHeaderRedactionPlaceholder marks an OTel exporter header value that was
+// redacted to prevent auth tokens from appearing in the manifest.
+const otelHeaderRedactionPlaceholder = "<redacted: OTel auth header>"
+
+// redactOTelHeaders returns a copy of the OTel exporter headers map with every
+// header value replaced by otelHeaderRedactionPlaceholder, preserving key names
+// so the operator knows which headers were configured. The second return value
+// is the sorted list of header keys whose values were redacted.
+//
+// Rationale: OTel exporter headers commonly carry authentication material (e.g.
+// "Authorization: Bearer <token>"). Redacting all header VALUES unconditionally
+// is the conservative, safe-to-share choice — header names alone carry no secret.
+func redactOTelHeaders(headers map[string]string) (map[string]string, []string) {
+	if len(headers) == 0 {
+		return headers, nil
+	}
+	out := make(map[string]string, len(headers))
+	redactedKeys := make([]string, 0, len(headers))
+	for k := range headers {
+		out[k] = otelHeaderRedactionPlaceholder
+		redactedKeys = append(redactedKeys, k)
+	}
+	sort.Strings(redactedKeys)
+	return out, redactedKeys
+}
+
+// urlOrbAuthSafeValues is the known-safe enum set for URLOrbAllowEntry.Auth.
+// Observed values confirmed from the CircleCI API and test fixtures:
+//   - "none"  — no authentication required for the orb source URL
+//   - "aws"   — AWS-signed requests (IRSA/instance profile; no embedded secret)
+//
+// Any value outside this set is treated as a potential credential and is
+// redacted before the manifest is written. This defensive stance ensures that
+// future Auth types that DO carry secret material (e.g. a bearer-token form)
+// are never written verbatim into the manifest.
+var urlOrbAuthSafeValues = map[string]bool{
+	"none": true,
+	"aws":  true,
+}
+
+// urlOrbAuthRedactionPlaceholder marks a URLOrbAllowEntry.Auth value that is
+// not in the known-safe enum set and has therefore been redacted.
+const urlOrbAuthRedactionPlaceholder = "<redacted: unknown URL-orb auth type>"
+
+// redactURLOrbAuth returns auth verbatim when it is empty (no auth configured)
+// or in the known-safe enum set (currently "none" and "aws"). Any other value
+// is replaced with urlOrbAuthRedactionPlaceholder to prevent unrecognised
+// credential formats from appearing in the manifest. Empty is passed through so
+// entries with no auth round-trip correctly through sync.
+func redactURLOrbAuth(auth string) string {
+	if auth == "" || urlOrbAuthSafeValues[auth] {
+		return auth
+	}
+	return urlOrbAuthRedactionPlaceholder
 }
 
 // splitOrgSlug returns the (vcs, orgName) pair for a "vcs/org" slug. For

@@ -2177,8 +2177,13 @@ func TestExport_OrgSettings_OTelExportersCaptured(t *testing.T) {
 	if exporters[0].Insecure {
 		t.Error("exporters[0].Insecure should be false")
 	}
-	if exporters[0].Headers["Authorization"] != "xxxx" {
-		t.Errorf("exporters[0].Headers[Authorization]: got %q want xxxx", exporters[0].Headers["Authorization"])
+	// Header values are redacted client-side (even the server-side "xxxx" value
+	// is replaced by the redaction placeholder to be conservative).
+	if _, ok := exporters[0].Headers["Authorization"]; !ok {
+		t.Error("exporters[0].Headers: Authorization key must be preserved")
+	}
+	if v := exporters[0].Headers["Authorization"]; !strings.Contains(v, "redacted") {
+		t.Errorf("exporters[0].Headers[Authorization]: expected redaction placeholder, got %q", v)
 	}
 	if exporters[1].Insecure != true {
 		t.Error("exporters[1].Insecure should be true")
