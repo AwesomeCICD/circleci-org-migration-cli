@@ -187,7 +187,8 @@ func TestOrbInline_RequiresConfig(t *testing.T) {
 	}
 }
 
-// TestOrbInline_RequiresToken verifies that omitting the token returns an error.
+// TestOrbInline_RequiresToken verifies that omitting all tokens returns the
+// canonical source-token error message.
 func TestOrbInline_RequiresToken(t *testing.T) {
 	// Clear all token env vars to ensure no token is available.
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
@@ -198,9 +199,34 @@ func TestOrbInline_RequiresToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when token is not set, got nil")
 	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Errorf("error %q does not mention 'token'", err.Error())
+	wantSubstr := "no source API token"
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("error %q does not contain %q", err.Error(), wantSubstr)
 	}
+}
+
+// TestOrbInline_AcceptsSourceToken verifies that CIRCLECI_SOURCE_TOKEN is
+// accepted by orb inline (regression for issue #70 where only CIRCLECI_CLI_TOKEN
+// was consulted).
+func TestOrbInline_AcceptsSourceToken(t *testing.T) {
+	// Set only CIRCLECI_SOURCE_TOKEN — no CIRCLECI_CLI_TOKEN.
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-source-token")
+
+	withFakeOrbSource(t, map[string]string{
+		"myns/foo@1.2.3":      fooOrbSource,
+		"circleci/node@5.0.0": nodeOrbSource,
+	})
+
+	cfgPath := writeConfig(t, sampleConfig)
+	out, _, err := runCmd(t, "orb", "inline", "--config", cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error with CIRCLECI_SOURCE_TOKEN set: %v", err)
+	}
+
+	// Both orbs must be inlined, proving the token was accepted.
+	assertOrbIsInline(t, out, "foo")
+	assertOrbIsInline(t, out, "node")
 }
 
 // ---------------------------------------------------------------------------
