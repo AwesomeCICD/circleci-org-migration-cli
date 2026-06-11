@@ -487,15 +487,8 @@ jobs:
       # artifact signing) and `sboms:` (CycloneDX SBOM) blocks. They are not
       # bundled with GoReleaser, so the release step fails without them on PATH.
       # Installed via direct, pinned release downloads (same pattern as above).
-      - run:
-          name: Install cosign (pinned v2.4.1)
-          command: |
-            # renovate: datasource=github-releases depName=sigstore/cosign
-            ver=2.6.3
-            curl -sfL "https://github.com/sigstore/cosign/releases/download/v${ver}/cosign-linux-amd64" \
-              -o /tmp/cosign
-            sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
-            cosign version
+      # cosign install removed: keyless signing is disabled (see #215 and
+      # .goreleaser.yml signs: block). syft (SBOM generation) stays.
       - run:
           name: Install syft (pinned v1.18.1)
           command: |

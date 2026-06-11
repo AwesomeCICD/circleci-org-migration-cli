@@ -57,40 +57,24 @@ sboms:
       - '--output'
       - 'cyclonedx-json=$document'
 
-# Keyless (OIDC) signing of all release artifacts (archives + checksums + SBOMs)
-# with Cosign. Signatures + certificates are uploaded as additional release
-# assets; verification needs no long-lived private key.
+# Cosign keyless (OIDC) signing is DISABLED — see #215.
 #
-# PREREQUISITES (the release job must satisfy ALL of these or the release fails):
-#   1. The `cosign` binary must be on PATH (NOT bundled with GoReleaser — the
-#      release CI must install it; see .circleci/continue_config.yml).
-#   2. Keyless signing relies on an OIDC token. CircleCI exposes one as the
-#      env var CIRCLE_OIDC_TOKEN_V2; we pass it via `--identity-token` so cosign
-#      does not try to open an interactive browser flow (`COSIGN_EXPERIMENTAL`
-#      is no longer required on modern cosign for keyless blob signing).
-#   3. The job needs network access to Fulcio (signing cert) and Rekor
-#      (transparency log), which are the public Sigstore defaults.
+# Keyless signing via the PUBLIC Sigstore (fulcio.sigstore.dev) does not work
+# from CircleCI: Fulcio rejects CircleCI's OIDC token because its audience is
+# the org ID, not `sigstore`, so it returns
+#   400 "There was an error processing the identity token".
+# This broke the v0.8.1 release (artifacts built + SBOMs generated, but the
+# upload never happened because signing failed). Re-enabling signing requires
+# either a cosign-compatible OIDC token (aud=sigstore) or key-based cosign with
+# a KMS-stored key. Tracked in #215. SBOMs (syft, above) are kept — they work.
 #
-# Verify a downloaded artifact with, e.g.:
-#   cosign verify-blob \
-#     --certificate circleci-migrate_1.2.3_linux_amd64.tar.gz.pem \
-#     --signature   circleci-migrate_1.2.3_linux_amd64.tar.gz.sig \
-#     --certificate-identity-regexp '.*' \
-#     --certificate-oidc-issuer https://oidc.circleci.com/org/<org-id> \
-#     circleci-migrate_1.2.3_linux_amd64.tar.gz
-signs:
-  - cmd: cosign
-    signature: '${artifact}.sig'
-    certificate: '${artifact}.pem'
-    artifacts: all
-    output: true
-    args:
-      - 'sign-blob'
-      - '--yes'
-      - '--identity-token={{ .Env.CIRCLE_OIDC_TOKEN_V2 }}'
-      - '--output-certificate=${certificate}'
-      - '--output-signature=${signature}'
-      - '${artifact}'
+# signs:
+#   - cmd: cosign
+#     signature: '${artifact}.sig'
+#     certificate: '${artifact}.pem'
+#     artifacts: all
+#     output: true
+#     args: ['sign-blob','--yes','--identity-token={{ .Env.CIRCLE_OIDC_TOKEN_V2 }}','--output-certificate=${certificate}','--output-signature=${signature}','${artifact}']
 
 snapshot:
   # version_template is the v2 key (v1 used name_template).
