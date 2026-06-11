@@ -85,11 +85,17 @@ Archive naming: `circleci-migrate_<version>_<os>_<arch>.tar.gz`
 (supported: `linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`).
 
 ```bash
-VERSION=v0.4.1
+# Resolve the latest release tag (e.g. v0.7.0) from the GitHub API.
+VERSION=$(curl -sfL https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest \
+  | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/${VERSION}/circleci-migrate_${VERSION#v}_linux_amd64.tar.gz" \
   | tar -xz
 sudo install -m 0755 circleci-migrate /usr/local/bin/
 ```
+
+To pin a specific version instead, set `VERSION` to the tag you want from the
+[releases page](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases)
+(e.g. `VERSION=v0.7.0`) and skip the first command.
 
 ---
 

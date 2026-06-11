@@ -305,9 +305,8 @@ in place for inspection; it is not cancelled automatically.
 
 ## Runner (resource classes)
 
-The runner v3 API base (`/api/v3/runner/...`) is reserved for a future
-milestone covering self-hosted runner resource-class migration. It is not
-called in the current release.
+The runner v3 API base (`/api/v3/runner/...`) is used for self-hosted runner
+resource-class migration (since v0.3.0).
 
 ---
 
