@@ -1,33 +1,63 @@
-# circleci-migrate demo — no network/tokens required
-# Demonstrates the key commands and help output
+# vhs tape for the circleci-migrate README demo.
+# Regenerate with:  make demo-gif   (or: vhs docs/demo.tape)
+# Deterministic + offline: shows version, the export->review->sync workflow,
+# and the secure-secrets highlight via --help. No network, no org data.
 
 Output docs/demo.gif
 
-Set FontSize 18
-Set Width 1200
-Set Height 700
-Set Theme "Dracula"
 Set Shell "bash"
-Set Padding 20
-Set Margin 10
-Set BorderRadius 10
+Set FontSize 17
+Set Width 1200
+Set Height 760
+Set Padding 18
+Set Theme "Catppuccin Mocha"
+Set TypingSpeed 55ms
 
-# Use the locally-built binary
-Type "export PATH=/tmp:$PATH" Enter
-Sleep 500ms
+# `make demo-gif` builds the binary and puts ./bin on PATH before invoking vhs,
+# which the recording shell inherits — so commands read as plain `circleci-migrate`.
+Hide
+Type "clear"
+Enter
+Show
 
-# Top-level help
-Type "circleci-migrate --help" Enter
-Sleep 2s
+Sleep 800ms
+Type "circleci-migrate version"
+Sleep 400ms
+Enter
+Sleep 1500ms
 
-# migrate help — shows interactive vs flag-driven paths
-Type "circleci-migrate migrate --help" Enter
-Sleep 2s
+Type "# Migrate a CircleCI org in two steps: export -> review -> sync"
+Sleep 300ms
+Enter
+Sleep 700ms
 
-# secrets capture help — shows guided/encryption options
-Type "circleci-migrate secrets capture --help" Enter
-Sleep 2s
+Type "circleci-migrate --help"
+Sleep 400ms
+Enter
+Sleep 4s
 
-# version
-Type "circleci-migrate version" Enter
-Sleep 1s
+Type "clear"
+Enter
+Sleep 300ms
+
+Type "# Secrets are encrypted by default - never written as plaintext artifacts"
+Sleep 300ms
+Enter
+Sleep 700ms
+
+Type "circleci-migrate secrets capture --help | sed -n '/ENCRYPTION/,/generate-key to have/p'"
+Sleep 400ms
+Enter
+Sleep 4s
+
+Type "clear"
+Enter
+Sleep 300ms
+
+Type "# Prefer a guided flow? Run migrate with no flags for an interactive walkthrough."
+Sleep 300ms
+Enter
+Type "circleci-migrate migrate --help | sed -n '1,14p'"
+Sleep 400ms
+Enter
+Sleep 3500ms
