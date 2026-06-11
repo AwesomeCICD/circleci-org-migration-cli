@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -96,7 +97,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			bundle, err := loadBundleIfPresent(secretsPath)
+			bundle, err := loadBundleWithFeedback(secretsPath, !cmd.Flags().Changed("secrets"), cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -355,6 +356,41 @@ func loadBundleIfPresent(path string) (*manifest.SecretBundle, error) {
 		return nil, err
 	}
 	return manifest.LoadSecretBundle(path)
+}
+
+// loadBundleWithFeedback is like loadBundleIfPresent but also prints a status
+// line to stderr so the operator knows whether the bundle was loaded or absent.
+//
+//   - Present:  "Loaded secrets bundle from <path> (N values)."
+//   - Absent (default path "secrets.json"):
+//     "Note: secrets.json not found — env-var values will be missing unless captured."
+//   - Absent (explicit non-default path): no note (user supplied the path explicitly;
+//     a missing explicit bundle is a configuration error the caller handles).
+//
+// isDefault should be true when path came from the flag default (i.e. the user
+// did not explicitly supply --secrets).
+func loadBundleWithFeedback(path string, isDefault bool, errW io.Writer) (*manifest.SecretBundle, error) {
+	bndl, err := loadBundleIfPresent(path)
+	if err != nil {
+		return nil, err
+	}
+	if bndl == nil {
+		// Bundle absent.
+		if isDefault && path != "" {
+			fmt.Fprintf(errW, "Note: %s not found — env-var values will be missing unless captured.\n", path)
+		}
+		return nil, nil
+	}
+	// Bundle loaded — count total secret values.
+	n := 0
+	for _, vals := range bndl.ContextSecrets {
+		n += len(vals)
+	}
+	for _, vals := range bndl.ProjectSecrets {
+		n += len(vals)
+	}
+	fmt.Fprintf(errW, "Loaded secrets bundle from %s (%d values).\n", path, n)
+	return bndl, nil
 }
 
 func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report) {

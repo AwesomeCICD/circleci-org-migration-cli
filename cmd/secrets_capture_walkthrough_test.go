@@ -676,3 +676,158 @@ func TestCaptureWalkthrough_FriendlyNameInPrompts(t *testing.T) {
 		t.Errorf("walkthrough prompt should contain friendly name 'my-repo'; output:\n%s", output)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #76 — step numbering: 8 steps total
+// ---------------------------------------------------------------------------
+
+// driveWalkthroughNoOutput is like driveWalkthrough but does NOT pre-fill
+// Output so that the walkthrough prompts for the output bundle path.
+func driveWalkthroughNoOutput(
+	t *testing.T,
+	m *manifest.Manifest,
+	inputLines []string,
+) (cmd.CaptureWalkthroughResult, string, error) {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	mPath := filepath.Join(dir, "manifest.json")
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if writeErr := os.WriteFile(mPath, data, 0o644); writeErr != nil {
+		t.Fatalf("write manifest: %v", writeErr)
+	}
+
+	input := strings.Join(inputLines, "\n") + "\n"
+	r := strings.NewReader(input)
+
+	root := cmd.MakeCommands()
+	var promptBuf strings.Builder
+	p := cmd.NewPrompter(r, &promptBuf)
+
+	// Output is intentionally left empty so the walkthrough prompts for it.
+	initial := cmd.CaptureWalkthroughResult{
+		ManifestPath: mPath,
+		Output:       "", // ← empty: walkthrough should prompt
+	}
+	result, walkthroughErr := cmd.RunCaptureWalkthroughWith(p, root, initial)
+	return result, promptBuf.String(), walkthroughErr
+}
+
+// TestCaptureWalkthrough_StepNumbering_8Steps verifies that the walkthrough
+// header text uses "of 8" throughout (not the old "of 6").
+func TestCaptureWalkthrough_StepNumbering_8Steps(t *testing.T) {
+	m := noContextManifest()
+
+	lines := []string{
+		"",                // projects: all
+		"n",               // encrypt
+		"1",               // storage: artifact
+		"n",               // retention: no
+		"custom-out.json", // output path (Step 7)
+		"",                // branch: main (Step 7)
+		"y",               // enable trigger (Step 8)
+		"y",               // confirm
+	}
+
+	_, output, err := driveWalkthroughNoOutput(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	for _, want := range []string{"1 of 8", "2 of 8", "4 of 8", "5 of 8", "6 of 8", "7 of 8", "8 of 8"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected walkthrough output to contain %q; got:\n%s", want, output)
+		}
+	}
+	// Must NOT contain the old "of 6" string.
+	if strings.Contains(output, "of 6") {
+		t.Errorf("walkthrough output still contains old 'of 6'; got:\n%s", output)
+	}
+}
+
+// TestCaptureWalkthrough_OutputPathPrompt verifies that the walkthrough asks
+// for the output bundle path when it is not pre-filled, and that the result
+// reflects the user's answer.
+func TestCaptureWalkthrough_OutputPathPrompt(t *testing.T) {
+	m := noContextManifest()
+
+	lines := []string{
+		"",               // projects: all
+		"n",              // encrypt
+		"1",              // storage: artifact
+		"n",              // retention: no
+		"my-bundle.json", // output path (Step 7)
+		"",               // branch: main (Step 7)
+		"y",              // enable trigger (Step 8)
+		"y",              // confirm
+	}
+
+	result, output, err := driveWalkthroughNoOutput(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	if result.Output != "my-bundle.json" {
+		t.Errorf("Output=%q, want my-bundle.json", result.Output)
+	}
+	// The prompt should mention "Output bundle path".
+	if !strings.Contains(output, "Output bundle path") {
+		t.Errorf("expected prompt to contain 'Output bundle path'; got:\n%s", output)
+	}
+}
+
+// TestCaptureWalkthrough_OutputPathDefault verifies that pressing Enter at the
+// output path prompt selects the default "secrets.json".
+func TestCaptureWalkthrough_OutputPathDefault(t *testing.T) {
+	m := noContextManifest()
+
+	lines := []string{
+		"",  // projects: all
+		"n", // encrypt
+		"1", // storage: artifact
+		"n", // retention: no
+		"",  // output path: accept default (secrets.json)
+		"",  // branch: main
+		"y", // enable trigger
+		"y", // confirm
+	}
+
+	result, _, err := driveWalkthroughNoOutput(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	if result.Output != "secrets.json" {
+		t.Errorf("Output=%q, want secrets.json (default)", result.Output)
+	}
+}
+
+// TestCaptureWalkthrough_Step8_EnableTrigger verifies that Step 8's label
+// appears in the walkthrough output.
+func TestCaptureWalkthrough_Step8_EnableTrigger(t *testing.T) {
+	m := noContextManifest()
+
+	lines := []string{
+		"",  // projects: all
+		"n", // encrypt
+		"1", // storage: artifact
+		"n", // retention
+		"",  // output path default
+		"",  // branch: main
+		"y", // enable trigger
+		"y", // confirm
+	}
+
+	_, output, err := driveWalkthroughNoOutput(t, m, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	if !strings.Contains(output, "Step 8 of 8") {
+		t.Errorf("expected 'Step 8 of 8' in walkthrough output; got:\n%s", output)
+	}
+	if !strings.Contains(output, "Step 7 of 8") {
+		t.Errorf("expected 'Step 7 of 8' in walkthrough output; got:\n%s", output)
+	}
+}

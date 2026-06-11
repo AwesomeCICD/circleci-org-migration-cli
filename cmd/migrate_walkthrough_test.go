@@ -261,3 +261,61 @@ func TestMigrateCmd_InvalidMissingSecrets_NoInput(t *testing.T) {
 		t.Errorf("error should mention 'missing-secrets', got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #76 — migrate walkthrough Step 3a/3b sub-step labels
+// ---------------------------------------------------------------------------
+
+// runWalkthroughCaptureOutput calls RunMigrateWalkthroughWith and captures the
+// full prompt/output text so we can assert on step labels.
+func runWalkthroughCaptureOutput(t *testing.T, inputLines []string) (string, error) {
+	t.Helper()
+
+	input := strings.Join(inputLines, "\n") + "\n"
+	r := strings.NewReader(input)
+
+	root := cmd.MakeCommands()
+	var outBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&outBuf)
+
+	p := cmd.NewPrompter(r, &outBuf)
+
+	_, _, _, _, _, _, _, _, _, _, err := cmd.RunMigrateWalkthroughWith(p, root, "", "", false)
+	return outBuf.String(), err
+}
+
+// TestMigrateWalkthrough_Step3SubStepLabels verifies that "Step 3a of 4" and
+// "Step 3b of 4" appear in the walkthrough output, replacing the unlabelled
+// sub-prompts that existed before issue #76 was fixed.
+func TestMigrateWalkthrough_Step3SubStepLabels(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"",            // components: all
+		"n",           // no secrets bundle
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+	if !strings.Contains(output, "Step 3a of 4") {
+		t.Errorf("expected 'Step 3a of 4' in migrate walkthrough output; got:\n%s", output)
+	}
+	if !strings.Contains(output, "Step 3b of 4") {
+		t.Errorf("expected 'Step 3b of 4' in migrate walkthrough output; got:\n%s", output)
+	}
+	if !strings.Contains(output, "Secrets bundle") {
+		t.Errorf("expected 'Secrets bundle' label in Step 3a; got:\n%s", output)
+	}
+	if !strings.Contains(output, "Missing secret values") {
+		t.Errorf("expected 'Missing secret values' label in Step 3b; got:\n%s", output)
+	}
+}

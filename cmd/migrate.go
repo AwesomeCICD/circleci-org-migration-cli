@@ -229,7 +229,7 @@ Examples:
 				return err
 			}
 
-			bundle, err := loadBundleIfPresent(secretsPath)
+			bundle, err := loadBundleWithFeedback(secretsPath, !cmd.Flags().Changed("secrets"), cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -489,7 +489,11 @@ func RunMigrateWalkthroughWith(
 		}
 	}
 
-	// --- 3b. Secrets bundle --------------------------------------------------
+	// --- Step 3a. Secrets bundle ---------------------------------------------
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 3a of 4 — Secrets bundle")
+	fmt.Fprintln(out, "  A captured secrets bundle supplies plaintext env-var values during sync.")
+	fmt.Fprintln(out, "  Produce one with 'secrets capture' before running migrate.")
 	fmt.Fprintln(out, "")
 	var useBundle bool
 	useBundle, err = p.askBool("Do you have a captured secrets bundle to provide?", false)
@@ -505,7 +509,10 @@ func RunMigrateWalkthroughWith(
 		secretsPath = "" // no bundle
 	}
 
-	// --- 3c. Missing secrets handling ----------------------------------------
+	// --- Step 3b. Missing secrets handling -----------------------------------
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Step 3b of 4 — Missing secret values")
+	fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
 	fmt.Fprintln(out, "")
 	var missingChoice string
 	missingChoice, err = p.askChoice(
