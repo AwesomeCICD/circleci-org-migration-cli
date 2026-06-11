@@ -1,17 +1,28 @@
 # CircleCI API usage
 
 `circleci-migrate` is v2-first. The vast majority of operations use the
-CircleCI API v2 (`/api/v2/`). A small number of capabilities are only
-available in the legacy v1.1 API, a project-discovery capability uses the
-private `/api/private/` endpoint, and two org-level resources require the
-private CIAM endpoints served by `app.circleci.com`; those are called out
-explicitly below.
+CircleCI API v2 (`/api/v2/`). The remaining surfaces are:
+
+- the legacy **v1.1** API for settings not exposed by v2 (feature flags,
+  project follow, additional SSH keys, project API tokens);
+- the **runner API v3** on `runner.circleci.com` for self-hosted runner
+  resource classes;
+- the private **`/api/private/`** endpoint on `circleci.com` for App-org
+  project discovery and a few org settings (contacts);
+- the private **CIAM** endpoints on `app.circleci.com` for groups, SSO state,
+  and org/project role grants;
+- the **`graphql-unstable`** endpoint for orb-source introspection.
+
+The private endpoints are unofficial and may change — see the
+[private-endpoint risk note](#private-endpoint-risk-note). Each surface is
+documented explicitly below.
 
 All requests carry a `Circle-Token` header and a `User-Agent` header in the
-form `circleci-migrate/<version>`. The host is configurable via `--host` or
-`CIRCLECI_HOST` (default: `https://circleci.com`). The private CIAM endpoints
-always target `app.circleci.com` (or the equivalent for Server installs) and
-use the same token.
+form `circleci-migrate/<version>`. The main host is configurable via `--host`
+(env `CIRCLECI_CLI_HOST`, `CIRCLECI_HOST`, or `CIRCLE_URL`; default:
+`https://circleci.com`). The private CIAM endpoints always target
+`app.circleci.com` and the runner API always targets `runner.circleci.com` (or
+the equivalent for Server installs); all use the same token.
 
 Secret values are **never returned by any API version**. The CircleCI API
 masks every environment-variable value everywhere it appears. Capturing real
@@ -184,6 +195,30 @@ source token's user does not follow every repository, pass an explicit
 | `GET` | `/api/v1.1/project/{slug}/settings` | Read the `feature_flags` blob for a project (e.g. `api_trigger_with_config`, `drop_all_build_requests`). |
 | `PUT` | `/api/v1.1/project/{slug}/settings` | Write project feature flags. `drop_all_build_requests` is a danger flag that is skipped by default. |
 
+#### v1.1 additional SSH keys
+
+Project **additional SSH keys** (keys added beyond the checkout/deploy key) are
+captured as metadata on export and re-uploaded on sync (skipped with
+`--skip-extras`). Private key material is never returned by any API, so it must
+be supplied to re-upload (the syncer matches by fingerprint to avoid duplicates).
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v1.1/project/{slug}/settings?ssh-key-digest=sha256` | Read the `ssh_keys` array: `hostname`, `public_key`, and SHA256 `fingerprint`. Private keys are never present. |
+| `POST` | `/api/v1.1/project/{slug}/ssh-key` | Upload an additional SSH key. Body: `{"hostname": "<host>", "private_key": "<PEM>"}`. `hostname` may be empty for a globally-scoped key. Idempotent at the API level (re-uploading the same key is a no-op). |
+
+#### v1.1 project API tokens
+
+Project **API tokens** are captured as metadata on export. They are recreated
+on sync only when `--create-project-tokens` is set (default: emit manual steps).
+Token *values* are never returned by the list API and are returned by `create`
+**once only**.
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `/api/v1.1/project/{slug}/token` | List token metadata: `id`, `label`, `scope` (`status` / `view-builds` / `all`). The token value is always null on list. |
+| `POST` | `/api/v1.1/project/{slug}/token` | Create a token. Body: `{"scope": "<scope>", "label": "<label>"}`. The response includes the plaintext `token` **once** — the CLI prints it to stderr and it cannot be retrieved again. Recreated tokens mint NEW secrets, so every consumer of the old token must be repointed. |
+
 #### OAuth project creation and enable-builds
 
 | Method | Endpoint | Used for |
@@ -243,7 +278,7 @@ query OrbSource($orbVersionRef: String!) {
 ```
 
 `orbVersionRef` is the fully qualified orb reference from the config's `orbs:`
-stanza (e.g. `awesomecicd/circleci-org-migration@0.2.0`). Public orbs are
+stanza (e.g. `awesomecicd/circleci-org-migration@0.8.0`). Public orbs are
 fetched without a token; private orbs require a token that belongs to a user or
 machine-user with access to that orb's namespace. A `null` `source` in the
 response is treated as "orb not found or not accessible."
@@ -303,10 +338,126 @@ in place for inspection; it is not cancelled automatically.
 
 ---
 
-## Runner (resource classes)
+## Runner API v3 (self-hosted runner resource classes)
 
-The runner v3 API base (`/api/v3/runner/...`) is used for self-hosted runner
-resource-class migration (since v0.3.0).
+Self-hosted runner **resource classes** have been migrated since v0.3.0. The
+runner API lives on its own host — `https://runner.circleci.com` — not on
+`circleci.com`. The `api/runner` client always targets `runner.circleci.com`
+regardless of `--host` (on Server installs the host is reused as-is). The same
+`Circle-Token` header is used.
+
+Resource classes are keyed by **namespace**, and there is no clean
+org → namespace lookup in the API, so the namespace must be supplied
+explicitly: `--runner-namespace` on `export`, `--dest-runner-namespace` on
+`sync`. Only the class *definition* (`resource_class`, `description`) is
+captured; ephemeral runner instances are intentionally ignored, and no tokens
+are exported (runner registration tokens are never returned).
+
+### Read (export phase)
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://runner.circleci.com/api/v3/runner/resource?namespace={ns}` | List all resource classes registered under a namespace. Returns `{ "items": [...] }`. `namespace` is a bare name (e.g. `acme`), not a slug. |
+
+### Write (sync phase)
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `POST` | `https://runner.circleci.com/api/v3/runner/resource` | Create a resource class in the destination namespace. Body: `{"resource_class": "<ns>/<name>", "description": "<desc>"}`. |
+| `DELETE` | `https://runner.circleci.com/api/v3/runner/resource/{id}` | Delete a resource class by UUID. Used for rollback and test cleanup only. |
+
+If the manifest contains runner classes but `--dest-runner-namespace` is not
+supplied, each class is flagged as `manual` in the sync report — the syncer
+never guesses the destination namespace.
+
+---
+
+## Private CIAM role-grants and groups (`app.circleci.com`)
+
+> **These are private, unofficial endpoints.** See the
+> [private-endpoint risk note](#private-endpoint-risk-note) below.
+
+CIAM (Identity & Access Management) roles and groups are migrated for
+**standalone `circleci/`-type orgs only**. Like the CIAM group/SSO reads
+documented under [Organization](#private-ciam-endpoints-groups-and-sso), these
+endpoints are served by `app.circleci.com` via the `api/org` client's separate
+`app` HTTP client. `sync` skips this section entirely on OAuth (`gh/`) orgs and
+when `--skip-ciam` is passed.
+
+### Org-level role grants
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants` | List org-level role grants. Each item has `user_id`, `email`, `username`, and `role` (`org-admin` / `org-contributor` / `org-viewer`). Used both to capture source grants and to resolve destination user IDs by email. |
+| `PUT` | `https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants/user/{userID}` | Assign an org role to a user. Body: `{"role": "<role>"}`. **Automated** by `sync` for users who already exist in the destination org (matched by email); unmatched users are reported as `manual`. |
+
+### Groups
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://app.circleci.com/private/ciam/orgs/{orgID}/groups` | List the org's CIAM groups (`id`, `name`). The "All members" group's UUID equals the org ID. |
+| `POST` | `https://app.circleci.com/private/ciam/orgs/{orgID}/groups` | Create a group. Body: `{"orgId": "...", "name": "...", "description": "..."}`. |
+| `POST` | `https://app.circleci.com/private/ciam/orgs/{orgID}/groups/{groupID}/add-users` | Add users to a group by UUID. Body: `{"user_ids": [...]}`. |
+
+### Project-level role grants (capture / manual only)
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants` | List per-project **user** role grants (`user_id`, `email`, `username`, `role`). |
+| `GET` | `https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups` | List per-project **group** role grants (`group_id`, `role`). |
+| `PUT` | `https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants/user/{userID}` | Assign a project role to a user. Body: `{"role": "<role>"}`. (Client method exists; not driven automatically — see below.) |
+| `POST` | `https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups` | Grant a role to groups on a project. Body: `{"group_ids": [...], "role": "<role>"}`. (Client method exists; not driven automatically — see below.) |
+
+**Why project-level grants are not applied automatically:** the destination
+project UUID is not reliably mappable from the source, so `sync` records every
+per-project user and group grant as `manual` and the operator recreates them on
+the destination project (tracked in
+[#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179)).
+The org-level role-grant and group write methods *are* driven automatically.
+
+---
+
+## Usage API (async usage-export job)
+
+The opt-in `export --include-usage` flow requests a historical usage report
+from the v2 Usage API. This is an **asynchronous job**: create the job, poll for
+completion, then download the resulting gzip-compressed CSV files. The window
+defaults to the last 30 days and may not exceed 31 days (server-enforced).
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `POST` | `/api/v2/organizations/{orgID}/usage_export_job` | Submit a usage-export job. Body: `{"start": "<RFC3339>", "end": "<RFC3339>", "shared_org_ids": [...]}` (`shared_org_ids` optional). Returns `usage_export_job_id`. |
+| `GET` | `/api/v2/organizations/{orgID}/usage_export_job/{jobID}` | Poll job `state`; when `completed`, returns pre-signed `download_urls`. The CLI downloads each URL into a `usage/` sub-directory next to the manifest. |
+
+**Local baseline only.** Usage data is a record/baseline for the source org. It
+is **never** transferred to the destination by `sync` or `migrate`. If the
+export job fails or exceeds `--usage-timeout` (default 10 minutes), the main
+export still succeeds and a warning is printed.
+
+---
+
+## Private-endpoint risk note
+
+`circleci-migrate` is v2-first, but a handful of capabilities are only
+reachable through **private, unofficial** endpoints. These are not part of the
+documented public API and **may change or disappear without notice**. They are:
+
+| Surface | Host / base | Used for |
+|---|---|---|
+| `/api/private/project` | `circleci.com` | Project discovery for GitHub App orgs (by org UUID). |
+| `/private/ciam/...` | `app.circleci.com` | CIAM groups, SSO state, and org/project role grants. |
+| `/api/private/...` org settings | `circleci.com` | Org contacts and other settings not yet promoted to v2. |
+| `graphql-unstable` | `circleci.com` | Orb-source introspection for `orb inline`. |
+
+Implications for operators:
+
+- Treat any feature built on a private endpoint as best-effort. The tool records
+  a warning and continues rather than aborting when one of these calls fails.
+- A 4xx/5xx from a private endpoint is **not** necessarily a bug in the CLI — the
+  endpoint contract may have shifted. Re-run with `--debug` to capture the
+  request/response, and check for a newer release.
+- This is the primary motivation for the planned migration off private endpoints
+  (M4): public/GA replacements should be adopted as they become available.
 
 ---
 
