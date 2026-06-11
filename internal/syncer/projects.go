@@ -203,8 +203,13 @@ func (s *Syncer) syncProjectV11Flags(report *Report, p manifest.Project, dst str
 		target := dst + "/feature_flag:" + flagKey
 
 		if dangerProjectFlags[flagKey] {
+			// Only warn when the source value is true (non-default). When the
+			// flag is false/absent there is nothing to migrate and no noise needed.
+			if !*val {
+				continue
+			}
 			report.add("project-flag", target, "manual",
-				fmt.Sprintf("flag %q skipped: writing this flag to a new project is unsafe (it can stop all builds). Set manually after validating the destination project is ready.", flagKey))
+				fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set manually after validating the destination project is ready.", flagKey))
 			continue
 		}
 

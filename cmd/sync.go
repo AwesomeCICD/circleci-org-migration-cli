@@ -12,6 +12,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/cciurl"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
 	"github.com/spf13/cobra"
@@ -255,7 +256,7 @@ Examples:
 				}
 				repsBySection["Org Settings"] = rep
 				if !jsonOutput {
-					printSyncReport(cmd, "Org Settings", rep)
+					printSyncReport(cmd, "Org Settings", rep, m)
 				}
 			}
 			if !skipContexts {
@@ -265,7 +266,7 @@ Examples:
 				}
 				repsBySection["Contexts"] = rep
 				if !jsonOutput {
-					printSyncReport(cmd, "Contexts", rep)
+					printSyncReport(cmd, "Contexts", rep, m)
 				}
 			}
 			if !skipProjects {
@@ -275,7 +276,7 @@ Examples:
 				}
 				repsBySection["Projects"] = rep
 				if !jsonOutput {
-					printSyncReport(cmd, "Projects", rep)
+					printSyncReport(cmd, "Projects", rep, m)
 				}
 
 				// Handle the enable-builds (follow) step for paused projects.
@@ -292,7 +293,7 @@ Examples:
 				}
 				repsBySection["Runner Resource Classes"] = rep
 				if !jsonOutput {
-					printSyncReport(cmd, "Runner Resource Classes", rep)
+					printSyncReport(cmd, "Runner Resource Classes", rep, m)
 				}
 			}
 
@@ -582,7 +583,7 @@ func loadBundleWithFeedback(path string, isDefault bool, errW io.Writer) (*manif
 	return bndl, nil
 }
 
-func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report) {
+func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report, m *manifest.Manifest) {
 	out := cmd.OutOrStdout()
 	mode := "DRY RUN (no changes written; re-run with --apply to apply)"
 	if rep.Applied {
@@ -609,7 +610,245 @@ func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report) {
 		fmt.Fprintf(out, "\n  Needs attention:\n")
 		sort.Slice(attention, func(i, j int) bool { return attention[i].Target < attention[j].Target })
 		for _, a := range attention {
-			fmt.Fprintf(out, "    [%s] %s — %s\n", a.Status, a.Target, a.Detail)
+			line := syncActionLine(a, rep.DestOrgSlug, m)
+			fmt.Fprintf(out, "    [%s] %s — %s\n", a.Status, line, a.Detail)
 		}
 	}
+}
+
+// syncActionLine enriches an action's Target with a friendly project/context
+// name (from the manifest) and a destination settings URL when constructible.
+// The returned string replaces the raw target slug in the "Needs attention"
+// output so operators can act without hunting for UUIDs.
+//
+// The destination org slug (rep.DestOrgSlug) is used for URL construction so
+// the link points at the correct destination org, not the source.
+func syncActionLine(a syncer.Action, destOrgSlug string, m *manifest.Manifest) string {
+	target := a.Target
+
+	// Derive a dest host: use the manifest source host (URL scheme is the same
+	// for cloud, different for server). For circleci.com sources this resolves to
+	// app.circleci.com; for server installs it uses the server host.
+	destHost := m.Source.Host
+
+	// Compute the destination project slug from the target by replacing the
+	// project-UUID portion with the destination org slug where possible.
+	// Target formats we recognise (set by the syncer):
+	//   "circleci/<srcOrgUUID>/<srcProjUUID>/..."  — standalone/App projects
+	//   "gh/<org>/<repo>/..."                       — OAuth projects
+	//   "<name>"                                    — App projects during dry-run / App creation path
+
+	// Build helper lookups once.
+	projBySourceSlug := buildProjBySourceSlug(m)
+	projByName := buildProjByName(m)
+	ctxByName := buildCtxByName(m)
+
+	// Identify what this action's target refers to.
+	friendlyName, settingsURL := resolveTargetMeta(target, destOrgSlug, destHost, projBySourceSlug, projByName, ctxByName)
+
+	if friendlyName == "" && settingsURL == "" {
+		return target
+	}
+	if friendlyName != "" && settingsURL != "" {
+		return fmt.Sprintf("%s (%s) → %s", target, friendlyName, settingsURL)
+	}
+	if friendlyName != "" {
+		return fmt.Sprintf("%s (%s)", target, friendlyName)
+	}
+	return fmt.Sprintf("%s → %s", target, settingsURL)
+}
+
+// resolveTargetMeta extracts the friendly name and destination settings URL for
+// an action target. Returns ("", "") when neither can be determined.
+func resolveTargetMeta(
+	target, destOrgSlug, destHost string,
+	projBySourceSlug map[string]manifest.Project,
+	projByName map[string]manifest.Project,
+	ctxByName map[string]manifest.Context,
+) (friendlyName, settingsURL string) {
+	// --- project-scoped targets ---
+	// Patterns: "circleci/<orgUUID>/<projUUID>/<kind>:<detail>"
+	//           "gh/<org>/<repo>/<kind>:<detail>"
+	//           "<projectName>/<kind>:<detail>"    (App dry-run path)
+	//
+	// First try to extract a project slug (3-part prefix).
+	if projSlug, rest := splitProjectSlug(target); projSlug != "" {
+		// Look up the source project by slug.
+		p, ok := projBySourceSlug[projSlug]
+		if !ok {
+			// Not a known source slug — may be a dest slug already; try name lookup
+			// via the last path component.
+			name := slugLastComponent(projSlug)
+			if pp, found := projByName[name]; found {
+				p = pp
+				ok = true
+			}
+		}
+		if ok {
+			friendlyName = syncProjectDisplayName(p)
+			tab := tabFromKind(rest)
+			// Build destination project slug by replacing the source org part.
+			destProjSlug := rebaseProjectSlug(projSlug, destOrgSlug)
+			settingsURL = cciurl.ProjectSettingsURL(destHost, destProjSlug, tab)
+			return
+		}
+	}
+
+	// --- context-scoped targets ---
+	// Patterns: "<contextName>/<kind>:<detail>"  or  "<contextName>"
+	if ctxName, _ := splitContextTarget(target); ctxName != "" {
+		if _, ok := ctxByName[ctxName]; ok {
+			friendlyName = ctxName
+			settingsURL = cciurl.OrgSettingsURL(destHost, destOrgSlug, "contexts")
+			return
+		}
+	}
+
+	// No match — return zero values.
+	return "", ""
+}
+
+// splitProjectSlug attempts to parse the leading three-component project slug
+// from an action target ("vcs/org/repo" or "circleci/uuid/uuid"). It returns
+// the slug and the remainder of the target string (everything after the third
+// component), or ("", target) when the target does not start with a
+// recognisable project slug.
+func splitProjectSlug(target string) (slug, rest string) {
+	parts := strings.SplitN(target, "/", 4)
+	if len(parts) < 3 {
+		return "", target
+	}
+	// Require a known VCS prefix or "circleci" as the first component.
+	prefix := strings.ToLower(parts[0])
+	switch prefix {
+	case "gh", "bb", "github", "bitbucket", "circleci":
+		slug = strings.Join(parts[:3], "/")
+		if len(parts) == 4 {
+			rest = parts[3]
+		}
+		return slug, rest
+	}
+	return "", target
+}
+
+// splitContextTarget attempts to extract a context name from an action target.
+// Context targets have the form "<name>" or "<name>/<rest>". Returns the
+// context name and remainder, or ("", target) when the target contains a
+// recognised VCS/project prefix (which is a project target, not a context).
+func splitContextTarget(target string) (ctxName, rest string) {
+	parts := strings.SplitN(target, "/", 2)
+	if len(parts) == 0 {
+		return "", target
+	}
+	prefix := strings.ToLower(parts[0])
+	switch prefix {
+	case "gh", "bb", "github", "bitbucket", "circleci",
+		"sso", "feature_flag", "oidc", "url_orb", "policy",
+		"audit_log", "otel", "contacts", "storage_retention",
+		"budget", "block_unregistered", "release_tracker",
+		"orb", "environment_hierarchy":
+		return "", target
+	}
+	ctxName = parts[0]
+	if len(parts) > 1 {
+		rest = parts[1]
+	}
+	return ctxName, rest
+}
+
+// tabFromKind maps an action-target "kind:detail" fragment to a settings tab
+// name suitable for ProjectSettingsURL.
+func tabFromKind(rest string) string {
+	if rest == "" {
+		return ""
+	}
+	// rest is typically "kind:detail" e.g. "ssh-key:aa:bb:cc"
+	kind := rest
+	if idx := strings.Index(rest, ":"); idx >= 0 {
+		kind = rest[:idx]
+	}
+	switch kind {
+	case "ssh-key":
+		return "ssh"
+	case "webhook":
+		return "webhooks"
+	case "env-var", "project-var":
+		return "env-vars"
+	case "feature_flag":
+		return "advanced"
+	case "oidc_claims":
+		return ""
+	case "schedule":
+		return ""
+	default:
+		return ""
+	}
+}
+
+// rebaseProjectSlug replaces the source-org portion of a project slug with the
+// destination org slug. For example:
+//
+//	"gh/acme/web" with destOrgSlug "gh/acme-new" → "gh/acme-new/web"
+//	"circleci/src-uuid/proj-uuid" with "circleci/dst-uuid" → "circleci/dst-uuid/proj-uuid"
+//
+// If destOrgSlug is empty or the slug is malformed, the original slug is returned.
+func rebaseProjectSlug(projSlug, destOrgSlug string) string {
+	if destOrgSlug == "" {
+		return projSlug
+	}
+	parts := strings.SplitN(projSlug, "/", 3)
+	if len(parts) != 3 {
+		return projSlug
+	}
+	destParts := strings.SplitN(destOrgSlug, "/", 2)
+	if len(destParts) == 2 {
+		return destParts[0] + "/" + destParts[1] + "/" + parts[2]
+	}
+	return projSlug
+}
+
+// slugLastComponent returns the last "/" component of a slug.
+func slugLastComponent(slug string) string {
+	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
+		return slug[idx+1:]
+	}
+	return slug
+}
+
+// buildProjBySourceSlug builds a map from source project slug to manifest.Project.
+func buildProjBySourceSlug(m *manifest.Manifest) map[string]manifest.Project {
+	out := make(map[string]manifest.Project, len(m.Projects))
+	for _, p := range m.Projects {
+		out[p.Slug] = p
+	}
+	return out
+}
+
+// buildProjByName builds a map from project name to manifest.Project.
+func buildProjByName(m *manifest.Manifest) map[string]manifest.Project {
+	out := make(map[string]manifest.Project, len(m.Projects))
+	for _, p := range m.Projects {
+		if p.Name != "" {
+			out[p.Name] = p
+		}
+	}
+	return out
+}
+
+// buildCtxByName builds a map from context name to manifest.Context.
+func buildCtxByName(m *manifest.Manifest) map[string]manifest.Context {
+	out := make(map[string]manifest.Context, len(m.Contexts))
+	for _, c := range m.Contexts {
+		out[c.Name] = c
+	}
+	return out
+}
+
+// syncProjectDisplayName returns the human-readable name for a project in sync
+// output. It prefers the Name field; falls back to the slug's last component.
+func syncProjectDisplayName(p manifest.Project) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return slugLastComponent(p.Slug)
 }

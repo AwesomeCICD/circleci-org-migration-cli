@@ -170,7 +170,7 @@ func TestPrintSyncReport_DryRunMode(t *testing.T) {
 			{Status: "error", Target: "ctx-d", Detail: "something failed"},
 		},
 	}
-	printSyncReport(c, "Contexts", rep)
+	printSyncReport(c, "Contexts", rep, &manifest.Manifest{})
 	out := outBuf.String()
 
 	if !strings.Contains(out, "DRY RUN") {
@@ -202,7 +202,7 @@ func TestPrintSyncReport_AppliedMode(t *testing.T) {
 			{Status: "set", Target: "var-a", Detail: "set OK"},
 		},
 	}
-	printSyncReport(c, "Projects", rep)
+	printSyncReport(c, "Projects", rep, &manifest.Manifest{})
 	out := outBuf.String()
 	if !strings.Contains(out, "APPLIED") {
 		t.Errorf("expected 'APPLIED' in output, got: %q", out)
@@ -225,7 +225,7 @@ func TestPrintSyncReport_NoAttentionItems(t *testing.T) {
 			{Status: "exists", Target: "ctx-y", Detail: "exists"},
 		},
 	}
-	printSyncReport(c, "Contexts", rep)
+	printSyncReport(c, "Contexts", rep, &manifest.Manifest{})
 	out := outBuf.String()
 	if strings.Contains(out, "Needs attention") {
 		t.Errorf("should not show 'Needs attention' when no manual/error items, got: %q", out)
@@ -725,4 +725,192 @@ func TestHandleEnableBuilds_Yes_PrintsEnablingMessage(t *testing.T) {
 	// syncer-shaped nil causes the output to start ("Enabling builds for").
 	// Skip this test when the syncer would panic.
 	t.Skip("requires a non-nil syncer to exercise the EnableBuilds call")
+}
+
+// ---------------------------------------------------------------------------
+// syncActionLine / resolveTargetMeta — friendly name + dest URL enrichment
+// ---------------------------------------------------------------------------
+
+// TestSyncActionLine_OAuthProjectTarget verifies that a manual action whose
+// target is an OAuth project slug gets enriched with the project's friendly
+// name (from the manifest) and a destination settings URL (not a bare UUID).
+func TestSyncActionLine_OAuthProjectTarget(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Slug: "gh/src-org"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/src-org/api", Name: "api-service"},
+		},
+	}
+
+	a := syncer.Action{
+		Kind:   "project-ssh-key",
+		Target: "gh/src-org/api/ssh-key:aa:bb:cc",
+		Status: "manual",
+		Detail: "SSH key not captured",
+	}
+	destOrgSlug := "gh/dest-org"
+
+	line := syncActionLine(a, destOrgSlug, m)
+
+	// Must contain the friendly name.
+	if !strings.Contains(line, "api-service") {
+		t.Errorf("expected friendly name 'api-service' in line, got: %q", line)
+	}
+	// Must contain a settings URL pointing at the DESTINATION org (not source UUID).
+	if !strings.Contains(line, "dest-org") {
+		t.Errorf("expected dest-org in URL, got: %q", line)
+	}
+	// Must contain the SSH settings tab.
+	if !strings.Contains(line, "/ssh") {
+		t.Errorf("expected /ssh tab in URL, got: %q", line)
+	}
+	// Must NOT be just the raw target (i.e. must be enriched).
+	if line == a.Target {
+		t.Errorf("line must be enriched, got bare target: %q", line)
+	}
+}
+
+// TestSyncActionLine_StandaloneProjectTarget verifies enrichment for a
+// standalone (circleci/<orgUUID>/<projUUID>) project target.
+func TestSyncActionLine_StandaloneProjectTarget(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Slug: "circleci/src-org-uuid"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "circleci/src-org-uuid/proj-uuid-123", Name: "my-app"},
+		},
+	}
+
+	a := syncer.Action{
+		Kind:   "project-webhook",
+		Target: "circleci/src-org-uuid/proj-uuid-123/webhook:notify",
+		Status: "manual",
+		Detail: "signing secret cannot be migrated",
+	}
+	destOrgSlug := "circleci/dest-org-uuid"
+
+	line := syncActionLine(a, destOrgSlug, m)
+
+	if !strings.Contains(line, "my-app") {
+		t.Errorf("expected friendly name 'my-app' in line, got: %q", line)
+	}
+	// URL should use dest org UUID, not source.
+	if !strings.Contains(line, "dest-org-uuid") {
+		t.Errorf("expected dest-org-uuid in URL, got: %q", line)
+	}
+	// Must point to webhooks tab.
+	if !strings.Contains(line, "webhooks") {
+		t.Errorf("expected webhooks tab in URL, got: %q", line)
+	}
+}
+
+// TestSyncActionLine_ContextTarget verifies that a context-scoped action
+// (context-var) gets enriched with the context name and a contexts settings URL.
+func TestSyncActionLine_ContextTarget(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Slug: "gh/acme"},
+		},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod"},
+		},
+	}
+
+	a := syncer.Action{
+		Kind:   "context-var",
+		Target: "deploy-prod/MY_SECRET",
+		Status: "manual",
+		Detail: "value not captured",
+	}
+	destOrgSlug := "gh/acme-new"
+
+	line := syncActionLine(a, destOrgSlug, m)
+
+	// Context name must appear.
+	if !strings.Contains(line, "deploy-prod") {
+		t.Errorf("expected context name in line, got: %q", line)
+	}
+	// Must contain a contexts settings URL.
+	if !strings.Contains(line, "contexts") {
+		t.Errorf("expected 'contexts' URL fragment in line, got: %q", line)
+	}
+	if !strings.Contains(line, "acme-new") {
+		t.Errorf("expected dest org in URL, got: %q", line)
+	}
+}
+
+// TestSyncActionLine_UnknownTarget verifies that when a target cannot be
+// resolved to a friendly name or URL, the raw target string is returned unchanged.
+func TestSyncActionLine_UnknownTarget(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Slug: "gh/acme"},
+		},
+	}
+
+	a := syncer.Action{
+		Kind:   "org-settings",
+		Target: "feature_flag:drop_all_build_requests",
+		Status: "manual",
+		Detail: "dangerous flag",
+	}
+
+	line := syncActionLine(a, "gh/acme-new", m)
+
+	// Org-settings targets like "feature_flag:..." have no project/context to
+	// resolve; the raw target should come back unmodified.
+	if line != a.Target {
+		t.Errorf("expected raw target %q, got: %q", a.Target, line)
+	}
+}
+
+// TestPrintSyncReport_ManualLineContainsFriendlyName verifies that after the
+// change, a manual action for an OAuth project slug appears in the "Needs
+// attention" section with the project's friendly name alongside it.
+func TestPrintSyncReport_ManualLineContainsFriendlyName(t *testing.T) {
+	c := internalTestCmd()
+	var outBuf bytes.Buffer
+	c.SetOut(&outBuf)
+
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "https://circleci.com",
+			Org:  manifest.Org{Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", Name: "web-frontend"},
+		},
+	}
+
+	rep := &syncer.Report{
+		Applied:     false,
+		DestOrgSlug: "gh/acme-new",
+		Actions: []syncer.Action{
+			{
+				Kind:   "project-ssh-key",
+				Target: "gh/acme/web/ssh-key:aa:bb:cc",
+				Status: "manual",
+				Detail: "SSH key private key not captured",
+			},
+		},
+	}
+
+	printSyncReport(c, "Projects", rep, m)
+	out := outBuf.String()
+
+	// The attention line must show the friendly name, not just the raw UUID slug.
+	if !strings.Contains(out, "web-frontend") {
+		t.Errorf("expected friendly name 'web-frontend' in output, got:\n%s", out)
+	}
+	// Must contain a settings URL.
+	if !strings.Contains(out, "app.circleci.com") {
+		t.Errorf("expected circleci settings URL in output, got:\n%s", out)
+	}
 }

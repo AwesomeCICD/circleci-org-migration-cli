@@ -268,21 +268,21 @@ Examples:
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Org Settings", rep)
+				printSyncReport(cmd, "Org Settings", rep, m)
 			}
 			if !skipContexts {
 				rep, syncErr := sy.SyncContexts(m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Contexts", rep)
+				printSyncReport(cmd, "Contexts", rep, m)
 			}
 			if !skipProjects {
 				rep, syncErr := sy.SyncProjects(m, bundle, mapping, opts)
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Projects", rep)
+				printSyncReport(cmd, "Projects", rep, m)
 				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, false); enableErr != nil {
 					return enableErr
 				}
@@ -294,7 +294,7 @@ Examples:
 				if syncErr != nil {
 					return syncErr
 				}
-				printSyncReport(cmd, "Runner Resource Classes", rep)
+				printSyncReport(cmd, "Runner Resource Classes", rep, m)
 			}
 			return nil
 		},
