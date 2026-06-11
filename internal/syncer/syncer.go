@@ -88,6 +88,10 @@ type ProjectWriter interface {
 	GetV11ProjectFeatureFlags(slug string) (map[string]bool, error)
 	SetV11ProjectFeatureFlags(slug string, flags map[string]bool) error
 
+	// SSH key management (additional SSH keys, not checkout keys).
+	ListAdditionalSSHKeys(slug string) ([]project.SSHKeyMeta, error)
+	AddAdditionalSSHKey(slug, hostname, privateKey string) error
+
 	// App-org (circleci/ vcs_type) project management.
 	CreateAppProject(orgID, name string) (*project.Project, error)
 	CreatePipelineDefinition(projectID string, spec project.PipelineDefinitionSpec) (string, error)
@@ -559,6 +563,7 @@ func (s *Syncer) SyncProjects(m *manifest.Manifest, bundle *manifest.SecretBundl
 
 		s.syncProjectSettings(report, p, dst, opts)
 		s.syncProjectVars(report, p, bundle, dst, opts)
+		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
 		s.syncProjectWebhooks(report, p, dst, destProj.ID, opts)
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, destProj.ID, opts)
@@ -604,6 +609,7 @@ func (s *Syncer) syncAppProject(
 		dst := existing.Slug
 		s.syncProjectSettings(report, p, dst, opts)
 		s.syncProjectVars(report, p, bundle, dst, opts)
+		s.syncProjectSSHKeys(report, p, bundle, dst, opts)
 		s.syncProjectWebhooks(report, p, dst, existing.ID, opts)
 		s.syncProjectSchedules(report, p, dst, opts)
 		s.syncProjectOIDCClaims(report, p, dst, destOrgID, existing.ID, opts)
@@ -639,6 +645,7 @@ func (s *Syncer) syncAppProject(
 		}
 		s.syncProjectSettings(report, p, drySlug, opts)
 		s.syncProjectVars(report, p, bundle, drySlug, opts)
+		s.syncProjectSSHKeys(report, p, bundle, drySlug, opts)
 		s.syncProjectWebhooks(report, p, drySlug, "", opts)
 		s.syncProjectSchedules(report, p, drySlug, opts)
 		s.syncProjectOIDCClaims(report, p, drySlug, destOrgID, "", opts)
@@ -677,6 +684,7 @@ func (s *Syncer) syncAppProject(
 	// Configure settings, vars, etc. on the new slug.
 	s.syncProjectSettings(report, p, newSlug, opts)
 	s.syncProjectVars(report, p, bundle, newSlug, opts)
+	s.syncProjectSSHKeys(report, p, bundle, newSlug, opts)
 	s.syncProjectWebhooks(report, p, newSlug, newProjectID, opts)
 	s.syncProjectSchedules(report, p, newSlug, opts)
 	s.syncProjectOIDCClaims(report, p, newSlug, destOrgID, newProjectID, opts)
