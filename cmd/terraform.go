@@ -47,13 +47,16 @@ exact circleci-migrate command to complete it.
 // newTerraformGenerateCommand returns the `terraform generate` subcommand.
 func newTerraformGenerateCommand() *cobra.Command {
 	var (
-		manifestPath   string
-		secretsPath    string
-		placeholders   bool
-		mappingPath    string
-		destOrgID      string
-		outDir         string
-		destOrgTypeRaw string
+		manifestPath        string
+		secretsPath         string
+		placeholders        bool
+		mappingPath         string
+		destOrgID           string
+		outDir              string
+		destOrgTypeRaw      string
+		destRunnerNamespace string
+		existingPath        string
+		importExisting      bool
 	)
 
 	cmd := &cobra.Command{
@@ -65,9 +68,14 @@ Terraform files into --out:
   versions.tf            — provider version constraint (~> 0.3)
   providers.tf           — provider block with host + org from flags
   contexts.tf            — circleci_context + circleci_context_environment_variable resources
+  restrictions.tf        — circleci_context_restriction resources (project+expression both orgs; group OAuth-only)
   projects.tf            — circleci_project + circleci_project_environment_variable resources
-  migration.auto.tfvars.json — non-secret values (context/project names, advanced settings)
+  webhooks.tf            — circleci_webhook resources (both org types)
+  runners.tf             — circleci_runner_resource_class + circleci_runner_token resources
+  pipelines.tf           — circleci_pipeline + circleci_trigger resources (standalone ONLY)
+  migration.auto.tfvars.json — non-secret values (context/project/webhook/pipeline/runner settings)
   secrets.auto.tfvars.json   — env-var values (only with --secrets or --placeholders)
+  imports.tf             — Terraform 1.5+ import blocks (only with --import-existing)
   GAPS.md                — checklist of what Terraform does not manage + CLI commands to fill gaps
 
 The generated HCL uses for_each over variables so that regenerating after a new
@@ -82,9 +90,10 @@ Apply the generated configuration:
 
 Then run:
 
-  circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply
+  circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN \
+    --apply --skip-terraform-managed
 
-to complete the items listed in GAPS.md.`,
+to complete the items listed in GAPS.md without double-writing Terraform-managed resources.`,
 		Example: `  # Basic generation (no secrets in output); org type inferred from manifest
   circleci-migrate terraform generate \
     --manifest manifest.json \
@@ -124,6 +133,20 @@ to complete the items listed in GAPS.md.`,
     --manifest manifest.json \
     --mapping mapping.json \
     --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --out ./terraform/
+
+  # Adopt already-existing resources (--import-existing)
+  circleci-migrate terraform generate \
+    --manifest manifest.json \
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --import-existing --existing sync-result.json \
+    --out ./terraform/
+
+  # Custom runner namespace mapping
+  circleci-migrate terraform generate \
+    --manifest manifest.json \
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --dest-runner-namespace acme-new \
     --out ./terraform/`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := configFromContext(cmd.Context())
@@ -172,14 +195,27 @@ to complete the items listed in GAPS.md.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), terraform.PlaintextWarning)
 			}
 
+			// Load optional existing IDs for --import-existing.
+			var existingIDs *terraform.ExistingIDs
+			if importExisting && existingPath != "" {
+				var loadErr error
+				existingIDs, loadErr = terraform.LoadExistingIDs(existingPath)
+				if loadErr != nil {
+					return loadErr
+				}
+			}
+
 			opts := terraform.Options{
-				DestOrgID:     destOrgID,
-				Host:          cfg.Host,
-				Mapping:       mp,
-				SecretsBundle: bundle,
-				Placeholders:  placeholders,
-				OutDir:        outDir,
-				DestOrgType:   destOrgType,
+				DestOrgID:           destOrgID,
+				Host:                cfg.Host,
+				Mapping:             mp,
+				SecretsBundle:       bundle,
+				Placeholders:        placeholders,
+				OutDir:              outDir,
+				DestOrgType:         destOrgType,
+				DestRunnerNamespace: destRunnerNamespace,
+				ExistingIDs:         existingIDs,
+				ImportExisting:      importExisting,
 			}
 
 			if err := terraform.Generate(m, opts); err != nil {
@@ -223,6 +259,16 @@ to complete the items listed in GAPS.md.`,
 		"Output directory for generated Terraform files")
 	f.StringVar(&destOrgTypeRaw, "dest-org-type", "",
 		destOrgTypeHelp)
+	f.StringVar(&destRunnerNamespace, "dest-runner-namespace", "",
+		"Destination runner namespace for self-hosted runner resource classes "+
+			"(e.g. 'acme-new'). When omitted, the source namespace from the manifest is used.")
+	f.BoolVar(&importExisting, "import-existing", false,
+		"Emit Terraform 1.5+ import {} blocks for resources that already exist in the "+
+			"destination. Destination IDs are read from --existing <sync-json>. "+
+			"Use this for the adoption path when resources were previously created by `sync`.")
+	f.StringVar(&existingPath, "existing", "",
+		"Path to a `sync --json` output file containing resource_ids of already-existing "+
+			"destination resources. Required with --import-existing.")
 
 	_ = cmd.MarkFlagRequired("dest-org-id")
 

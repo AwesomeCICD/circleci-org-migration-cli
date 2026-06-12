@@ -74,24 +74,26 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
 ### Options
 
 ```
-      --apply                          Write changes to the destination (default: dry run)
-      --create-project-tokens          When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
-      --dest-github-org string         Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
-      --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
-      --github-token string            GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
-  -h, --help                           help for sync
-      --json                           Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports
-      --manifest string                Path to the export manifest (required)
-      --mapping string                 Path to a source->destination mapping file (JSON). REQUIRED to change the destination org name; without it sync targets the SOURCE org. Schema: { "org": {"from":"gh/acme","to":"gh/acme-new"}, "projects": {"gh/acme/web":"gh/acme-new/web"}, "github_org": {"from":"acme","to":"acme-new"} }. Only org.to is required to retarget; projects/github_org are optional.
-      --missing-secrets string         How to handle variables with no captured value: 'skip' omits the variable entirely; 'placeholder' creates the variable with a placeholder value. Use 'placeholder' for restricted contexts whose values cannot be captured, so the variable name exists and can be filled in manually later. (default "skip")
-      --secrets string                 Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them. (default "secrets.json")
-      --skip-ciam                      Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
-      --skip-contexts                  Skip syncing contexts
-      --skip-extras                    Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
-      --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
-      --skip-projects                  Skip syncing projects
-      --skip-runner                    Skip syncing self-hosted runner resource classes
-  -y, --yes                            Only with --apply: auto-confirm enabling builds after project creation (skip the interactive prompt). No effect in a dry run.
+      --apply                                    Write changes to the destination (default: dry run)
+      --create-project-tokens                    When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
+      --dest-github-org string                   Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
+      --dest-runner-namespace string             Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
+      --github-token string                      GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
+  -h, --help                                     help for sync
+      --json                                     Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports
+      --manifest string                          Path to the export manifest (required)
+      --mapping string                           Path to a source->destination mapping file (JSON). REQUIRED to change the destination org name; without it sync targets the SOURCE org. Schema: { "org": {"from":"gh/acme","to":"gh/acme-new"}, "projects": {"gh/acme/web":"gh/acme-new/web"}, "github_org": {"from":"acme","to":"acme-new"} }. Only org.to is required to retarget; projects/github_org are optional.
+      --missing-secrets string                   How to handle variables with no captured value: 'skip' omits the variable entirely; 'placeholder' creates the variable with a placeholder value. Use 'placeholder' for restricted contexts whose values cannot be captured, so the variable name exists and can be filled in manually later. (default "skip")
+      --only string                              Comma-separated list of sections to sync, skipping all others. Accepted values: org-settings, contexts, projects, runner, ciam, extras. Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). Mutually exclusive with --skip-terraform-managed.
+      --secrets string                           Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them. (default "secrets.json")
+      --skip-ciam                                Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
+      --skip-contexts                            Skip syncing contexts
+      --skip-extras                              Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
+      --skip-org-settings                        Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
+      --skip-projects                            Skip syncing projects
+      --skip-runner                              Skip syncing self-hosted runner resource classes
+      --skip-terraform-managed terraform apply   Skip syncing sections that Terraform manages (contexts, projects, runner resource classes). Use this for the CLI gap-fill step after terraform apply to avoid overwriting resources Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). Mutually exclusive with --only.
+  -y, --yes                                      Only with --apply: auto-confirm enabling builds after project creation (skip the interactive prompt). No effect in a dry run.
 ```
 
 ### Options inherited from parent commands

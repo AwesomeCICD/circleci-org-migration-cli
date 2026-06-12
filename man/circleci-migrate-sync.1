@@ -124,6 +124,10 @@ Examples:
 	How to handle variables with no captured value: 'skip' omits the variable entirely; 'placeholder' creates the variable with a placeholder value. Use 'placeholder' for restricted contexts whose values cannot be captured, so the variable name exists and can be filled in manually later.
 
 .PP
+\fB--only\fP=""
+	Comma-separated list of sections to sync, skipping all others. Accepted values: org-settings, contexts, projects, runner, ciam, extras. Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). Mutually exclusive with --skip-terraform-managed.
+
+.PP
 \fB--secrets\fP="secrets.json"
 	Path to the captured secret bundle holding plaintext env-var values (optional). Without it, --apply creates resources with EMPTY env-var values; run 'secrets capture' first to populate them.
 
@@ -150,6 +154,10 @@ Examples:
 .PP
 \fB--skip-runner\fP[=false]
 	Skip syncing self-hosted runner resource classes
+
+.PP
+\fB--skip-terraform-managed\fP[=false]
+	Skip syncing sections that Terraform manages (contexts, projects, runner resource classes). Use this for the CLI gap-fill step after \fBterraform apply\fR to avoid overwriting resources Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). Mutually exclusive with --only.
 
 .PP
 \fB-y\fP, \fB--yes\fP[=false]

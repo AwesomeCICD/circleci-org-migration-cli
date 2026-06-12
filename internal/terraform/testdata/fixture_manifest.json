@@ -33,6 +33,16 @@
           "type": "project",
           "value": "dddddddd-dddd-dddd-dddd-dddddddddddd",
           "name": "acme/api"
+        },
+        {
+          "type": "expression",
+          "value": "project.slug == \"gh/acme/api\"",
+          "name": ""
+        },
+        {
+          "type": "group",
+          "value": "gggggggg-gggg-gggg-gggg-gggggggggggg",
+          "name": "deploy-team"
         }
       ]
     },
@@ -42,6 +52,13 @@
       "environment_variables": [
         {"name": "NPM_TOKEN"},
         {"name": "SONAR_TOKEN"}
+      ],
+      "restrictions": [
+        {
+          "type": "project",
+          "value": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+          "name": "acme/frontend"
+        }
       ]
     }
   ],
@@ -73,11 +90,57 @@
           "preferred": true
         }
       ],
+      "webhooks": [
+        {
+          "name": "notify-slack",
+          "url": "https://hooks.slack.com/services/T0001/B0001/TOKEN",
+          "events": ["workflow-completed"],
+          "verify_tls": true
+        }
+      ],
       "schedules": [
         {
           "name": "nightly",
           "timetable": {"per_hour": 1, "hours_of_day": [2]},
           "parameters": {"branch": "main"}
+        }
+      ],
+      "pipeline_definitions": [
+        {
+          "name": "main",
+          "description": "Main pipeline",
+          "config_source": {
+            "provider": "github_app",
+            "repo_full_name": "acme/api",
+            "repo_external_id": "12345678",
+            "file_path": ".circleci/config.yml"
+          },
+          "checkout_source": {
+            "provider": "github_app",
+            "repo_full_name": "acme/api",
+            "repo_external_id": "12345678"
+          },
+          "triggers": [
+            {
+              "name": "push-trigger",
+              "event_preset": "all-pushes",
+              "disabled": false,
+              "event_source": {
+                "provider": "github_app",
+                "repo_full_name": "acme/api",
+                "repo_external_id": "12345678"
+              }
+            },
+            {
+              "name": "weekly-trigger",
+              "event_preset": "",
+              "disabled": false,
+              "event_source": {
+                "provider": "schedule",
+                "schedule_cron": "0 8 * * 1"
+              }
+            }
+          ]
         }
       ]
     },
@@ -102,7 +165,26 @@
       ],
       "api_tokens": [
         {"label": "ci-badge", "scope": "status"}
+      ],
+      "webhooks": [
+        {
+          "name": "notify-pagerduty",
+          "url": "https://events.pagerduty.com/integration/abc/enqueue",
+          "events": ["workflow-completed", "job-completed"],
+          "verify_tls": true
+        }
       ]
+    }
+  ],
+  "runner_namespace": "acme",
+  "runner_resource_classes": [
+    {
+      "name": "acme/linux-medium",
+      "description": "Linux medium runner"
+    },
+    {
+      "name": "acme/linux-xlarge",
+      "description": "Linux xlarge runner"
     }
   ],
   "warnings": []

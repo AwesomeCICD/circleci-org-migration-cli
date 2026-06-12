@@ -121,6 +121,46 @@ func stripProjectExtras(m *manifest.Manifest) {
 	}
 }
 
+// parseSyncOnly parses a comma-separated --only list into a set of section
+// names. Returns an error if any name is not recognised.
+// Accepted values: org-settings, contexts, projects, runner, ciam, extras.
+func parseSyncOnly(raw string) (map[string]bool, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	valid := map[string]bool{
+		"org-settings": true,
+		"contexts":     true,
+		"projects":     true,
+		"runner":       true,
+		"ciam":         true,
+		"extras":       true,
+	}
+	result := make(map[string]bool)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(strings.ToLower(part))
+		if name == "" {
+			continue
+		}
+		if !valid[name] {
+			return nil, fmt.Errorf("--only: unknown section %q; accepted values: %s",
+				name, strings.Join(sortedKeys(valid), ", "))
+		}
+		result[name] = true
+	}
+	return result, nil
+}
+
+// sortedKeys returns the keys of a map[string]bool in sorted order.
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func newSyncCommand() *cobra.Command {
 	var (
 		manifestPath        string
@@ -140,6 +180,8 @@ func newSyncCommand() *cobra.Command {
 		destRunnerNamespace string
 		jsonOutput          bool
 		createProjectTokens bool
+		onlyRaw             string
+		skipTFManaged       bool
 	)
 
 	cmd := &cobra.Command{
@@ -220,6 +262,35 @@ Examples:
 			}
 			if missing != syncer.MissingSkip && missing != syncer.MissingPlaceholder {
 				return fmt.Errorf("--missing-secrets must be %q or %q", syncer.MissingSkip, syncer.MissingPlaceholder)
+			}
+
+			// Parse --only and --skip-terraform-managed.
+			// These two flags override the per-section skip flags.
+			onlySet, err := parseSyncOnly(onlyRaw)
+			if err != nil {
+				return err
+			}
+			if onlySet != nil && skipTFManaged {
+				return fmt.Errorf("--only and --skip-terraform-managed are mutually exclusive")
+			}
+			// Apply --only: skip every section NOT in the only set.
+			if onlySet != nil {
+				skipOrgSettings = !onlySet["org-settings"]
+				skipContexts = !onlySet["contexts"]
+				skipProjects = !onlySet["projects"]
+				skipRunner = !onlySet["runner"]
+				skipCIAM = !onlySet["ciam"]
+				skipExtras = !onlySet["extras"]
+			}
+			// Apply --skip-terraform-managed: skip sections Terraform owns.
+			if skipTFManaged {
+				// Terraform manages: contexts, projects (+ webhooks inside projects),
+				// runner resource classes, pipelines/triggers.
+				// CLI gap-fill handles: org-settings, ciam, extras (checkout-keys, ssh-keys, schedules).
+				skipContexts = true
+				skipProjects = true
+				skipRunner = true
+				// org-settings, ciam, extras are NOT skipped — they are CLI-only.
 			}
 			token := cfg.DestTokenOrDefault()
 			if token == "" {
@@ -436,6 +507,16 @@ Examples:
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
 			"must be repointed to the new value. New plaintext values are printed to stderr once and cannot "+
 			"be retrieved again. Default false: emit manual steps only.")
+	f.StringVar(&onlyRaw, "only", "",
+		"Comma-separated list of sections to sync, skipping all others. "+
+			"Accepted values: org-settings, contexts, projects, runner, ciam, extras. "+
+			"Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). "+
+			"Mutually exclusive with --skip-terraform-managed.")
+	f.BoolVar(&skipTFManaged, "skip-terraform-managed", false,
+		"Skip syncing sections that Terraform manages (contexts, projects, runner resource classes). "+
+			"Use this for the CLI gap-fill step after `terraform apply` to avoid overwriting resources "+
+			"Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). "+
+			"Mutually exclusive with --only.")
 
 	return cmd
 }
