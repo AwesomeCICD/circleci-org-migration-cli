@@ -1041,6 +1041,11 @@ cosign verify-blob \
 
 ## See also
 
+- [Playbooks](playbooks/README.md) — step-by-step operator runbooks with
+  per-phase checklists and validation gates, one per account/org-type:
+  [OAuth → OAuth](playbooks/oauth-to-oauth.md),
+  [standalone → standalone](playbooks/standalone-to-standalone.md),
+  [OAuth → App (cross-type, lossy)](playbooks/cross-type-oauth-to-app.md).
 - [Cutover runbook](cutover-runbook.md) — operator checklist + the full
   what-does-NOT-transfer list.
 - [mapping.json reference](mapping.md) — when you need a mapping file and what

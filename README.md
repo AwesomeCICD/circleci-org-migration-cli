@@ -92,12 +92,17 @@ Read in this order:
 1. **[Migration guide](docs/guide.md)** — the single walkthrough: org types,
    prerequisites & token permissions, and export → capture → sync with
    per-org-type examples.
-2. **[mapping.json reference](docs/mapping.md)** — when you need a mapping file
+2. **[Playbooks](docs/playbooks/README.md)** — step-by-step operator runbooks
+   with per-phase checklists and validation gates, one per account/org-type:
+   [OAuth → OAuth](docs/playbooks/oauth-to-oauth.md),
+   [standalone → standalone](docs/playbooks/standalone-to-standalone.md),
+   [OAuth → App (cross-type)](docs/playbooks/cross-type-oauth-to-app.md).
+3. **[mapping.json reference](docs/mapping.md)** — when you need a mapping file
    and what the `org` / `projects` / `github_org` keys do.
-3. **[Cutover runbook](docs/cutover-runbook.md)** — the operator checklist for a
+4. **[Cutover runbook](docs/cutover-runbook.md)** — the operator checklist for a
    production cutover, including the full *what does NOT transfer* list.
-4. **[Troubleshooting](docs/troubleshooting.md)** — common errors and fixes.
-5. **[CLI reference](docs/cli/README.md)** — complete, auto-generated
+5. **[Troubleshooting](docs/troubleshooting.md)** — common errors and fixes.
+6. **[CLI reference](docs/cli/README.md)** — complete, auto-generated
    per-command flag tables. (Also available as [man pages](man/).)
 
 Further reading: [architecture & data flow](docs/architecture.md),
