@@ -969,6 +969,76 @@ After sync (and any `terraform apply`) completes, follow the
 
 ---
 
+## 10. Verifying release artifacts
+
+Every release binary and archive is signed with
+[Sigstore](https://www.sigstore.dev/) keyless cosign (no long-lived key stored
+in CI). The signing identity is a CircleCI OIDC certificate minted at release
+time and recorded on the public Sigstore transparency log (Rekor). No secrets
+are needed to verify.
+
+### What is published
+
+Each GitHub Release asset has an accompanying `.bundle` file (the Sigstore
+bundle: signature + certificate + Rekor log entry in one JSON file). For
+example:
+
+```
+circleci-migrate_1.2.3_linux_amd64.tar.gz
+circleci-migrate_1.2.3_linux_amd64.tar.gz.bundle
+```
+
+### How to verify
+
+Download the binary/archive and its `.bundle` sidecar, then run:
+
+```bash
+# Install cosign v3 if not already present
+go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.1
+
+cosign verify-blob \
+  circleci-migrate_1.2.3_linux_amd64.tar.gz \
+  --bundle circleci-migrate_1.2.3_linux_amd64.tar.gz.bundle \
+  --certificate-oidc-issuer https://oidc.circleci.com \
+  --certificate-identity-regexp 'https://circleci\.com/api/v2/projects/.*'
+```
+
+A successful verification prints:
+
+```
+Verified OK
+```
+
+### Pinning to a specific project (optional)
+
+The certificate's Subject Alternative Name (SAN) encodes the exact CircleCI
+pipeline-definition URL that produced the signature:
+
+```
+https://circleci.com/api/v2/projects/<CIRCLE_PROJECT_ID>/pipeline-definitions/<def-id>
+```
+
+You can pin to the exact project by replacing `--certificate-identity-regexp`
+with `--certificate-identity` and the full URL from the bundle:
+
+```bash
+# Inspect the identity in the bundle
+cat circleci-migrate_1.2.3_linux_amd64.tar.gz.bundle \
+  | jq -r '.verificationMaterial.certificate.rawBytes' \
+  | base64 -d \
+  | openssl x509 -inform DER -noout -text \
+  | grep URI
+
+# Then pin:
+cosign verify-blob \
+  circleci-migrate_1.2.3_linux_amd64.tar.gz \
+  --bundle circleci-migrate_1.2.3_linux_amd64.tar.gz.bundle \
+  --certificate-oidc-issuer https://oidc.circleci.com \
+  --certificate-identity "https://circleci.com/api/v2/projects/<CIRCLE_PROJECT_ID>/pipeline-definitions/<def-id>"
+```
+
+---
+
 ## See also
 
 - [Cutover runbook](cutover-runbook.md) — operator checklist + the full

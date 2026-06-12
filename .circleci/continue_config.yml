@@ -568,6 +568,80 @@ jobs:
               --token="$GITHUB_TOKEN"
 
   # ===========================================================================
+  # COSIGN KEYLESS PROOF — branch CI de-risk job
+  # ===========================================================================
+  #
+  # Runs on EVERY branch push (never on tags) to prove that OIDC keyless signing
+  # works in this org BEFORE any release depends on it.
+  #
+  # Key design points:
+  #   1. Mints a custom-audience OIDC token (aud=sigstore) via
+  #      `circleci run oidc get --claims '{"aud":"sigstore"}' --root-issuer`.
+  #      This is DIFFERENT from CIRCLE_OIDC_TOKEN_V2 (aud=org-id) which Fulcio
+  #      rejects. The token is never echoed.
+  #   2. Uses cosign v3 (go install) — matches CircleCI-Public/sign-and-publish-examples.
+  #   3. Signs a test blob and immediately verifies the bundle against Rekor,
+  #      proving the full Sigstore mint→sign→verify chain works in this org.
+  #   4. Job FAILS on any non-zero exit code (default shell -e behaviour).
+  cosign-keyless-verify:
+    executor: go
+    steps:
+      - checkout
+      # Install cosign v3 via go install (matches CircleCI-Public/sign-and-publish-examples).
+      # Cached on version+arch so a Renovate bump triggers a fresh download.
+      # renovate: datasource=github-releases depName=sigstore/cosign
+      - restore_cache:
+          keys:
+            - cosign-v3.1.1-{{ arch }}-v1
+      - run:
+          name: Install cosign v3 (if not cached)
+          command: |
+            if [ ! -x ~/go/bin/cosign ]; then
+              # renovate: datasource=github-releases depName=sigstore/cosign
+              go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.1
+            fi
+            ~/go/bin/cosign version
+      - save_cache:
+          key: cosign-v3.1.1-{{ arch }}-v1
+          paths:
+            - ~/go/bin/cosign
+            - ~/go/pkg/mod/github.com/sigstore
+      - run:
+          name: Create test blob
+          command: echo "circleci-migrate keyless signing proof" > testblob
+      - run:
+          name: Mint custom-audience OIDC token (aud=sigstore)
+          # Use BASH_ENV so the variable is available to the next step.
+          # The token is NEVER echoed (no `echo "$SIGSTORE_ID_TOKEN"`).
+          # `circleci run oidc get` is the v2 CLI subcommand that mints a
+          # custom-audience OIDC token; it is available in the bundled CircleCI
+          # CLI inside cimg/go. If the bundled CLI predates v0.1.34950 this step
+          # will fail with "unknown command" — the install step above would need
+          # to be used. In practice cimg/go ships a recent CLI.
+          command: |
+            echo "export SIGSTORE_ID_TOKEN=$(circleci run oidc get --claims '{"aud": "sigstore"}' --root-issuer)" >> "$BASH_ENV"
+      - run:
+          name: Sign test blob (keyless, Sigstore public)
+          command: |
+            ~/go/bin/cosign sign-blob testblob \
+              --oidc-issuer https://oidc.circleci.com \
+              --yes \
+              --bundle testblob.bundle \
+              --use-signing-config=false
+      - run:
+          name: Verify bundle (mint→sign→verify roundtrip proof)
+          # --certificate-identity-regexp '.*' accepts any CircleCI-issued
+          # identity URI. The actual subject is:
+          #   https://circleci.com/api/v2/projects/<CIRCLE_PROJECT_ID>/pipeline-definitions/<def-id>
+          # For the proof job '.*' is sufficient; production verification should
+          # pin the exact project-ID URI (see docs/guide.md Verifying releases).
+          command: |
+            ~/go/bin/cosign verify-blob testblob \
+              --bundle testblob.bundle \
+              --certificate-oidc-issuer https://oidc.circleci.com \
+              --certificate-identity-regexp '.*'
+
+  # ===========================================================================
   # RELEASE — publish cross-platform binaries via GoReleaser
   # ===========================================================================
 
@@ -587,14 +661,21 @@ jobs:
             curl -sfL "https://github.com/goreleaser/goreleaser/releases/download/v${ver}/goreleaser_Linux_x86_64.tar.gz" \
               | sudo tar -xz -C /usr/local/bin goreleaser
             goreleaser --version
-      # cosign + syft are REQUIRED by the .goreleaser.yml `signs:` (keyless
-      # artifact signing) and `sboms:` (CycloneDX SBOM) blocks. They are not
-      # bundled with GoReleaser, so the release step fails without them on PATH.
-      # Installed via direct, pinned release downloads (same pattern as above).
-      # cosign install removed: keyless signing is disabled (see #215 and
-      # .goreleaser.yml signs: block). syft (SBOM generation) stays.
+      # cosign v3 is REQUIRED for the .goreleaser.yml `signs:` (keyless artifact
+      # signing) block. Not bundled with GoReleaser — must be on PATH.
+      # Installed via go install at a pinned version (matches the proof job above
+      # and CircleCI-Public/sign-and-publish-examples). Renovate bumps both.
       - run:
-          name: Install syft (pinned v1.18.1)
+          name: Install cosign v3 (pinned v3.1.1)
+          command: |
+            # renovate: datasource=github-releases depName=sigstore/cosign
+            go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.1
+            ~/go/bin/cosign version
+            # Make cosign available on the system PATH for goreleaser.
+            sudo cp ~/go/bin/cosign /usr/local/bin/cosign
+      # syft is REQUIRED for the .goreleaser.yml `sboms:` (CycloneDX SBOM) block.
+      - run:
+          name: Install syft (pinned v1.45.1)
           command: |
             # renovate: datasource=github-releases depName=anchore/syft
             ver=1.45.1
@@ -602,6 +683,16 @@ jobs:
               | sudo tar -xz -C /usr/local/bin syft
             syft version
       - go/mod-download-cached
+      - run:
+          # Mint a custom-audience OIDC token (aud=sigstore) BEFORE goreleaser runs.
+          # Written to $BASH_ENV so the goreleaser step inherits SIGSTORE_ID_TOKEN.
+          # The token is NEVER echoed. This is the fix for #215: the old approach
+          # used CIRCLE_OIDC_TOKEN_V2 (aud=org-id) which Fulcio rejects; the
+          # `circleci run oidc get --root-issuer` variant mints a token Fulcio
+          # accepts because its audience is "sigstore".
+          name: Mint OIDC token for keyless signing (aud=sigstore)
+          command: |
+            echo "export SIGSTORE_ID_TOKEN=$(circleci run oidc get --claims '{"aud":"sigstore"}' --root-issuer)" >> "$BASH_ENV"
       - run:
           name: goreleaser release
           command: goreleaser release --clean
@@ -791,6 +882,12 @@ workflows:
 
       - coverage:
           name: "Coverage (85% gate)"
+          filters:
+            tags:
+              ignore: /.*/
+
+      - cosign-keyless-verify:
+          name: "Cosign: keyless signing proof"
           filters:
             tags:
               ignore: /.*/
