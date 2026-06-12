@@ -59,14 +59,23 @@ func printSubStepHeader(w io.Writer, substep string, total int, title string) {
 }
 
 // isInteractiveTTY returns true when os.Stdin is connected to an interactive
-// terminal (character device).  It uses only stdlib syscall wrappers so that
-// no third-party TTY library is needed.
+// terminal.  It delegates to the overridable stdinIsTerminal var so that tests
+// can inject a non-TTY stub without spawning a subprocess.
+//
+// The implementation uses term.IsTerminal rather than the os.ModeCharDevice
+// stat check: the latter incorrectly returns true for /dev/null (a character
+// device on Linux and macOS), which causes the command to attempt interactive
+// prompts and then die with "Error: EOF" when stdin is redirected to /dev/null
+// in CI environments.
 func isInteractiveTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return stdinIsTerminal()
+}
+
+// stdinIsTerminal is the real-stdin check wrapped in a var so tests can
+// replace it with a stub.  Production code must never assign to this directly;
+// use t.Cleanup to restore after overriding in tests.
+var stdinIsTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // Prompter holds the I/O streams used by all interactive prompt functions.
