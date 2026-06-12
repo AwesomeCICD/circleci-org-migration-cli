@@ -40,6 +40,7 @@ ALTERNATIVE PATH — orb / 'secrets extract' (committed config):
 
 Subcommands:
   capture   CLI-orchestrated extraction via unversioned pipeline (RECOMMENDED)
+  transfer  Direct source→dest transfer via in-pipeline PUT (no bundle file; context values only)
   extract   In-job extraction from the current environment (orb path)
   decrypt   Decrypt an age-encrypted secret bundle locally
   merge     Merge multiple secret bundles into one
@@ -67,4 +68,5 @@ Subcommands:
 * [circleci-migrate secrets decrypt](circleci-migrate_secrets_decrypt.md)	 - Decrypt an age-encrypted secret bundle.
 * [circleci-migrate secrets extract](circleci-migrate_secrets_extract.md)	 - Extract secret values from the current job environment (for use in orb/pipeline jobs).
 * [circleci-migrate secrets merge](circleci-migrate_secrets_merge.md)	 - Merge multiple secret bundles into one.
+* [circleci-migrate secrets transfer](circleci-migrate_secrets_transfer.md)	 - Transfer context env-var values directly source→dest via an in-pipeline PUT (no bundle file).
 
