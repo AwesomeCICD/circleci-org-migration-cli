@@ -36,8 +36,8 @@ func TestGenerate_M2_Restrictions_OAuth(t *testing.T) {
 
 	s := readFile(t, dir, "restrictions.tf")
 	assertContains(t, "restrictions.tf", s, `resource "circleci_context_restriction"`)
-	assertContains(t, "restrictions.tf", s, `restriction_type`)
-	assertContains(t, "restrictions.tf", s, `restriction_value`)
+	assertContains(t, "restrictions.tf", s, `type`)
+	assertContains(t, "restrictions.tf", s, `value`)
 	assertContains(t, "restrictions.tf", s, `context_id`)
 	// Variable definition must be present.
 	assertContains(t, "restrictions.tf", s, `variable "restrictions"`)
@@ -84,7 +84,7 @@ func TestGenerate_M2_Restrictions_Standalone(t *testing.T) {
 
 	s := readFile(t, dir, "restrictions.tf")
 	assertContains(t, "restrictions.tf", s, `resource "circleci_context_restriction"`)
-	assertContains(t, "restrictions.tf", s, `restriction_type`)
+	assertContains(t, "restrictions.tf", s, `type`)
 
 	// Tfvars: should have project and expression, but NO group.
 	tfvarsData := readFile(t, dir, "migration.auto.tfvars.json")
@@ -150,7 +150,7 @@ func TestGenerate_M2_Webhooks_OAuth(t *testing.T) {
 
 	s := readFile(t, dir, "webhooks.tf")
 	assertContains(t, "webhooks.tf", s, `resource "circleci_webhook"`)
-	assertContains(t, "webhooks.tf", s, `project_id`)
+	assertContains(t, "webhooks.tf", s, `scope_id`)
 	assertContains(t, "webhooks.tf", s, `circleci_project.projects`)
 	assertContains(t, "webhooks.tf", s, `events`)
 	assertContains(t, "webhooks.tf", s, `verify_tls`)
@@ -311,9 +311,9 @@ func TestGenerate_M2_Pipelines_Standalone(t *testing.T) {
 	assertContains(t, "pipelines.tf", s, `resource "circleci_trigger"`)
 	assertContains(t, "pipelines.tf", s, `project_id`)
 	assertContains(t, "pipelines.tf", s, `pipeline_id`)
-	assertContains(t, "pipelines.tf", s, `config_source`)
-	assertContains(t, "pipelines.tf", s, `checkout_source`)
-	assertContains(t, "pipelines.tf", s, `event_source`)
+	assertContains(t, "pipelines.tf", s, `config_source_provider`)
+	assertContains(t, "pipelines.tf", s, `checkout_source_provider`)
+	assertContains(t, "pipelines.tf", s, `event_source_provider`)
 	assertContains(t, "pipelines.tf", s, `variable "pipelines"`)
 
 	// Tfvars should have pipeline entries.
@@ -329,10 +329,10 @@ func TestGenerate_M2_Pipelines_Standalone(t *testing.T) {
 	if pd.ProjectRepoName == "" {
 		t.Error("pipeline project_repo_name should not be empty")
 	}
-	if pd.ConfigProvider != "github_app" {
-		t.Errorf("expected config_provider github_app, got %q", pd.ConfigProvider)
+	if pd.ConfigSourceProvider != "github_app" {
+		t.Errorf("expected config_provider github_app, got %q", pd.ConfigSourceProvider)
 	}
-	if pd.ConfigRepoExternalID == "" {
+	if pd.ConfigSourceRepoExternalID == "" {
 		t.Error("pipeline config_repo_external_id should not be empty")
 	}
 	if len(pd.Triggers) == 0 {
@@ -403,7 +403,7 @@ func TestGenerate_M2_Pipelines_Standalone_ScheduleTrigger(t *testing.T) {
 		for _, trig := range pd.Triggers {
 			if trig.EventSourceProvider == "schedule" {
 				found = true
-				if trig.ScheduleCron == "" {
+				if trig.EventSourceScheduleCronExpression == "" {
 					t.Error("schedule trigger cron should not be empty")
 				}
 			}

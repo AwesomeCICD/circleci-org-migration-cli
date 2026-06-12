@@ -409,6 +409,7 @@ type tfPipelineDef struct {
 }
 
 // tfTrigger is a pipeline trigger, resolved for the destination.
+// Note: circleci_trigger has no "name" attribute in the provider schema (v0.3.x).
 type tfTrigger struct {
 	// TFKey is the Terraform resource key.
 	TFKey string
@@ -416,8 +417,6 @@ type tfTrigger struct {
 	PipelineTFKey string
 	// ProjectTFKey is the parent project's TF key.
 	ProjectTFKey string
-	// Name is the trigger name.
-	Name string
 	// EventPreset is the event preset (e.g. "all-pushes").
 	EventPreset string
 	// EventSourceProvider is the event source provider
@@ -426,8 +425,9 @@ type tfTrigger struct {
 	// EventSourceRepoExternalID is the event source repo external ID
 	// (only for github_app/github_server providers).
 	EventSourceRepoExternalID string
-	// ScheduleCron is the cron expression (only for schedule provider).
-	ScheduleCron string
+	// EventSourceScheduleCronExpression is the cron expression (only for schedule provider).
+	// Matches the flat provider attribute event_source_schedule_cron_expression.
+	EventSourceScheduleCronExpression string
 	// Disabled indicates whether the trigger is disabled.
 	Disabled bool
 }
@@ -736,39 +736,29 @@ func buildWebhooks(p manifest.Project, projectKey string) []tfWebhook {
 // buildPipelineDefs converts manifest pipeline definitions to the tf model.
 // Only called for standalone (GitHub App) destination orgs.
 //
-// Provider attribute reference (CircleCI-Public/circleci v0.3.x, schema-verified):
+// Provider attribute reference (CircleCI-Public/circleci v0.3.x, schema-verified
+// against v0.3.8 via `terraform providers schema -json`):
 //
-//	circleci_pipeline:
-//	  name            (Required, String) — Pipeline definition name.
-//	  description     (Optional, String) — Human-readable description.
-//	  project_id      (Required, String) — Project UUID (from circleci_project.id).
-//	  config_source   (Required, Block)  — Config source configuration.
-//	    provider      (Required, String) — "github_app" | "github_server".
-//	    github_app    (Optional, Block)  — GitHub App config source.
-//	      external_id (Required, String) — GitHub repo numeric ID.
-//	      file_path   (Optional, String) — Config file path (default ".circleci/config.yml").
-//	  checkout_source (Required, Block)  — Checkout source configuration.
-//	    provider      (Required, String) — "github_app" | "github_server".
-//	    github_app    (Optional, Block)  — GitHub App checkout source.
-//	      external_id (Required, String) — GitHub repo numeric ID.
+// circleci_pipeline uses FLAT top-level attributes (NO nested blocks):
 //
-// NOTE: The "github_app" sub-block attribute external_id matches the
-// TriggerEventSource.RepoExternalID field in the manifest. Provider attr names
-// are INFERRED from terraform-provider-circleci source (provider not yet
-// fully published with detailed schema docs for these blocks) — marked INFERRED.
+//	name                             (Required, String) — Pipeline definition name.
+//	description                      (Required, String) — Human-readable description.
+//	project_id                       (Required, String) — Project UUID (from circleci_project.id).
+//	config_source_provider           (Required, String) — "github_app" | "github_server".
+//	config_source_repo_external_id   (Required, String) — GitHub repo numeric ID.
+//	config_source_file_path          (Required, String) — Config file path.
+//	checkout_source_provider         (Required, String) — "github_app" | "github_server".
+//	checkout_source_repo_external_id (Required, String) — GitHub repo numeric ID.
 //
-//	circleci_trigger:
-//	  name            (Required, String) — Trigger name.
-//	  pipeline_id     (Required, String) — Pipeline definition ID (from circleci_pipeline.id).
-//	  project_id      (Required, String) — Project UUID (from circleci_project.id).
-//	  event_preset    (Optional, String) — Event preset (e.g. "all-pushes"). INFERRED.
-//	  disabled        (Optional, Bool)   — Whether the trigger is disabled.
-//	  event_source    (Required, Block)  — Event source configuration. INFERRED.
-//	    provider      (Required, String) — "github_app" | "github_server" | "webhook" | "schedule". INFERRED.
-//	    github_app    (Optional, Block)  — GitHub App event source. INFERRED.
-//	      external_id (Required, String) — GitHub repo numeric ID. INFERRED.
-//	    schedule      (Optional, Block)  — Schedule event source. INFERRED.
-//	      cron        (Required, String) — Cron expression. INFERRED.
+// circleci_trigger uses FLAT top-level attributes (NO nested blocks, NO name attr):
+//
+//	pipeline_id                           (Required, String) — Pipeline def ID.
+//	project_id                            (Required, String) — Project UUID.
+//	event_preset                          (Optional, String) — e.g. "all-pushes".
+//	disabled                              (Optional, Bool)   — Whether disabled.
+//	event_source_provider                 (Required, String) — "github_app"|"github_server"|"webhook"|"schedule".
+//	event_source_repo_external_id         (Optional, String) — GitHub repo numeric ID.
+//	event_source_schedule_cron_expression (Optional, String) — Cron expression (schedule only).
 func buildPipelineDefs(p manifest.Project, projectKey string) []tfPipelineDef {
 	var out []tfPipelineDef
 	for _, pd := range p.PipelineDefinitions {
@@ -792,17 +782,16 @@ func buildPipelineDefs(p manifest.Project, projectKey string) []tfPipelineDef {
 				continue
 			}
 
-			trigKey := defKey + "_" + TFIdentifier(t.Name)
+			trigKey := defKey + "_" + TFIdentifier(t.EventSource.Provider)
 			triggers = append(triggers, tfTrigger{
-				TFKey:                     trigKey,
-				PipelineTFKey:             defKey,
-				ProjectTFKey:              projectKey,
-				Name:                      t.Name,
-				EventPreset:               t.EventPreset,
-				EventSourceProvider:       t.EventSource.Provider,
-				EventSourceRepoExternalID: t.EventSource.RepoExternalID,
-				ScheduleCron:              t.EventSource.ScheduleCron,
-				Disabled:                  t.Disabled,
+				TFKey:                             trigKey,
+				PipelineTFKey:                     defKey,
+				ProjectTFKey:                      projectKey,
+				EventPreset:                       t.EventPreset,
+				EventSourceProvider:               t.EventSource.Provider,
+				EventSourceRepoExternalID:         t.EventSource.RepoExternalID,
+				EventSourceScheduleCronExpression: t.EventSource.ScheduleCron,
+				Disabled:                          t.Disabled,
 			})
 		}
 
@@ -903,9 +892,15 @@ type TFVarWebhook struct {
 	Events []string `json:"events,omitempty"`
 	// VerifyTLS indicates whether TLS verification is enabled.
 	VerifyTLS bool `json:"verify_tls"`
+	// SigningSecret is the signing secret for payload verification.
+	// Required by the circleci_webhook provider (scope_id/scope_type/signing_secret are all required).
+	// Replace the placeholder with: openssl rand -hex 32
+	SigningSecret string `json:"signing_secret"`
 }
 
 // TFVarPipeline is one pipeline definition in the tfvars file.
+// JSON field names match the Terraform variable object attribute names
+// (which in turn match the flat provider attribute names for circleci_pipeline).
 type TFVarPipeline struct {
 	// ProjectRepoName is the repository name of the parent project.
 	ProjectRepoName string `json:"project_repo_name"`
@@ -913,32 +908,33 @@ type TFVarPipeline struct {
 	Name string `json:"name"`
 	// Description is the pipeline definition description.
 	Description string `json:"description,omitempty"`
-	// ConfigProvider is the config source provider.
-	ConfigProvider string `json:"config_provider"`
-	// ConfigRepoExternalID is the config source repo external ID.
-	ConfigRepoExternalID string `json:"config_repo_external_id"`
-	// ConfigFilePath is the config file path.
-	ConfigFilePath string `json:"config_file_path,omitempty"`
-	// CheckoutProvider is the checkout source provider.
-	CheckoutProvider string `json:"checkout_provider"`
-	// CheckoutRepoExternalID is the checkout source repo external ID.
-	CheckoutRepoExternalID string `json:"checkout_repo_external_id"`
+	// ConfigSourceProvider is the config source provider ("github_app" | "github_server").
+	ConfigSourceProvider string `json:"config_source_provider"`
+	// ConfigSourceRepoExternalID is the config source repo external ID.
+	ConfigSourceRepoExternalID string `json:"config_source_repo_external_id"`
+	// ConfigSourceFilePath is the config file path.
+	ConfigSourceFilePath string `json:"config_source_file_path,omitempty"`
+	// CheckoutSourceProvider is the checkout source provider.
+	CheckoutSourceProvider string `json:"checkout_source_provider"`
+	// CheckoutSourceRepoExternalID is the checkout source repo external ID.
+	CheckoutSourceRepoExternalID string `json:"checkout_source_repo_external_id"`
 	// Triggers holds the pipeline trigger configurations.
 	Triggers []TFVarTrigger `json:"triggers,omitempty"`
 }
 
 // TFVarTrigger is one pipeline trigger in the tfvars file.
+// Note: circleci_trigger has no "name" attribute in the provider schema (v0.3.x).
+// Triggers are indexed by position within the pipeline definition.
 type TFVarTrigger struct {
-	// Name is the trigger name.
-	Name string `json:"name"`
 	// EventPreset is the event preset.
 	EventPreset string `json:"event_preset,omitempty"`
 	// EventSourceProvider is the event source provider.
 	EventSourceProvider string `json:"event_source_provider"`
 	// EventSourceRepoExternalID is the event source repo external ID.
 	EventSourceRepoExternalID string `json:"event_source_repo_external_id,omitempty"`
-	// ScheduleCron is the cron expression (schedule triggers only).
-	ScheduleCron string `json:"schedule_cron,omitempty"`
+	// EventSourceScheduleCronExpression is the cron expression (schedule triggers only).
+	// Field name matches the flat provider attribute event_source_schedule_cron_expression.
+	EventSourceScheduleCronExpression string `json:"event_source_schedule_cron_expression,omitempty"`
 	// Disabled indicates whether the trigger is disabled.
 	Disabled bool `json:"disabled"`
 }
@@ -983,6 +979,7 @@ func buildTFVars(mo *model, destOrgType OrgType) *TFVarsFile {
 				URL:             w.URL,
 				Events:          w.Events,
 				VerifyTLS:       w.VerifyTLS,
+				SigningSecret:   "REPLACE_ME_SIGNING_SECRET",
 			})
 		}
 		// Pipeline definitions (standalone only).
@@ -991,24 +988,23 @@ func buildTFVars(mo *model, destOrgType OrgType) *TFVarsFile {
 				var triggers []TFVarTrigger
 				for _, t := range pd.Triggers {
 					triggers = append(triggers, TFVarTrigger{
-						Name:                      t.Name,
-						EventPreset:               t.EventPreset,
-						EventSourceProvider:       t.EventSourceProvider,
-						EventSourceRepoExternalID: t.EventSourceRepoExternalID,
-						ScheduleCron:              t.ScheduleCron,
-						Disabled:                  t.Disabled,
+						EventPreset:                       t.EventPreset,
+						EventSourceProvider:               t.EventSourceProvider,
+						EventSourceRepoExternalID:         t.EventSourceRepoExternalID,
+						EventSourceScheduleCronExpression: t.EventSourceScheduleCronExpression,
+						Disabled:                          t.Disabled,
 					})
 				}
 				f.Pipelines = append(f.Pipelines, TFVarPipeline{
-					ProjectRepoName:        p.RepoName,
-					Name:                   pd.Name,
-					Description:            pd.Description,
-					ConfigProvider:         pd.ConfigProvider,
-					ConfigRepoExternalID:   pd.ConfigRepoExternalID,
-					ConfigFilePath:         pd.ConfigFilePath,
-					CheckoutProvider:       pd.CheckoutProvider,
-					CheckoutRepoExternalID: pd.CheckoutRepoExternalID,
-					Triggers:               triggers,
+					ProjectRepoName:              p.RepoName,
+					Name:                         pd.Name,
+					Description:                  pd.Description,
+					ConfigSourceProvider:         pd.ConfigProvider,
+					ConfigSourceRepoExternalID:   pd.ConfigRepoExternalID,
+					ConfigSourceFilePath:         pd.ConfigFilePath,
+					CheckoutSourceProvider:       pd.CheckoutProvider,
+					CheckoutSourceRepoExternalID: pd.CheckoutRepoExternalID,
+					Triggers:                     triggers,
 				})
 			}
 		}

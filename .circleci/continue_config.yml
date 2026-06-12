@@ -418,13 +418,21 @@ jobs:
   # ===========================================================================
 
   terraform-validate:
+    # Generates HCL from BOTH fixture manifests (OAuth + standalone) and validates
+    # each output against the REAL CircleCI provider schema using terraform validate.
+    # This catches wrong attribute names/structures (e.g. nested blocks vs flat attrs)
+    # that terraform fmt -check alone cannot detect.
+    #
+    # Exercises: pipelines/webhooks/restrictions/runner for standalone, and the
+    # OAuth subset (no pipelines.tf). Both must report "Success! The configuration
+    # is valid." to pass the gate.
     executor: base
     steps:
       - checkout
       - attach_workspace:
           at: .
       - run:
-          name: Install Terraform (pinned v1.9.8)
+          name: Install Terraform (pinned v1.15.6)
           command: |
             # renovate: datasource=github-releases depName=hashicorp/terraform
             ver=1.15.6
@@ -434,35 +442,54 @@ jobs:
             sudo install -m 0755 /tmp/terraform-bin/terraform /usr/local/bin/terraform
             terraform version
       - run:
-          name: Generate Terraform from fixture manifest
+          name: Generate Terraform — OAuth fixture (gh/ slug, no pipelines)
           command: |
-            mkdir -p /tmp/tf-validate
+            mkdir -p /tmp/tf-validate-oauth
             ./bin/linux/amd64/circleci-migrate terraform generate \
               --manifest internal/terraform/testdata/fixture_manifest.json \
               --placeholders \
               --dest-org-id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
-              --out /tmp/tf-validate
-            ls -la /tmp/tf-validate
+              --dest-org-type oauth \
+              --out /tmp/tf-validate-oauth
+            ls -la /tmp/tf-validate-oauth
       - run:
-          name: Terraform fmt-check (HCL syntax validation, no network required)
+          name: Generate Terraform — standalone fixture (circleci/ slug, with pipelines)
           command: |
-            terraform fmt -check -recursive /tmp/tf-validate
-            echo "terraform fmt -check: OK"
+            mkdir -p /tmp/tf-validate-standalone
+            ./bin/linux/amd64/circleci-migrate terraform generate \
+              --manifest internal/terraform/testdata/fixture_manifest_standalone.json \
+              --placeholders \
+              --dest-org-id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
+              --dest-org-type standalone \
+              --out /tmp/tf-validate-standalone
+            ls -la /tmp/tf-validate-standalone
       - run:
-          name: Terraform init + validate (full provider download)
-          # Wrapped in || so a network failure does not fail the whole CI run;
-          # the fmt-check step above already catches HCL syntax errors.
-          # If init succeeds, validate runs and its exit code is propagated.
+          name: Terraform fmt-check — both fixtures (HCL syntax, no network required)
           command: |
-            cd /tmp/tf-validate
-            # init downloads the CircleCI provider from the registry.
-            # -backend=false skips remote state configuration (not needed for validate).
-            if terraform init -backend=false; then
-              terraform validate
-              echo "terraform validate: OK"
-            else
-              echo "terraform init failed (network unavailable?); fmt-check already passed"
-            fi
+            terraform fmt -check -recursive /tmp/tf-validate-oauth
+            echo "terraform fmt -check (oauth): OK"
+            terraform fmt -check -recursive /tmp/tf-validate-standalone
+            echo "terraform fmt -check (standalone): OK"
+      - run:
+          name: Terraform init + validate — OAuth fixture
+          # Validates ALL resources: contexts, projects, restrictions, webhooks, runners.
+          # pipelines.tf is absent for OAuth — provider rejects github_oauth.
+          # init downloads the CircleCI provider from the registry.
+          command: |
+            cd /tmp/tf-validate-oauth
+            terraform init -backend=false
+            terraform validate
+            echo "terraform validate (oauth): OK"
+      - run:
+          name: Terraform init + validate — standalone fixture
+          # Validates ALL M2 resources: contexts, projects, restrictions, webhooks,
+          # runners, pipeline definitions, and triggers.
+          # Uses the same provider lock from the OAuth init (shared ~/.terraform.d cache).
+          command: |
+            cd /tmp/tf-validate-standalone
+            terraform init -backend=false
+            terraform validate
+            echo "terraform validate (standalone): OK"
 
   # ===========================================================================
   # WAVE A — Cross-platform build matrix (parallel with lint + coverage)
