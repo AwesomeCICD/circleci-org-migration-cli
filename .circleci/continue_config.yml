@@ -503,6 +503,38 @@ jobs:
           command: goreleaser release --clean
 
   # ===========================================================================
+  # RELEASE-SMOKE — post-release packaging / install smoke test
+  # ===========================================================================
+  #
+  # Downloads the published GitHub Release tarball for the just-released tag
+  # (using CIRCLE_TAG from the tag pipeline context), extracts it, and runs:
+  #   1. circleci-migrate version
+  #   2. circleci-migrate --help
+  #   3. secrets merge against two minimal inline fixture bundles
+  #   4. README curl install snippet verbatim (scratch-dir install)
+  #
+  # Runs linux/amd64 and linux/arm64 in parallel via matrix.
+  # Requires the "goreleaser" context so GITHUB_TOKEN is available for the
+  # GitHub API call in the README install step (avoids anonymous rate-limit).
+  # Triggered only by version tags; runs AFTER the `release` job completes.
+  release-smoke:
+    parameters:
+      platform:
+        type: string
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Smoke — download + test << parameters.platform >> binary
+          # Allow up to 10 minutes: the tarball download retry loop can take a
+          # few minutes while GoReleaser finishes uploading the assets.
+          no_output_timeout: 10m
+          command: |
+            bash scripts/smoke-release.sh "$CIRCLE_TAG" "<< parameters.platform >>"
+
+  # ===========================================================================
   # ORB PUBLISH — validate + publish awesomecicd/circleci-org-migration
   # ===========================================================================
   #
@@ -760,6 +792,26 @@ workflows:
   release:
     jobs:
       - release:
+          context:
+            - goreleaser
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      # -----------------------------------------------------------------------
+      # Post-release smoke test — runs after GoReleaser uploads release assets.
+      # Exercises the linux/amd64 and linux/arm64 tarballs in parallel:
+      # downloads the real published asset, extracts it, and verifies
+      # `version`, `--help`, `secrets merge`, and the README install snippet.
+      # -----------------------------------------------------------------------
+      - release-smoke:
+          name: "Release Smoke: << matrix.platform >>"
+          matrix:
+            parameters:
+              platform: [linux_amd64, linux_arm64]
+          requires:
+            - release
           context:
             - goreleaser
           filters:
