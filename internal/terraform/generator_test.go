@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	fixtureManifest = "testdata/fixture_manifest.json"
-	fixtureBundle   = "testdata/fixture_bundle.json"
-	fixtureMapping  = "testdata/fixture_mapping.json"
-	destOrgID       = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	fixtureManifest           = "testdata/fixture_manifest.json"
+	fixtureManifestStandalone = "testdata/fixture_manifest_standalone.json"
+	fixtureBundle             = "testdata/fixture_bundle.json"
+	fixtureMapping            = "testdata/fixture_mapping.json"
+	destOrgID                 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 )
 
 func loadManifest(t *testing.T, path string) *manifest.Manifest {
@@ -91,11 +92,13 @@ func assertNotContains(t *testing.T, file, s, substr string) {
 
 // TestGenerate_StaticFiles verifies that versions.tf, providers.tf, contexts.tf,
 // and projects.tf are generated with the expected static content.
+// The fixture manifest has a "gh/" source slug so org type is inferred as oauth.
 func TestGenerate_StaticFiles(t *testing.T) {
 	m := loadManifest(t, fixtureManifest)
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
-		Host:      "https://circleci.com",
+		DestOrgID:   destOrgID,
+		Host:        "https://circleci.com",
+		DestOrgType: terraform.OrgTypeOAuth, // explicit to avoid inference notice in test output
 	})
 
 	t.Run("versions.tf", func(t *testing.T) {
@@ -126,22 +129,54 @@ func TestGenerate_StaticFiles(t *testing.T) {
 		assertContains(t, "contexts.tf", s, `context_id`)
 	})
 
-	t.Run("projects.tf", func(t *testing.T) {
+	t.Run("projects.tf_oauth", func(t *testing.T) {
 		s := readFile(t, dir, "projects.tf")
 		assertContains(t, "projects.tf", s, `resource "circleci_project"`)
 		assertContains(t, "projects.tf", s, `resource "circleci_project_environment_variable"`)
 		assertContains(t, "projects.tf", s, `for_each`)
-		assertContains(t, "projects.tf", s, `advanced_settings`)
 		assertContains(t, "projects.tf", s, `var.project_secrets`)
-		assertContains(t, "projects.tf", s, `project_id`)
+		// OAuth: project_slug references the resource slug output (not a hard-coded slug).
+		assertContains(t, "projects.tf", s, `circleci_project.projects[each.value.repo_name].slug`)
+		// OAuth: advanced settings HCL assignments must NOT be present.
+		// Check for assignment patterns (not just the name, which may appear in comments).
+		assertNotContains(t, "projects.tf", s, `auto_cancel_builds            =`)
+		assertNotContains(t, "projects.tf", s, `set_github_status             =`)
+		assertNotContains(t, "projects.tf", s, `advanced_settings`)
 	})
 }
 
-// TestGenerate_MigrationTFVars verifies migration.auto.tfvars.json content.
+// TestGenerate_StaticFiles_Standalone verifies projects.tf for standalone orgs
+// includes advanced settings and uses the .slug reference.
+func TestGenerate_StaticFiles_Standalone(t *testing.T) {
+	m := loadManifest(t, fixtureManifestStandalone)
+	dir := generateTo(t, m, terraform.Options{
+		DestOrgID:   destOrgID,
+		Host:        "https://circleci.com",
+		DestOrgType: terraform.OrgTypeStandalone,
+	})
+
+	t.Run("projects.tf_standalone", func(t *testing.T) {
+		s := readFile(t, dir, "projects.tf")
+		assertContains(t, "projects.tf", s, `resource "circleci_project"`)
+		assertContains(t, "projects.tf", s, `resource "circleci_project_environment_variable"`)
+		assertContains(t, "projects.tf", s, `for_each`)
+		assertContains(t, "projects.tf", s, `var.project_secrets`)
+		// Standalone: advanced settings MUST be present.
+		assertContains(t, "projects.tf", s, `advanced_settings`)
+		assertContains(t, "projects.tf", s, `auto_cancel_builds`)
+		assertContains(t, "projects.tf", s, `set_github_status`)
+		// project_slug references the resource slug output.
+		assertContains(t, "projects.tf", s, `circleci_project.projects[each.value.repo_name].slug`)
+	})
+}
+
+// TestGenerate_MigrationTFVars verifies migration.auto.tfvars.json content
+// for a standalone destination (advanced settings should be present in tfvars).
 func TestGenerate_MigrationTFVars(t *testing.T) {
 	m := loadManifest(t, fixtureManifest)
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
+		DestOrgID:   destOrgID,
+		DestOrgType: terraform.OrgTypeStandalone, // explicit: test the standalone path
 	})
 
 	data := readFile(t, dir, "migration.auto.tfvars.json")
@@ -212,6 +247,7 @@ func TestGenerate_WithSecrets(t *testing.T) {
 	dir := generateTo(t, m, terraform.Options{
 		DestOrgID:     destOrgID,
 		SecretsBundle: bundle,
+		DestOrgType:   terraform.OrgTypeOAuth, // fixture manifest has "gh/" source slug
 	})
 
 	// secrets.auto.tfvars.json must exist.
@@ -257,6 +293,7 @@ func TestGenerate_WithPlaceholders(t *testing.T) {
 	dir := generateTo(t, m, terraform.Options{
 		DestOrgID:    destOrgID,
 		Placeholders: true,
+		DestOrgType:  terraform.OrgTypeOAuth, // fixture manifest has "gh/" source slug
 	})
 
 	// secrets.auto.tfvars.json must exist.
@@ -284,8 +321,9 @@ func TestGenerate_WithMapping(t *testing.T) {
 	mp := loadMapping(t, fixtureMapping)
 
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
-		Mapping:   mp,
+		DestOrgID:   destOrgID,
+		Mapping:     mp,
+		DestOrgType: terraform.OrgTypeOAuth, // fixture manifest has "gh/" source slug
 	})
 
 	data := readFile(t, dir, "migration.auto.tfvars.json")
@@ -298,11 +336,12 @@ func TestGenerate_WithMapping(t *testing.T) {
 }
 
 // TestGenerate_GAPSmd verifies GAPS.md is generated and contains the expected
-// gap categories based on the fixture manifest.
+// gap categories based on the fixture manifest (standalone dest — no proj-settings gap).
 func TestGenerate_GAPSmd(t *testing.T) {
 	m := loadManifest(t, fixtureManifest)
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
+		DestOrgID:   destOrgID,
+		DestOrgType: terraform.OrgTypeStandalone,
 	})
 
 	if !fileExists(t, dir, "GAPS.md") {
@@ -330,7 +369,8 @@ func TestGenerate_GAPSmd(t *testing.T) {
 func TestGenerate_NoSecretsWithoutFlag(t *testing.T) {
 	m := loadManifest(t, fixtureManifest)
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
+		DestOrgID:   destOrgID,
+		DestOrgType: terraform.OrgTypeOAuth,
 	})
 
 	if fileExists(t, dir, "secrets.auto.tfvars.json") {
@@ -342,12 +382,202 @@ func TestGenerate_NoSecretsWithoutFlag(t *testing.T) {
 func TestGenerate_CustomHost(t *testing.T) {
 	m := loadManifest(t, fixtureManifest)
 	dir := generateTo(t, m, terraform.Options{
-		DestOrgID: destOrgID,
-		Host:      "https://circleci.example.com",
+		DestOrgID:   destOrgID,
+		Host:        "https://circleci.example.com",
+		DestOrgType: terraform.OrgTypeOAuth,
 	})
 
 	s := readFile(t, dir, "providers.tf")
 	assertContains(t, "providers.tf", s, "https://circleci.example.com")
+}
+
+// TestGenerate_OrgTypeOAuth verifies OAuth output: no advanced settings in
+// projects.tf or migration.auto.tfvars.json; project_slug uses .slug reference;
+// GAPS.md includes the advanced-settings gap.
+func TestGenerate_OrgTypeOAuth(t *testing.T) {
+	m := loadManifest(t, fixtureManifest) // source slug: gh/acme (OAuth)
+	dir := generateTo(t, m, terraform.Options{
+		DestOrgID:   destOrgID,
+		DestOrgType: terraform.OrgTypeOAuth,
+	})
+
+	t.Run("projects.tf_no_advanced_settings", func(t *testing.T) {
+		s := readFile(t, dir, "projects.tf")
+		assertContains(t, "projects.tf", s, `resource "circleci_project"`)
+		assertContains(t, "projects.tf", s, `resource "circleci_project_environment_variable"`)
+		// project_slug must use the .slug computed attribute, not a hard-coded value.
+		assertContains(t, "projects.tf", s, `circleci_project.projects[each.value.repo_name].slug`)
+		// Advanced settings HCL assignments must be absent for OAuth.
+		// Check for = assignment patterns to avoid false positives from comments.
+		assertNotContains(t, "projects.tf", s, `auto_cancel_builds            =`)
+		assertNotContains(t, "projects.tf", s, `build_fork_prs                =`)
+		assertNotContains(t, "projects.tf", s, `disable_ssh                   =`)
+		assertNotContains(t, "projects.tf", s, `forks_receive_secret_env_vars =`)
+		assertNotContains(t, "projects.tf", s, `set_github_status             =`)
+		assertNotContains(t, "projects.tf", s, `setup_workflows               =`)
+		assertNotContains(t, "projects.tf", s, `write_settings_requires_admin =`)
+	})
+
+	t.Run("tfvars_no_advanced_settings", func(t *testing.T) {
+		data := readFile(t, dir, "migration.auto.tfvars.json")
+		// advanced_settings must be absent (empty map → omitempty drops it).
+		assertNotContains(t, "migration.auto.tfvars.json", data, `"advanced_settings"`)
+	})
+
+	t.Run("GAPS.md_has_project_settings_gap", func(t *testing.T) {
+		gaps := readFile(t, dir, "GAPS.md")
+		// OAuth must surface the advanced-settings gap.
+		assertContains(t, "GAPS.md", gaps, "Project advanced settings")
+		assertContains(t, "GAPS.md", gaps, "OAuth")
+		assertContains(t, "GAPS.md", gaps, "circleci-migrate sync")
+	})
+}
+
+// TestGenerate_OrgTypeStandalone verifies standalone output: advanced settings
+// ARE included in projects.tf and migration.auto.tfvars.json; no project-settings gap.
+func TestGenerate_OrgTypeStandalone(t *testing.T) {
+	m := loadManifest(t, fixtureManifestStandalone) // source slug: circleci/... (standalone)
+	dir := generateTo(t, m, terraform.Options{
+		DestOrgID:   destOrgID,
+		DestOrgType: terraform.OrgTypeStandalone,
+	})
+
+	t.Run("projects.tf_has_advanced_settings", func(t *testing.T) {
+		s := readFile(t, dir, "projects.tf")
+		assertContains(t, "projects.tf", s, `resource "circleci_project"`)
+		// Standalone: advanced settings must be present.
+		assertContains(t, "projects.tf", s, `advanced_settings`)
+		assertContains(t, "projects.tf", s, `auto_cancel_builds`)
+		assertContains(t, "projects.tf", s, `set_github_status`)
+		// project_slug uses .slug computed attribute.
+		assertContains(t, "projects.tf", s, `circleci_project.projects[each.value.repo_name].slug`)
+	})
+
+	t.Run("tfvars_has_advanced_settings", func(t *testing.T) {
+		data := readFile(t, dir, "migration.auto.tfvars.json")
+		// Advanced settings must appear for the 'api' project (has settings in fixture).
+		assertContains(t, "migration.auto.tfvars.json", data, `"advanced_settings"`)
+		assertContains(t, "migration.auto.tfvars.json", data, `"auto_cancel_builds"`)
+		assertContains(t, "migration.auto.tfvars.json", data, `"set_github_status"`)
+	})
+
+	t.Run("GAPS.md_no_project_settings_gap", func(t *testing.T) {
+		gaps := readFile(t, dir, "GAPS.md")
+		// Standalone must NOT have the OAuth project-settings gap.
+		assertNotContains(t, "GAPS.md", gaps, "Project advanced settings (OAuth org")
+	})
+}
+
+// TestGenerate_OrgTypeInference verifies that the org type is correctly inferred
+// from the source slug when --dest-org-type is not specified.
+func TestGenerate_OrgTypeInference(t *testing.T) {
+	t.Run("gh_slug_infers_oauth", func(t *testing.T) {
+		m := loadManifest(t, fixtureManifest) // slug: gh/acme
+		got := terraform.InferOrgType(m)
+		if got != terraform.OrgTypeOAuth {
+			t.Errorf("InferOrgType(gh/acme) = %v, want OrgTypeOAuth", got)
+		}
+	})
+
+	t.Run("circleci_slug_infers_standalone", func(t *testing.T) {
+		m := loadManifest(t, fixtureManifestStandalone) // slug: circleci/...
+		got := terraform.InferOrgType(m)
+		if got != terraform.OrgTypeStandalone {
+			t.Errorf("InferOrgType(circleci/...) = %v, want OrgTypeStandalone", got)
+		}
+	})
+}
+
+// TestGenerate_InferencePaths exercises the Generate function's inference code
+// paths (OrgTypeUnknown → infer from slug) so the stderr-printing branches are
+// covered. The actual content correctness is verified in the org-type tests above.
+func TestGenerate_InferencePaths(t *testing.T) {
+	t.Run("infer_oauth_from_gh_slug", func(t *testing.T) {
+		m := loadManifest(t, fixtureManifest) // slug: gh/acme → should infer OrgTypeOAuth
+		// OrgTypeUnknown causes inference; we just verify generation succeeds.
+		dir := generateTo(t, m, terraform.Options{
+			DestOrgID:   destOrgID,
+			DestOrgType: terraform.OrgTypeUnknown, // explicit: exercise inference path
+		})
+		s := readFile(t, dir, "projects.tf")
+		// Result should be the OAuth template (no advanced settings assignments).
+		assertNotContains(t, "projects.tf", s, `auto_cancel_builds            =`)
+	})
+
+	t.Run("infer_standalone_from_circleci_slug", func(t *testing.T) {
+		m := loadManifest(t, fixtureManifestStandalone) // slug: circleci/... → standalone
+		dir := generateTo(t, m, terraform.Options{
+			DestOrgID:   destOrgID,
+			DestOrgType: terraform.OrgTypeUnknown, // explicit: exercise inference path
+		})
+		s := readFile(t, dir, "projects.tf")
+		// Result should be the standalone template (advanced settings present).
+		assertContains(t, "projects.tf", s, `advanced_settings`)
+	})
+}
+
+// TestParseOrgType verifies all accepted --dest-org-type values and aliases.
+func TestParseOrgType(t *testing.T) {
+	cases := []struct {
+		input string
+		want  terraform.OrgType
+		errOK bool
+	}{
+		{"oauth", terraform.OrgTypeOAuth, false},
+		{"gh", terraform.OrgTypeOAuth, false},
+		{"github", terraform.OrgTypeOAuth, false},
+		{"GH", terraform.OrgTypeOAuth, false},    // case-insensitive
+		{"OAuth", terraform.OrgTypeOAuth, false}, // mixed case
+		{"standalone", terraform.OrgTypeStandalone, false},
+		{"app", terraform.OrgTypeStandalone, false},
+		{"github_app", terraform.OrgTypeStandalone, false},
+		{"Standalone", terraform.OrgTypeStandalone, false}, // mixed case
+		{"unknown-value", terraform.OrgTypeUnknown, true},
+		{"", terraform.OrgTypeUnknown, true},
+	}
+	for _, tc := range cases {
+		got, err := terraform.ParseOrgType(tc.input)
+		if tc.errOK {
+			if err == nil {
+				t.Errorf("ParseOrgType(%q): expected error, got nil (result %v)", tc.input, got)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("ParseOrgType(%q): unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("ParseOrgType(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		}
+	}
+}
+
+// TestGenerate_SlugReference verifies that circleci_project_environment_variable
+// uses the project resource's .slug computed attribute (not a hard-coded slug)
+// for both org types, ensuring the correct format is used automatically.
+func TestGenerate_SlugReference(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture string
+		orgType terraform.OrgType
+	}{
+		{"oauth", fixtureManifest, terraform.OrgTypeOAuth},
+		{"standalone", fixtureManifestStandalone, terraform.OrgTypeStandalone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := loadManifest(t, tc.fixture)
+			dir := generateTo(t, m, terraform.Options{
+				DestOrgID:   destOrgID,
+				DestOrgType: tc.orgType,
+			})
+			s := readFile(t, dir, "projects.tf")
+			// The env-var resource must use the computed .slug output, not dest_slug.
+			assertContains(t, "projects.tf", s, `circleci_project.projects[each.value.repo_name].slug`)
+			// Hard-coded dest_slug must not be used as the project_slug value.
+			// (dest_slug may still appear in the variable definition, just not as the project_slug value)
+			assertNotContains(t, "projects.tf", s, `project_slug = each.value.dest_slug`)
+		})
+	}
 }
 
 // TestGenerate_TFIdentifier validates edge cases in the identifier sanitiser.
