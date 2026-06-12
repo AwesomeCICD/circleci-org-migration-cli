@@ -828,6 +828,92 @@ func TestPrintSyncReport_ManualLineContainsFriendlyName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// parseSyncOnly + sortedKeys (sync.go helpers)
+// ---------------------------------------------------------------------------
+
+func TestParseSyncOnly_EmptyString_ReturnsNil(t *testing.T) {
+	got, err := parseSyncOnly("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty --only, got %v", got)
+	}
+}
+
+func TestParseSyncOnly_ValidSections_Parsed(t *testing.T) {
+	got, err := parseSyncOnly("contexts,projects")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got["contexts"] {
+		t.Error("expected 'contexts' in result")
+	}
+	if !got["projects"] {
+		t.Error("expected 'projects' in result")
+	}
+	if got["runner"] {
+		t.Error("'runner' should not be in result for 'contexts,projects'")
+	}
+}
+
+func TestParseSyncOnly_AllValidSections_Accepted(t *testing.T) {
+	for _, section := range []string{"org-settings", "contexts", "projects", "runner", "ciam", "extras"} {
+		got, err := parseSyncOnly(section)
+		if err != nil {
+			t.Errorf("parseSyncOnly(%q) error: %v", section, err)
+		}
+		if !got[section] {
+			t.Errorf("expected %q in result", section)
+		}
+	}
+}
+
+func TestParseSyncOnly_InvalidSection_ReturnsError(t *testing.T) {
+	_, err := parseSyncOnly("terraform")
+	if err == nil {
+		t.Fatal("expected error for unknown section 'terraform'")
+	}
+	if !strings.Contains(err.Error(), "terraform") {
+		t.Errorf("error should mention invalid section name, got: %v", err)
+	}
+}
+
+func TestParseSyncOnly_SpacesAndCase_Normalised(t *testing.T) {
+	got, err := parseSyncOnly("  Contexts , PROJECTS ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got["contexts"] {
+		t.Error("expected 'contexts' (lowercased) in result")
+	}
+	if !got["projects"] {
+		t.Error("expected 'projects' (lowercased) in result")
+	}
+}
+
+func TestSortedKeys_EmptyMap_Empty(t *testing.T) {
+	got := sortedKeys(map[string]bool{})
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %v", got)
+	}
+}
+
+func TestSortedKeys_SortedOutput(t *testing.T) {
+	m := map[string]bool{"zebra": true, "apple": true, "mango": true}
+	got := sortedKeys(m)
+	want := []string{"apple", "mango", "zebra"}
+	if len(got) != len(want) {
+		t.Fatalf("length mismatch: got %d, want %d", len(got), len(want))
+	}
+	for i, v := range got {
+		if v != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, v, want[i])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ciamWriterAdapter — converts *org.Client results to the syncer.CIAMWriter
 // shapes (#176). Backed by httptest via newOrgClientForTest.
 // ---------------------------------------------------------------------------

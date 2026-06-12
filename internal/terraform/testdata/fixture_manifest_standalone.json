@@ -23,6 +23,23 @@
       "environment_variables": [
         {"name": "AWS_ACCESS_KEY_ID"},
         {"name": "AWS_SECRET_ACCESS_KEY"}
+      ],
+      "restrictions": [
+        {
+          "type": "project",
+          "value": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+          "name": "acme-app/api"
+        },
+        {
+          "type": "expression",
+          "value": "project.id == \"dddddddd-dddd-dddd-dddd-dddddddddddd\"",
+          "name": ""
+        },
+        {
+          "type": "group",
+          "value": "gggggggg-gggg-gggg-gggg-gggggggggggg",
+          "name": "deploy-team"
+        }
       ]
     }
   ],
@@ -45,7 +62,51 @@
       },
       "environment_variables": [
         {"name": "DATABASE_URL", "masked_value": "xxxx1234"}
+      ],
+      "webhooks": [
+        {
+          "name": "ci-notify",
+          "url": "https://hooks.example.com/circleci",
+          "events": ["workflow-completed"],
+          "verify_tls": true
+        }
+      ],
+      "pipeline_definitions": [
+        {
+          "name": "main",
+          "description": "Main pipeline",
+          "config_source": {
+            "provider": "github_app",
+            "repo_full_name": "acme/api",
+            "repo_external_id": "12345678",
+            "file_path": ".circleci/config.yml"
+          },
+          "checkout_source": {
+            "provider": "github_app",
+            "repo_full_name": "acme/api",
+            "repo_external_id": "12345678"
+          },
+          "triggers": [
+            {
+              "name": "push-trigger",
+              "event_preset": "all-pushes",
+              "disabled": false,
+              "event_source": {
+                "provider": "github_app",
+                "repo_full_name": "acme/api",
+                "repo_external_id": "12345678"
+              }
+            }
+          ]
+        }
       ]
+    }
+  ],
+  "runner_namespace": "acme-app",
+  "runner_resource_classes": [
+    {
+      "name": "acme-app/linux-medium",
+      "description": "Linux medium runner"
     }
   ],
   "warnings": []

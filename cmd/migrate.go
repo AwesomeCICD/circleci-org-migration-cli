@@ -615,6 +615,14 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "    --runner-namespace / --dest-runner-namespace  migrate self-hosted runner resource classes")
 	fmt.Fprintln(out, "    --dest-github-org                             when repos moved to a new GitHub org (App orgs)")
 	fmt.Fprintln(out, "    --mapping                                     per-project source->destination slug overrides")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  Terraform alternative (IaC path):")
+	fmt.Fprintln(out, "    To manage contexts, projects, webhooks, runners, and pipelines as Terraform")
+	fmt.Fprintln(out, "    code, run 'terraform generate' after export and apply with terraform, then")
+	fmt.Fprintln(out, "    re-run sync with --skip-terraform-managed to fill in CLI-only gaps:")
+	fmt.Fprintln(out, "      circleci-migrate terraform generate --manifest manifest.json --dest-org-id <uuid> --out ./terraform/")
+	fmt.Fprintln(out, "      cd ./terraform/ && terraform init && terraform plan && terraform apply")
+	fmt.Fprintln(out, "      circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply --skip-terraform-managed")
 
 	outSourceOrg = sourceOrg
 	outDestOrg = destOrg

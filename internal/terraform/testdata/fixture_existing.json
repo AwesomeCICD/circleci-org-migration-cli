@@ -1,0 +1,41 @@
+{
+  "dry_run": false,
+  "dest_org_slug": "gh/acme-new",
+  "sections": [
+    {
+      "section": "Contexts",
+      "created": 0,
+      "exists": 2,
+      "set": 0,
+      "skipped": 0,
+      "manual": 0,
+      "error": 0
+    },
+    {
+      "section": "Projects",
+      "created": 0,
+      "exists": 2,
+      "set": 0,
+      "skipped": 0,
+      "manual": 0,
+      "error": 0
+    }
+  ],
+  "resource_ids": {
+    "contexts": {
+      "deploy-prod": "cccccccc-dddd-dddd-dddd-cccccccccccc",
+      "shared-ci": "eeeeeeee-dddd-dddd-dddd-eeeeeeeeeeee"
+    },
+    "context_env_vars": {},
+    "projects": {
+      "api": "11111111-2222-2222-2222-111111111111",
+      "frontend": "33333333-4444-4444-4444-333333333333"
+    },
+    "webhooks": {
+      "api/notify-slack": "wh-aaaa-1111-bbbb-2222-cccc"
+    },
+    "runner_resource_classes": {
+      "acme/linux-medium": "rc-1111-aaaa-2222-bbbb-3333"
+    }
+  }
+}

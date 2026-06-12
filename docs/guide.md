@@ -841,18 +841,111 @@ circleci-migrate terraform generate \
   --out ./terraform/
 ```
 
-### What Terraform does NOT manage (M1 scope)
+### M2 resources (context restrictions, webhooks, runners, pipelines/triggers)
 
-The following are always in GAPS.md and require the CLI `sync` command:
-schedules (legacy v2), checkout/deploy keys, additional SSH keys, project API
+`terraform generate` (M2) now covers these additional resources:
+
+| Resource | Both org types | Standalone only | OAuth only |
+|---|---|---|---|
+| `circleci_context_restriction` type=project | ✓ | | |
+| `circleci_context_restriction` type=expression | ✓ | | |
+| `circleci_context_restriction` type=group | | | ✓ |
+| `circleci_webhook` | ✓ | | |
+| `circleci_runner_resource_class` + `circleci_runner_token` | ✓ | | |
+| `circleci_pipeline` + `circleci_trigger` | | ✓ | skipped |
+
+For **OAuth destinations**: `circleci_pipeline` and `circleci_trigger` are
+**omitted** (provider schema rejects `github_oauth`). Pipeline definitions in
+the manifest land in GAPS.md and must be recreated via `sync`.
+
+### Self-hosted runner namespace
+
+Pass `--dest-runner-namespace` to map runner classes to a different destination namespace:
+
+```bash
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <uuid> \
+  --dest-runner-namespace acme-new \
+  --out ./terraform/
+```
+
+When omitted, the source namespace from the manifest is used as-is.
+
+### Adopting existing resources (--import-existing)
+
+If resources were previously created by `circleci-migrate sync`, you can import
+them into Terraform state with the `--import-existing` flag. Pass the output of
+`sync --json` via `--existing`:
+
+```bash
+# Step 1: run sync --json to capture existing resource IDs
+circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN \
+  --json > sync-result.json
+
+# Step 2: generate with import blocks
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <uuid> \
+  --import-existing --existing sync-result.json \
+  --out ./terraform/
+
+# Step 3: terraform plan (imports existing, creates missing)
+cd ./terraform/ && terraform init && terraform plan
+```
+
+This emits Terraform 1.5+ `import {}` blocks in `imports.tf` for contexts,
+projects, webhooks, and runner resource classes that already exist.
+
+### CLI gap-fill after terraform apply
+
+After `terraform apply`, use `--skip-terraform-managed` on `sync` to avoid
+overwriting resources Terraform now owns. This syncs only the CLI-only sections
+(org-settings, CIAM, extras):
+
+```bash
+circleci-migrate sync --manifest manifest.json \
+  --dest-token $CIRCLECI_DEST_TOKEN \
+  --apply --skip-terraform-managed
+```
+
+Alternatively, use `--only` to sync only specific sections:
+
+```bash
+# Sync only org-settings, CIAM, and extras after terraform apply
+circleci-migrate sync --manifest manifest.json \
+  --dest-token $CIRCLECI_DEST_TOKEN \
+  --apply --only org-settings,ciam,extras
+```
+
+### How should the destination be managed?
+
+When running `migrate` interactively, you can choose how the destination is
+managed:
+
+1. **CLI applies everything (default)** — run `sync --apply` to recreate all
+   resources imperatively. This is the standard path.
+2. **Generate Terraform + CLI gap-fill** — run `terraform generate` first, then
+   `terraform apply`, then `sync --skip-terraform-managed` (or `--only`) to fill
+   in what the provider cannot manage. Use this when the destination org should
+   land in Terraform state for ongoing IaC management.
+
+The Terraform path requires an extra setup step (Terraform installed, remote
+state configured) but leaves all declarative resources in state for future
+`plan`/`apply` cycles. The GAPS.md lists every remaining CLI step with the exact
+command to complete it.
+
+### What Terraform does NOT manage (M1/M2 scope)
+
+The following always require the CLI `sync` command (they are listed in GAPS.md):
+legacy v2 schedules, checkout/deploy keys, additional SSH keys, project API
 tokens, CIAM roles and groups, org-level settings (feature flags, OIDC, OTel,
 contacts, retention, budgets, orb allowlist, SSO, release tracker), and private
 orb inlining.
 
 For **OAuth (`gh/`) destination orgs**, project advanced settings
-(`auto_cancel_builds`, `build_fork_prs`, `disable_ssh`, etc.) are also in
-GAPS.md because the Terraform provider does not support them for OAuth orgs.
-Apply them via:
+(`auto_cancel_builds`, `build_fork_prs`, `disable_ssh`, etc.) and pipeline/trigger
+resources are also in GAPS.md. Apply them via:
 
 ```bash
 circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply
