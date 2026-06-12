@@ -129,10 +129,18 @@ type Options struct {
 	// Empty means all contexts with at least one variable.
 	SelectedContextNames map[string]bool
 
-	// Mapping is an optional source→dest context name mapping.  When a source
-	// context name has an entry, the destination context is looked up by the
-	// mapped name.  When absent, the source name is used directly.
+	// Mapping is an optional source→dest context/project name mapping.  When a
+	// source context name has an entry (key without "/"), the destination context
+	// is looked up by the mapped name.  When a source project slug has an entry
+	// (key containing "/"), the destination project slug is the value.
 	Mapping map[string]string
+
+	// IncludeProjectVars controls whether project env-var values are also
+	// transferred.  Default false (context-only).  When true, each source project
+	// that has env vars AND can be resolved to a destination project slug is
+	// included in the transfer pipeline.  Projects without a resolvable dest slug
+	// are skipped with a WARN line in the plan.
+	IncludeProjectVars bool
 
 	// DryRun controls whether the transfer is actually executed.
 	// When true (the default), only a plan is printed and no pipeline is triggered.
@@ -192,6 +200,19 @@ func (o *Options) destContextName(srcName string) string {
 	return srcName
 }
 
+// destProjectSlug returns the destination project slug for a given source
+// project slug, consulting Mapping if present.  ok is false when the slug
+// cannot be resolved (caller should skip and flag the project).
+func (o *Options) destProjectSlug(srcSlug string) (string, bool) {
+	if o.Mapping != nil {
+		if dst, ok := o.Mapping[srcSlug]; ok {
+			return dst, true
+		}
+	}
+	// No mapping entry — we cannot derive the dest slug automatically.
+	return "", false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plan — what would be transferred
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,23 +225,56 @@ type ContextPlan struct {
 	DestName string
 	// VarNames are the env-var names that would be transferred.
 	VarNames []string
+	// WillCreate is true when the destination context is expected to be absent
+	// and will be created by the in-pipeline job before setting values.
+	// False means the job will attempt to look it up (update path).
+	WillCreate bool
+}
+
+// ProjectVarPlan describes what would be transferred for one project's env vars.
+type ProjectVarPlan struct {
+	// SourceSlug is the project slug in the source org.
+	SourceSlug string
+	// DestSlug is the resolved project slug in the destination org.
+	// Empty when Skipped is true.
+	DestSlug string
+	// VarNames are the env-var names that would be transferred.
+	VarNames []string
+	// Skipped is true when the destination project cannot be resolved.
+	Skipped bool
+	// SkipReason is a human-readable explanation of why Skipped is true.
+	SkipReason string
 }
 
 // Plan describes what Transfer would do (dry-run output).
 type Plan struct {
 	// Contexts is the ordered list of contexts that would be transferred.
 	Contexts []ContextPlan
+	// Projects is the ordered list of project env-var plans (populated only
+	// when IncludeProjectVars is set).
+	Projects []ProjectVarPlan
 	// DestTokenContext is the source context holding the dest token.
 	DestTokenContext string
 	// DestTokenEnvVar is the env-var name within DestTokenContext.
 	DestTokenEnvVar string
 }
 
-// TotalVars returns the total number of env-var values in the plan.
+// TotalVars returns the total number of env-var values in the plan (contexts only).
 func (p *Plan) TotalVars() int {
 	n := 0
 	for _, c := range p.Contexts {
 		n += len(c.VarNames)
+	}
+	return n
+}
+
+// TotalProjectVars returns the total number of project env-var values in the plan.
+func (p *Plan) TotalProjectVars() int {
+	n := 0
+	for _, pv := range p.Projects {
+		if !pv.Skipped {
+			n += len(pv.VarNames)
+		}
 	}
 	return n
 }
@@ -239,18 +293,20 @@ const transferJobName = "circleci-migrate-transfer"
 //   - Each job installs circleci-migrate and runs a shell script that PUTs each
 //     env-var value to the matching context in the destination org via the
 //     CircleCI API.
+//   - Optionally, one job per project (when IncludeProjectVars is set) PUTs
+//     project env-var values to the matching project in the destination org.
 //
 // Design invariants:
 //   - The dest token value NEVER appears in the generated YAML — it is
 //     referenced only by env-var name (${CIRCLECI_DEST_TOKEN} or the override).
 //   - No secret values are written to any file or artifact.
 //   - The PUT calls go directly over TLS to the destination API.
-func buildTransferConfig(m *manifest.Manifest, ctxPlans []ContextPlan, opts *Options) string {
-	return buildTransferConfigWithVersion(m, ctxPlans, opts, version.Version)
+func buildTransferConfig(m *manifest.Manifest, ctxPlans []ContextPlan, projPlans []ProjectVarPlan, opts *Options) string {
+	return buildTransferConfigWithVersion(m, ctxPlans, projPlans, opts, version.Version)
 }
 
 // buildTransferConfigWithVersion is the testable variant.
-func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan, opts *Options, ver string) string {
+func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan, projPlans []ProjectVarPlan, opts *Options, ver string) string {
 	destHost := opts.destHost()
 	destTokenEnvVar := opts.destTokenEnvVar()
 	destOrgID := opts.DestOrgID
@@ -260,6 +316,8 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 
 	sb.WriteString("version: 2.1\n")
 	sb.WriteString("jobs:\n")
+
+	// ── Context jobs ─────────────────────────────────────────────────────────
 
 	for _, cp := range ctxPlans {
 		if len(cp.VarNames) == 0 {
@@ -321,13 +379,26 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 		sb.WriteString("              page_token=\"$next_token\"\n")
 		sb.WriteString("            done\n")
 		sb.WriteString("\n")
+		// Create-if-missing: when the context is not found, POST to create it.
 		sb.WriteString("            if [ -z \"$DEST_CTX_ID\" ]; then\n")
-		sb.WriteString(fmt.Sprintf("              echo \"ERROR: destination context %q not found in org ${DEST_ORG_ID}\" >&2\n", cp.DestName))
-		sb.WriteString("              echo 'Run: circleci-migrate sync --manifest manifest.json --apply' >&2\n")
-		sb.WriteString("              echo 'to create destination contexts before transferring values.' >&2\n")
-		sb.WriteString("              exit 1\n")
+		sb.WriteString(fmt.Sprintf("              echo \"Destination context %q not found — creating it in org ${DEST_ORG_ID}\"\n", cp.DestName))
+		sb.WriteString("              create_body=$(jq -n --arg name \"$DEST_CTX_NAME\" --arg oid \"$DEST_ORG_ID\" \\\n")
+		sb.WriteString("                '{\"name\": $name, \"owner\": {\"id\": $oid, \"type\": \"organization\"}}')\n")
+		sb.WriteString("              create_resp=$(curl -sf \\\n")
+		sb.WriteString("                -X POST \\\n")
+		sb.WriteString("                -H 'Content-Type: application/json' \\\n")
+		sb.WriteString("                -H \"Circle-Token: ${DEST_TOKEN}\" \\\n")
+		sb.WriteString("                -d \"$create_body\" \\\n")
+		sb.WriteString("                \"${DEST_HOST}/api/v2/context\")\n")
+		sb.WriteString("              DEST_CTX_ID=$(printf '%s' \"$create_resp\" | jq -r '.id')\n")
+		sb.WriteString("              if [ -z \"$DEST_CTX_ID\" ] || [ \"$DEST_CTX_ID\" = 'null' ]; then\n")
+		sb.WriteString(fmt.Sprintf("                echo \"ERROR: failed to create destination context %q\" >&2\n", cp.DestName))
+		sb.WriteString("                exit 1\n")
+		sb.WriteString("              fi\n")
+		sb.WriteString(fmt.Sprintf("              echo \"Created destination context %q → ${DEST_CTX_ID}\"\n", cp.DestName))
+		sb.WriteString("            else\n")
+		sb.WriteString(fmt.Sprintf("              echo \"Resolved destination context %q → ${DEST_CTX_ID}\"\n", cp.DestName))
 		sb.WriteString("            fi\n")
-		sb.WriteString(fmt.Sprintf("            echo \"Resolved destination context %q → ${DEST_CTX_ID}\"\n", cp.DestName))
 		sb.WriteString("\n")
 
 		// PUT each env var.
@@ -365,7 +436,73 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 		sb.WriteString("\n")
 	}
 
-	// Workflow: one job per context, all in parallel.
+	// ── Project env-var jobs ──────────────────────────────────────────────────
+
+	const projJobName = "circleci-migrate-transfer-project"
+
+	for _, pp := range projPlans {
+		if pp.Skipped || len(pp.VarNames) == 0 {
+			continue
+		}
+
+		jobName := projJobName + "-" + sanitizeName(pp.SourceSlug)
+
+		sb.WriteString("  " + jobName + ":\n")
+		sb.WriteString("    docker:\n")
+		sb.WriteString("      - image: cimg/base:current\n")
+		sb.WriteString("    resource_class: small\n")
+		sb.WriteString("    steps:\n")
+		sb.WriteString(buildTransferInstallStep(ver))
+
+		// Project env-var transfer step.
+		// The source project's env vars are available in the job environment
+		// because the job runs under that project (they are injected by CircleCI).
+		// We PUT/POST each value to the destination project via the v1.1 API.
+		//
+		// CircleCI project env-var API:
+		//   POST /api/v1.1/project/{slug}/envvar   → 201 (create or update)
+		//   PUT  /api/v1.1/project/{slug}/envvar   → not available; POST is idempotent-upsert
+		// We use POST (add-or-update) which returns 201 on create and 200 on update.
+		sb.WriteString("      - run:\n")
+		sb.WriteString(fmt.Sprintf("          name: Transfer project env vars for %q\n", pp.SourceSlug))
+		sb.WriteString("          command: |\n")
+		sb.WriteString("            set -euo pipefail\n")
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("            DEST_HOST=%q\n", destHost))
+		sb.WriteString(fmt.Sprintf("            DEST_PROJECT_SLUG=%q\n", pp.DestSlug))
+		sb.WriteString(fmt.Sprintf("            DEST_TOKEN=${%s:?%q env var is required (should be in the dest-token context)}\n",
+			destTokenEnvVar, destTokenEnvVar))
+		sb.WriteString("\n")
+		sb.WriteString("            # POST each project env var to the destination project.\n")
+		sb.WriteString("            # Values are available in the job environment from the source project.\n")
+		sb.WriteString("            transfer_ok=true\n")
+		for _, varName := range pp.VarNames {
+			safeVar := strings.ReplaceAll(varName, "'", "'\\''")
+			sb.WriteString(fmt.Sprintf("            # Transfer project var %s\n", varName))
+			sb.WriteString(fmt.Sprintf("            val=${%s:-}\n", safeVar))
+			sb.WriteString("            body=$(jq -n --arg n \"" + varName + "\" --arg v \"$val\" '{\"name\": $n, \"value\": $v}')\n")
+			sb.WriteString("            http_code=$(curl -s -o /dev/null -w '%{http_code}' \\\n")
+			sb.WriteString("              -X POST \\\n")
+			sb.WriteString("              -H 'Content-Type: application/json' \\\n")
+			sb.WriteString("              -H \"Circle-Token: ${DEST_TOKEN}\" \\\n")
+			sb.WriteString("              -d \"$body\" \\\n")
+			sb.WriteString("              \"${DEST_HOST}/api/v1.1/project/${DEST_PROJECT_SLUG}/envvar\")\n")
+			sb.WriteString("            if [ \"$http_code\" != '201' ] && [ \"$http_code\" != '200' ]; then\n")
+			sb.WriteString(fmt.Sprintf("              echo \"ERROR: POST project var %s HTTP ${http_code}\" >&2\n", varName))
+			sb.WriteString("              transfer_ok=false\n")
+			sb.WriteString("            else\n")
+			sb.WriteString(fmt.Sprintf("              echo \"Transferred project var: %s\"\n", varName))
+			sb.WriteString("            fi\n")
+		}
+		sb.WriteString("            if [ \"$transfer_ok\" = 'false' ]; then\n")
+		sb.WriteString("              echo 'ERROR: one or more project env-var POSTs failed (see above).' >&2\n")
+		sb.WriteString("              exit 1\n")
+		sb.WriteString("            fi\n")
+		sb.WriteString(fmt.Sprintf("            echo 'Project env-var transfer complete for %q'\n", pp.SourceSlug))
+		sb.WriteString("\n")
+	}
+
+	// Workflow: one job per context (and per project), all in parallel.
 	sb.WriteString("workflows:\n")
 	sb.WriteString("  transfer:\n")
 	sb.WriteString("    jobs:\n")
@@ -384,6 +521,18 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 		for _, c := range contexts {
 			sb.WriteString(fmt.Sprintf("            - %s\n", c))
 		}
+	}
+
+	for _, pp := range projPlans {
+		if pp.Skipped || len(pp.VarNames) == 0 {
+			continue
+		}
+		jobName := projJobName + "-" + sanitizeName(pp.SourceSlug)
+		// The job runs under the source project (env vars are injected); attach the
+		// dest-token context so the job can authenticate to the destination API.
+		sb.WriteString("      - " + jobName + ":\n")
+		sb.WriteString("          context:\n")
+		sb.WriteString(fmt.Sprintf("            - %s\n", destTokenCtx))
 	}
 
 	return sb.String()
@@ -496,15 +645,58 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 			SourceName: mc.Name,
 			DestName:   opts.destContextName(mc.Name),
 			VarNames:   varNames,
+			// WillCreate is always false at plan time — whether the context exists
+			// in the destination is unknown without a live API call.  The
+			// in-pipeline job handles create-if-missing; the plan shows the intent.
+			WillCreate: false,
 		})
 	}
 
-	if len(ctxPlans) == 0 {
+	if len(ctxPlans) == 0 && !opts.IncludeProjectVars {
 		return Plan{}, errors.New("transfer: no contexts with env-var values found in manifest (nothing to transfer)")
 	}
 
+	// Project env-var plans (only when IncludeProjectVars is set).
+	var projPlans []ProjectVarPlan
+	if opts.IncludeProjectVars {
+		for _, mp := range m.Projects {
+			if len(mp.EnvVars) == 0 {
+				continue
+			}
+
+			destSlug, ok := opts.destProjectSlug(mp.Slug)
+			if !ok {
+				projPlans = append(projPlans, ProjectVarPlan{
+					SourceSlug: mp.Slug,
+					Skipped:    true,
+					SkipReason: fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug),
+				})
+				continue
+			}
+
+			varNames := make([]string, 0, len(mp.EnvVars))
+			for _, ev := range mp.EnvVars {
+				varNames = append(varNames, ev.Name)
+			}
+			sort.Strings(varNames)
+
+			projPlans = append(projPlans, ProjectVarPlan{
+				SourceSlug: mp.Slug,
+				DestSlug:   destSlug,
+				VarNames:   varNames,
+			})
+		}
+	}
+
+	if len(ctxPlans) == 0 && len(projPlans) == 0 {
+		return Plan{}, errors.New("transfer: no contexts or projects with env-var values found in manifest (nothing to transfer)")
+	}
+	// If only project-var mode and ALL projects are skipped, that's a usable but
+	// warning-worthy plan — we return it; the caller sees the SKIP lines.
+
 	return Plan{
 		Contexts:         ctxPlans,
+		Projects:         projPlans,
 		DestTokenContext: opts.DestTokenContext,
 		DestTokenEnvVar:  opts.destTokenEnvVar(),
 	}, nil
@@ -571,7 +763,7 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	}
 	defID := defs[0].ID
 
-	configYAML := buildTransferConfig(m, plan.Contexts, &opts)
+	configYAML := buildTransferConfig(m, plan.Contexts, plan.Projects, &opts)
 
 	fmt.Fprintf(opts.Stderr, "Triggering transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
 
@@ -600,8 +792,18 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
 	}
 
-	fmt.Fprintf(opts.Stdout, "\nTransfer pipeline succeeded: %d context(s), %d variable(s) transferred.\n",
+	activeProjPlans := 0
+	for _, pp := range plan.Projects {
+		if !pp.Skipped {
+			activeProjPlans++
+		}
+	}
+	fmt.Fprintf(opts.Stdout, "\nTransfer pipeline succeeded: %d context(s), %d context variable(s)",
 		len(plan.Contexts), plan.TotalVars())
+	if activeProjPlans > 0 {
+		fmt.Fprintf(opts.Stdout, ", %d project(s), %d project variable(s)", activeProjPlans, plan.TotalProjectVars())
+	}
+	fmt.Fprintln(opts.Stdout, " transferred.")
 
 	return nil
 }
@@ -616,16 +818,50 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 	fmt.Fprintln(errOut, "")
 
 	for _, cp := range plan.Contexts {
+		action := "update"
+		// The in-pipeline job performs create-if-missing automatically; we label
+		// the action accordingly in the plan to set operator expectations.
+		if cp.WillCreate {
+			action = "create"
+		}
 		if cp.SourceName == cp.DestName {
-			fmt.Fprintf(out, "  context %q → %d variable(s)\n", cp.SourceName, len(cp.VarNames))
+			fmt.Fprintf(out, "  context %q [%s] → %d variable(s)\n", cp.SourceName, action, len(cp.VarNames))
 		} else {
-			fmt.Fprintf(out, "  context %q → %q (%d variable(s))\n", cp.SourceName, cp.DestName, len(cp.VarNames))
+			fmt.Fprintf(out, "  context %q → %q [%s] (%d variable(s))\n", cp.SourceName, cp.DestName, action, len(cp.VarNames))
 		}
 		for _, v := range cp.VarNames {
 			fmt.Fprintf(out, "    %s\n", v)
 		}
 	}
-	fmt.Fprintf(out, "\nTotal: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
+
+	if len(plan.Projects) > 0 {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  project env vars:")
+		for _, pp := range plan.Projects {
+			if pp.Skipped {
+				fmt.Fprintf(out, "  SKIP project %q: %s\n", pp.SourceSlug, pp.SkipReason)
+			} else {
+				fmt.Fprintf(out, "  project %q → %q (%d variable(s))\n", pp.SourceSlug, pp.DestSlug, len(pp.VarNames))
+				for _, v := range pp.VarNames {
+					fmt.Fprintf(out, "    %s\n", v)
+				}
+			}
+		}
+	}
+
+	activeProjCount := 0
+	for _, pp := range plan.Projects {
+		if !pp.Skipped {
+			activeProjCount++
+		}
+	}
+
+	if activeProjCount > 0 {
+		fmt.Fprintf(out, "\nTotal: %d context(s), %d context variable(s); %d project(s), %d project variable(s)\n",
+			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars())
+	} else {
+		fmt.Fprintf(out, "\nTotal: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
+	}
 	fmt.Fprintln(errOut, "\nSECURITY NOTE: the dest API token must already be stored in the source org context")
 	fmt.Fprintf(errOut, "  %q (env var: %s).\n", plan.DestTokenContext, plan.DestTokenEnvVar)
 	fmt.Fprintln(errOut, "  Source org admins with access to that context can read the dest token.\n  Use a scoped token and rotate it after transfer.")
