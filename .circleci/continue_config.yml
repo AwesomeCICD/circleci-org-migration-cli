@@ -339,9 +339,11 @@ jobs:
             # package list by historical timings (name-split on first run), feeds
             # Test Insights, and enables the "Rerun failed tests" button.
             # CGO_ENABLED=1 is required for -race and must be inside --command so
-            # it applies to the gotestsum subprocess on each shard.
+            # it applies to the gotestsum subprocess on each shard. Use `env` so
+            # xargs sets the var rather than trying to exec "CGO_ENABLED=1" as a
+            # program (which fails with exit 127 / "No such file or directory").
             go list ./... | circleci tests run \
-              --command "xargs CGO_ENABLED=1 gotestsum --junitfile test-results/unit-tests.xml --format testname -- -race" \
+              --command "xargs env CGO_ENABLED=1 gotestsum --junitfile test-results/unit-tests.xml --format testname -- -race" \
               --split-by=timings \
               --timings-type=classname
       - run:
