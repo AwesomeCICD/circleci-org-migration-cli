@@ -726,6 +726,14 @@ func loadBundleWithFeedback(path string, isDefault bool, errW io.Writer) (*manif
 		n += len(vals)
 	}
 	fmt.Fprintf(errW, "Loaded secrets bundle from %s (%d values).\n", path, n)
+	// Belt-and-suspenders: warn if the bundle has no contexts and no projects.
+	// A bundle that parses but is completely empty may have been produced with
+	// wrong field names (e.g. "contexts" instead of "context_secrets").
+	if len(bndl.ContextSecrets) == 0 && len(bndl.ProjectSecrets) == 0 {
+		fmt.Fprintf(errW,
+			"WARNING: secrets bundle %s has 0 context(s) and 0 project(s) — it may be empty or use wrong field names.\n",
+			path)
+	}
 	return bndl, nil
 }
 

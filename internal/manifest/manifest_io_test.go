@@ -7,6 +7,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -181,6 +182,52 @@ func TestLoadSecretBundle_SchemaMismatch(t *testing.T) {
 	_, err := LoadSecretBundle(path)
 	if err == nil {
 		t.Fatal("expected schema-version mismatch error, got nil")
+	}
+}
+
+// TestLoadSecretBundle_UnknownField verifies that a bundle JSON with an
+// unrecognised top-level field (e.g. the misspelling "contexts" instead of
+// the correct "context_secrets") is rejected with a clear error that names
+// the offending field, rather than silently producing an empty bundle.
+func TestLoadSecretBundle_UnknownField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad-field.json")
+	// "contexts" is the wrong field name — the correct name is "context_secrets".
+	raw := `{"schema_version":"1","contexts":{"myctx":{"KEY":"val"}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := LoadSecretBundle(path)
+	if err == nil {
+		t.Fatal("expected error for unknown field 'contexts', got nil")
+	}
+	// The error must mention the offending field name so the user knows what to fix.
+	if !strings.Contains(err.Error(), "contexts") {
+		t.Errorf("error %q does not mention the offending field 'contexts'", err.Error())
+	}
+}
+
+// TestLoadSecretBundle_ValidBundle_RoundTrip verifies that a correctly-shaped
+// bundle (using the proper field names) loads without error and with the
+// expected values intact.
+func TestLoadSecretBundle_ValidBundle_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	b := NewSecretBundle()
+	b.SetContextSecret("ctx-a", "KEY", "val")
+	b.SetProjectSecret("gh/o/p", "ENV", "secret")
+	if err := b.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := LoadSecretBundle(path)
+	if err != nil {
+		t.Fatalf("LoadSecretBundle: %v", err)
+	}
+	if loaded.ContextSecrets["ctx-a"]["KEY"] != "val" {
+		t.Errorf("ContextSecrets[ctx-a][KEY] = %q; want %q", loaded.ContextSecrets["ctx-a"]["KEY"], "val")
+	}
+	if loaded.ProjectSecrets["gh/o/p"]["ENV"] != "secret" {
+		t.Errorf("ProjectSecrets[gh/o/p][ENV] = %q; want %q", loaded.ProjectSecrets["gh/o/p"]["ENV"], "secret")
 	}
 }
 

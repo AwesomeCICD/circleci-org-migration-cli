@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -143,13 +144,20 @@ func (b *SecretBundle) Save(path string) error {
 }
 
 // LoadSecretBundle reads and validates a secret bundle from path.
+//
+// The decoder uses DisallowUnknownFields so that a bundle with misspelled or
+// wrong top-level field names (e.g. "contexts" instead of "context_secrets")
+// is rejected with a clear error naming the offending field rather than
+// silently producing an empty bundle.
 func LoadSecretBundle(path string) (*SecretBundle, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var b SecretBundle
-	if err := json.Unmarshal(data, &b); err != nil {
+	if err := dec.Decode(&b); err != nil {
 		return nil, fmt.Errorf("parsing secret bundle %s: %w", path, err)
 	}
 	if b.SchemaVersion != SchemaVersion {
