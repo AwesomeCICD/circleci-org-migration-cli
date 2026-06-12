@@ -327,7 +327,7 @@ jobs:
 
   test:
     executor: go
-    parallelism: 2
+    parallelism: 4
     steps:
       - checkout
       - go/mod-download-cached
@@ -335,15 +335,15 @@ jobs:
           name: Run tests (split by timing, race detector)
           command: |
             mkdir -p test-results
-            # Split packages across containers by timing data; falls back to
-            # name-splitting on the first run (no timing data yet).
-            PKGS=$(go list ./... | circleci tests split --split-by=timings --timings-type=classname)
-            # -race requires CGO; executor defaults CGO_ENABLED=0 for static
-            # builds, so enable it just for the race-enabled test run.
-            CGO_ENABLED=1 gotestsum \
-              --junitfile test-results/unit-tests.xml \
-              --format testname \
-              -- -race $PKGS
+            # circleci tests run supersedes `circleci tests split`: splits the
+            # package list by historical timings (name-split on first run), feeds
+            # Test Insights, and enables the "Rerun failed tests" button.
+            # CGO_ENABLED=1 is required for -race and must be inside --command so
+            # it applies to the gotestsum subprocess on each shard.
+            go list ./... | circleci tests run \
+              --command "xargs CGO_ENABLED=1 gotestsum --junitfile test-results/unit-tests.xml --format testname -- -race" \
+              --split-by=timings \
+              --timings-type=classname
       - run:
           # Best-effort HTML report from the JUnit XML. cimg/go may or may not
           # have Node available; wrap in || true so a missing runtime never
