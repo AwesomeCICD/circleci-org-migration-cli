@@ -106,7 +106,22 @@ Example:
 				if err != nil {
 					return err
 				}
+				ctxBefore := len(merged.ContextSecrets)
+				projBefore := len(merged.ProjectSecrets)
 				merged.Merge(b)
+				ctxAdded := len(merged.ContextSecrets) - ctxBefore
+				projAdded := len(merged.ProjectSecrets) - projBefore
+				// Belt-and-suspenders: warn if an input bundle contributed zero
+				// context values AND zero project values.  This catches the
+				// common mistake of using the wrong field name (e.g. "contexts"
+				// instead of "context_secrets") which parses successfully but
+				// leaves both maps empty.
+				if ctxAdded == 0 && projAdded == 0 &&
+					len(b.ContextSecrets) == 0 && len(b.ProjectSecrets) == 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"WARNING: %s contributed 0 context(s) and 0 project(s) — it may be empty or use wrong field names.\n",
+						path)
+				}
 			}
 			merged.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 			merged.ToolVersion = version.UserAgent()
