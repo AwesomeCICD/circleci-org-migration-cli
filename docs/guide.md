@@ -405,6 +405,58 @@ is age-encrypted, decrypt it locally with `secrets decrypt`.
 - Use a **private** project for the capture pipeline.
 - **Rotate every captured value** after the destination is confirmed healthy.
 
+### Alternative: `secrets transfer` (zero-disk-write, context values only)
+
+`secrets transfer` is a **third mode** beside `capture` and `extract`. Instead
+of writing values to a build artifact, it triggers a single dynamic pipeline in
+the SOURCE org with one job per context. Each job imports the context (CircleCI
+unmasks the values into the job environment) and PUTs each value directly into
+the matching context in the DESTINATION org via the CircleCI API over TLS.
+
+**No plaintext ever touches disk or artifacts** — strictly better security for
+context variables than the bundle-artifact flow.
+
+**Prerequisites:** destination contexts must already exist (create them with
+`sync --apply`) and the destination API token must be pre-stored in a source-org
+context.
+
+**Trust model:** The CLI embeds the context NAME (not the token value) in the
+generated pipeline config. CircleCI injects the token as an env var inside the
+job. Source-org admins with access to the token context have implicit access to
+the destination token — use a scoped token and rotate it after transfer.
+
+**Dry-run by default** (like `sync`). Pass `--apply` to execute.
+
+```bash
+# 1. Store dest token in a source-org context, then dry-run the plan:
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets
+
+# 2. Execute the transfer:
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets \
+  --enable-trigger --apply
+```
+
+Key flags:
+- `--dest-org-id` — destination org UUID (find it in `manifest.json` under
+  `source.org.id`, or in the CircleCI org settings page).
+- `--dest-token-context` — name of the source-org context holding the dest token.
+- `--dest-token-env-var` — env-var name inside that context (default:
+  `CIRCLECI_DEST_TOKEN`).
+- `--dest-host` — override for CircleCI Server installations (default:
+  `https://circleci.com`).
+- `--apply` — execute the pipeline (omit for dry-run).
+- `--context` — limit to specific context names; default is all contexts with
+  values.
+- `--mapping` — optional path to `mapping.json`; entries in `projects` whose
+  keys have no `/` are treated as context name → destination name overrides.
+
+**Scope:** context env-var values only. SSH keys and project env vars still
+require `secrets capture` with an encrypted bundle.
+
 ---
 
 ## 6. Step 3 — Sync into the destination

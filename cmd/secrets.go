@@ -58,6 +58,7 @@ ALTERNATIVE PATH — orb / 'secrets extract' (committed config):
 
 Subcommands:
   capture   CLI-orchestrated extraction via unversioned pipeline (RECOMMENDED)
+  transfer  Direct source→dest transfer via in-pipeline PUT (no bundle file; context values only)
   extract   In-job extraction from the current environment (orb path)
   decrypt   Decrypt an age-encrypted secret bundle locally
   merge     Merge multiple secret bundles into one`,
@@ -66,6 +67,7 @@ Subcommands:
 	cmd.AddCommand(newSecretsMergeCommand())
 	cmd.AddCommand(newSecretsCaptureCommand())
 	cmd.AddCommand(newSecretsDecryptCommand())
+	cmd.AddCommand(newSecretsTransferCommand())
 	return cmd
 }
 
