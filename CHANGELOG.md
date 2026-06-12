@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.9.0...v0.10.0) (2026-06-12)
+
+
+### Features
+
+* **ci:** enable keyless cosign signing of release artifacts ([#215](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/215)) ([#243](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/243)) ([2c4f415](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2c4f4159443ec30da7fa317c25607637aa3d7352))
+* **terraform:** generate M2 — pipelines/triggers/webhooks/restrictions/runner + import + sync selector ([#231](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/231)) ([#242](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/242)) ([b448ce6](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/b448ce6f9f785ff535264cc6f271c5d3432c5ff0))
+
+
+### Bug Fixes
+
+* **deps:** bump filippo.io/edwards25519 v1.1.0 → v1.2.0 (CVE-2026-26958 / GHSA-fw7p-63qq-7hpr) ([#239](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/239)) ([ab618c3](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/ab618c36adf29ee013e9b99c2a069bba7d38caf6))
+
 ## [0.9.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.2...v0.9.0) (2026-06-12)
 
 
