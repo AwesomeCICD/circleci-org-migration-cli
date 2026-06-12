@@ -155,6 +155,14 @@ jobs:
             # not mentioned in the hand-written docs/guide.md walkthrough.
             # Guards against the v0.5-v0.7 doc drift the audit flagged (H3/D2).
             ./scripts/check-doc-flags.sh docs/cli docs/guide.md
+      - run:
+          name: skill-commands-check (skills/ staleness gate)
+          command: |
+            # Fail if a circleci-migrate subcommand or flag referenced in any
+            # skills/**/*.md is absent from the generated docs/cli/ reference.
+            # Guards against deprecated flags or renamed subcommands silently
+            # persisting in the AI skills (closes #221).
+            ./scripts/check-skill-commands.sh skills docs/cli
 
   # ===========================================================================
   # WAVE A — Coverage (run in parallel with build matrix + lint, no prerequisites)
