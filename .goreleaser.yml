@@ -57,24 +57,31 @@ sboms:
       - '--output'
       - 'cyclonedx-json=$document'
 
-# Cosign keyless (OIDC) signing is DISABLED — see #215.
+# Cosign keyless (OIDC) signing via Sigstore public infrastructure.
 #
-# Keyless signing via the PUBLIC Sigstore (fulcio.sigstore.dev) does not work
-# from CircleCI: Fulcio rejects CircleCI's OIDC token because its audience is
-# the org ID, not `sigstore`, so it returns
+# CircleCI supports keyless signing — but ONLY with a custom-audience OIDC token.
+# The default CIRCLE_OIDC_TOKEN_V2 has aud=<org-id>, which Fulcio rejects with
 #   400 "There was an error processing the identity token".
-# This broke the v0.8.1 release (artifacts built + SBOMs generated, but the
-# upload never happened because signing failed). Re-enabling signing requires
-# either a cosign-compatible OIDC token (aud=sigstore) or key-based cosign with
-# a KMS-stored key. Tracked in #215. SBOMs (syft, above) are kept — they work.
+# The fix (per CircleCI-Public/sign-and-publish-examples cosign/blob/sign.sh) is:
+#   export SIGSTORE_ID_TOKEN=$(circleci run oidc get --claims '{"aud":"sigstore"}' --root-issuer)
+# cosign picks SIGSTORE_ID_TOKEN up automatically. This token is minted in the
+# release job's environment BEFORE goreleaser runs (via $BASH_ENV). See
+# .circleci/continue_config.yml release job. Fixed in #215.
 #
-# signs:
-#   - cmd: cosign
-#     signature: '${artifact}.sig'
-#     certificate: '${artifact}.pem'
-#     artifacts: all
-#     output: true
-#     args: ['sign-blob','--yes','--identity-token={{ .Env.CIRCLE_OIDC_TOKEN_V2 }}','--output-certificate=${certificate}','--output-signature=${signature}','${artifact}']
+# The .bundle file (Sigstore bundle format) combines the signature + transparency
+# log entry in a single portable JSON file, replacing the older .sig + .pem pair.
+signs:
+  - cmd: cosign
+    signature: '${artifact}.bundle'
+    artifacts: all
+    output: true
+    args:
+      - sign-blob
+      - '--oidc-issuer=https://oidc.circleci.com'
+      - '--yes'
+      - '--bundle=${artifact}.bundle'
+      - '--use-signing-config=false'
+      - '${artifact}'
 
 snapshot:
   # version_template is the v2 key (v1 used name_template).
