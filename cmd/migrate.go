@@ -119,15 +119,15 @@ Examples:
 			wantsInteraction := (missingSourceOrg || missingDestOrg) && !noInput
 
 			if wantsInteraction && !isInteractiveTTY() {
-				// Non-TTY (piped/CI) with missing required flags: fail clearly.
-				if missingSourceOrg {
-					return fmt.Errorf("--source-org is required in non-interactive mode " +
-						"(e.g. --source-org gh/acme); run without flags on an interactive " +
-						"terminal for a guided walkthrough")
-				}
-				return fmt.Errorf("--dest-org is required in non-interactive mode " +
-					"(e.g. --dest-org gh/acme-new); run without flags on an interactive " +
-					"terminal for a guided walkthrough")
+				// Non-TTY (piped/CI) with missing required flags: fail fast with a
+				// clear, actionable message BEFORE any banner or prompt output is
+				// written.  This is the primary gate for the CI/redirect case where
+				// stdin is not a terminal (e.g. stdin=/dev/null, pipe, or CI runner).
+				return fmt.Errorf(
+					"interactive walkthrough requires a TTY; " +
+						"pass --source-org and --dest-org to run non-interactively " +
+						"(e.g. --source-org gh/acme --dest-org gh/acme-new). " +
+						"See docs/guide.md")
 			}
 
 			if wantsInteraction {
