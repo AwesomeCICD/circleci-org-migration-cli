@@ -1,0 +1,130 @@
+.nh
+.TH "CIRCLECI-MIGRATE" "1" "Jun 2026" "circleci-migrate" "CircleCI Org Migration CLI"
+
+.SH NAME
+circleci-migrate-terraform-generate - Generate Terraform HCL and tfvars from an exported manifest.
+
+
+.SH SYNOPSIS
+\fBcircleci-migrate terraform generate [flags]\fP
+
+
+.SH DESCRIPTION
+generate reads an exported manifest and writes a complete set of
+Terraform files into --out:
+
+.PP
+versions.tf            — provider version constraint (~> 0.3)
+  providers.tf           — provider block with host + org from flags
+  contexts.tf            — circleci_context + circleci_context_environment_variable resources
+  projects.tf            — circleci_project + circleci_project_environment_variable resources
+  migration.auto.tfvars.json — non-secret values (context/project names, advanced settings)
+  secrets.auto.tfvars.json   — env-var values (only with --secrets or --placeholders)
+  GAPS.md                — checklist of what Terraform does not manage + CLI commands to fill gaps
+
+.PP
+The generated HCL uses for_each over variables so that regenerating after a new
+export changes only the tfvars, not the modules.
+
+.PP
+Apply the generated configuration:
+
+.PP
+cd ./terraform/
+  terraform init
+  terraform plan
+  terraform apply
+
+.PP
+Then run:
+
+.PP
+circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply
+
+.PP
+to complete the items listed in GAPS.md.
+
+
+.SH OPTIONS
+\fB--dest-org-id\fP=""
+	UUID of the destination CircleCI organization (required)
+
+.PP
+\fB-h\fP, \fB--help\fP[=false]
+	help for generate
+
+.PP
+\fB--manifest\fP="manifest.json"
+	Path to the exported manifest.json
+
+.PP
+\fB--mapping\fP=""
+	Path to a mapping.json for org slug / project ID remapping
+
+.PP
+\fB--out\fP="./terraform"
+	Output directory for generated Terraform files
+
+.PP
+\fB--placeholders\fP[=false]
+	Emit secrets.auto.tfvars.json with REPLACE_ME placeholders and a fill-in workbook
+
+.PP
+\fB--secrets\fP=""
+	Path to a secrets bundle.json — writes plaintext values to secrets.auto.tfvars.json
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+\fB--debug\fP[=false]
+	Enable debug logging
+
+.PP
+\fB--dest-token\fP=""
+	API token for the destination org (env: CIRCLECI_DEST_TOKEN)
+
+.PP
+\fB--host\fP="https://circleci.com"
+	CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)
+
+.PP
+\fB--source-token\fP=""
+	API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
+
+.PP
+\fB--token\fP=""
+	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
+
+
+.SH EXAMPLE
+.EX
+  # Basic generation (no secrets in output)
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --out ./terraform/
+
+  # With secret values from a captured bundle
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --secrets bundle.json \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --out ./terraform/
+
+  # With placeholder values and a workbook to fill in
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --placeholders \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --out ./terraform/
+
+  # With org slug remapping
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --mapping mapping.json \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --out ./terraform/
+.EE
+
+
+.SH SEE ALSO
+\fBcircleci-migrate-terraform(1)\fP

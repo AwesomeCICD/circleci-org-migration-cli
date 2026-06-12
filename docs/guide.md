@@ -626,9 +626,125 @@ as secrets — supply a bundle or use `--missing-secrets placeholder`.
 
 ---
 
-## 8. Step 4 — Validate, enable, rotate
+## 8. Terraform generation (optional)
 
-After sync completes, follow the [cutover runbook](cutover-runbook.md):
+`terraform generate` converts an exported manifest into a set of Terraform HCL
+files targeting the official **CircleCI-Public/circleci** provider (v0.3.x).
+Use this when you want the migrated org to land in Terraform state rather than
+being created imperatively by `sync`.
+
+> **Terraform vs CLI split:** Terraform manages the declarative resource
+> *shells* (contexts, projects, env-var names + values). The CLI remains the
+> orchestrator for everything the Terraform provider cannot do: secrets capture,
+> CIAM roles and groups, org-level settings, legacy schedules, checkout/deploy
+> keys, SSH keys, and project API tokens. The generated **GAPS.md** lists every
+> remaining step with the exact `circleci-migrate` command to complete it.
+
+### Basic usage
+
+```bash
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <destination-org-uuid> \
+  --out ./terraform/
+```
+
+This writes the following files into `--out`:
+
+| File | Contents |
+|---|---|
+| `versions.tf` | Provider version constraint (`~> 0.3`) |
+| `providers.tf` | Provider block — `host` and `organization` from `--host`/`--dest-org-id` |
+| `contexts.tf` | `circleci_context` + `circleci_context_environment_variable` resources |
+| `projects.tf` | `circleci_project` + `circleci_project_environment_variable` resources |
+| `migration.auto.tfvars.json` | Non-secret values (context names, project settings) |
+| `GAPS.md` | Everything Terraform does not manage + CLI commands to finish the job |
+
+### Providing secret values
+
+Env-var values are never included in the manifest (the CircleCI API masks them).
+Supply them one of two ways:
+
+```bash
+# From a captured bundle (values written to secrets.auto.tfvars.json — PLAINTEXT)
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --secrets bundle.json \
+  --dest-org-id <uuid> --out ./terraform/
+
+# Placeholder mode (REPLACE_ME values + SECRETS_WORKBOOK.md fill-in guide)
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --placeholders \
+  --dest-org-id <uuid> --out ./terraform/
+```
+
+`--secrets bundle.json` writes plaintext values to `secrets.auto.tfvars.json`.
+A warning is printed to stderr — treat that file like a password file and delete
+it after `terraform apply`.
+
+`--placeholders` emits `REPLACE_ME` values and a `SECRETS_WORKBOOK.md` table for
+manual fill-in before applying.
+
+### Org slug / project ID remapping
+
+```bash
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --mapping mapping.json \
+  --dest-org-id <uuid> --out ./terraform/
+```
+
+The mapping file is the same one used by `sync` (see [mapping.md](mapping.md)).
+
+### Apply the generated configuration
+
+```bash
+cd ./terraform/
+
+# Set the API token for the destination org
+export TF_VAR_circleci_api_token="<dest-org-api-token>"
+
+terraform init
+terraform plan
+terraform apply
+```
+
+Then run the CLI to fill the gaps listed in `GAPS.md`:
+
+```bash
+circleci-migrate sync --manifest manifest.json \
+  --secrets bundle.json \
+  --dest-token $CIRCLECI_DEST_TOKEN \
+  --apply
+```
+
+### CircleCI Server (`--host`)
+
+The generated `providers.tf` sets `host` from `--host`. For CircleCI Server:
+
+```bash
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <uuid> \
+  --host https://circleci.example.com \
+  --out ./terraform/
+```
+
+### What Terraform does NOT manage (M1 scope)
+
+The following are always in GAPS.md and require the CLI `sync` command:
+schedules (legacy v2), checkout/deploy keys, additional SSH keys, project API
+tokens, CIAM roles and groups, org-level settings (feature flags, OIDC, OTel,
+contacts, retention, budgets, orb allowlist, SSO, release tracker), and private
+orb inlining.
+
+---
+
+## 9. Step 4 — Validate, enable, rotate
+
+After sync (and any `terraform apply`) completes, follow the
+[cutover runbook](cutover-runbook.md):
 
 1. Validate contexts and env-var names against the audit report.
 2. Verify project settings, webhooks, and schedules.
@@ -636,7 +752,8 @@ After sync completes, follow the [cutover runbook](cutover-runbook.md):
 4. Recreate items that don't transfer — see
    [Manual steps required](cutover-runbook.md#3-manual-steps-required).
 5. Update external pins (Backstage, Slack, status badges, branch-protection).
-6. **Rotate every captured secret** and delete `secrets.json`.
+6. **Rotate every captured secret** and delete `secrets.json` (and
+   `secrets.auto.tfvars.json` if Terraform was used).
 
 ---
 

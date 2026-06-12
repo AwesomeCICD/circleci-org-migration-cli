@@ -1,0 +1,109 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-06-12T00:00:00Z",
+  "tool_version": "test",
+  "source": {
+    "host": "https://circleci.com",
+    "org": {
+      "slug": "gh/acme",
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "acme",
+      "vcs_type": "github",
+      "settings": {
+        "feature_flags": {
+          "oss-builds-enabled": true
+        },
+        "contacts": {
+          "primary": ["admin@acme.example"]
+        }
+      }
+    }
+  },
+  "contexts": [
+    {
+      "name": "deploy-prod",
+      "source_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "environment_variables": [
+        {"name": "AWS_ACCESS_KEY_ID"},
+        {"name": "AWS_SECRET_ACCESS_KEY"},
+        {"name": "DEPLOY_TOKEN"}
+      ],
+      "restrictions": [
+        {
+          "type": "project",
+          "value": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+          "name": "acme/api"
+        }
+      ]
+    },
+    {
+      "name": "shared-ci",
+      "source_id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "environment_variables": [
+        {"name": "NPM_TOKEN"},
+        {"name": "SONAR_TOKEN"}
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "gh/acme/api",
+      "source_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "api",
+      "vcs": {
+        "provider": "GitHub",
+        "url": "https://github.com/acme/api",
+        "default_branch": "main"
+      },
+      "settings": {
+        "autocancel_builds": true,
+        "build_fork_prs": false,
+        "set_github_status": true,
+        "setup_workflows": true,
+        "write_settings_requires_admin": true
+      },
+      "environment_variables": [
+        {"name": "DATABASE_URL", "masked_value": "xxxx1234"},
+        {"name": "REDIS_URL", "masked_value": "xxxx5678"}
+      ],
+      "checkout_keys": [
+        {
+          "type": "deploy-key",
+          "fingerprint": "ab:cd:ef:00",
+          "preferred": true
+        }
+      ],
+      "schedules": [
+        {
+          "name": "nightly",
+          "timetable": {"per_hour": 1, "hours_of_day": [2]},
+          "parameters": {"branch": "main"}
+        }
+      ]
+    },
+    {
+      "slug": "gh/acme/frontend",
+      "source_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "name": "frontend",
+      "vcs": {
+        "provider": "GitHub",
+        "url": "https://github.com/acme/frontend",
+        "default_branch": "main"
+      },
+      "settings": {
+        "autocancel_builds": true,
+        "oss": true,
+        "build_fork_prs": true,
+        "forks_receive_secret_env_vars": false,
+        "disable_ssh": false
+      },
+      "environment_variables": [
+        {"name": "SENTRY_DSN", "masked_value": "xxxx0001"}
+      ],
+      "api_tokens": [
+        {"label": "ci-badge", "scope": "status"}
+      ]
+    }
+  ],
+  "warnings": []
+}

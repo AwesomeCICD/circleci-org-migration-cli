@@ -42,5 +42,6 @@ Use "circleci-migrate [command] --help" for more information about a command.
 * [circleci-migrate orb](circleci-migrate_orb.md)	 - Manage CircleCI orb references in pipeline configs.
 * [circleci-migrate secrets](circleci-migrate_secrets.md)	 - Capture secret values that the API cannot expose (RECOMMENDED: use 'secrets capture').
 * [circleci-migrate sync](circleci-migrate_sync.md)	 - Apply a manifest to the destination org (contexts, projects, and org settings).
+* [circleci-migrate terraform](circleci-migrate_terraform.md)	 - Generate Terraform configurations from an exported manifest.
 * [circleci-migrate version](circleci-migrate_version.md)	 - Display version and build information.
 

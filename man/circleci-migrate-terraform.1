@@ -1,0 +1,60 @@
+.nh
+.TH "CIRCLECI-MIGRATE" "1" "Jun 2026" "circleci-migrate" "CircleCI Org Migration CLI"
+
+.SH NAME
+circleci-migrate-terraform - Generate Terraform configurations from an exported manifest.
+
+
+.SH SYNOPSIS
+\fBcircleci-migrate terraform [flags]\fP
+
+
+.SH DESCRIPTION
+terraform generates Terraform HCL and tfvars files from a circleci-migrate
+manifest, targeting the official CircleCI Terraform provider
+(CircleCI-Public/circleci, v0.3.x).
+
+.PP
+Terraform manages the declarative resources (contexts, context env-vars,
+projects, project env-vars); the CLI remains the orchestrator for everything
+Terraform cannot do: secrets capture, CIAM, org settings, schedules, checkout
+keys, and SSH keys. The generated GAPS.md lists every remaining step with the
+exact circleci-migrate command to complete it.
+
+.PP
+circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    [--secrets bundle.json | --placeholders] \\
+    [--mapping mapping.json] \\
+    --dest-org-id  \\
+    --out ./terraform/
+
+
+.SH OPTIONS
+\fB-h\fP, \fB--help\fP[=false]
+	help for terraform
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+\fB--debug\fP[=false]
+	Enable debug logging
+
+.PP
+\fB--dest-token\fP=""
+	API token for the destination org (env: CIRCLECI_DEST_TOKEN)
+
+.PP
+\fB--host\fP="https://circleci.com"
+	CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)
+
+.PP
+\fB--source-token\fP=""
+	API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
+
+.PP
+\fB--token\fP=""
+	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
+
+
+.SH SEE ALSO
+\fBcircleci-migrate(1)\fP, \fBcircleci-migrate-terraform-generate(1)\fP
