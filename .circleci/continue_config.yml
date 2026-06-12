@@ -427,7 +427,7 @@ jobs:
           name: Install Terraform (pinned v1.9.8)
           command: |
             # renovate: datasource=github-releases depName=hashicorp/terraform
-            ver=1.9.8
+            ver=1.15.6
             curl -fsSL "https://releases.hashicorp.com/terraform/${ver}/terraform_${ver}_linux_amd64.zip" \
               -o /tmp/terraform.zip
             unzip -o /tmp/terraform.zip -d /tmp/terraform-bin
