@@ -19,6 +19,7 @@ exact circleci-migrate command to complete it.
     [--secrets bundle.json | --placeholders] \
     [--mapping mapping.json] \
     --dest-org-id <uuid> \
+    [--dest-org-type oauth|standalone] \
     --out ./terraform/
 
 ### Options

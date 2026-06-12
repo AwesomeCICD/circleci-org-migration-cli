@@ -9,6 +9,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// destOrgTypeHelp is a shared description of the --dest-org-type flag.
+const destOrgTypeHelp = `Destination org authentication type: "oauth" (GitHub OAuth, "gh/" slug) or
+"standalone" (GitHub App / GitLab / circleci-type, "circleci/" slug).
+Aliases: oauth|gh|github → oauth; standalone|app|github_app → standalone.
+When omitted, the type is inferred from the source org slug in the manifest
+and a note is printed so you know which type was assumed.`
+
 // newTerraformCommand returns the `terraform` command group.
 func newTerraformCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -29,6 +36,7 @@ exact circleci-migrate command to complete it.
     [--secrets bundle.json | --placeholders] \
     [--mapping mapping.json] \
     --dest-org-id <uuid> \
+    [--dest-org-type oauth|standalone] \
     --out ./terraform/`,
 	}
 
@@ -39,12 +47,13 @@ exact circleci-migrate command to complete it.
 // newTerraformGenerateCommand returns the `terraform generate` subcommand.
 func newTerraformGenerateCommand() *cobra.Command {
 	var (
-		manifestPath string
-		secretsPath  string
-		placeholders bool
-		mappingPath  string
-		destOrgID    string
-		outDir       string
+		manifestPath   string
+		secretsPath    string
+		placeholders   bool
+		mappingPath    string
+		destOrgID      string
+		outDir         string
+		destOrgTypeRaw string
 	)
 
 	cmd := &cobra.Command{
@@ -76,10 +85,24 @@ Then run:
   circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply
 
 to complete the items listed in GAPS.md.`,
-		Example: `  # Basic generation (no secrets in output)
+		Example: `  # Basic generation (no secrets in output); org type inferred from manifest
   circleci-migrate terraform generate \
     --manifest manifest.json \
     --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --out ./terraform/
+
+  # Explicit OAuth destination (omits advanced project settings)
+  circleci-migrate terraform generate \
+    --manifest manifest.json \
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --dest-org-type oauth \
+    --out ./terraform/
+
+  # Explicit standalone destination (includes advanced project settings)
+  circleci-migrate terraform generate \
+    --manifest manifest.json \
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    --dest-org-type standalone \
     --out ./terraform/
 
   # With secret values from a captured bundle
@@ -108,6 +131,16 @@ to complete the items listed in GAPS.md.`,
 			// Validate mutual exclusivity.
 			if secretsPath != "" && placeholders {
 				return fmt.Errorf("--secrets and --placeholders are mutually exclusive; use one or the other")
+			}
+
+			// Parse optional --dest-org-type.
+			destOrgType := terraform.OrgTypeUnknown
+			if destOrgTypeRaw != "" {
+				var err error
+				destOrgType, err = terraform.ParseOrgType(destOrgTypeRaw)
+				if err != nil {
+					return err
+				}
 			}
 
 			// Load manifest.
@@ -146,6 +179,7 @@ to complete the items listed in GAPS.md.`,
 				SecretsBundle: bundle,
 				Placeholders:  placeholders,
 				OutDir:        outDir,
+				DestOrgType:   destOrgType,
 			}
 
 			if err := terraform.Generate(m, opts); err != nil {
@@ -187,6 +221,8 @@ to complete the items listed in GAPS.md.`,
 		"UUID of the destination CircleCI organization (required)")
 	f.StringVar(&outDir, "out", "./terraform",
 		"Output directory for generated Terraform files")
+	f.StringVar(&destOrgTypeRaw, "dest-org-type", "",
+		destOrgTypeHelp)
 
 	_ = cmd.MarkFlagRequired("dest-org-id")
 

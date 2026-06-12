@@ -50,6 +50,14 @@ to complete the items listed in GAPS.md.
 	UUID of the destination CircleCI organization (required)
 
 .PP
+\fB--dest-org-type\fP=""
+	Destination org authentication type: "oauth" (GitHub OAuth, "gh/" slug) or
+"standalone" (GitHub App / GitLab / circleci-type, "circleci/" slug).
+Aliases: oauth|gh|github → oauth; standalone|app|github_app → standalone.
+When omitted, the type is inferred from the source org slug in the manifest
+and a note is printed so you know which type was assumed.
+
+.PP
 \fB-h\fP, \fB--help\fP[=false]
 	help for generate
 
@@ -97,10 +105,24 @@ to complete the items listed in GAPS.md.
 
 .SH EXAMPLE
 .EX
-  # Basic generation (no secrets in output)
+  # Basic generation (no secrets in output); org type inferred from manifest
   circleci-migrate terraform generate \\
     --manifest manifest.json \\
     --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --out ./terraform/
+
+  # Explicit OAuth destination (omits advanced project settings)
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --dest-org-type oauth \\
+    --out ./terraform/
+
+  # Explicit standalone destination (includes advanced project settings)
+  circleci-migrate terraform generate \\
+    --manifest manifest.json \\
+    --dest-org-id bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \\
+    --dest-org-type standalone \\
     --out ./terraform/
 
   # With secret values from a captured bundle

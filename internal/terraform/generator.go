@@ -22,6 +22,55 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
+// OrgType identifies the CircleCI destination org authentication model.
+// It controls which provider attributes are emitted in the generated HCL.
+type OrgType int
+
+const (
+	// OrgTypeUnknown means no type was specified; it is inferred from the manifest.
+	OrgTypeUnknown OrgType = iota
+	// OrgTypeOAuth represents a GitHub-OAuth org (slug prefix "gh/").
+	// The circleci_project advanced-settings attributes are NOT available for
+	// these orgs; GetSettings/UpdateSettings is standalone-only per the provider.
+	OrgTypeOAuth
+	// OrgTypeStandalone represents a GitHub App / GitLab / standalone org
+	// (slug prefix "circleci/"). All circleci_project attributes are available.
+	OrgTypeStandalone
+)
+
+// ParseOrgType parses a human-supplied org-type string into an OrgType.
+// Accepted values (case-insensitive):
+//
+//	oauth, gh, github       → OrgTypeOAuth
+//	standalone, app, github_app → OrgTypeStandalone
+//
+// Returns an error for unrecognised values.
+func ParseOrgType(s string) (OrgType, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "oauth", "gh", "github":
+		return OrgTypeOAuth, nil
+	case "standalone", "app", "github_app":
+		return OrgTypeStandalone, nil
+	default:
+		return OrgTypeUnknown, fmt.Errorf("unrecognised --dest-org-type %q: accepted values are oauth|gh|github or standalone|app|github_app", s)
+	}
+}
+
+// InferOrgType determines the OrgType from a manifest's source org slug.
+// A slug starting with "gh/" implies OrgTypeOAuth; "circleci/" implies
+// OrgTypeStandalone. Returns OrgTypeUnknown if the prefix is not recognised.
+func InferOrgType(m *manifest.Manifest) OrgType {
+	slug := m.Source.Org.Slug
+	switch {
+	case strings.HasPrefix(slug, "gh/") || strings.HasPrefix(slug, "bb/"):
+		return OrgTypeOAuth
+	case strings.HasPrefix(slug, "circleci/"):
+		return OrgTypeStandalone
+	default:
+		return OrgTypeUnknown
+	}
+}
+
 // Options controls what the generator produces.
 type Options struct {
 	// DestOrgID is the destination organization UUID (required).
@@ -40,16 +89,55 @@ type Options struct {
 	Placeholders bool
 	// OutDir is the directory where all generated files are written.
 	OutDir string
+	// DestOrgType controls whether advanced project settings are emitted.
+	// When OrgTypeUnknown (the zero value) the generator infers the type from
+	// the manifest's source org slug and prints which type it assumed.
+	DestOrgType OrgType
 }
 
 // Generate writes all Terraform files for m into opts.OutDir.
 // It creates the directory (and any missing parents) if it does not exist.
+//
+// When opts.DestOrgType is OrgTypeUnknown the function infers the type from
+// the manifest's source org slug (gh/ → oauth; circleci/ → standalone) and
+// prints a notice to stderr so the caller knows which type was assumed and how
+// to override it. The notice is written to os.Stderr directly because Generate
+// is a pure file-writing function without access to cobra's IO handles; the
+// cmd layer may optionally pass the type explicitly to suppress inference.
 func Generate(m *manifest.Manifest, opts Options) error {
 	if opts.OutDir == "" {
 		return fmt.Errorf("terraform generate: --out directory is required")
 	}
 	if opts.DestOrgID == "" {
 		return fmt.Errorf("terraform generate: --dest-org-id is required")
+	}
+
+	// Resolve dest org type — infer if not supplied.
+	destOrgType := opts.DestOrgType
+	if destOrgType == OrgTypeUnknown {
+		destOrgType = InferOrgType(m)
+		switch destOrgType {
+		case OrgTypeOAuth:
+			fmt.Fprintf(os.Stderr,
+				"Note: --dest-org-type not set; inferred \"oauth\" from source slug %q.\n"+
+					"      Advanced project settings will be OMITTED (not supported for OAuth orgs).\n"+
+					"      To override, pass --dest-org-type standalone.\n",
+				m.Source.Org.Slug)
+		case OrgTypeStandalone:
+			fmt.Fprintf(os.Stderr,
+				"Note: --dest-org-type not set; inferred \"standalone\" from source slug %q.\n"+
+					"      Advanced project settings will be included.\n"+
+					"      To override, pass --dest-org-type oauth.\n",
+				m.Source.Org.Slug)
+		default:
+			// Cannot infer — fall back to standalone (safest: includes all attrs).
+			destOrgType = OrgTypeStandalone
+			fmt.Fprintf(os.Stderr,
+				"Note: --dest-org-type not set and could not be inferred from source slug %q.\n"+
+					"      Defaulting to \"standalone\" (advanced settings included).\n"+
+					"      Pass --dest-org-type oauth if your destination is a GitHub OAuth org.\n",
+				m.Source.Org.Slug)
+		}
 	}
 
 	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
@@ -67,7 +155,7 @@ func Generate(m *manifest.Manifest, opts Options) error {
 	}
 
 	// Build the intermediate model — resolved slugs, deduplicated names.
-	model, err := buildModel(m, mp, opts.DestOrgID)
+	model, err := buildModel(m, mp, opts.DestOrgID, destOrgType)
 	if err != nil {
 		return err
 	}
@@ -85,7 +173,12 @@ func Generate(m *manifest.Manifest, opts Options) error {
 	if err := writeFile(opts.OutDir, "contexts.tf", contextsTemplate, nil); err != nil {
 		return err
 	}
-	if err := writeFile(opts.OutDir, "projects.tf", projectsTemplate, nil); err != nil {
+	// projects.tf varies by dest org type: OAuth orgs cannot use advanced settings.
+	projectsTmpl := projectsTemplate
+	if destOrgType == OrgTypeOAuth {
+		projectsTmpl = projectsOAuthTemplate
+	}
+	if err := writeFile(opts.OutDir, "projects.tf", projectsTmpl, nil); err != nil {
 		return err
 	}
 
@@ -112,7 +205,7 @@ func Generate(m *manifest.Manifest, opts Options) error {
 	}
 
 	// Emit GAPS.md.
-	if err := writeGapsFile(opts.OutDir, m, model); err != nil {
+	if err := writeGapsFile(opts.OutDir, m, model, destOrgType); err != nil {
 		return err
 	}
 
@@ -144,14 +237,15 @@ type tfProject struct {
 
 // model holds the resolved intermediate representation.
 type model struct {
-	DestOrgID string
-	Contexts  []tfContext
-	Projects  []tfProject
+	DestOrgID   string
+	DestOrgType OrgType
+	Contexts    []tfContext
+	Projects    []tfProject
 }
 
 // buildModel resolves the manifest into the intermediate model.
-func buildModel(m *manifest.Manifest, mp *manifest.Mapping, destOrgID string) (*model, error) {
-	mo := &model{DestOrgID: destOrgID}
+func buildModel(m *manifest.Manifest, mp *manifest.Mapping, destOrgID string, destOrgType OrgType) (*model, error) {
+	mo := &model{DestOrgID: destOrgID, DestOrgType: destOrgType}
 
 	// Contexts: sort stable by name for deterministic output.
 	ctxs := make([]manifest.Context, len(m.Contexts))
@@ -190,7 +284,10 @@ func buildModel(m *manifest.Manifest, mp *manifest.Mapping, destOrgID string) (*
 		key := TFIdentifier(repoName)
 
 		advSettings := make(map[string]bool)
-		if s := p.Settings; s != nil {
+		// Advanced settings (GetSettings/UpdateSettings) are only available for
+		// standalone (GitHub App / GitLab) projects. For OAuth (gh/) destinations
+		// these provider attributes cause terraform apply to fail; omit them.
+		if s := p.Settings; s != nil && destOrgType != OrgTypeOAuth {
 			// Manifest field → provider attribute mapping (schema-verified):
 			//   AutocancelBuilds   → auto_cancel_builds     (note: different casing)
 			//   BuildForkPRs       → build_fork_prs
@@ -458,14 +555,14 @@ func writeSecretsWorkbook(dir string, mo *model) error {
 
 // writeGapsFile emits GAPS.md listing everything Terraform does NOT manage for
 // this manifest.
-func writeGapsFile(dir string, m *manifest.Manifest, mo *model) error {
+func writeGapsFile(dir string, m *manifest.Manifest, mo *model, destOrgType OrgType) error {
 	var b strings.Builder
 	b.WriteString("# Migration gaps — resources Terraform does not manage\n\n")
 	b.WriteString("The resources below were exported from the source org but are **not**\n")
 	b.WriteString("managed by the generated Terraform configuration. Use the indicated\n")
 	b.WriteString("`circleci-migrate` commands to complete those steps.\n\n")
 
-	gaps := collectGaps(m)
+	gaps := collectGaps(m, destOrgType)
 	if len(gaps) == 0 {
 		b.WriteString("No gaps detected for this manifest. All exported resources are covered\n")
 		b.WriteString("by the generated Terraform configuration.\n")
@@ -493,8 +590,33 @@ type gap struct {
 
 // collectGaps inspects the manifest and returns gaps for anything Terraform
 // cannot manage.
-func collectGaps(m *manifest.Manifest) []gap {
+func collectGaps(m *manifest.Manifest, destOrgType OrgType) []gap {
 	var gaps []gap
+
+	// For OAuth destination orgs, project advanced settings are not managed by
+	// Terraform (GetSettings/UpdateSettings is standalone-only). Surface them
+	// as a gap pointing at circleci-migrate sync.
+	if destOrgType == OrgTypeOAuth {
+		hasProjSettings := false
+		for _, p := range m.Projects {
+			if p.Settings != nil {
+				hasProjSettings = true
+				break
+			}
+		}
+		if hasProjSettings {
+			gaps = append(gaps, gap{
+				Title: "Project advanced settings (OAuth org — Terraform cannot manage)",
+				Description: "The CircleCI Terraform provider's `circleci_project` advanced-settings\n" +
+					"attributes (`auto_cancel_builds`, `build_fork_prs`, `disable_ssh`, etc.) are\n" +
+					"**only available for standalone (GitHub App / GitLab) orgs**. For OAuth (`gh/`)\n" +
+					"destination orgs they are not included in the generated HCL and must be\n" +
+					"configured via the CircleCI UI or via `circleci-migrate sync`.",
+				Status:  "Requires UI configuration or CLI sync",
+				Command: "circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply",
+			})
+		}
+	}
 
 	// Secret values are never managed by Terraform.
 	hasContextVars := false

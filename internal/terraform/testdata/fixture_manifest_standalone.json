@@ -1,0 +1,52 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-06-12T00:00:00Z",
+  "tool_version": "test",
+  "source": {
+    "host": "https://circleci.com",
+    "org": {
+      "slug": "circleci/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "acme-app",
+      "vcs_type": "circleci",
+      "settings": {
+        "feature_flags": {
+          "oss-builds-enabled": true
+        }
+      }
+    }
+  },
+  "contexts": [
+    {
+      "name": "deploy-prod",
+      "source_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "environment_variables": [
+        {"name": "AWS_ACCESS_KEY_ID"},
+        {"name": "AWS_SECRET_ACCESS_KEY"}
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "circleci/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "source_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "api",
+      "vcs": {
+        "provider": "GitHub",
+        "url": "https://github.com/acme/api",
+        "default_branch": "main"
+      },
+      "settings": {
+        "autocancel_builds": true,
+        "build_fork_prs": false,
+        "set_github_status": true,
+        "setup_workflows": true,
+        "write_settings_requires_admin": true
+      },
+      "environment_variables": [
+        {"name": "DATABASE_URL", "masked_value": "xxxx1234"}
+      ]
+    }
+  ],
+  "warnings": []
+}

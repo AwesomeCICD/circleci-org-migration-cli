@@ -692,12 +692,54 @@ being created imperatively by `sync`.
 > keys, SSH keys, and project API tokens. The generated **GAPS.md** lists every
 > remaining step with the exact `circleci-migrate` command to complete it.
 
+### OAuth vs standalone destination orgs
+
+The CircleCI Terraform provider's advanced project-settings attributes
+(`auto_cancel_builds`, `build_fork_prs`, `disable_ssh`,
+`forks_receive_secret_env_vars`, `set_github_status`, `setup_workflows`,
+`write_settings_requires_admin`) are **only supported for standalone (GitHub
+App / GitLab / `circleci/`-type) orgs**. For GitHub OAuth (`gh/`-type) orgs
+the provider's `GetSettings`/`UpdateSettings` APIs are not available and
+including those attributes would cause `terraform apply` to fail.
+
+Use `--dest-org-type` to tell the generator which kind of destination org you
+are targeting:
+
+| Value | Aliases | When to use |
+|---|---|---|
+| `oauth` | `gh`, `github` | Destination is a GitHub OAuth org (`gh/<org>` slug) |
+| `standalone` | `app`, `github_app` | Destination is a GitHub App / GitLab / standalone org (`circleci/<uuid>` slug) |
+
+When `--dest-org-type` is **omitted**, the type is **inferred from the source
+org slug** in the manifest (`gh/` → oauth; `circleci/` → standalone) and a
+note is printed explaining which type was assumed and how to override it.
+
+For **OAuth destinations**, `projects.tf` is generated **without** advanced
+settings. The generated `GAPS.md` lists project advanced settings as a gap
+with a `circleci-migrate sync` command to apply them. For **standalone
+destinations**, all advanced settings are included (current behavior).
+
 ### Basic usage
 
 ```bash
+# Org type inferred from manifest source slug (notice printed to stderr)
 circleci-migrate terraform generate \
   --manifest manifest.json \
   --dest-org-id <destination-org-uuid> \
+  --out ./terraform/
+
+# Explicit: OAuth destination (no advanced project settings in output)
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <destination-org-uuid> \
+  --dest-org-type oauth \
+  --out ./terraform/
+
+# Explicit: standalone destination (advanced project settings included)
+circleci-migrate terraform generate \
+  --manifest manifest.json \
+  --dest-org-id <destination-org-uuid> \
+  --dest-org-type standalone \
   --out ./terraform/
 ```
 
@@ -708,8 +750,8 @@ This writes the following files into `--out`:
 | `versions.tf` | Provider version constraint (`~> 0.3`) |
 | `providers.tf` | Provider block — `host` and `organization` from `--host`/`--dest-org-id` |
 | `contexts.tf` | `circleci_context` + `circleci_context_environment_variable` resources |
-| `projects.tf` | `circleci_project` + `circleci_project_environment_variable` resources |
-| `migration.auto.tfvars.json` | Non-secret values (context names, project settings) |
+| `projects.tf` | `circleci_project` + `circleci_project_environment_variable` resources (advanced settings only for standalone) |
+| `migration.auto.tfvars.json` | Non-secret values (context names, project settings where applicable) |
 | `GAPS.md` | Everything Terraform does not manage + CLI commands to finish the job |
 
 ### Providing secret values
@@ -790,6 +832,15 @@ schedules (legacy v2), checkout/deploy keys, additional SSH keys, project API
 tokens, CIAM roles and groups, org-level settings (feature flags, OIDC, OTel,
 contacts, retention, budgets, orb allowlist, SSO, release tracker), and private
 orb inlining.
+
+For **OAuth (`gh/`) destination orgs**, project advanced settings
+(`auto_cancel_builds`, `build_fork_prs`, `disable_ssh`, etc.) are also in
+GAPS.md because the Terraform provider does not support them for OAuth orgs.
+Apply them via:
+
+```bash
+circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply
+```
 
 ---
 
