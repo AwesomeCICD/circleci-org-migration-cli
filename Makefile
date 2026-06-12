@@ -96,13 +96,22 @@ security:
 	@echo "==> govulncheck"; \
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 	@echo "==> gosec"; \
-	go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -severity high ./...
+	go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
+	GOMEMLIMIT=4GiB $(GOBIN)/gosec -concurrency=1 -exclude-generated -severity high ./...
 	@echo "==> gitleaks"; \
 	if command -v gitleaks >/dev/null 2>&1; then \
 		gitleaks detect --source=. --redact --exit-code=1; \
 	else \
 		echo "gitleaks not found — run 'make tools' to install it"; exit 1; \
 	fi
+
+# gosec runs the pinned gosec SAST scanner standalone with the same flags as CI.
+# -concurrency=1 serializes SSA analysis to cap peak RSS (matches CI behaviour).
+# GOMEMLIMIT=4GiB triggers aggressive GC before RSS grows too large locally.
+.PHONY: gosec
+gosec:
+	go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	GOMEMLIMIT=4GiB $(GOBIN)/gosec -concurrency=1 -exclude-generated -severity high ./...
 
 .PHONY: config-validate
 config-validate:

@@ -251,8 +251,12 @@ jobs:
           command: |
             mkdir -p test-results
             status=0
-            gosec -severity high -fmt junit-xml -out test-results/gosec.xml ./... || status=$?
-            gosec -severity high -fmt sarif -out gosec.sarif ./... 2>/dev/null || true
+            # -concurrency=1 serializes SSA analysis to cap peak RSS (the
+            # default NumCPU workers caused OOM on go-large once internal/terraform
+            # + internal/transfer were added). GOMEMLIMIT=6GiB triggers aggressive
+            # GC before the kernel OOM-killer fires.
+            GOMEMLIMIT=6GiB gosec -concurrency=1 -exclude-generated -severity high -fmt junit-xml -out test-results/gosec.xml ./... || status=$?
+            GOMEMLIMIT=6GiB gosec -concurrency=1 -exclude-generated -severity high -fmt sarif -out gosec.sarif ./... 2>/dev/null || true
             exit $status
       - store_test_results:
           path: test-results
