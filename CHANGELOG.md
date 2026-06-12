@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.2...v0.9.0) (2026-06-12)
+
+
+### Features
+
+* **secrets:** add 'secrets transfer' command — in-pipeline direct context transfer ([#223](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/223)) ([#233](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/233)) ([2975dee](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2975dee2da214dd933e879144a19f6df6816567d))
+* **skills:** split monolith SKILL.md into task-scoped skills/ layout ([#221](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/221)) ([#229](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/229)) ([760ee62](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/760ee625a9d19e92fffa0ced78976f365cabed9f))
+* **terraform:** add terraform generate command (M1) — closes [#222](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/222) ([#230](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/230)) ([d5e97a0](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d5e97a06b5db39575c0c967ddceff73489849c06))
+* **transfer:** expand secrets transfer — create-missing contexts + project env vars ([#223](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/223)) ([#235](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/235)) ([39b4d17](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/39b4d171b8253770d66c9771e28335eab4a62f6c))
+
+
+### Bug Fixes
+
+* **#218:** strict decode for secret bundles to reject unknown fields ([#225](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/225)) ([09778ca](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/09778caa7a08d783d138cd22ef62639011612daa)), closes [#218](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/218)
+* **migrate:** fail fast with actionable error on non-TTY stdin ([#217](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/217)) ([#224](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/224)) ([85e3547](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/85e3547d41138441dbf7aa35940e4cd36d7bd5be))
+* **sast:** gosec OOM fix, G101 nosec, chunk sidecars ([#52](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/52)) ([#236](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/236)) ([a569635](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/a569635214f4631aa4ea9096db9bc7fd4bb41405))
+* **terraform:** gate advanced project settings by dest org type ([#222](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/222)) ([#234](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/234)) ([43d2237](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/43d22375dd79668ff2aa97234a17a325dcd5dac3))
+
 ## [0.8.2](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.8.1...v0.8.2) (2026-06-11)
 
 
