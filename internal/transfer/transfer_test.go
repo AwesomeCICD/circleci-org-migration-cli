@@ -228,7 +228,7 @@ func TestBuildTransferConfig_ContainsContextAndJob(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
 
 	// Must contain the job names derived from context names.
 	if !strings.Contains(cfg, "circleci-migrate-transfer-deploy-prod") {
@@ -289,7 +289,7 @@ func TestBuildTransferConfig_NoDestTokenContextDuplicated(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
 
 	// The context should appear only once in the workflow context list.
 	count := strings.Count(cfg, "- migration-secrets")
@@ -306,13 +306,13 @@ func TestBuildTransferConfig_Version(t *testing.T) {
 	plan, _ := BuildPlan(m, &opts)
 
 	// With a pinned version, the config should embed that version.
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
 	if !strings.Contains(cfg, "v0.9.0") {
 		t.Error("expected pinned version in install step")
 	}
 
 	// With dev/empty version, should use "latest".
-	cfgDev := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "dev")
+	cfgDev := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "dev")
 	if !strings.Contains(cfgDev, "releases/latest") {
 		t.Error("dev build should fall back to 'latest' release")
 	}
@@ -325,7 +325,7 @@ func TestBuildTransferConfig_DestHostEmbedded(t *testing.T) {
 	opts.DestHost = "https://circleci.example.com"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
 
 	if !strings.Contains(cfg, "circleci.example.com") {
 		t.Error("expected custom dest host in config")
@@ -340,7 +340,7 @@ func TestBuildTransferConfig_NoPLAINTEXTValues(t *testing.T) {
 	opts.DestTokenContext = "migration-secrets"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
 
 	// These strings must never appear in the generated config.
 	forbidden := []string{
@@ -630,7 +630,7 @@ func TestBuildTransferConfig_TokenReferencedByName(t *testing.T) {
 	opts.DestTokenEnvVar = "CIRCLECI_DEST_TOKEN"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
 
 	// The config should reference CIRCLECI_DEST_TOKEN as a shell var, not as a literal value.
 	if !strings.Contains(cfg, "${CIRCLECI_DEST_TOKEN") {
@@ -695,5 +695,325 @@ func TestOptionsDestTokenEnvVar_Default(t *testing.T) {
 	opts := Options{}
 	if got := opts.destTokenEnvVar(); got != "CIRCLECI_DEST_TOKEN" {
 		t.Errorf("default destTokenEnvVar = %q, want CIRCLECI_DEST_TOKEN", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Create-missing-context path
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildTransferConfig_CreateMissingContext(t *testing.T) {
+	m := baseManifest()
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("plan error: %v", err)
+	}
+
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
+
+	// The generated config must contain the create-if-missing POST logic.
+	if !strings.Contains(cfg, "/api/v2/context\"") {
+		t.Error("expected POST to /api/v2/context in config")
+	}
+	if !strings.Contains(cfg, "\"type\": \"organization\"") {
+		t.Error("expected organization type in context POST body")
+	}
+	// Must contain the create branch (not just the error-and-exit branch).
+	if !strings.Contains(cfg, "Creating it in org") && !strings.Contains(cfg, "not found — creating it") {
+		t.Error("expected create-if-missing message in config shell")
+	}
+	// Must still resolve by listing first (pagination loop).
+	if !strings.Contains(cfg, "api/v2/context?owner-id=") {
+		t.Error("expected context list endpoint in config")
+	}
+	// Must NOT contain the old error-and-exit-only path.
+	if strings.Contains(cfg, "Run: circleci-migrate sync") {
+		t.Error("config must not tell operator to run sync (create-if-missing replaces that)")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project env-var mapping resolution (--include-project-vars)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// manifestWithProjects returns a manifest with projects that have env vars.
+func manifestWithProjects() *manifest.Manifest {
+	return &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Contexts: []manifest.Context{
+			{
+				Name:    "deploy-prod",
+				EnvVars: []manifest.ContextEnvVar{{Name: "AWS_KEY"}},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				EnvVars: []manifest.ProjectEnvVar{
+					{Name: "APP_SECRET"},
+					{Name: "DB_URL"},
+				},
+			},
+			{
+				Slug: "gh/acme/api",
+				EnvVars: []manifest.ProjectEnvVar{
+					{Name: "API_KEY"},
+				},
+			},
+			{
+				Slug: "gh/acme/no-vars",
+				// No env vars — should be excluded from plan.
+			},
+		},
+	}
+}
+
+func TestBuildPlan_ProjectVars_Mapped(t *testing.T) {
+	m := manifestWithProjects()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		// gh/acme/api is intentionally NOT mapped — should be skipped.
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(plan.Projects) != 2 {
+		t.Fatalf("expected 2 project plans (1 mapped + 1 skipped), got %d", len(plan.Projects))
+	}
+
+	// Verify mapped project.
+	var webPlan, apiPlan *ProjectVarPlan
+	for i := range plan.Projects {
+		switch plan.Projects[i].SourceSlug {
+		case "gh/acme/web":
+			webPlan = &plan.Projects[i]
+		case "gh/acme/api":
+			apiPlan = &plan.Projects[i]
+		}
+	}
+
+	if webPlan == nil {
+		t.Fatal("expected gh/acme/web in plan")
+	}
+	if webPlan.Skipped {
+		t.Errorf("gh/acme/web should not be skipped (has mapping)")
+	}
+	if webPlan.DestSlug != "gh/acme-new/web" {
+		t.Errorf("gh/acme/web dest slug = %q, want gh/acme-new/web", webPlan.DestSlug)
+	}
+	if len(webPlan.VarNames) != 2 {
+		t.Errorf("gh/acme/web expected 2 vars, got %d: %v", len(webPlan.VarNames), webPlan.VarNames)
+	}
+
+	if apiPlan == nil {
+		t.Fatal("expected gh/acme/api in plan (as skipped)")
+	}
+	if !apiPlan.Skipped {
+		t.Errorf("gh/acme/api should be skipped (no mapping)")
+	}
+	if apiPlan.SkipReason == "" {
+		t.Error("gh/acme/api skip reason must not be empty")
+	}
+	if !strings.Contains(apiPlan.SkipReason, "gh/acme/api") {
+		t.Errorf("skip reason should mention source slug, got: %s", apiPlan.SkipReason)
+	}
+	if !strings.Contains(apiPlan.SkipReason, "--mapping") {
+		t.Errorf("skip reason should mention --mapping, got: %s", apiPlan.SkipReason)
+	}
+}
+
+func TestBuildPlan_ProjectVars_AllSkipped_NoPanic(t *testing.T) {
+	m := manifestWithProjects()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	// No mapping entries — all projects will be skipped.
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All projects skipped is a valid plan (operator sees the SKIP lines).
+	for _, pp := range plan.Projects {
+		if !pp.Skipped {
+			t.Errorf("expected all projects skipped with no mapping, but %q is not skipped", pp.SourceSlug)
+		}
+	}
+	if plan.TotalProjectVars() != 0 {
+		t.Errorf("expected 0 active project vars when all skipped, got %d", plan.TotalProjectVars())
+	}
+}
+
+func TestBuildPlan_ProjectVarsOff_NoProjectPlans(t *testing.T) {
+	m := manifestWithProjects()
+	opts := baseOpts()
+	opts.IncludeProjectVars = false // default
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(plan.Projects) != 0 {
+		t.Errorf("expected no project plans when IncludeProjectVars=false, got %d", len(plan.Projects))
+	}
+}
+
+func TestBuildTransferConfig_ProjectVarsIncluded(t *testing.T) {
+	m := manifestWithProjects()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	opts.DestTokenContext = "migration-secrets"
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("plan error: %v", err)
+	}
+
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, plan.Projects, &opts, "v1.0.0")
+
+	// Must contain the project job.
+	if !strings.Contains(cfg, "circleci-migrate-transfer-project") {
+		t.Error("expected project transfer job in config")
+	}
+	// Must reference dest project slug.
+	if !strings.Contains(cfg, "gh/acme-new/web") {
+		t.Error("expected dest project slug in config")
+	}
+	// Must use POST to v1.1 envvar endpoint.
+	if !strings.Contains(cfg, "/api/v1.1/project/") {
+		t.Error("expected v1.1 project envvar endpoint in config")
+	}
+	if !strings.Contains(cfg, "/envvar") {
+		t.Error("expected /envvar path in project job")
+	}
+	// Skipped project (gh/acme/api) must NOT appear.
+	if strings.Contains(cfg, "gh/acme/api") {
+		t.Error("skipped project gh/acme/api must not appear in config")
+	}
+	// No plaintext values.
+	if strings.Contains(cfg, "actual-secret") {
+		t.Error("config must not contain secret values")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan output (printPlan) — project SKIP lines
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestPrintPlan_ShowsProjectSkips(t *testing.T) {
+	plan := &Plan{
+		Contexts: []ContextPlan{
+			{SourceName: "deploy-prod", DestName: "deploy-prod", VarNames: []string{"AWS_KEY"}},
+		},
+		Projects: []ProjectVarPlan{
+			{SourceSlug: "gh/acme/web", DestSlug: "gh/acme-new/web", VarNames: []string{"APP_SECRET"}},
+			{SourceSlug: "gh/acme/api", Skipped: true, SkipReason: `dest project for "gh/acme/api" unknown — provide --mapping or onboard it first; skipped`},
+		},
+		DestTokenContext: "migration-secrets",
+		DestTokenEnvVar:  "CIRCLECI_DEST_TOKEN",
+	}
+	opts := baseOpts()
+
+	var out, errOut bytes.Buffer
+	printPlan(&out, &errOut, plan, &opts)
+
+	outStr := out.String()
+
+	// Mapped project must appear with dest slug.
+	if !strings.Contains(outStr, "gh/acme/web") {
+		t.Error("expected gh/acme/web in plan output")
+	}
+	if !strings.Contains(outStr, "gh/acme-new/web") {
+		t.Error("expected dest slug gh/acme-new/web in plan output")
+	}
+	// Skipped project must be flagged.
+	if !strings.Contains(outStr, "SKIP") {
+		t.Error("expected SKIP marker for unresolvable project")
+	}
+	if !strings.Contains(outStr, "gh/acme/api") {
+		t.Error("expected skipped project slug in plan output")
+	}
+}
+
+func TestPrintPlan_ContextCreateVsUpdate(t *testing.T) {
+	plan := &Plan{
+		Contexts: []ContextPlan{
+			{SourceName: "existing-ctx", DestName: "existing-ctx", VarNames: []string{"KEY"}, WillCreate: false},
+			{SourceName: "new-ctx", DestName: "new-ctx", VarNames: []string{"SECRET"}, WillCreate: true},
+		},
+		DestTokenContext: "migration-secrets",
+		DestTokenEnvVar:  "CIRCLECI_DEST_TOKEN",
+	}
+	opts := baseOpts()
+
+	var out, errOut bytes.Buffer
+	printPlan(&out, &errOut, plan, &opts)
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "[update]") {
+		t.Error("expected [update] label for existing context")
+	}
+	if !strings.Contains(outStr, "[create]") {
+		t.Error("expected [create] label for new context")
+	}
+}
+
+func TestPlan_TotalProjectVars(t *testing.T) {
+	p := Plan{
+		Projects: []ProjectVarPlan{
+			{SourceSlug: "a", DestSlug: "a-new", VarNames: []string{"X", "Y"}},
+			{SourceSlug: "b", Skipped: true}, // should not count
+			{SourceSlug: "c", DestSlug: "c-new", VarNames: []string{"Z"}},
+		},
+	}
+	if got := p.TotalProjectVars(); got != 3 {
+		t.Errorf("TotalProjectVars = %d, want 3", got)
+	}
+}
+
+func TestOptionsDestProjectSlug_WithMapping(t *testing.T) {
+	opts := Options{
+		Mapping: map[string]string{
+			"gh/acme/web": "gh/acme-new/web",
+		},
+	}
+	slug, ok := opts.destProjectSlug("gh/acme/web")
+	if !ok {
+		t.Fatal("expected ok=true for mapped project")
+	}
+	if slug != "gh/acme-new/web" {
+		t.Errorf("expected gh/acme-new/web, got %q", slug)
+	}
+}
+
+func TestOptionsDestProjectSlug_NoMapping(t *testing.T) {
+	opts := Options{}
+	_, ok := opts.destProjectSlug("gh/acme/web")
+	if ok {
+		t.Error("expected ok=false when no mapping is set")
+	}
+}
+
+func TestOptionsDestProjectSlug_MissingEntry(t *testing.T) {
+	opts := Options{
+		Mapping: map[string]string{
+			"gh/acme/other": "gh/acme-new/other",
+		},
+	}
+	_, ok := opts.destProjectSlug("gh/acme/web")
+	if ok {
+		t.Error("expected ok=false for unmapped project")
 	}
 }

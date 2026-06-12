@@ -405,7 +405,7 @@ is age-encrypted, decrypt it locally with `secrets decrypt`.
 - Use a **private** project for the capture pipeline.
 - **Rotate every captured value** after the destination is confirmed healthy.
 
-### Alternative: `secrets transfer` (zero-disk-write, context values only)
+### Alternative: `secrets transfer` (zero-disk-write)
 
 `secrets transfer` is a **third mode** beside `capture` and `extract`. Instead
 of writing values to a build artifact, it triggers a single dynamic pipeline in
@@ -416,16 +416,17 @@ the matching context in the DESTINATION org via the CircleCI API over TLS.
 **No plaintext ever touches disk or artifacts** — strictly better security for
 context variables than the bundle-artifact flow.
 
-**Prerequisites:** destination contexts must already exist (create them with
-`sync --apply`) and the destination API token must be pre-stored in a source-org
-context.
+**Create-missing destination contexts:** if a destination context does not yet
+exist, the in-pipeline job creates it automatically before setting values.
+Running `sync --apply` first is no longer required for contexts.
 
 **Trust model:** The CLI embeds the context NAME (not the token value) in the
 generated pipeline config. CircleCI injects the token as an env var inside the
 job. Source-org admins with access to the token context have implicit access to
 the destination token — use a scoped token and rotate it after transfer.
 
-**Dry-run by default** (like `sync`). Pass `--apply` to execute.
+**Dry-run by default** (like `sync`). Pass `--apply` to execute. The dry-run
+plan shows each context with `[create]` or `[update]` based on intent.
 
 ```bash
 # 1. Store dest token in a source-org context, then dry-run the plan:
@@ -438,6 +439,14 @@ circleci-migrate secrets transfer --manifest manifest.json \
   --dest-org-id <dest-org-uuid> \
   --dest-token-context migration-secrets \
   --enable-trigger --apply
+
+# 3. Also transfer project env vars (requires mapping.json with project entries):
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets \
+  --mapping mapping.json \
+  --include-project-vars \
+  --apply
 ```
 
 Key flags:
@@ -451,11 +460,18 @@ Key flags:
 - `--apply` — execute the pipeline (omit for dry-run).
 - `--context` — limit to specific context names; default is all contexts with
   values.
-- `--mapping` — optional path to `mapping.json`; entries in `projects` whose
-  keys have no `/` are treated as context name → destination name overrides.
+- `--include-project-vars` — also transfer project env-var values (default:
+  off). Each source project must be resolvable to a destination project slug
+  via `--mapping`; projects without a mapping entry are **skipped** and clearly
+  flagged in the plan. The destination project must already be onboarded.
+- `--mapping` — optional path to `mapping.json`. Entries in `projects` whose
+  keys contain `/` are project slug overrides (source → dest project slug);
+  entries whose keys have no `/` are context name → destination context name
+  overrides.
 
-**Scope:** context env-var values only. SSH keys and project env vars still
-require `secrets capture` with an encrypted bundle.
+**Scope:** context env-var values by default; add `--include-project-vars` for
+project env vars too. SSH keys still require `secrets capture` with an
+encrypted bundle.
 
 ---
 
