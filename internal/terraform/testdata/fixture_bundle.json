@@ -1,0 +1,25 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-06-12T00:00:00Z",
+  "context_secrets": {
+    "deploy-prod": {
+      "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+      "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "DEPLOY_TOKEN": "tok-abc123"
+    },
+    "shared-ci": {
+      "NPM_TOKEN": "npm_xxxxxxxxxxxxxxxxxxxx",
+      "SONAR_TOKEN": "sonar_yyyyyyyy"
+    }
+  },
+  "project_secrets": {
+    "gh/acme/api": {
+      "DATABASE_URL": "postgres://user:pass@db.acme.example/prod",
+      "REDIS_URL": "redis://redis.acme.example:6379"
+    },
+    "gh/acme/frontend": {
+      "SENTRY_DSN": "https://public@sentry.acme.example/1"
+    }
+  },
+  "ssh_keys": {}
+}

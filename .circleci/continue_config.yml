@@ -396,6 +396,69 @@ jobs:
             echo "E2E smoke test passed."
 
   # ===========================================================================
+  # WAVE C — Terraform validate (requires ALL of Wave B; uses binary from workspace)
+  #
+  # Generates Terraform HCL from the fixture manifest and then validates it
+  # structurally.
+  #
+  # terraform init (provider download) requires network access to the Terraform
+  # Registry. In the standard CircleCI cloud executor this is available, so the
+  # job runs a full init + fmt-check + validate. If the registry is unreachable
+  # (e.g. air-gapped runners), only terraform fmt -check runs (still catches HCL
+  # syntax errors in the generated files).
+  #
+  # Terraform is downloaded at a pinned version via a direct GitHub release URL
+  # (same pattern as gosec/trivy/gitleaks above, to avoid supply-chain risk).
+  # ===========================================================================
+
+  terraform-validate:
+    executor: base
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install Terraform (pinned v1.9.8)
+          command: |
+            # renovate: datasource=github-releases depName=hashicorp/terraform
+            ver=1.9.8
+            curl -fsSL "https://releases.hashicorp.com/terraform/${ver}/terraform_${ver}_linux_amd64.zip" \
+              -o /tmp/terraform.zip
+            unzip -o /tmp/terraform.zip -d /tmp/terraform-bin
+            sudo install -m 0755 /tmp/terraform-bin/terraform /usr/local/bin/terraform
+            terraform version
+      - run:
+          name: Generate Terraform from fixture manifest
+          command: |
+            mkdir -p /tmp/tf-validate
+            ./bin/linux/amd64/circleci-migrate terraform generate \
+              --manifest internal/terraform/testdata/fixture_manifest.json \
+              --placeholders \
+              --dest-org-id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
+              --out /tmp/tf-validate
+            ls -la /tmp/tf-validate
+      - run:
+          name: Terraform fmt-check (HCL syntax validation, no network required)
+          command: |
+            terraform fmt -check -recursive /tmp/tf-validate
+            echo "terraform fmt -check: OK"
+      - run:
+          name: Terraform init + validate (full provider download)
+          # Wrapped in || so a network failure does not fail the whole CI run;
+          # the fmt-check step above already catches HCL syntax errors.
+          # If init succeeds, validate runs and its exit code is propagated.
+          command: |
+            cd /tmp/tf-validate
+            # init downloads the CircleCI provider from the registry.
+            # -backend=false skips remote state configuration (not needed for validate).
+            if terraform init -backend=false; then
+              terraform validate
+              echo "terraform validate: OK"
+            else
+              echo "terraform init failed (network unavailable?); fmt-check already passed"
+            fi
+
+  # ===========================================================================
   # WAVE A — Cross-platform build matrix (parallel with lint + coverage)
   # Persists each built binary to workspace for downstream consumers (e2e).
   # ===========================================================================
@@ -776,6 +839,18 @@ workflows:
       # -----------------------------------------------------------------------
       - e2e:
           name: "E2E Smoke (built binary)"
+          requires:
+            - "Unit Tests (race)"
+            - "Security: govulncheck"
+            - "Security: gosec (SAST)"
+            - "Security: gitleaks"
+            - "Security: Trivy"
+          filters:
+            tags:
+              ignore: /.*/
+
+      - terraform-validate:
+          name: "Terraform: generate + validate"
           requires:
             - "Unit Tests (race)"
             - "Security: govulncheck"
