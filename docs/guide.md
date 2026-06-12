@@ -16,6 +16,75 @@ If you just want the operator checklist for a production cutover, use the
 
 ---
 
+## Installing behind a restricted network / proxy
+
+Enterprise networks commonly allowlist outbound traffic by domain. The required
+domains differ by install method.
+
+### Prebuilt binary (recommended)
+
+The README curl snippet and any browser download of a GitHub release asset
+contact two hosts:
+
+| Domain | Purpose |
+|---|---|
+| `api.github.com` | Resolve the latest release tag (`/releases/latest`) |
+| `github.com` | Download the release tarball |
+| `release-assets.githubusercontent.com` | GitHub redirects archive fetches here |
+
+Homebrew (`brew install`) additionally contacts `formulae.brew.sh` and
+`raw.githubusercontent.com` for the tap formula.
+
+### `go install github.com/AwesomeCICD/circleci-org-migration-cli@<version>`
+
+Go resolves module downloads through its module proxy and checksum database,
+plus several vanity-import domains used by the module's dependencies (confirmed
+against `go.mod`):
+
+| Domain | Purpose |
+|---|---|
+| `github.com` | Source repository and all `github.com/*` dependencies |
+| `proxy.golang.org` | Go module proxy (download cache) |
+| `sum.golang.org` | Go checksum database |
+| `filippo.io` | `filippo.io/age`, `filippo.io/edwards25519`, `filippo.io/hpke` |
+| `golang.org` | `golang.org/x/crypto`, `golang.org/x/term`, `golang.org/x/sys` |
+| `gopkg.in` | `gopkg.in/yaml.v3` |
+| `go.yaml.in` | `go.yaml.in/yaml/v3` |
+
+To bypass the module proxy entirely (for example, if only `github.com` is
+reachable), set:
+
+```bash
+GOPROXY=off go install github.com/AwesomeCICD/circleci-org-migration-cli@v0.8.1
+```
+
+This instructs Go to fetch directly from VCS instead of the proxy. You still
+need the vanity-import hosts above because Go fetches their `go-import` metadata
+via HTTPS even in `GOPROXY=off` mode.
+
+To route through a corporate proxy, set the standard `HTTPS_PROXY` (or
+`GOPROXY=https://your-proxy`) before running `go install`.
+
+### Build from source (git clone + `go build`)
+
+Clone access requires only `github.com`. The `go build` step resolves the same
+vanity-import hosts listed above unless the tree is vendored:
+
+```bash
+# Vendored build — only github.com needed (for the clone itself)
+git clone https://github.com/AwesomeCICD/circleci-org-migration-cli.git
+cd circleci-org-migration-cli
+GOFLAGS=-mod=vendor go build -o circleci-migrate .
+```
+
+This requires a `vendor/` directory in the cloned tree. The repository does not
+currently ship a vendored tree; a future release may attach a vendored source
+tarball (`go mod vendor` snapshot) to each GitHub release so that
+`go build -mod=vendor` works with `github.com` access only. Until then, the
+vanity-import hosts above must be reachable for an unvendored build.
+
+---
+
 ## 1. The model
 
 `circleci-migrate` works in two halves:
