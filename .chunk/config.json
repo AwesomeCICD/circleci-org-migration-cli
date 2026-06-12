@@ -57,6 +57,30 @@
       "limit": 2
     },
     {
+      "name": "gosec",
+      "run": "make gosec",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 300,
+      "limit": 2
+    },
+    {
+      "name": "cover",
+      "run": "make cover",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 300,
+      "limit": 1
+    },
+    {
+      "name": "docs-check",
+      "run": "make docs-check",
+      "role": "gate",
+      "fileExt": ".go",
+      "timeout": 120,
+      "limit": 1
+    },
+    {
       "name": "config-validate",
       "run": "make config-validate",
       "role": "gate",

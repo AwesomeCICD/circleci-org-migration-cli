@@ -14,6 +14,7 @@ import (
 )
 
 // secretsTransferLong is the long help text for 'secrets transfer'.
+// #nosec G101 -- long help text; mentions 'token'/'secret' but contains no credential
 const secretsTransferLong = `transfer is a ZERO-DISK-WRITE mode for migrating context env-var VALUES directly
 from the SOURCE org to the DESTINATION org without producing any bundle file.
 
