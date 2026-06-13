@@ -82,6 +82,12 @@ type ProjectWriter interface {
 	ListEnvVars(ctx context.Context, slug string) ([]project.EnvVar, error)
 	CreateEnvVar(ctx context.Context, slug, name, value string) error
 	UpdateSettings(ctx context.Context, provider, org, proj string, s *project.AdvancedSettings) error
+	// SetOSS attempts a best-effort, isolated PATCH to set oss=true on the
+	// destination project.  It returns applied=true when the API confirmed the
+	// field, and applied=false (with a nil error) when the project type does not
+	// support the oss field (e.g. GitHub App projects return "Unexpected field
+	// 'advanced.oss'").  A non-nil error indicates a genuine transport failure.
+	SetOSS(ctx context.Context, provider, org, proj string) (applied bool, err error)
 	ListWebhooks(ctx context.Context, projectID string) ([]project.Webhook, error)
 	CreateWebhook(ctx context.Context, destProjectID string, w project.Webhook) error
 	ListSchedules(ctx context.Context, slug string) ([]project.Schedule, error)
