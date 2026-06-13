@@ -104,8 +104,9 @@ func TestCreateEnvVar_EmptyName(t *testing.T) {
 // ---- UpdateSettings ---------------------------------------------------------
 
 func TestUpdateSettings_HappyPath(t *testing.T) {
-	// Set OSS=true and AutocancelBuilds=false; all other fields nil.
-	// Assert body contains exactly those two fields under "advanced".
+	// Set AutocancelBuilds=false (and OSS=true in the AdvancedSettings struct to
+	// verify it is NOT forwarded to the wire — the API rejects it, see #247).
+	// Assert body contains exactly AutocancelBuilds and that oss is absent.
 	ossTrue := true
 	autocancelFalse := false
 
@@ -129,15 +130,18 @@ func TestUpdateSettings_HappyPath(t *testing.T) {
 			t.Fatalf("advanced field missing or not an object: %v", body["advanced"])
 		}
 
-		// OSS and AutocancelBuilds must be present.
-		if v, exists := advanced["oss"]; !exists || v != true {
-			t.Errorf("advanced.oss: got %v (exists=%v), want true", v, exists)
-		}
+		// AutocancelBuilds must be present.
 		if v, exists := advanced["autocancel_builds"]; !exists || v != false {
 			t.Errorf("advanced.autocancel_builds: got %v (exists=%v), want false", v, exists)
 		}
 
-		// Other fields must NOT be present (nil *bool fields should be omitted).
+		// "oss" must NEVER appear in the PATCH body — the API rejects it with
+		// "Unexpected field 'advanced.oss'" for all project types. (#247)
+		if _, exists := advanced["oss"]; exists {
+			t.Errorf("advanced.oss must be absent from the PATCH body (rejected by API, see #247)")
+		}
+
+		// Other nil fields must NOT be present (nil *bool fields should be omitted).
 		for _, absent := range []string{
 			"build_fork_prs", "build_prs_only", "disable_ssh",
 			"forks_receive_secret_env_vars", "set_github_status",
@@ -151,7 +155,6 @@ func TestUpdateSettings_HappyPath(t *testing.T) {
 
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"advanced": map[string]interface{}{
-				"oss":               true,
 				"autocancel_builds": false,
 			},
 		})
@@ -160,7 +163,7 @@ func TestUpdateSettings_HappyPath(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	s := &AdvancedSettings{
-		OSS:              &ossTrue,
+		OSS:              &ossTrue, // set in AdvancedSettings but must NOT appear on the wire
 		AutocancelBuilds: &autocancelFalse,
 	}
 	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err != nil {
@@ -212,6 +215,43 @@ func TestUpdateSettings_PROnlyBranchOverridesIncluded(t *testing.T) {
 	c := newTestClient(t, srv)
 	s := &AdvancedSettings{
 		PROnlyBranchOverrides: []string{"main", "develop"},
+	}
+	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestUpdateSettings_OSSNeverSentOnWire verifies that "oss" is never included
+// in the PATCH body regardless of the value set on AdvancedSettings.
+// Background: the CircleCI project-settings endpoint rejects "advanced.oss"
+// with "Unexpected field 'advanced.oss'" for all project types (GitHub OAuth
+// and GitHub App alike).  The Terraform provider has no "oss" attribute either
+// (same root issue).  See issue #247.
+func TestUpdateSettings_OSSNeverSentOnWire(t *testing.T) {
+	ossTrue := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		advanced, ok := body["advanced"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("advanced field missing or not an object: %v", body["advanced"])
+		}
+		// "oss" must be absent — the API rejects it. (#247)
+		if _, exists := advanced["oss"]; exists {
+			t.Errorf("advanced.oss must be absent from the PATCH body (rejected by API, see #247); got body: %v", advanced)
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{"advanced": map[string]interface{}{}})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	// Set OSS in AdvancedSettings — it must be recorded/read but never written.
+	s := &AdvancedSettings{
+		OSS:              &ossTrue,
+		AutocancelBuilds: boolPtr(true),
+		SetGithubStatus:  boolPtr(true),
 	}
 	if err := c.UpdateSettings(context.Background(), "gh", "acme", "web", s); err != nil {
 		t.Fatalf("unexpected error: %v", err)

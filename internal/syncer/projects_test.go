@@ -2466,10 +2466,13 @@ func TestSyncProjects_AppDest_Settings_OAuthOnlyFieldsStripped(t *testing.T) {
 	}
 }
 
-// TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved verifies that for a
-// non-App (OAuth) destination, all advanced settings including OAuth-only fields
-// are forwarded unmodified.
-func TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved(t *testing.T) {
+// TestSyncProjects_OAuthDest_Settings_OAuthFieldsPassedThrough verifies that for
+// a non-App (OAuth) destination the syncer does NOT strip fork/PR fields from the
+// AdvancedSettings struct it passes to UpdateSettings (unlike the App path which
+// calls stripOAuthOnlySettings).  Note that "oss" is never serialised to the wire
+// regardless — that is enforced at the project.Client.UpdateSettings layer (see
+// advancedSettingsPatch in write.go and issue #247).
+func TestSyncProjects_OAuthDest_Settings_OAuthFieldsPassedThrough(t *testing.T) {
 	fp := &fakeProjectWriter{}
 	sy := newSyncerProjects(fp)
 
@@ -2499,18 +2502,20 @@ func TestSyncProjects_OAuthDest_Settings_OAuthFieldsPreserved(t *testing.T) {
 	}
 	got := fp.settingsUpdates[0]
 
-	// OAuth fields must be preserved for non-App destinations.
+	// The syncer does not strip these fields from the struct for OAuth destinations
+	// (stripping is a no-op at this layer; the write.go layer omits oss from the
+	// wire body for all project types per #247).
 	if got.OSS == nil || !*got.OSS {
-		t.Error("OSS must be preserved for OAuth destination")
+		t.Error("OSS must be present in the AdvancedSettings struct for OAuth destination (write.go omits it from the wire body)")
 	}
 	if got.BuildForkPRs == nil || !*got.BuildForkPRs {
-		t.Error("BuildForkPRs must be preserved for OAuth destination")
+		t.Error("BuildForkPRs must be passed through for OAuth destination")
 	}
 	if got.ForksReceiveSecretEnvVars == nil || !*got.ForksReceiveSecretEnvVars {
-		t.Error("ForksReceiveSecretEnvVars must be preserved for OAuth destination")
+		t.Error("ForksReceiveSecretEnvVars must be passed through for OAuth destination")
 	}
 	if len(got.PROnlyBranchOverrides) != 2 {
-		t.Errorf("PROnlyBranchOverrides must be preserved for OAuth destination, got %v", got.PROnlyBranchOverrides)
+		t.Errorf("PROnlyBranchOverrides must be passed through for OAuth destination, got %v", got.PROnlyBranchOverrides)
 	}
 }
 
