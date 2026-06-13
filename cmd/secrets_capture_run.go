@@ -262,19 +262,28 @@ func (cf *captureFlags) run(cmd *cobra.Command) error {
 
 	// ── Org-level allow_api_trigger_with_config ───────────────────────
 	// The pipeline/run endpoint also requires the ORG-level flag to be on.
-	// We read-and-restore it ONCE before iterating projects (not per-project).
-	// On any error we warn and continue — the per-project flag is the primary
-	// gate and callers can fix the org flag manually.
-	if cf.enableTrigger {
-		if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
-			orgClient, oerr := newOrgClientForCapture(cfg, token)
-			if oerr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"WARNING: could not create org client to check org-level flag: %v\n", oerr)
-			} else {
-				restoreOrgFlag := capture.MaybeEnableOrgTriggerFlag(cmd.Context(), cmd.ErrOrStderr(), orgClient, vcsType, orgName)
-				defer restoreOrgFlag()
+	// We check/enable it ONCE before iterating projects (not per-project).
+	//
+	// Behaviour:
+	//   --enable-trigger set → enable if off, defer restore (existing path).
+	//   --enable-trigger NOT set:
+	//     flag already ON → proceed, no prompt.
+	//     flag OFF + interactive TTY → offer to enable (with auto-restore on no).
+	//     flag OFF + non-interactive → fail fast with actionable error.
+	//     flag read error → warn and continue (best-effort).
+	if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
+		orgClient, oerr := newOrgClientForCapture(cfg, token)
+		if oerr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"WARNING: could not create org client to check org-level flag: %v\n", oerr)
+		} else {
+			restoreOrgFlag, ferr := checkAndMaybeEnableOrgTriggerFlag(
+				cmd, cf, orgClient, vcsType, orgName,
+			)
+			if ferr != nil {
+				return ferr
 			}
+			defer restoreOrgFlag()
 		}
 	}
 
@@ -458,6 +467,86 @@ WARNING: --no-encrypt was set. The secret bundle contains PLAINTEXT secrets.
 	return captureErr
 }
 
+// checkAndMaybeEnableOrgTriggerFlag performs the pre-flight check on the
+// org-level allow_api_trigger_with_config flag before any pipeline is triggered.
+//
+// Decision matrix:
+//
+//	enableTrigger=true                  → enable if off, return restore func (MaybeEnableOrgTriggerFlag).
+//	enableTrigger=false, flag ON        → proceed, no-op restore.
+//	enableTrigger=false, flag OFF + TTY → prompt; yes → enable+restore; no → error.
+//	enableTrigger=false, flag OFF + no-TTY → fail-fast actionable error.
+//	enableTrigger=false, read error     → warn + return no-op (best-effort).
+//
+// The returned restore func must be deferred by the caller.
+func checkAndMaybeEnableOrgTriggerFlag(
+	cmd *cobra.Command,
+	cf *captureFlags,
+	orgClient capture.OrgFlagManager,
+	vcsType, orgName string,
+) (restore func(), err error) {
+	noop := func() {}
+
+	if cf.enableTrigger {
+		// Existing path: user explicitly asked us to enable+restore.
+		restoreFn := capture.MaybeEnableOrgTriggerFlag(cmd.Context(), cmd.ErrOrStderr(), orgClient, vcsType, orgName)
+		return restoreFn, nil
+	}
+
+	// Read the org flag to determine if it's already on.
+	flags, rerr := orgClient.GetFeatureFlags(cmd.Context(), vcsType, orgName)
+	if rerr != nil {
+		// Warn but do not hard-block — MaybeEnableOrgTriggerFlag already tolerates
+		// read failures, so this matches the existing best-effort contract.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"WARNING: could not read org-level feature flags for %s/%s: %v — "+
+				"capture may fail if allow_api_trigger_with_config is OFF; "+
+				"use --enable-trigger to let the CLI enable it automatically.\n",
+			vcsType, orgName, rerr)
+		return noop, nil
+	}
+
+	if capture.OrgTriggerAlreadyEnabled(flags) {
+		// Flag is already ON — nothing to do.
+		return noop, nil
+	}
+
+	// Flag is OFF. Decide based on TTY.
+	if isInteractiveTTY() {
+		prompter := NewPrompter(os.Stdin, cmd.ErrOrStderr())
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"\nNOTICE: 'secrets capture' triggers an in-pipeline job that requires "+
+				"'Allow triggering pipelines with unversioned config' "+
+				"(allow_api_trigger_with_config) to be ON for %s/%s.\n"+
+				"It is currently OFF.\n",
+			vcsType, orgName)
+		enable, perr := prompter.askBool(
+			"Enable it now for the duration of capture? It will be restored to OFF afterward",
+			false,
+		)
+		if perr != nil {
+			return noop, fmt.Errorf("reading prompt: %w", perr)
+		}
+		if !enable {
+			return noop, fmt.Errorf(
+				"capture cannot proceed: allow_api_trigger_with_config is OFF for %s/%s; "+
+					"re-run with --enable-trigger to let the CLI enable it automatically (restored after capture), "+
+					"or enable 'Allow triggering pipelines with unversioned config' in Org Settings -> Advanced",
+				vcsType, orgName)
+		}
+		// User said yes — enable and return a restore func.
+		restoreFn := capture.MaybeEnableOrgTriggerFlag(cmd.Context(), cmd.ErrOrStderr(), orgClient, vcsType, orgName)
+		return restoreFn, nil
+	}
+
+	// Non-interactive: fail fast with an actionable error.
+	return noop, fmt.Errorf(
+		"allow_api_trigger_with_config is OFF for %s/%s; capture would fail mid-run — "+
+			"re-run with --enable-trigger to let the CLI enable it for the duration of capture (auto-restored afterward), "+
+			"or enable 'Allow triggering pipelines with unversioned config' in Org Settings -> Advanced",
+		vcsType, orgName)
+}
+
 // bind registers the capture flags on f and stores their values in cf.
 func (cf *captureFlags) bind(f *pflag.FlagSet) {
 	f.StringVar(&cf.manifestPath, "manifest", "", "Path to the export manifest (prompted interactively when omitted on a TTY)")
@@ -470,7 +559,9 @@ func (cf *captureFlags) bind(f *pflag.FlagSet) {
 			"Prompted interactively when contexts are selected and this flag is absent.")
 	f.StringVar(&cf.branch, "branch", "main", "Branch to check out for the extraction run")
 	f.BoolVar(&cf.enableTrigger, "enable-trigger", false,
-		"Enable api-trigger-with-config if not already on, and restore after capture")
+		"Unconditionally enable allow_api_trigger_with_config for the org before capture and restore it afterward. "+
+			"When omitted, capture auto-detects the flag: if it is OFF on an interactive TTY you are offered a "+
+			"choice; on a non-interactive terminal capture fails fast with an actionable error.")
 	f.BoolVar(&cf.skipRestrictedCtxs, "skip-restricted-contexts", true,
 		"Skip contexts that have project/expression/group restrictions (attach warning instead of attempting)")
 	f.BoolVar(&cf.removeRestrictions, "remove-restrictions", false,

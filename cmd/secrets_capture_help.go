@@ -38,14 +38,22 @@ NON-INTERACTIVE MODE & THE CAPTURE-ALL GUARD:
 HOW IT WORKS:
   1. Reads variable names from the manifest for the selected project(s) and
      context(s).
-  2. Ensures api-trigger-with-config is enabled for each project (either it
+  2. Checks the org-level allow_api_trigger_with_config flag BEFORE triggering
+     any pipeline:
+       - If the flag is already ON → proceed normally.
+       - If it is OFF and --enable-trigger is set → enable it, defer restore.
+       - If it is OFF and running interactively → offer to enable (with
+         auto-restore); answering "no" exits cleanly with guidance.
+       - If it is OFF and running non-interactively → fail fast with an
+         actionable error before any pipeline is triggered (no mid-run failure).
+  3. Ensures api-trigger-with-config is enabled for each project (either it
      must already be on, or --enable-trigger must be set).
-  3. Triggers an unversioned pipeline run with an inline config that dumps the
+  4. Triggers an unversioned pipeline run with an inline config that dumps the
      variable values to a build artifact.
-  4. Polls until the pipeline completes, then downloads and parses the artifact.
-  5. Writes the captured values into the secret bundle (--output).
-  6. Restores the api-trigger-with-config flag to its original value (even on
-     failure).
+  5. Polls until the pipeline completes, then downloads and parses the artifact.
+  6. Writes the captured values into the secret bundle (--output).
+  7. Restores the allow_api_trigger_with_config flag to its original value (even
+     on failure).
 
 HOST PROJECT FOR CONTEXT EXTRACTION:
   Context env vars are injected into a job that references the context.

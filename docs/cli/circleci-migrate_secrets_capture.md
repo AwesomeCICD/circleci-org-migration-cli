@@ -40,14 +40,22 @@ NON-INTERACTIVE MODE & THE CAPTURE-ALL GUARD:
 HOW IT WORKS:
   1. Reads variable names from the manifest for the selected project(s) and
      context(s).
-  2. Ensures api-trigger-with-config is enabled for each project (either it
+  2. Checks the org-level allow_api_trigger_with_config flag BEFORE triggering
+     any pipeline:
+       - If the flag is already ON → proceed normally.
+       - If it is OFF and --enable-trigger is set → enable it, defer restore.
+       - If it is OFF and running interactively → offer to enable (with
+         auto-restore); answering "no" exits cleanly with guidance.
+       - If it is OFF and running non-interactively → fail fast with an
+         actionable error before any pipeline is triggered (no mid-run failure).
+  3. Ensures api-trigger-with-config is enabled for each project (either it
      must already be on, or --enable-trigger must be set).
-  3. Triggers an unversioned pipeline run with an inline config that dumps the
+  4. Triggers an unversioned pipeline run with an inline config that dumps the
      variable values to a build artifact.
-  4. Polls until the pipeline completes, then downloads and parses the artifact.
-  5. Writes the captured values into the secret bundle (--output).
-  6. Restores the api-trigger-with-config flag to its original value (even on
-     failure).
+  5. Polls until the pipeline completes, then downloads and parses the artifact.
+  6. Writes the captured values into the secret bundle (--output).
+  7. Restores the allow_api_trigger_with_config flag to its original value (even
+     on failure).
 
 HOST PROJECT FOR CONTEXT EXTRACTION:
   Context env vars are injected into a job that references the context.
@@ -118,7 +126,7 @@ circleci-migrate secrets capture [--manifest <file>] [flags]
       --artifact-retention-days int   Set the org's artifact-retention to this many days BEFORE triggering the extraction pipeline. Recommended value: 1 (the minimum). Default 0 = leave unchanged. The prior value is logged so you can restore it manually. This control is NOT auto-restored after capture — keeping retention low is the safe default when secrets may land in artifacts.
       --branch string                 Branch to check out for the extraction run (default "main")
       --context stringArray           Context name(s) to capture (default: all in manifest)
-      --enable-trigger                Enable api-trigger-with-config if not already on, and restore after capture
+      --enable-trigger                Unconditionally enable allow_api_trigger_with_config for the org before capture and restore it afterward. When omitted, capture auto-detects the flag: if it is OFF on an interactive TTY you are offered a choice; on a non-interactive terminal capture fails fast with an actionable error.
       --encrypt                       Encrypt the in-pipeline artifact with age so plaintext secrets never persist in CircleCI (default: true). Supply --ssh-public-key or --generate-key; if neither is given a fresh keypair is auto-generated. Use --no-encrypt to opt out. (default true)
       --generate-key                  Generate a fresh age X25519 keypair for this run. Writes the identity to ./migration-identity.age and the recipient to ./migration-recipient.txt. Use --generate-key instead of --ssh-public-key when you do not have an existing key. Auto-enabled when --encrypt is in effect and no key is supplied.
   -h, --help                          help for capture
