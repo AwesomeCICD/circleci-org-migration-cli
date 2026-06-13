@@ -43,6 +43,9 @@ type fakeProjectWriter struct {
 	listProjectTokens         func(slug string) ([]project.ProjectAPIToken, error)
 	createProjectToken        func(slug, scope, label string) (string, error)
 
+	// Best-effort OSS setter (separate from main UpdateSettings patch).
+	setOSS func(provider, org, proj string) (bool, error)
+
 	// App-org methods
 	createAppProject         func(orgID, name string) (*project.Project, error)
 	createPipelineDefinition func(projectID string, spec project.PipelineDefinitionSpec) (string, error)
@@ -102,6 +105,15 @@ func (f *fakeProjectWriter) UpdateSettings(_ context.Context, provider, org, pro
 		return f.updateSettings(provider, org, proj, s)
 	}
 	return nil
+}
+
+func (f *fakeProjectWriter) SetOSS(_ context.Context, provider, org, proj string) (bool, error) {
+	f.calls = append(f.calls, projectCall{"SetOSS", []string{provider, org, proj}})
+	if f.setOSS != nil {
+		return f.setOSS(provider, org, proj)
+	}
+	// Default: return applied=true (OSS was accepted and applied).
+	return true, nil
 }
 
 func (f *fakeProjectWriter) ListWebhooks(_ context.Context, projectID string) ([]project.Webhook, error) {
@@ -910,6 +922,222 @@ func TestSyncProjects_UpdateSettings_Error_IsErrorAction(t *testing.T) {
 	if !hasError {
 		t.Error("expected an 'error' action when UpdateSettings fails, got none")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SyncProjects: OSS best-effort behaviour (#251)
+// ---------------------------------------------------------------------------
+
+// ossProject builds a manifest.Project with oss=true in its advanced settings.
+func ossProject(slug string) manifest.Project {
+	trueVal := true
+	return manifest.Project{
+		Slug: slug,
+		Name: slug,
+		Settings: &manifest.AdvancedSettings{
+			OSS: &trueVal,
+		},
+	}
+}
+
+// TestSyncProjects_OSS_Applied verifies that when the source project had
+// oss=true and the destination SetOSS call returns applied=true, a "set"
+// project-oss action is recorded and the project sync succeeds.
+func TestSyncProjects_OSS_Applied(t *testing.T) {
+	fp := &fakeProjectWriter{
+		setOSS: func(provider, org, proj string) (bool, error) {
+			return true, nil // oss accepted and applied
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := ossProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.hasCalled("SetOSS") {
+		t.Error("SetOSS must be called when source project had oss=true and Apply=true")
+	}
+
+	ossActions := actionsOfKind(rep, "project-oss")
+	if len(ossActions) == 0 {
+		t.Fatal("expected a project-oss action, got none")
+	}
+	if ossActions[0].Status != "set" {
+		t.Errorf("project-oss status: got %q want %q", ossActions[0].Status, "set")
+	}
+}
+
+// TestSyncProjects_OSS_NotApplied_Warning verifies that when the source project
+// had oss=true but SetOSS returns applied=false (e.g. GitHub App auto-detects
+// from repo visibility; private OAuth no-op), a "manual" project-oss action is
+// recorded and the project sync still succeeds (no error returned).
+func TestSyncProjects_OSS_NotApplied_Warning(t *testing.T) {
+	fp := &fakeProjectWriter{
+		setOSS: func(provider, org, proj string) (bool, error) {
+			return false, nil // accepted but oss did not come back true
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := ossProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("project sync must not fail when OSS is not applied: %v", err)
+	}
+
+	ossActions := actionsOfKind(rep, "project-oss")
+	if len(ossActions) == 0 {
+		t.Fatal("expected a project-oss action, got none")
+	}
+	if ossActions[0].Status != "manual" {
+		t.Errorf("project-oss status: got %q want %q", ossActions[0].Status, "manual")
+	}
+	// The detail should mention the remediation.
+	if !containsSubstring(ossActions[0].Detail, "Advanced settings") {
+		t.Errorf("project-oss detail should mention 'Advanced settings', got: %q", ossActions[0].Detail)
+	}
+}
+
+// TestSyncProjects_OSS_UnexpectedField_TreatedAsNotApplied verifies that when
+// SetOSS returns applied=false with nil error (the "Unexpected field" 400 case —
+// handled inside SetOSS itself), the syncer records a "manual" action and the
+// project sync still succeeds.  This mirrors the GitHub App rejection scenario.
+func TestSyncProjects_OSS_UnexpectedField_TreatedAsNotApplied(t *testing.T) {
+	fp := &fakeProjectWriter{
+		// Simulate the SetOSS implementation already absorbing the 400 and
+		// returning (false, nil) — the syncer must treat this as not-applied.
+		setOSS: func(provider, org, proj string) (bool, error) {
+			return false, nil
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := ossProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("project sync must succeed even when OSS PATCH is rejected: %v", err)
+	}
+
+	// Main settings must still have been applied.
+	if !fp.hasCalled("UpdateSettings") {
+		t.Error("UpdateSettings must still be called even when SetOSS returns not-applied")
+	}
+
+	ossActions := actionsOfKind(rep, "project-oss")
+	if len(ossActions) == 0 {
+		t.Fatal("expected a project-oss action, got none")
+	}
+	if ossActions[0].Status != "manual" {
+		t.Errorf("project-oss status: got %q want %q", ossActions[0].Status, "manual")
+	}
+}
+
+// TestSyncProjects_OSS_APIError_TreatedAsManual verifies that when SetOSS
+// returns a genuine (non-field-rejection) API error, a "manual" action is
+// recorded with the error detail and the project sync still succeeds.
+func TestSyncProjects_OSS_APIError_TreatedAsManual(t *testing.T) {
+	fp := &fakeProjectWriter{
+		setOSS: func(provider, org, proj string) (bool, error) {
+			return false, errors.New("connection refused")
+		},
+	}
+	sy := newSyncerProjects(fp)
+
+	p := ossProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("project sync must succeed even when SetOSS returns error: %v", err)
+	}
+
+	ossActions := actionsOfKind(rep, "project-oss")
+	if len(ossActions) == 0 {
+		t.Fatal("expected a project-oss action, got none")
+	}
+	if ossActions[0].Status != "manual" {
+		t.Errorf("project-oss status: got %q want %q", ossActions[0].Status, "manual")
+	}
+	if !containsSubstring(ossActions[0].Detail, "connection refused") {
+		t.Errorf("project-oss detail should contain error text, got: %q", ossActions[0].Detail)
+	}
+}
+
+// TestSyncProjects_OSS_NoSource_NoSetOSSCall verifies that when the source
+// project did NOT have oss=true, SetOSS is never called.
+func TestSyncProjects_OSS_NoSource_NoSetOSSCall(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	trueVal := true
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Name: "web",
+		Settings: &manifest.AdvancedSettings{
+			AutocancelBuilds: &trueVal,
+			// OSS is nil (not set)
+		},
+	}
+	m := projectManifest("gh/acme", p)
+
+	_, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetOSS") {
+		t.Error("SetOSS must NOT be called when source project did not have oss=true")
+	}
+}
+
+// TestSyncProjects_OSS_DryRun_NoSetOSSCall verifies that in dry-run mode
+// SetOSS is never called (no API writes).
+func TestSyncProjects_OSS_DryRun_NoSetOSSCall(t *testing.T) {
+	fp := &fakeProjectWriter{}
+	sy := newSyncerProjects(fp)
+
+	p := ossProject("gh/acme/web")
+	m := projectManifest("gh/acme", p)
+
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fp.hasCalled("SetOSS") {
+		t.Error("SetOSS must NOT be called in dry-run mode")
+	}
+
+	// A dry-run preview action should still be recorded.
+	ossActions := actionsOfKind(rep, "project-oss")
+	if len(ossActions) == 0 {
+		t.Fatal("expected a project-oss dry-run action, got none")
+	}
+	if ossActions[0].Status != "set" {
+		t.Errorf("dry-run project-oss status: got %q want %q", ossActions[0].Status, "set")
+	}
+}
+
+// containsSubstring is a simple case-sensitive substring check used in tests.
+func containsSubstring(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

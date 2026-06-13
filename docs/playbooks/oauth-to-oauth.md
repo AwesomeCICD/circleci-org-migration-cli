@@ -549,6 +549,7 @@ Work through the `manual` items from the dry-run and the `migration-report.md`:
 - OTel exporter headers — re-add in org settings
 - Per-project CIAM grants — recreate on each destination project (n/a for OAuth)
 - Org orbs — republish in the destination namespace (if applicable)
+- **OSS flag** — if the dry-run emitted a `project-oss: manual` note for any project, enable "Free and Open Source" in the destination project's **Advanced settings** (OAuth→OAuth only; for App destinations OSS is auto-detected from repo visibility).
 - See the canonical list: [cutover-runbook.md — Section 4](../cutover-runbook.md#4-does-not-transfer--data-loss)
 
 ---

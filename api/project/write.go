@@ -16,6 +16,115 @@ type createEnvVarRequest struct {
 	Value string `json:"value"`
 }
 
+// ossOnlyPatch is a minimal PATCH body that sets only the oss field.
+// It is used for the best-effort SetOSS call (a separate PATCH from the main
+// advanced-settings update) so that a rejection by the API ("Unexpected field
+// 'advanced.oss'" on GitHub App projects) does not affect the main settings
+// write.
+type ossOnlyPatch struct {
+	Advanced ossOnlyAdvanced `json:"advanced"`
+}
+
+type ossOnlyAdvanced struct {
+	OSS bool `json:"oss"`
+}
+
+// SetOSS attempts to enable the "Free and Open Source" flag on the given
+// project via a dedicated PATCH {"advanced":{"oss":true}}.
+//
+// It returns applied=true when the API echoed oss=true back in its response,
+// and applied=false when:
+//   - the API returned an error (including the "Unexpected field 'advanced.oss'"
+//     400 that GitHub App projects always return), or
+//   - the response did not include oss=true (e.g. private-repo no-op on OAuth).
+//
+// The error return is nil in the "Unexpected field" case — it is treated as
+// "not applied" rather than a hard failure, so callers can record a warning
+// without failing the overall sync.  Any other non-2xx response is returned
+// as an error so callers can distinguish a transient failure from a silent
+// no-op.
+//
+// Endpoint: PATCH /api/v2/project/{provider}/{organization}/{project}/settings
+// Body:     {"advanced":{"oss":true}}
+func (c *Client) SetOSS(ctx context.Context, provider, org, proj string) (applied bool, err error) {
+	if provider == "" || org == "" || proj == "" {
+		return false, fmt.Errorf("project: SetOSS requires provider, org, and proj")
+	}
+
+	path := "project/" +
+		url.PathEscape(provider) + "/" +
+		url.PathEscape(org) + "/" +
+		url.PathEscape(proj) + "/settings"
+
+	u, err := url.Parse(path)
+	if err != nil {
+		return false, fmt.Errorf("project: SetOSS: build URL: %w", err)
+	}
+
+	body := ossOnlyPatch{Advanced: ossOnlyAdvanced{OSS: true}}
+	req, err := c.v2.NewRequest(ctx, "PATCH", u, &body)
+	if err != nil {
+		return false, fmt.Errorf("project: SetOSS: build request: %w", err)
+	}
+
+	var raw advancedSettingsResponse
+	if _, doErr := c.v2.DoRequest(req, &raw); doErr != nil {
+		// "Unexpected field 'advanced.oss'" (400) means the project type does
+		// not support the oss field (GitHub App projects, or any other future
+		// rejection).  Treat it as not-applied rather than an error so the
+		// caller can record a warning and keep going.
+		msg := doErr.Error()
+		if containsUnexpectedOSSField(msg) {
+			return false, nil
+		}
+		return false, fmt.Errorf("project: SetOSS %s/%s/%s: %w", provider, org, proj, doErr)
+	}
+
+	// The API echoed the settings back; check whether oss is now true.
+	applied = raw.Advanced.OSS != nil && *raw.Advanced.OSS
+	return applied, nil
+}
+
+// containsUnexpectedOSSField returns true when the error message indicates the
+// API rejected the oss field with "Unexpected field 'advanced.oss'" or the
+// similar lower-case variant.  This is the canonical signal that the project
+// type does not support the oss field.
+func containsUnexpectedOSSField(msg string) bool {
+	return containsFold(msg, "unexpected field") && containsFold(msg, "oss")
+}
+
+// containsFold is a case-insensitive substring search without importing strings.
+func containsFold(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	if len(sub) > len(s) {
+		return false
+	}
+	for i := 0; i <= len(s)-len(sub); i++ {
+		match := true
+		for j := 0; j < len(sub); j++ {
+			sc := s[i+j]
+			tc := sub[j]
+			// ASCII-only tolower.
+			if sc >= 'A' && sc <= 'Z' {
+				sc += 'a' - 'A'
+			}
+			if tc >= 'A' && tc <= 'Z' {
+				tc += 'a' - 'A'
+			}
+			if sc != tc {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // CreateEnvVar creates a new environment variable on the given project.
 // If a variable with the same name already exists it is replaced.
 //

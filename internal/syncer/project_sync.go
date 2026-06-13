@@ -624,8 +624,15 @@ func (s *Syncer) syncProjectSettings(ctx context.Context, report *Report, p mani
 		report.add("project-settings", dst, "error", err.Error())
 		return
 	}
+
+	sourceOSS := p.Settings.OSS != nil && *p.Settings.OSS
+
 	if !opts.Apply {
 		report.add("project-settings", dst, "set", "would update advanced settings")
+		if sourceOSS {
+			// Preview the OSS best-effort attempt so operators know it will run.
+			report.add("project-oss", dst, "set", "would attempt to set OSS flag (best-effort)")
+		}
 		return
 	}
 
@@ -644,7 +651,47 @@ func (s *Syncer) syncProjectSettings(ctx context.Context, report *Report, p mani
 		return
 	}
 	report.add("project-settings", dst, "set", "updated advanced settings")
+
+	// Best-effort OSS apply: only when the source project had oss=true.
+	// This is a SEPARATE PATCH so a rejection (e.g. "Unexpected field
+	// 'advanced.oss'" from GitHub App projects) never fails the main sync.
+	if sourceOSS {
+		s.applyOSSBestEffort(ctx, report, provider, org, proj, dst)
+	}
 }
+
+// applyOSSBestEffort attempts to set oss=true on the destination project via
+// a dedicated, isolated PATCH.  It records:
+//   - "set"    when the API confirmed oss=true.
+//   - "manual" when the field was not applied (GitHub App auto-detects from
+//     repo visibility; OAuth no-op on private repos) with a clear remediation
+//     note so the operator knows what to do next.
+//
+// The main project sync always continues regardless of the outcome here.
+func (s *Syncer) applyOSSBestEffort(ctx context.Context, report *Report, provider, org, proj, dst string) {
+	applied, err := s.Projects.SetOSS(ctx, provider, org, proj)
+	if err != nil {
+		// Genuine transport or API error — log as manual so the operator is
+		// alerted, but do NOT fail the project sync.
+		report.add("project-oss", dst, "manual",
+			fmt.Sprintf("OSS flag could not be set (API error: %v) — "+
+				ossManualNote, err))
+		return
+	}
+	if !applied {
+		// API accepted the call but did not echo oss=true back (GitHub App
+		// auto-detects from repo visibility; private OAuth repos no-op).
+		report.add("project-oss", dst, "manual", ossManualNote)
+		return
+	}
+	report.add("project-oss", dst, "set", "OSS flag enabled on destination project")
+}
+
+// ossManualNote is the standard remediation message emitted when the OSS flag
+// could not be applied automatically.
+const ossManualNote = "OSS status not set automatically — " +
+	"public repos under the GitHub App are auto-detected from repo visibility; " +
+	"otherwise enable 'Free and Open Source' in the destination project's Advanced settings."
 
 func (s *Syncer) syncProjectVars(ctx context.Context, report *Report, p manifest.Project, bundle *manifest.SecretBundle, dst string, opts Options) {
 	values := map[string]string{}

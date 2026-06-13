@@ -223,6 +223,7 @@ This is the single canonical "does not transfer / data loss" reference for
 | **Usage data** | Local baseline only (`--include-usage`). | Not synced — retained as a source-org record. |
 | **Runner instances & registration tokens** | Only resource-class *definitions* transfer. | Re-register runners against the destination resource classes. |
 | **Cross-type settings (OAuth → App)** | No App equivalent for fork-PR builds, the OSS flag, or `pr_only_branch_overrides`; multiple App pipeline definitions cannot collapse into one OAuth config. | Reconfigure manually where an equivalent exists. |
+| **OSS ("Free and Open Source") flag** | GitHub App projects auto-detect OSS from repo visibility (the PATCH endpoint rejects the `oss` field); OAuth private repos silently no-op. The sync makes a best-effort attempt and records a `manual` note when it cannot confirm the flag. | For GitHub App destinations: no action needed — OSS status is auto-detected from the public/private visibility of the GitHub repo. For OAuth destinations with a public repo: enable "Free and Open Source" in the destination project's **Advanced settings**. |
 
 ---
 
