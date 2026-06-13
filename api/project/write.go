@@ -61,13 +61,21 @@ func (c *Client) CreateEnvVar(ctx context.Context, slug, name, value string) err
 //	PATCH /project/{provider}/{organization}/{project}/settings
 //	Body: {"advanced": { ... only the fields to update ... }}
 //	Response: 200 with the full advancedSettingsResponse.
+//
+// NOTE: the "oss" field is intentionally absent from this patch struct.
+// The CircleCI project-settings PATCH endpoint rejects it with
+// "Unexpected field 'advanced.oss'" for all project types (GitHub OAuth and
+// GitHub App).  The Terraform provider has no "oss" attribute either (same
+// root issue on the imperative path).  See issue #247.
+// The field is kept on AdvancedSettings (the READ type) so that captured
+// manifests still record the value for reporting; it is simply never sent
+// in write calls.
 type advancedSettingsPatch struct {
 	AutocancelBuilds           *bool    `json:"autocancel_builds,omitempty"`
 	BuildForkPRs               *bool    `json:"build_fork_prs,omitempty"`
 	BuildPRsOnly               *bool    `json:"build_prs_only,omitempty"`
 	DisableSSH                 *bool    `json:"disable_ssh,omitempty"`
 	ForksReceiveSecretEnvVars  *bool    `json:"forks_receive_secret_env_vars,omitempty"`
-	OSS                        *bool    `json:"oss,omitempty"`
 	SetGithubStatus            *bool    `json:"set_github_status,omitempty"`
 	SetupWorkflows             *bool    `json:"setup_workflows,omitempty"`
 	WriteSettingsRequiresAdmin *bool    `json:"write_settings_requires_admin,omitempty"`
@@ -106,13 +114,14 @@ func (c *Client) UpdateSettings(ctx context.Context, provider, org, proj string,
 		return fmt.Errorf("project: UpdateSettings: build URL: %w", err)
 	}
 
+	// OSS is intentionally omitted — the API rejects it with
+	// "Unexpected field 'advanced.oss'" for all project types. (#247)
 	patch := advancedSettingsPatch{
 		AutocancelBuilds:           s.AutocancelBuilds,
 		BuildForkPRs:               s.BuildForkPRs,
 		BuildPRsOnly:               s.BuildPRsOnly,
 		DisableSSH:                 s.DisableSSH,
 		ForksReceiveSecretEnvVars:  s.ForksReceiveSecretEnvVars,
-		OSS:                        s.OSS,
 		SetGithubStatus:            s.SetGithubStatus,
 		SetupWorkflows:             s.SetupWorkflows,
 		WriteSettingsRequiresAdmin: s.WriteSettingsRequiresAdmin,
