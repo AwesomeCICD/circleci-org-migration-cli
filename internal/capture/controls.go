@@ -113,9 +113,18 @@ func prepareRestrictionRemoval(ctx context.Context, stderr io.Writer, client Con
 	return restore, nil
 }
 
-// orgTriggerAlreadyEnabled reports whether any of the known key shapes for
+// OrgTriggerAlreadyEnabled reports whether any of the known key shapes for
 // allow_api_trigger_with_config is present and true in the feature-flag map.
 // It normalises keys by stripping a trailing "?" (standalone API quirk).
+//
+// Exported so cmd-layer callers can perform a pre-flight read without going
+// through MaybeEnableOrgTriggerFlag (which unconditionally enables the flag).
+func OrgTriggerAlreadyEnabled(flags map[string]bool) bool {
+	return orgTriggerAlreadyEnabled(flags)
+}
+
+// orgTriggerAlreadyEnabled is the unexported implementation; internal callers
+// use this to avoid the extra indirection.
 func orgTriggerAlreadyEnabled(flags map[string]bool) bool {
 	for k, v := range flags {
 		k = strings.TrimSuffix(k, "?")
