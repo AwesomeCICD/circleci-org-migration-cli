@@ -103,6 +103,33 @@ them — encrypted by default, never stored in plain text.
 `migrate` is the all-in-one command that runs export → sync in one step (with an
 interactive walkthrough when run with no flags).
 
+### Preflight checks
+
+Before export/sync begins, `migrate` runs a **preflight** that detects common
+configuration issues and prints a ✅/⚠️/❌ summary:
+
+| Check | Hard fail? |
+|---|---|
+| Source + destination tokens set | Yes (migration cannot proceed) |
+| Destination org reachable | Yes (migration cannot proceed) |
+| Source org reachable | No (warn + continue) |
+| Cross-type migration (e.g. OAuth → standalone) | No (warn; see [playbooks](playbooks/cross-type-oauth-to-app.md)) |
+| `allow_api_trigger_with_config` on source org | No (warn; enabled automatically during secrets capture) |
+| Project discovery count + path | No (warn if private API unavailable) |
+| GitHub token for repo resolution | No (warn if cross-type and `--github-token` absent) |
+
+On an interactive TTY, warnings prompt "Continue? [Y/n]" before proceeding. On a
+non-TTY (CI), warnings are printed and the migration proceeds automatically.
+
+Pass `--skip-preflight` to bypass all checks (useful in CI pipelines where
+checks have been validated in a prior step, or to speed up repeated runs):
+
+```bash
+circleci-migrate migrate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --skip-preflight --apply --yes
+```
+
 For the authoritative list of **what does NOT transfer** and requires manual
 follow-up, see the cutover runbook:
 [Manual steps required](cutover-runbook.md#3-manual-steps-required) and

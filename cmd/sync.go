@@ -345,9 +345,7 @@ Examples:
 				// Under --apply with a TTY, require explicit confirmation before
 				// writing to the source org. Without a TTY, warn loudly only.
 				if apply {
-					fi, _ := os.Stdin.Stat()
-					isTTY := fi != nil && fi.Mode()&os.ModeCharDevice != 0
-					if isTTY && !yes {
+					if isInteractiveTTY() && !yes {
 						fmt.Fprintf(errW, "Apply changes to the SOURCE org %s anyway? [y/N]: ", destSlug)
 						scanner := bufio.NewScanner(os.Stdin)
 						confirmed := false
@@ -542,13 +540,21 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 		return nil
 	}
 
-	// Detect TTY on stdin.
-	fi, _ := os.Stdin.Stat()
-	isTTY := fi != nil && fi.Mode()&os.ModeCharDevice != 0
+	// Use the shared isInteractiveTTY() detector (term.IsTerminal on stdin fd)
+	// instead of the os.ModeCharDevice stat check: the latter incorrectly treats
+	// /dev/null as a TTY on Linux and macOS, causing the command to attempt
+	// interactive prompts and then die with "Error: EOF" in CI (issue #217).
+	isTTY := isInteractiveTTY()
 
-	// confirm reads one line from stdin and returns true if it is "y" or "yes".
+	// confirm prompts the operator and reads their answer.
+	// "Enabling builds" means following the project in the destination org,
+	// which installs the webhook and may trigger an initial build — make that
+	// clear so the operator knows what they are consenting to.
 	confirm := func() bool {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Enable builds for %d project(s) now? [y/N]: ", n)
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"\nFollow (enable builds for) %d project(s) in the destination org now?\n"+
+				"  Note: following installs the webhook and may trigger an initial build.\n"+
+				"  [y/N]: ", n)
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
@@ -561,16 +567,17 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 		if !jsonOutput {
 			if !isTTY && !yes {
 				fmt.Fprintf(cmd.ErrOrStderr(),
-					"\nSkipped enabling builds (no TTY). Re-run with --yes to follow the %d created project(s).\n", n)
+					"\nSkipped following projects (no TTY and --yes not set). "+
+						"Re-run with --apply --yes to follow (enable builds for) the %d created project(s).\n", n)
 			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped enabling builds.\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped following projects (enable builds).\n")
 			}
 		}
 		return nil
 	}
 
 	if !jsonOutput {
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nEnabling builds for %d project(s)...\n", n)
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nFollowing (enabling builds for) %d project(s)...\n", n)
 	}
 	for _, t := range pending {
 		action, _ := sy.EnableBuilds(cmd.Context(), t, true)

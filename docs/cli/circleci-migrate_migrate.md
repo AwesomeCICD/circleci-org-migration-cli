@@ -86,6 +86,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-contexts                  Skip exporting and syncing contexts
       --skip-extras                    Skip checkout keys, webhooks, and schedules
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
+      --skip-preflight                 Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
       --skip-projects                  Skip exporting and syncing projects
       --skip-runner                    Skip exporting and syncing self-hosted runner resource classes
       --source-org string              Source organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)

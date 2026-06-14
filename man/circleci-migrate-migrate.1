@@ -156,6 +156,10 @@ Examples:
 	Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
 
 .PP
+\fB--skip-preflight\fP[=false]
+	Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
+
+.PP
 \fB--skip-projects\fP[=false]
 	Skip exporting and syncing projects
 
