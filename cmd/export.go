@@ -496,6 +496,21 @@ Examples:
 // projClient is used both to list already-known projects (via ListOrgProjects)
 // and to follow new ones (via FollowProject).
 func runFollowAll(ctx context.Context, orgSlug, githubToken string, projClient *project.Client, out io.Writer) error {
+	return runFollowAllWithDeps(ctx, orgSlug, githubToken, projClient, github.ListOrgRepos, out)
+}
+
+// followAllProjectClient is the subset of *project.Client that runFollowAll
+// needs.  Defining it as an interface lets the core logic be unit-tested with a
+// fake client (the production path passes a real *project.Client).
+type followAllProjectClient interface {
+	ListOrgProjects(ctx context.Context, orgID string) ([]project.OrgProject, error)
+	FollowProject(ctx context.Context, vcsType, org, repo string) (*project.FollowResult, error)
+}
+
+// runFollowAllWithDeps is the dependency-injected core of runFollowAll.  The
+// CircleCI client and the GitHub repo lister are passed in so the follow-all
+// orchestration can be exercised without real network access.
+func runFollowAllWithDeps(ctx context.Context, orgSlug, githubToken string, projClient followAllProjectClient, listRepos exporter.GitHubRepoLister, out io.Writer) error {
 	// Determine the CircleCI org ID so we can call ListOrgProjects.
 	// The org ID is embedded in circleci/<uuid> slugs; for gh/ orgs we can't
 	// cheaply look it up without an extra API call, so we pass an empty string
@@ -529,7 +544,7 @@ func runFollowAll(ctx context.Context, orgSlug, githubToken string, projClient *
 		return err
 	}
 
-	n, err := exporter.FollowAll(ctx, github.ListOrgRepos, follower, exporter.FollowAllOptions{
+	n, err := exporter.FollowAll(ctx, listRepos, follower, exporter.FollowAllOptions{
 		GitHubToken: githubToken,
 		OrgSlug:     orgSlug,
 		KnownSlugs:  known,
