@@ -1,0 +1,86 @@
+# CircleCI NIGHTLY continuation config — live e2e (#195).
+#
+# Continued from .circleci/config.yml ONLY when the nightly Scheduled Pipeline
+# trigger sets run-nightly-e2e=true. Never runs on ordinary pushes/tags.
+#
+# What it does (zero write risk):
+#   - export  : reads a real source org via the private/v2/v1.1 read APIs and
+#               writes a manifest. Read-only.
+#   - sync    : WITHOUT --apply, so it is a DRY RUN — it diffs the manifest
+#               against the destination org and prints a plan. No writes.
+# Together these exercise ~90% of the API surface against live data.
+#
+# Required CircleCI context "e2e-live" (see e2e-fixtures.yaml + issue #195):
+#   E2E_CIRCLE_TOKEN  — minimally-scoped CircleCI API token for the e2e org(s)
+#   E2E_SOURCE_ORG    — source org slug   (e.g. gh/gh-oauth-cci-1)
+#   E2E_DEST_ORG      — destination org slug (e.g. gh/gh-oauth-cci-2)
+#   E2E_DEST_TOKEN    — (optional) dest-org token; falls back to E2E_CIRCLE_TOKEN
+#
+# Safety: if E2E_CIRCLE_TOKEN is absent the job halts cleanly (success) instead
+# of failing, so a manual misfire before the context is provisioned is a no-op.
+version: 2.1
+
+parameters:
+  go-image-tag:
+    type: string
+    default: "1.26"
+
+executors:
+  go:
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: medium
+    environment:
+      CGO_ENABLED: "0"
+
+jobs:
+  live-e2e:
+    executor: go
+    steps:
+      - checkout
+      - run:
+          name: Guard — require the e2e-live context (skip cleanly if absent)
+          command: |
+            if [ -z "${E2E_CIRCLE_TOKEN:-}" ]; then
+              echo "E2E_CIRCLE_TOKEN is not set — the 'e2e-live' context is not provisioned yet."
+              echo "Skipping the live e2e (expected until a scoped token + context exist; see issue #195)."
+              circleci-agent step halt
+            fi
+            : "${E2E_SOURCE_ORG:?set E2E_SOURCE_ORG in the e2e-live context}"
+            : "${E2E_DEST_ORG:?set E2E_DEST_ORG in the e2e-live context}"
+      - run:
+          name: Build circleci-migrate
+          command: go build -o /tmp/circleci-migrate .
+      - run:
+          name: Live export (read-only) from the source org
+          command: |
+            echo "Exporting source org: $E2E_SOURCE_ORG"
+            export CIRCLECI_SOURCE_TOKEN="$E2E_CIRCLE_TOKEN"
+            /tmp/circleci-migrate export \
+              --source-org "$E2E_SOURCE_ORG" \
+              --output /tmp/manifest.json \
+              --skip-preflight
+            test -s /tmp/manifest.json
+            echo "Export wrote $(wc -c < /tmp/manifest.json) bytes to manifest.json"
+      - run:
+          name: Live sync --dry-run (no writes) into the dest org
+          command: |
+            echo "Dry-run sync: $E2E_SOURCE_ORG -> $E2E_DEST_ORG"
+            export CIRCLECI_SOURCE_TOKEN="$E2E_CIRCLE_TOKEN"
+            export CIRCLECI_DEST_TOKEN="${E2E_DEST_TOKEN:-$E2E_CIRCLE_TOKEN}"
+            # No --apply => dry run. Diffs manifest against the destination org
+            # and prints the plan; exercises the destination read APIs.
+            /tmp/circleci-migrate sync \
+              --manifest /tmp/manifest.json \
+              --mapping "{\"org\":{\"from\":\"$E2E_SOURCE_ORG\",\"to\":\"$E2E_DEST_ORG\"}}" \
+              --skip-preflight
+      - store_artifacts:
+          path: /tmp/manifest.json
+          destination: nightly-manifest.json
+
+workflows:
+  nightly:
+    jobs:
+      - live-e2e:
+          context:
+            - e2e-live

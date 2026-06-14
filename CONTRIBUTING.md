@@ -245,6 +245,32 @@ A typical `oauth_to_oauth` flow:
 For `app_to_app`, additionally verify that pipeline definitions and triggers are
 created with `disabled=true`, then that `--yes` enables them correctly.
 
+### Nightly live e2e (CI)
+
+A scheduled CI job runs `export` + `sync --dry-run` (no `--apply`, zero writes)
+against the `oauth_to_oauth` fixture orgs nightly, exercising ~90% of the API
+surface against live data. It lives in `.circleci/nightly_config.yml` and is
+reached from the setup config (`.circleci/config.yml`) only when the pipeline
+parameter `run-nightly-e2e=true` is set by a Scheduled Pipeline trigger — every
+ordinary push/tag leaves the parameter `false`, so normal CI is unaffected.
+
+To enable it (one-time, org owner):
+
+1. Create a CircleCI **context** named exactly `e2e-live` containing:
+   - `E2E_CIRCLE_TOKEN` — a minimally-scoped API token that can **read** both
+     orgs (read-only is sufficient; the run never writes).
+   - `E2E_SOURCE_ORG` / `E2E_DEST_ORG` — the slugs from
+     `nightly_ci` in `e2e-fixtures.yaml` (defaults: `gh/gh-oauth-cci-1` →
+     `gh/gh-oauth-cci-2`).
+   - `E2E_DEST_TOKEN` *(optional)* — a separate dest token; falls back to
+     `E2E_CIRCLE_TOKEN`.
+2. Create a **Scheduled Pipeline** trigger on `main` that passes
+   `run-nightly-e2e=true`.
+
+Until both exist the nightly path never runs. If it is triggered without
+`E2E_CIRCLE_TOKEN`, the job halts cleanly (success) rather than failing, so a
+misfire can never turn CI red.
+
 ---
 
 ## Linting
