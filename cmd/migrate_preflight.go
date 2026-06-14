@@ -146,6 +146,158 @@ func runMigratePreflight(
 	return nil
 }
 
+// runExportPreflight executes source-side preflight checks before an export.
+// It runs: source token present, source org reachable, api-trigger flag
+// (informational), and project discovery count.
+//
+// Hard-failure rule: only a missing source token causes a hard failure.
+// Org reachability and discovery failures are downgraded to StatusWarn.
+//
+// out is written to (typically cmd.ErrOrStderr()).
+func runExportPreflight(
+	ctx context.Context,
+	deps preflightDeps,
+	clients preflightClients,
+	out io.Writer,
+) error {
+	var results []preflight.Result
+
+	// ---- Check 1: Source token present -----------------------------------
+	if deps.srcToken == "" {
+		r := preflight.Result{
+			Name:   "Source token",
+			Status: preflight.StatusFail,
+			Detail: "Missing: source token (set CIRCLECI_SOURCE_TOKEN, --source-token, or CIRCLECI_CLI_TOKEN)",
+		}
+		results = append(results, r)
+		preflight.PrintSummary(out, results)
+		return fmt.Errorf("preflight: %s", r.Detail)
+	}
+	results = append(results, preflight.Result{
+		Name:   "Source token",
+		Status: preflight.StatusOK,
+		Detail: "Source token is set.",
+	})
+
+	// ---- Check 2: Source org reachable (best-effort, WARN on failure) ----
+	srcResult, srcOrg := checkSrcOrg(ctx, clients.srcOrg, deps.sourceOrg)
+	results = append(results, srcResult)
+
+	// ---- Check 3: api-trigger flag (best-effort) -------------------------
+	if srcOrg != nil {
+		results = append(results, checkAPITriggerFlag(ctx, clients.srcFlags, srcOrg))
+	}
+
+	// ---- Check 4: Project discovery preview (best-effort) ----------------
+	if srcOrg != nil {
+		results = append(results, checkProjectDiscovery(ctx, clients.srcProjects, srcOrg))
+	}
+
+	// ---- Print summary ---------------------------------------------------
+	_, warn, fail := preflight.PrintSummary(out, results)
+
+	if fail > 0 {
+		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
+	}
+
+	if warn > 0 && isInteractiveTTY() {
+		p := NewPrompter(os.Stdin, out)
+		cont, err := p.askBool(
+			fmt.Sprintf("Preflight found %d warning(s). Continue?", warn),
+			true,
+		)
+		if err != nil {
+			return fmt.Errorf("preflight: reading confirmation: %w", err)
+		}
+		if !cont {
+			return fmt.Errorf("export cancelled at preflight")
+		}
+	}
+
+	return nil
+}
+
+// runSyncPreflight executes destination-side preflight checks before a sync.
+// It runs: dest token present, dest org reachable + type, cross-type warning
+// (comparing manifest source type vs dest), and GitHub token check when needed.
+//
+// Hard-failure rule: only a missing dest token or unreachable dest org causes
+// a hard failure. Cross-type and GitHub-token warnings are non-blocking.
+//
+// manifestSourceType is the VCSType recorded in the manifest (may be empty).
+// out is written to (typically cmd.ErrOrStderr()).
+func runSyncPreflight(
+	ctx context.Context,
+	deps preflightDeps,
+	clients preflightClients,
+	manifestSourceType string,
+	out io.Writer,
+) error {
+	var results []preflight.Result
+
+	// ---- Check 1: Dest token present -------------------------------------
+	if deps.dstToken == "" {
+		r := preflight.Result{
+			Name:   "Destination token",
+			Status: preflight.StatusFail,
+			Detail: "Missing: destination token (set CIRCLECI_DEST_TOKEN, --dest-token, or CIRCLECI_CLI_TOKEN)",
+		}
+		results = append(results, r)
+		preflight.PrintSummary(out, results)
+		return fmt.Errorf("preflight: %s", r.Detail)
+	}
+	results = append(results, preflight.Result{
+		Name:   "Destination token",
+		Status: preflight.StatusOK,
+		Detail: "Destination token is set.",
+	})
+
+	// ---- Check 2: Destination org reachable (hard blocker) ---------------
+	destResult, destOrg := checkDestOrg(ctx, clients.dstOrg, deps.destOrg)
+	results = append(results, destResult)
+	if destResult.Status == preflight.StatusFail {
+		preflight.PrintSummary(out, results)
+		return fmt.Errorf("preflight: %s", destResult.Detail)
+	}
+
+	// ---- Check 3: Cross-type warning (manifest source vs dest) ----------
+	crossType := false
+	if destOrg != nil && manifestSourceType != "" {
+		srcOrg := &org.Organization{VCSType: manifestSourceType}
+		xtResult := checkCrossType(srcOrg, destOrg)
+		results = append(results, xtResult)
+		crossType = xtResult.Status == preflight.StatusWarn
+	}
+
+	// ---- Check 4: GitHub token for repo resolution ----------------------
+	if needsGitHubToken(deps, crossType) {
+		results = append(results, checkGitHubToken(deps.githubToken))
+	}
+
+	// ---- Print summary --------------------------------------------------
+	_, warn, fail := preflight.PrintSummary(out, results)
+
+	if fail > 0 {
+		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
+	}
+
+	if warn > 0 && isInteractiveTTY() {
+		p := NewPrompter(os.Stdin, out)
+		cont, err := p.askBool(
+			fmt.Sprintf("Preflight found %d warning(s). Continue?", warn),
+			true,
+		)
+		if err != nil {
+			return fmt.Errorf("preflight: reading confirmation: %w", err)
+		}
+		if !cont {
+			return fmt.Errorf("sync cancelled at preflight")
+		}
+	}
+
+	return nil
+}
+
 // ---- Individual checks -------------------------------------------------
 
 // checkTokens validates that both source and dest tokens are resolved.

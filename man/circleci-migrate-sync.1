@@ -148,6 +148,10 @@ Examples:
 	Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
 
 .PP
+\fB--skip-preflight\fP[=false]
+	Skip the startup destination-side preflight checks (token validation, destination org reachability, cross-type warning, GitHub token check). Preflight runs by default before sync; use --skip-preflight in CI pipelines or when checks have been verified manually.
+
+.PP
 \fB--skip-projects\fP[=false]
 	Skip syncing projects
 

@@ -79,6 +79,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")
       --no-input                       Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
   -o, --output string                  Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)
+      --preflight-only                 Run the preflight checks and print the summary, then exit without performing export or sync. Exits non-zero if any check is a hard failure; exits 0 on warnings (unless --skip-preflight is also set). Use this to validate configuration before committing to a migration run.
       --report string                  Optional: save the human-readable audit report to this path (omit to skip writing the report)
       --runner-namespace string        Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). The namespace must be supplied explicitly — there is no clean org→namespace lookup.
       --secrets string                 Path to a captured secret bundle (optional) (default "secrets.json")

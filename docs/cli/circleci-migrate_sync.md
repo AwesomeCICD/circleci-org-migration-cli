@@ -90,6 +90,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --skip-contexts                            Skip syncing contexts
       --skip-extras                              Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
       --skip-org-settings                        Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
+      --skip-preflight                           Skip the startup destination-side preflight checks (token validation, destination org reachability, cross-type warning, GitHub token check). Preflight runs by default before sync; use --skip-preflight in CI pipelines or when checks have been verified manually.
       --skip-projects                            Skip syncing projects
       --skip-runner                              Skip syncing self-hosted runner resource classes
       --skip-terraform-managed terraform apply   Skip syncing sections that Terraform manages (contexts, projects, runner resource classes). Use this for the CLI gap-fill step after terraform apply to avoid overwriting resources Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). Mutually exclusive with --only.

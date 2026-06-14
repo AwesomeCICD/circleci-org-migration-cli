@@ -105,8 +105,17 @@ interactive walkthrough when run with no flags).
 
 ### Preflight checks
 
-Before export/sync begins, `migrate` runs a **preflight** that detects common
-configuration issues and prints a ✅/⚠️/❌ summary:
+Before work begins, each command runs **preflight checks** that detect common
+configuration issues and print a ✅/⚠️/❌ summary:
+
+| Command | Checks run | Hard fail conditions |
+|---|---|---|
+| `migrate` | All of the below | Missing token; dest org unreachable |
+| `export` | Source token, source org reachable, api-trigger flag, project discovery | Missing source token |
+| `sync` | Dest token, dest org reachable, cross-type warning, GitHub token | Missing dest token; dest org unreachable |
+| `doctor` | Source- and/or dest-side checks (see below) | Same as respective command |
+
+Full check table for `migrate` (and `doctor --source-org … --dest-org …`):
 
 | Check | Hard fail? |
 |---|---|
@@ -119,16 +128,57 @@ configuration issues and prints a ✅/⚠️/❌ summary:
 | GitHub token for repo resolution | No (warn if cross-type and `--github-token` absent) |
 
 On an interactive TTY, warnings prompt "Continue? [Y/n]" before proceeding. On a
-non-TTY (CI), warnings are printed and the migration proceeds automatically.
+non-TTY (CI), warnings are printed and the command proceeds automatically.
 
-Pass `--skip-preflight` to bypass all checks (useful in CI pipelines where
-checks have been validated in a prior step, or to speed up repeated runs):
+#### `--preflight-only` (migrate)
+
+Run the full preflight and exit without doing export or sync. Useful for
+validating configuration before committing to a migration:
 
 ```bash
 circleci-migrate migrate \
   --source-org gh/acme --dest-org gh/acme-new \
-  --skip-preflight --apply --yes
+  --preflight-only
+# Exit 0 on OK/warnings; exit 1 on hard failures.
 ```
+
+#### `--skip-preflight`
+
+Available on `migrate`, `export`, and `sync`. Skips all preflight checks for
+the respective command. Use in CI pipelines where checks have been validated in a
+prior step (e.g. via `doctor`), or to speed up repeated runs:
+
+```bash
+# Skip preflight on migrate (already validated via doctor):
+circleci-migrate migrate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --skip-preflight --apply --yes
+
+# Skip preflight on export:
+circleci-migrate export --source-org gh/acme --skip-preflight
+
+# Skip preflight on sync:
+circleci-migrate sync --manifest manifest.json --apply --skip-preflight
+```
+
+#### `doctor` — standalone preflight command
+
+`doctor` runs preflight checks without migrating. It is entirely **read-only**
+and safe to run as many times as needed:
+
+```bash
+# Check both source and destination before a full migration:
+circleci-migrate doctor --source-org gh/acme --dest-org gh/acme-new
+
+# Source-side only (validate before export):
+circleci-migrate doctor --source-org gh/acme
+
+# Destination-side only (validate before sync):
+circleci-migrate doctor --dest-org gh/acme-new
+```
+
+Exit codes: `0` = all checks OK or warnings only; `1` = hard failure (missing
+required token or unreachable org).
 
 For the authoritative list of **what does NOT transfer** and requires manual
 follow-up, see the cutover runbook:

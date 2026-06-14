@@ -128,6 +128,10 @@ Examples:
 	Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)
 
 .PP
+\fB--preflight-only\fP[=false]
+	Run the preflight checks and print the summary, then exit without performing export or sync. Exits non-zero if any check is a hard failure; exits 0 on warnings (unless --skip-preflight is also set). Use this to validate configuration before committing to a migration run.
+
+.PP
 \fB--report\fP=""
 	Optional: save the human-readable audit report to this path (omit to skip writing the report)
 

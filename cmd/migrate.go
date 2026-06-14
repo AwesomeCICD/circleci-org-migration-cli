@@ -37,6 +37,7 @@ func newMigrateCommand() *cobra.Command {
 		skipRunner          bool
 		skipCIAM            bool
 		skipPreflight       bool
+		preflightOnly       bool
 		output              string
 		reportPath          string
 		runnerNamespace     string
@@ -207,6 +208,11 @@ Examples:
 				if pfRunErr := runMigratePreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfRunErr != nil {
 					return pfRunErr
 				}
+			}
+
+			// --preflight-only: exit after printing the preflight summary.
+			if preflightOnly {
+				return nil
 			}
 
 			// --- step 1: export from source org -------------------------------
@@ -440,6 +446,10 @@ Examples:
 		"Skip the startup preflight checks (token validation, org reachability, cross-type warning, "+
 			"api-trigger flag, project discovery). Preflight runs by default before export/sync; use "+
 			"--skip-preflight in CI pipelines or when checks have already been verified manually.")
+	f.BoolVar(&preflightOnly, "preflight-only", false,
+		"Run the preflight checks and print the summary, then exit without performing export or sync. "+
+			"Exits non-zero if any check is a hard failure; exits 0 on warnings (unless --skip-preflight is also set). "+
+			"Use this to validate configuration before committing to a migration run.")
 
 	return cmd
 }

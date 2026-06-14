@@ -182,6 +182,7 @@ func newSyncCommand() *cobra.Command {
 		createProjectTokens bool
 		onlyRaw             string
 		skipTFManaged       bool
+		skipPreflight       bool
 	)
 
 	cmd := &cobra.Command{
@@ -361,6 +362,31 @@ Examples:
 				}
 			}
 
+			// --- sync preflight checks ----------------------------------------
+			// Run destination-side checks after token validation, manifest load,
+			// and dest-slug resolution so checks have full context.
+			if !skipPreflight {
+				var pfDstOrgClient orgGetter
+				if c, pfErr := org.NewClient(cfg, token); pfErr == nil {
+					pfDstOrgClient = c
+				}
+				pfDeps := preflightDeps{
+					cfg:           cfg,
+					dstToken:      token,
+					destOrg:       destSlug,
+					githubToken:   githubToken,
+					destGitHubOrg: destGitHubOrg,
+				}
+				pfClients := preflightClients{
+					dstOrg: pfDstOrgClient,
+				}
+				// Extract manifest source org type for cross-type check.
+				manifestSrcType := m.Source.Org.VCSType
+				if pfErr := runSyncPreflight(ctx, pfDeps, pfClients, manifestSrcType, cmd.ErrOrStderr()); pfErr != nil {
+					return pfErr
+				}
+			}
+
 			opts := syncer.Options{
 				Apply:               apply,
 				MissingSecrets:      missing,
@@ -515,6 +541,10 @@ Examples:
 			"Use this for the CLI gap-fill step after `terraform apply` to avoid overwriting resources "+
 			"Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). "+
 			"Mutually exclusive with --only.")
+	f.BoolVar(&skipPreflight, "skip-preflight", false,
+		"Skip the startup destination-side preflight checks (token validation, destination org reachability, "+
+			"cross-type warning, GitHub token check). Preflight runs by default before sync; use "+
+			"--skip-preflight in CI pipelines or when checks have been verified manually.")
 
 	return cmd
 }

@@ -53,6 +53,7 @@ func TestPrintSyncReport_SkipAllSections(t *testing.T) {
 		"--skip-contexts",
 		"--skip-projects",
 		"--skip-org-settings",
+		"--skip-preflight",
 	)
 	// The manifest has no runner classes and no dest-runner-namespace, so
 	// after skipping all sections the command should succeed with no output.
@@ -106,7 +107,7 @@ func TestLoadBundleIfPresent_EmptyPathIsNotError(t *testing.T) {
 	mPath := writeTinyManifest(t, dir)
 
 	_, _, err := runSyncCmd(t, "--manifest", mPath, "--secrets", "",
-		"--skip-contexts", "--skip-projects", "--skip-org-settings")
+		"--skip-contexts", "--skip-projects", "--skip-org-settings", "--skip-preflight")
 	if err != nil {
 		t.Fatalf("empty secrets path should not error, got: %v", err)
 	}
@@ -265,6 +266,7 @@ func TestSyncCmd_JSON_NoTextInStdout(t *testing.T) {
 		"--skip-projects",
 		"--skip-org-settings",
 		"--skip-runner",
+		"--skip-preflight",
 		"--json",
 	)
 	if err != nil {
@@ -303,6 +305,7 @@ func TestSyncCmd_JSON_NoEnableBuildTextInStdout(t *testing.T) {
 		"--skip-projects",
 		"--skip-org-settings",
 		"--skip-runner",
+		"--skip-preflight",
 		"--json",
 	)
 	if err != nil {
@@ -360,7 +363,7 @@ func TestSyncCmd_SkippedSecretsWarning_NoBundle(t *testing.T) {
 	_, stderr, err := runSyncCmd(t, "--manifest", mPath,
 		"--secrets", "",
 		"--skip-contexts", "--skip-projects", "--skip-org-settings",
-		"--skip-runner",
+		"--skip-runner", "--skip-preflight",
 	)
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
@@ -400,7 +403,7 @@ func TestSyncCmd_SkippedSecretsWarning_WithBundle(t *testing.T) {
 	_, stderr, err := runSyncCmd(t, "--manifest", mPath,
 		"--secrets", bPath,
 		"--skip-contexts", "--skip-projects", "--skip-org-settings",
-		"--skip-runner",
+		"--skip-runner", "--skip-preflight",
 	)
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
