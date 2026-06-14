@@ -55,9 +55,10 @@ type CIAMGroupInfo struct {
 //   - Resolves destination user IDs from ListOrgRoleGrants by email, then by
 //     username, then by userID (the CIAM API often returns an empty email).
 //   - Applies org-level roles for matched users.
-//   - Records per-project role grants (user + group) as "manual": the dest
-//     project UUID is not reliably mappable from the source, so they cannot be
-//     applied automatically (see #179).
+//   - Applies per-project role grants (user + group) when the destination project
+//     exists by name (resolved via ListOrgProjects on s.Projects). When the dest
+//     project is not found by name, a "manual" action is recorded with a clear
+//     message to create/onboard the project first.
 //   - Unmatched users (not yet in dest org) emit "manual" actions.
 //   - Dry-run: no writes, plans are recorded in the report.
 func (s *Syncer) SyncCIAM(ctx context.Context, m *manifest.Manifest, mapping *manifest.Mapping, opts Options) (*Report, error) {
@@ -111,15 +112,39 @@ func (s *Syncer) SyncCIAM(ctx context.Context, m *manifest.Manifest, mapping *ma
 	resolver := s.buildUserResolver(ctx, report, destOrgID)
 
 	// ── Step 2: Create groups (idempotent by name) ───────────────────────────
-	s.syncCIAMGroups(ctx, report, ciam, destOrgID, resolver, opts)
+	groupNameToID := s.syncCIAMGroups(ctx, report, ciam, destOrgID, resolver, opts)
 
 	// ── Step 3: Apply org-level role grants ──────────────────────────────────
 	s.syncCIAMOrgRoles(ctx, report, ciam, destOrgID, resolver, opts)
 
-	// ── Step 4: Record project role grants as manual (see #179) ──────────────
-	s.syncCIAMProjectGrants(ctx, report, ciam)
+	// ── Step 4: Build destination project name → UUID map (for project grants) ─
+	destProjsByName := s.buildDestProjectMap(ctx, report, destOrgID)
+
+	// ── Step 5: Apply per-project role grants (user + group) ─────────────────
+	s.syncCIAMProjectGrants(ctx, report, ciam, destOrgID, destProjsByName, groupNameToID, resolver, opts)
 
 	return report, nil
+}
+
+// buildDestProjectMap lists the destination org's projects and returns a
+// case-insensitive name → UUID map. When s.Projects is nil or the list call
+// fails, an empty map is returned (all project grants will be recorded as
+// manual).
+func (s *Syncer) buildDestProjectMap(ctx context.Context, report *Report, destOrgID string) map[string]string {
+	if s.Projects == nil {
+		return map[string]string{}
+	}
+	projs, err := s.Projects.ListOrgProjects(ctx, destOrgID)
+	if err != nil {
+		report.add("ciam", "dest_projects_list", "error",
+			fmt.Sprintf("could not list destination org projects for CIAM project-grant resolution: %v", err))
+		return map[string]string{}
+	}
+	m := make(map[string]string, len(projs))
+	for _, p := range projs {
+		m[strings.ToLower(p.Name)] = p.ID
+	}
+	return m
 }
 
 // ciamUserResolver maps the various portable identities of destination org
@@ -312,27 +337,98 @@ func (s *Syncer) syncCIAMOrgRoles(ctx context.Context, report *Report, ciam *man
 	}
 }
 
-// syncCIAMProjectGrants records per-project CIAM role grants (user + group) as
-// MANUAL follow-ups. Unlike org-level roles, project-level grants cannot be
-// applied automatically: the destination project UUID is assigned when the
-// project is created on the destination and is not reliably mappable from the
-// source project UUID, so a blind write keyed on the source UUID would target
-// the wrong project (and the API accepts it without persisting a usable grant).
-// Reliable project-grant apply requires resolving the destination project UUID
-// by name on the destination org — tracked in #179.
-func (s *Syncer) syncCIAMProjectGrants(ctx context.Context, report *Report, ciam *manifest.CIAMData) {
-	const note = " — project-level CIAM grants are not applied automatically because the destination project UUID is not reliably mappable from the source (see #179); recreate this grant manually on the destination project"
-
+// syncCIAMProjectGrants applies per-project CIAM role grants (user + group).
+//
+// For each grant the destination project UUID is resolved by the grant's
+// ProjectName (case-insensitive exact match against destProjsByName, which is
+// the name→UUID map built from ListOrgProjects on the destination org).
+//
+//   - Project found: apply via SetProjectUserRole / AddProjectGroupRole (or
+//     record "would set" in dry-run mode). Users are matched by the same
+//     email→username→userID resolver used for org-level roles; groups are
+//     matched by name against groupNameToID (built during syncCIAMGroups).
+//   - Project not found: emit a "manual" action with a clear message — the
+//     dest project must be created/onboarded first, then re-run.
+//   - User not found: emit a "manual" action (same behaviour as org-level).
+//   - Group not found in dest: emit a "manual" action.
+func (s *Syncer) syncCIAMProjectGrants(
+	ctx context.Context,
+	report *Report,
+	ciam *manifest.CIAMData,
+	destOrgID string,
+	destProjsByName map[string]string, // lower(name) → destProjectID
+	groupNameToID map[string]string, // group name → destGroupID (from syncCIAMGroups)
+	resolver *ciamUserResolver,
+	opts Options,
+) {
 	for _, g := range ciam.ProjectUserGrants {
 		label := ciamUserLabel(g.Email, g.Username)
 		target := "ciam-project-user:" + g.ProjectName + "/" + label
-		report.add("ciam", target, "manual",
-			fmt.Sprintf("grant project role %q to user %q on project %q%s", g.Role, label, g.ProjectName, note))
+
+		destProjID, found := destProjsByName[strings.ToLower(g.ProjectName)]
+		if !found {
+			report.add("ciam", target, "manual",
+				fmt.Sprintf("grant project role %q to user %q on project %q: destination project %q not found by name; create/onboard it first, then re-run",
+					g.Role, label, g.ProjectName, g.ProjectName))
+			continue
+		}
+
+		uid, _ := resolver.resolve(g.Email, g.Username, "")
+		if uid == "" {
+			report.add("ciam", target, "manual",
+				fmt.Sprintf("grant project role %q to user %q on project %q: user not found in destination org by email or username — invite the user first, then re-run sync",
+					g.Role, label, g.ProjectName))
+			continue
+		}
+
+		if !opts.Apply {
+			report.add("ciam", target, "set",
+				fmt.Sprintf("would set project role %q for %q on project %q (dest id %s)",
+					g.Role, label, g.ProjectName, destProjID))
+			continue
+		}
+		if err := s.CIAM.SetProjectUserRole(ctx, destOrgID, destProjID, uid, g.Role); err != nil {
+			report.add("ciam", target, "error",
+				fmt.Sprintf("set project role %q for %q on project %q: %v", g.Role, label, g.ProjectName, err))
+			continue
+		}
+		report.add("ciam", target, "set",
+			fmt.Sprintf("set project role %q for %q on project %q (dest id %s)",
+				g.Role, label, g.ProjectName, destProjID))
 	}
 
 	for _, g := range ciam.ProjectGroupGrants {
 		target := "ciam-project-group:" + g.ProjectName + "/" + g.GroupName
-		report.add("ciam", target, "manual",
-			fmt.Sprintf("grant project role %q to group %q on project %q%s", g.Role, g.GroupName, g.ProjectName, note))
+
+		destProjID, found := destProjsByName[strings.ToLower(g.ProjectName)]
+		if !found {
+			report.add("ciam", target, "manual",
+				fmt.Sprintf("grant project role %q to group %q on project %q: destination project %q not found by name; create/onboard it first, then re-run",
+					g.Role, g.GroupName, g.ProjectName, g.ProjectName))
+			continue
+		}
+
+		destGroupID, groupFound := groupNameToID[g.GroupName]
+		if !groupFound {
+			report.add("ciam", target, "manual",
+				fmt.Sprintf("grant project role %q to group %q on project %q: group %q not found in destination org; create the group first, then re-run",
+					g.Role, g.GroupName, g.ProjectName, g.GroupName))
+			continue
+		}
+
+		if !opts.Apply {
+			report.add("ciam", target, "set",
+				fmt.Sprintf("would grant project role %q to group %q on project %q (dest id %s)",
+					g.Role, g.GroupName, g.ProjectName, destProjID))
+			continue
+		}
+		if err := s.CIAM.AddProjectGroupRole(ctx, destOrgID, destProjID, []string{destGroupID}, g.Role); err != nil {
+			report.add("ciam", target, "error",
+				fmt.Sprintf("grant project role %q to group %q on project %q: %v", g.Role, g.GroupName, g.ProjectName, err))
+			continue
+		}
+		report.add("ciam", target, "set",
+			fmt.Sprintf("granted project role %q to group %q on project %q (dest id %s)",
+				g.Role, g.GroupName, g.ProjectName, destProjID))
 	}
 }
