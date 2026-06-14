@@ -212,6 +212,7 @@ func newExportCommand() *cobra.Command {
 		skipExtras      bool
 		runnerNamespace string
 		jsonOutput      bool
+		skipPreflight   bool
 		// Usage export flags (opt-in; data stays local, never transferred to dest).
 		includeUsage bool
 		usageStart   string
@@ -283,6 +284,25 @@ Examples:
 			projClient, err := project.NewClient(cfg, token)
 			if err != nil {
 				return fmt.Errorf("creating project client: %w", err)
+			}
+
+			// --- export preflight checks -------------------------------------
+			// Run source-side checks after clients are built so that the same
+			// clients can be reused for the export itself.
+			if !skipPreflight {
+				pfDeps := preflightDeps{
+					cfg:       cfg,
+					srcToken:  token,
+					sourceOrg: orgSlug,
+				}
+				pfClients := preflightClients{
+					srcOrg:      orgClient,
+					srcFlags:    orgClient,
+					srcProjects: projClient,
+				}
+				if pfErr := runExportPreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfErr != nil {
+					return pfErr
+				}
 			}
 
 			ex := &exporter.Exporter{
@@ -392,6 +412,11 @@ Examples:
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+
+	f.BoolVar(&skipPreflight, "skip-preflight", false,
+		"Skip the startup source-side preflight checks (token validation, source org reachability, "+
+			"api-trigger flag state, project discovery count). Preflight runs by default before export; "+
+			"use --skip-preflight in CI pipelines or when checks have been verified manually.")
 
 	// Usage export flags (opt-in; data is local-only, never transferred to dest).
 	f.BoolVar(&includeUsage, "include-usage", false,

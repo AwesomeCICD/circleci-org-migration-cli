@@ -91,6 +91,10 @@ Examples:
 	Skip checkout keys, webhooks, and schedules
 
 .PP
+\fB--skip-preflight\fP[=false]
+	Skip the startup source-side preflight checks (token validation, source org reachability, api-trigger flag state, project discovery count). Preflight runs by default before export; use --skip-preflight in CI pipelines or when checks have been verified manually.
+
+.PP
 \fB--skip-projects\fP[=false]
 	Skip exporting projects
 

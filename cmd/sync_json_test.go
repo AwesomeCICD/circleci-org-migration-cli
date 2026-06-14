@@ -69,6 +69,7 @@ func TestSyncCmd_JSON_SkipAllSections_EmitsValidJSON(t *testing.T) {
 		"--skip-contexts",
 		"--skip-projects",
 		"--skip-org-settings",
+		"--skip-preflight",
 		"--json",
 	)
 	if err != nil {
@@ -123,6 +124,7 @@ func TestSyncCmd_JSON_HumanSummaryAbsent(t *testing.T) {
 		"--skip-contexts",
 		"--skip-projects",
 		"--skip-org-settings",
+		"--skip-preflight",
 		"--json",
 	)
 	if err != nil {

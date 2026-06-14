@@ -56,6 +56,7 @@ circleci-migrate export --source-org <org-slug> [flags]
       --runner-namespace string   Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). The namespace must be supplied explicitly — there is no clean org→namespace lookup.
       --skip-contexts             Skip exporting contexts
       --skip-extras               Skip checkout keys, webhooks, and schedules
+      --skip-preflight            Skip the startup source-side preflight checks (token validation, source org reachability, api-trigger flag state, project discovery count). Preflight runs by default before export; use --skip-preflight in CI pipelines or when checks have been verified manually.
       --skip-projects             Skip exporting projects
       --source-org string         Source organization slug: gh/<org> or circleci/<org-id> (required)
       --usage-end string          End of the usage report window in RFC 3339 format (default: now). Only used when --include-usage is set.
