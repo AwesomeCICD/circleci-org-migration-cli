@@ -405,6 +405,232 @@ func TestRunMigratePreflight_AllOK(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// runExportPreflight — follow-all offer
+// ---------------------------------------------------------------------------
+
+// TestRunExportPreflight_HappyPath verifies the all-OK path returns nil.
+func TestRunExportPreflight_HappyPath(t *testing.T) {
+	overrideNonTTY(t)
+
+	deps := preflightDeps{
+		srcToken:  "tok-src",
+		sourceOrg: "gh/acme",
+	}
+	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	clients := preflightClients{
+		srcOrg:   &fakeOrgGetter{org: srcOrg},
+		srcFlags: &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{
+			{ID: "1", Slug: "gh/acme/repo"},
+		}},
+	}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("all-OK export preflight should not error; got: %v", err)
+	}
+}
+
+// TestRunExportPreflight_MissingToken_FailsHardV2 verifies that a missing source
+// token causes a hard failure before any network call.
+func TestRunExportPreflight_MissingToken_FailsHardV2(t *testing.T) {
+	overrideNonTTY(t)
+
+	deps := preflightDeps{srcToken: "", sourceOrg: "gh/acme"}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, preflightClients{}, &buf)
+	if err == nil {
+		t.Fatal("expected hard failure for missing source token")
+	}
+	if !strings.Contains(err.Error(), "preflight") {
+		t.Errorf("error should mention preflight: %q", err.Error())
+	}
+}
+
+// TestRunExportPreflight_FollowAllOffer_NonTTY_NoPrompt verifies that when a
+// followAllRunner is wired and stdin is not a TTY, no interactive prompt is
+// shown (the runner must NOT be called automatically).
+func TestRunExportPreflight_FollowAllOffer_NonTTY_NoPrompt(t *testing.T) {
+	overrideNonTTY(t)
+
+	runnerCalled := false
+	deps := preflightDeps{srcToken: "tok", sourceOrg: "gh/acme"}
+	srcOrg := &org.Organization{ID: "org-id", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: srcOrg},
+		srcFlags:    &fakeFlagGetter{flags: nil},
+		srcProjects: &fakeProjectLister{projects: nil}, // 0 projects → Warn, so we exercise warning path
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return nil
+		},
+	}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("expected nil error (warnings non-blocking on non-TTY); got: %v", err)
+	}
+	if runnerCalled {
+		t.Error("followAllRunner must NOT be called automatically in non-TTY mode")
+	}
+	// The offer note should still appear in the output.
+	out := buf.String()
+	if !strings.Contains(out, "Follow-all offer") && !strings.Contains(out, "follow-all") {
+		t.Errorf("expected follow-all offer note in output; got: %q", out)
+	}
+}
+
+// TestRunMigratePreflight_FollowAllOffer_NonTTY_RunnerNotCalled verifies that
+// in non-TTY mode the follow-all runner is NOT automatically invoked.
+func TestRunMigratePreflight_FollowAllOffer_NonTTY_RunnerNotCalled(t *testing.T) {
+	overrideNonTTY(t)
+
+	runnerCalled := false
+	deps := preflightDeps{
+		srcToken:  "tok-src",
+		dstToken:  "tok-dst",
+		sourceOrg: "gh/acme",
+		destOrg:   "gh/acme-new",
+	}
+	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	dstOrg := &org.Organization{ID: "dst-uuid", Name: "acme-new", VCSType: "github", Slug: "gh/acme-new"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: srcOrg},
+		dstOrg:      &fakeOrgGetter{org: dstOrg},
+		srcFlags:    &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: nil},
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return nil
+		},
+	}
+	var buf strings.Builder
+	err := runMigratePreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("non-TTY preflight should not error; got: %v", err)
+	}
+	if runnerCalled {
+		t.Error("followAllRunner must NOT be called in non-TTY mode (only interactive)")
+	}
+	// The offer note should appear in the output.
+	if !strings.Contains(buf.String(), "Follow-all offer") {
+		t.Errorf("expected follow-all offer note in output; got: %q", buf.String())
+	}
+}
+
+// TestRunExportPreflight_NoFollowAllRunner_NoOffer verifies that when
+// followAllRunner is nil the follow-all offer note is NOT emitted.
+func TestRunExportPreflight_NoFollowAllRunner_NoOffer(t *testing.T) {
+	overrideNonTTY(t)
+
+	deps := preflightDeps{srcToken: "tok", sourceOrg: "gh/acme"}
+	srcOrg := &org.Organization{ID: "org-id", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	clients := preflightClients{
+		srcOrg:   &fakeOrgGetter{org: srcOrg},
+		srcFlags: &fakeFlagGetter{flags: nil},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{
+			{ID: "1", Slug: "gh/acme/repo"},
+		}},
+		// followAllRunner is nil → no offer
+	}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("expected nil error; got: %v", err)
+	}
+	if strings.Contains(buf.String(), "Follow-all offer") {
+		t.Errorf("follow-all offer should NOT appear when followAllRunner is nil; got: %q", buf.String())
+	}
+}
+
+// TestRunExportPreflight_CircleCIOrg_NoOffer verifies that the follow-all offer
+// is NOT shown for circleci/ orgs (App/standalone), where follow-all is N/A.
+func TestRunExportPreflight_CircleCIOrg_NoOffer(t *testing.T) {
+	overrideNonTTY(t)
+
+	runnerCalled := false
+	deps := preflightDeps{srcToken: "tok", sourceOrg: "circleci/some-uuid"}
+	srcOrg := &org.Organization{ID: "some-uuid", Name: "myorg", VCSType: "circleci", Slug: "circleci/some-uuid"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: srcOrg},
+		srcFlags:    &fakeFlagGetter{},
+		srcProjects: &fakeProjectLister{projects: nil},
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return nil
+		},
+	}
+	var buf strings.Builder
+	_ = runExportPreflight(context.Background(), deps, clients, &buf)
+	if runnerCalled {
+		t.Error("follow-all runner must NOT be called for circleci/ orgs")
+	}
+	if strings.Contains(buf.String(), "Follow-all offer") {
+		t.Errorf("follow-all offer must not appear for circleci/ orgs; got: %q", buf.String())
+	}
+}
+
+// TestRunMigratePreflight_CircleCIOrg_NoFollowAllOffer verifies the offer is
+// skipped for circleci/ source orgs.
+func TestRunMigratePreflight_CircleCIOrg_NoFollowAllOffer(t *testing.T) {
+	overrideNonTTY(t)
+
+	runnerCalled := false
+	deps := preflightDeps{
+		srcToken:  "tok-src",
+		dstToken:  "tok-dst",
+		sourceOrg: "circleci/some-uuid",
+		destOrg:   "circleci/other-uuid",
+	}
+	srcOrg := &org.Organization{ID: "some-uuid", Name: "myorg", VCSType: "circleci", Slug: "circleci/some-uuid"}
+	dstOrg := &org.Organization{ID: "other-uuid", Name: "myorg-new", VCSType: "circleci", Slug: "circleci/other-uuid"}
+	clients := preflightClients{
+		srcOrg:   &fakeOrgGetter{org: srcOrg},
+		dstOrg:   &fakeOrgGetter{org: dstOrg},
+		srcFlags: &fakeFlagGetter{},
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return nil
+		},
+	}
+	var buf strings.Builder
+	_ = runMigratePreflight(context.Background(), deps, clients, &buf)
+	if runnerCalled {
+		t.Error("follow-all runner must NOT be called for circleci/ orgs")
+	}
+}
+
+// TestRunMigratePreflight_FollowAllOffer_Shown_GHOrg verifies the offer note
+// appears in output for gh/ orgs when followAllRunner is wired up.
+func TestRunMigratePreflight_FollowAllOffer_Shown_GHOrg(t *testing.T) {
+	overrideNonTTY(t)
+
+	deps := preflightDeps{
+		srcToken:  "tok-src",
+		dstToken:  "tok-dst",
+		sourceOrg: "gh/acme",
+		destOrg:   "gh/acme-new",
+	}
+	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	dstOrg := &org.Organization{ID: "dst-uuid", Name: "acme-new", VCSType: "github", Slug: "gh/acme-new"}
+	clients := preflightClients{
+		srcOrg:          &fakeOrgGetter{org: srcOrg},
+		dstOrg:          &fakeOrgGetter{org: dstOrg},
+		srcFlags:        &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects:     &fakeProjectLister{projects: nil},
+		followAllRunner: func(_ context.Context) error { return nil },
+	}
+	var buf strings.Builder
+	err := runMigratePreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("expected nil error; got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Follow-all offer") {
+		t.Errorf("expected follow-all offer note for gh/ org; got: %q", buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // --skip-preflight flag is registered on migrate
 // ---------------------------------------------------------------------------
 

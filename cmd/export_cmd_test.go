@@ -231,6 +231,100 @@ func TestExportCommand_ProjectFlagCanRepeat(t *testing.T) {
 	}
 }
 
+// TestExportCommand_FollowAll_RequiresGitHubToken verifies that --follow-all
+// without --github-token (or $GITHUB_TOKEN) returns a clear error.
+func TestExportCommand_FollowAll_RequiresGitHubToken(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "") // Ensure GITHUB_TOKEN is not set.
+
+	root := cmd.MakeCommands()
+	var outBuf, errBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{"export", "--source-org", "gh/acme", "--follow-all", "--skip-preflight"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when --follow-all set without --github-token, got nil")
+	}
+	if !strings.Contains(err.Error(), "--github-token") {
+		t.Errorf("error should mention --github-token; got: %v", err)
+	}
+}
+
+// TestExportCommand_FollowAllFlagRegistered verifies that --follow-all and
+// --github-token flags are registered on the export subcommand.
+func TestExportCommand_FollowAllFlagRegistered(t *testing.T) {
+	root := cmd.MakeCommands()
+	var exportCmd *cobra.Command
+	for _, sub := range root.Commands() {
+		if strings.HasPrefix(sub.Use, "export") {
+			exportCmd = sub
+			break
+		}
+	}
+	if exportCmd == nil {
+		t.Fatal("export subcommand not found")
+	}
+	if exportCmd.Flags().Lookup("follow-all") == nil {
+		t.Error("--follow-all flag not registered on export")
+	}
+	if exportCmd.Flags().Lookup("github-token") == nil {
+		t.Error("--github-token flag not registered on export")
+	}
+}
+
+// TestMigrateCommand_FollowAll_RequiresGitHubToken verifies that --follow-all
+// without --github-token returns a clear error on the migrate command.
+func TestMigrateCommand_FollowAll_RequiresGitHubToken(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-token")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-token")
+	t.Setenv("CIRCLE_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "") // Ensure GITHUB_TOKEN is not set.
+
+	root := cmd.MakeCommands()
+	var outBuf, errBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{"migrate",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--follow-all",
+		"--skip-preflight",
+		"--no-input",
+	})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when --follow-all set without --github-token, got nil")
+	}
+	if !strings.Contains(err.Error(), "--github-token") {
+		t.Errorf("migrate error should mention --github-token; got: %v", err)
+	}
+}
+
+// TestMigrateCommand_FollowAllFlagRegistered verifies --follow-all is on migrate.
+func TestMigrateCommand_FollowAllFlagRegistered(t *testing.T) {
+	root := cmd.MakeCommands()
+	var migrateCmd *cobra.Command
+	for _, sub := range root.Commands() {
+		if strings.HasPrefix(sub.Use, "migrate") {
+			migrateCmd = sub
+			break
+		}
+	}
+	if migrateCmd == nil {
+		t.Fatal("migrate subcommand not found")
+	}
+	if migrateCmd.Flags().Lookup("follow-all") == nil {
+		t.Error("--follow-all flag not registered on migrate")
+	}
+}
+
 // TestExportCommand_SourceOrgAndOrgAreEquivalent checks that --source-org and
 // --org both reach the token-error stage (i.e. both satisfy the required-org
 // check), confirming they bind to the same underlying variable.

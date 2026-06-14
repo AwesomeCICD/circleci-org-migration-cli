@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,6 +131,176 @@ func TestResolveRepoID_InvalidFullName(t *testing.T) {
 		if _, err := ResolveRepoID(context.Background(), name, "token", ""); err == nil {
 			t.Errorf("ResolveRepoID(context.Background(), %q): expected error, got nil", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListOrgRepos tests
+// ---------------------------------------------------------------------------
+
+func TestListOrgRepos_SinglePage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/acme/repos" {
+			t.Errorf("path = %q, want /orgs/acme/repos", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer my-token" {
+			t.Errorf("Authorization: got %q, want %q", got, "Bearer my-token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"name":"web","archived":false},{"name":"api","archived":false}]`))
+	}))
+	defer srv.Close()
+
+	repos, err := ListOrgRepos(context.Background(), "acme", "my-token", srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+	if repos[0].Name != "web" || repos[1].Name != "api" {
+		t.Errorf("repos: got %v", repos)
+	}
+}
+
+func TestListOrgRepos_Pagination(t *testing.T) {
+	page := 0
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		w.Header().Set("Content-Type", "application/json")
+		if page == 1 {
+			// Return link header pointing to page 2.
+			w.Header().Set("Link", fmt.Sprintf(`<%s/orgs/acme/repos?page=2>; rel="next"`, srvURL))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"name":"repo1"}]`))
+		} else {
+			// Last page: no Link header.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"name":"repo2"}]`))
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	repos, err := ListOrgRepos(context.Background(), "acme", "tok", srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Errorf("expected 2 repos across pages, got %d: %v", len(repos), repos)
+	}
+}
+
+func TestListOrgRepos_ArchivedField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"name":"active","archived":false},{"name":"old","archived":true}]`))
+	}))
+	defer srv.Close()
+
+	repos, err := ListOrgRepos(context.Background(), "acme", "tok", srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+	if repos[1].Archived != true {
+		t.Errorf("archived field: got %v, want true", repos[1].Archived)
+	}
+}
+
+func TestListOrgRepos_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := ListOrgRepos(context.Background(), "acme", "bad-token", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+}
+
+func TestListOrgRepos_EmptyOrg(t *testing.T) {
+	_, err := ListOrgRepos(context.Background(), "", "token", "")
+	if err == nil {
+		t.Fatal("expected error for empty org, got nil")
+	}
+}
+
+func TestParseLinkNext(t *testing.T) {
+	cases := []struct {
+		header string
+		want   string
+	}{
+		{`<https://api.github.com/orgs/acme/repos?page=2>; rel="next", <...>; rel="last"`, "https://api.github.com/orgs/acme/repos?page=2"},
+		{`<https://api.github.com/orgs/acme/repos?page=3>; rel="next"`, "https://api.github.com/orgs/acme/repos?page=3"},
+		{`<...>; rel="last"`, ""},
+		{``, ""},
+	}
+	for _, c := range cases {
+		got := parseLinkNext(c.header)
+		if got != c.want {
+			t.Errorf("parseLinkNext(%q) = %q, want %q", c.header, got, c.want)
+		}
+	}
+}
+
+func TestListOrgRepos_BadJSON(t *testing.T) {
+	// Server returns invalid JSON → decode error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not-json`))
+	}))
+	defer srv.Close()
+
+	_, err := ListOrgRepos(context.Background(), "acme", "tok", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for bad JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("expected 'decode response' in error, got: %v", err)
+	}
+}
+
+func TestResolveRepoID_BadJSON(t *testing.T) {
+	// Server returns invalid JSON → decode error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not-json`))
+	}))
+	defer srv.Close()
+
+	_, err := ResolveRepoID(context.Background(), "acme/web", "tok", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for bad JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("expected 'decode response' in error, got: %v", err)
+	}
+}
+
+func TestResolveRepoID_ZeroID(t *testing.T) {
+	// Server returns id:0 → should be treated as missing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":0}`))
+	}))
+	defer srv.Close()
+
+	_, err := ResolveRepoID(context.Background(), "acme/web", "tok", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for id=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "id missing or zero") {
+		t.Errorf("expected 'id missing or zero' in error, got: %v", err)
 	}
 }
 
