@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -95,6 +96,13 @@ func (f *fakeCIAMWriter) AddProjectGroupRole(_ context.Context, orgID, projectID
 // ─────────────────────────────────────────────────────────────────────────────
 
 func newCIAMTestSyncer(ciamWriter *fakeCIAMWriter, destVCSType string) *Syncer {
+	return newCIAMTestSyncerWithProjects(ciamWriter, destVCSType, nil)
+}
+
+// newCIAMTestSyncerWithProjects builds a test Syncer with an optional
+// ProjectWriter wired. When projects is non-nil, the syncer can resolve
+// destination project UUIDs by name for per-project CIAM grant application.
+func newCIAMTestSyncerWithProjects(ciamWriter *fakeCIAMWriter, destVCSType string, projects ProjectWriter) *Syncer {
 	return &Syncer{
 		Org: &fakeOrgResolver{
 			getOrganization: func(slug string) (*org.Organization, error) {
@@ -108,7 +116,8 @@ func newCIAMTestSyncer(ciamWriter *fakeCIAMWriter, destVCSType string) *Syncer {
 				return "dest-org-uuid", nil
 			},
 		},
-		CIAM: ciamWriter,
+		CIAM:     ciamWriter,
+		Projects: projects,
 	}
 }
 
@@ -346,13 +355,12 @@ func TestSyncCIAM_EmailMatchedUsersGetRoles_UnmatchedEmitManual(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: project user grants applied for matched users
+// Test: project user grants — no Projects writer wired → manual (no project map)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Project-level user grants are recorded as MANUAL (never written): the dest
-// project UUID is not reliably mappable from the source, so SyncCIAM must not
-// attempt SetProjectUserRole. See #176/#179.
-func TestSyncCIAM_ProjectUserGrants_RecordedManual(t *testing.T) {
+// When s.Projects is nil, the dest project map is empty, so all per-project
+// user grants are recorded as manual (project not found by name).
+func TestSyncCIAM_ProjectUserGrants_NoProjectsWriter_RecordedManual(t *testing.T) {
 	ciam := &fakeCIAMWriter{
 		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
 			return []CIAMRoleGrant{
@@ -361,11 +369,12 @@ func TestSyncCIAM_ProjectUserGrants_RecordedManual(t *testing.T) {
 		},
 		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
 		setProjectUserRole: func(_, _, _, _ string) error {
-			t.Fatal("SetProjectUserRole must not be called: project grants are manual")
+			t.Fatal("SetProjectUserRole must not be called when s.Projects is nil")
 			return nil
 		},
 	}
 
+	// No Projects writer: project map will be empty.
 	s := newCIAMTestSyncer(ciam, "circleci")
 	m := ciamManifest()
 	m.CIAM.Groups = nil
@@ -481,22 +490,24 @@ func TestSyncCIAM_ListOrgRoleGrantsError_ErrorRecorded(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: project group grants applied when group exists in destination
+// Test: project group grants — no Projects writer wired → manual (no project map)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Project-level group grants are recorded as MANUAL (never written). See #176/#179.
-func TestSyncCIAM_ProjectGroupGrants_RecordedManual(t *testing.T) {
+// When s.Projects is nil, the dest project map is empty, so all per-project
+// group grants are recorded as manual (project not found by name).
+func TestSyncCIAM_ProjectGroupGrants_NoProjectsWriter_RecordedManual(t *testing.T) {
 	ciam := &fakeCIAMWriter{
 		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
 		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
 			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
 		},
 		addProjectGroupRole: func(_, _ string, _ []string, _ string) error {
-			t.Fatal("AddProjectGroupRole must not be called: project grants are manual")
+			t.Fatal("AddProjectGroupRole must not be called when s.Projects is nil")
 			return nil
 		},
 	}
 
+	// No Projects writer: project map will be empty.
 	s := newCIAMTestSyncer(ciam, "circleci")
 	m := ciamManifest()
 	m.CIAM.OrgRoles = nil
@@ -521,7 +532,7 @@ func TestSyncCIAM_ProjectGroupGrants_RecordedManual(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: project user grant — project not found in dest, emits manual
+// Test: project user grant — dest project not in ListOrgProjects → manual
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSyncCIAM_ProjectUserGrant_ProjectNotFound_EmitsManual(t *testing.T) {
@@ -531,16 +542,20 @@ func TestSyncCIAM_ProjectUserGrant_ProjectNotFound_EmitsManual(t *testing.T) {
 		},
 		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
 	}
+	// Projects writer returns a different project (not "my-project").
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-other-proj-id", Name: "other-project"},
+			}, nil
+		},
+	}
 
-	s := newCIAMTestSyncer(ciam, "circleci")
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
 	m := ciamManifest()
 	m.CIAM.OrgRoles = nil
 	m.CIAM.Groups = nil
 	m.CIAM.ProjectGroupGrants = nil
-	// Strip the project SourceID so there's no project UUID in the map.
-	m.Projects = []manifest.Project{
-		{Slug: "circleci/src-org-uuid/proj-uuid-1", Name: "my-project", SourceID: ""},
-	}
 
 	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
 	if err != nil {
@@ -549,17 +564,20 @@ func TestSyncCIAM_ProjectUserGrant_ProjectNotFound_EmitsManual(t *testing.T) {
 
 	var manualActions []Action
 	for _, a := range report.Actions {
-		if a.Status == "manual" {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-user:") {
 			manualActions = append(manualActions, a)
 		}
 	}
 	if len(manualActions) == 0 {
-		t.Errorf("expected manual action for missing project; got: %+v", report.Actions)
+		t.Errorf("expected manual action for project not found; got: %+v", report.Actions)
+	}
+	if len(ciam.projectRolesSet) != 0 {
+		t.Errorf("expected 0 project roles written; got %v", ciam.projectRolesSet)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: project group grant — group not found in dest, emits manual
+// Test: project group grant — project found but group not found → manual
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSyncCIAM_ProjectGroupGrant_GroupNotFound_EmitsManual(t *testing.T) {
@@ -567,11 +585,19 @@ func TestSyncCIAM_ProjectGroupGrant_GroupNotFound_EmitsManual(t *testing.T) {
 		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
 		listGroups:        func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
 	}
+	// Project exists but the group "security-team" is absent from CIAM groups.
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
 
-	s := newCIAMTestSyncer(ciam, "circleci")
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
 	m := ciamManifest()
 	m.CIAM.OrgRoles = nil
-	m.CIAM.Groups = nil // no groups in dest, no creates planned
+	m.CIAM.Groups = nil // no groups synced → groupNameToID is empty
 	m.CIAM.ProjectUserGrants = nil
 
 	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
@@ -581,12 +607,15 @@ func TestSyncCIAM_ProjectGroupGrant_GroupNotFound_EmitsManual(t *testing.T) {
 
 	var manualActions []Action
 	for _, a := range report.Actions {
-		if a.Status == "manual" {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-group:") {
 			manualActions = append(manualActions, a)
 		}
 	}
 	if len(manualActions) == 0 {
 		t.Errorf("expected manual action for missing group; got: %+v", report.Actions)
+	}
+	if len(ciam.projectGroupRoles) != 0 {
+		t.Errorf("expected 0 project group roles written; got %v", ciam.projectGroupRoles)
 	}
 }
 
@@ -915,5 +944,439 @@ func TestCIAMUserLabel(t *testing.T) {
 		if got := ciamUserLabel(c.email, c.username); got != c.want {
 			t.Errorf("ciamUserLabel(%q,%q) = %q; want %q", c.email, c.username, got, c.want)
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests (#179): per-project grant resolution via dest project name→UUID map
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSyncCIAM_ProjectUserGrant_DestProjectFound_Applied verifies that when the
+// destination project exists by name in ListOrgProjects, SetProjectUserRole is
+// called with the dest project UUID and the resolved user ID.
+func TestSyncCIAM_ProjectUserGrant_DestProjectFound_Applied(t *testing.T) {
+	var setProjectRoleCall string
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{{UserID: "uid-alice", Email: "alice@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(orgID, projectID, userID, role string) error {
+			setProjectRoleCall = fmt.Sprintf("%s/%s/%s/%s", orgID, projectID, userID, role)
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// SetProjectUserRole must have been called.
+	if setProjectRoleCall == "" {
+		t.Fatalf("expected SetProjectUserRole to be called; got none. actions: %+v", report.Actions)
+	}
+	want := "dest-org-uuid/dest-proj-uuid/uid-alice/project-admin"
+	if setProjectRoleCall != want {
+		t.Errorf("SetProjectUserRole call: got %q want %q", setProjectRoleCall, want)
+	}
+
+	// Report should have a "set" action (not "manual").
+	var setActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "set" && strings.HasPrefix(a.Target, "ciam-project-user:") {
+			setActions = append(setActions, a)
+		}
+	}
+	if len(setActions) != 1 {
+		t.Errorf("expected 1 set project-user action; got %d: %+v", len(setActions), report.Actions)
+	}
+}
+
+// TestSyncCIAM_ProjectGroupGrant_DestProjectFound_Applied verifies that when
+// the destination project exists and the group is in the dest org,
+// AddProjectGroupRole is called with the dest project UUID and group ID.
+func TestSyncCIAM_ProjectGroupGrant_DestProjectFound_Applied(t *testing.T) {
+	var addGroupRoleCall string
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
+			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
+		},
+		addProjectGroupRole: func(orgID, projectID string, groupIDs []string, role string) error {
+			addGroupRoleCall = fmt.Sprintf("%s/%s/%v/%s", orgID, projectID, groupIDs, role)
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectUserGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// AddProjectGroupRole must have been called.
+	if addGroupRoleCall == "" {
+		t.Fatalf("expected AddProjectGroupRole to be called; actions: %+v", report.Actions)
+	}
+	if !strings.Contains(addGroupRoleCall, "dest-proj-uuid") {
+		t.Errorf("AddProjectGroupRole should use dest project UUID; got %q", addGroupRoleCall)
+	}
+	if !strings.Contains(addGroupRoleCall, "grp-security-id") {
+		t.Errorf("AddProjectGroupRole should use dest group ID; got %q", addGroupRoleCall)
+	}
+
+	// Report should have a "set" action (not "manual").
+	var setActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "set" && strings.HasPrefix(a.Target, "ciam-project-group:") {
+			setActions = append(setActions, a)
+		}
+	}
+	if len(setActions) != 1 {
+		t.Errorf("expected 1 set project-group action; got %d: %+v", len(setActions), report.Actions)
+	}
+}
+
+// TestSyncCIAM_ProjectUserGrant_DryRun_WouldSet verifies that in dry-run mode
+// SetProjectUserRole is NOT called but a "would set" action is recorded.
+func TestSyncCIAM_ProjectUserGrant_DryRun_WouldSet(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{{UserID: "uid-alice", Email: "alice@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(_, _, _, _ string) error {
+			t.Fatal("SetProjectUserRole must NOT be called in dry-run mode")
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ciam.projectRolesSet) != 0 {
+		t.Errorf("expected 0 writes in dry-run; got %v", ciam.projectRolesSet)
+	}
+
+	// Should record a "set" action with "would set" wording.
+	var setActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "set" && strings.HasPrefix(a.Target, "ciam-project-user:") {
+			setActions = append(setActions, a)
+		}
+	}
+	if len(setActions) != 1 {
+		t.Errorf("expected 1 dry-run set action; got %d: %+v", len(setActions), report.Actions)
+	}
+	if !strings.Contains(setActions[0].Detail, "would set") {
+		t.Errorf("dry-run detail should contain 'would set'; got %q", setActions[0].Detail)
+	}
+}
+
+// TestSyncCIAM_ProjectGroupGrant_DryRun_WouldSet verifies dry-run for group grants.
+func TestSyncCIAM_ProjectGroupGrant_DryRun_WouldSet(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
+			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
+		},
+		addProjectGroupRole: func(_, _ string, _ []string, _ string) error {
+			t.Fatal("AddProjectGroupRole must NOT be called in dry-run mode")
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectUserGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ciam.projectGroupRoles) != 0 {
+		t.Errorf("expected 0 writes in dry-run; got %v", ciam.projectGroupRoles)
+	}
+
+	var setActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "set" && strings.HasPrefix(a.Target, "ciam-project-group:") {
+			setActions = append(setActions, a)
+		}
+	}
+	if len(setActions) != 1 {
+		t.Errorf("expected 1 dry-run set action; got %d: %+v", len(setActions), report.Actions)
+	}
+	if !strings.Contains(setActions[0].Detail, "would") {
+		t.Errorf("dry-run detail should mention 'would'; got %q", setActions[0].Detail)
+	}
+}
+
+// TestSyncCIAM_ProjectUserGrant_CaseInsensitiveNameMatch verifies that project
+// name matching is case-insensitive (e.g. "My-Project" matches "my-project").
+func TestSyncCIAM_ProjectUserGrant_CaseInsensitiveNameMatch(t *testing.T) {
+	var setCalled bool
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{{UserID: "uid-alice", Email: "alice@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(_, _, _, _ string) error {
+			setCalled = true
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			// Dest has "My-Project" (mixed case); grant references "my-project".
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "My-Project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	// ciamManifest uses ProjectName = "my-project"; dest returns "My-Project".
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !setCalled {
+		t.Errorf("expected SetProjectUserRole to be called (case-insensitive match); actions: %+v", report.Actions)
+	}
+}
+
+// TestSyncCIAM_ProjectUserGrant_UserNotFound_EmitsManual verifies that when the
+// project is found but the user is not in the dest org, a "manual" action is recorded.
+func TestSyncCIAM_ProjectUserGrant_UserNotFound_EmitsManual(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			// Only bob is in dest; grant is for alice (not there).
+			return []CIAMRoleGrant{{UserID: "uid-bob", Email: "bob@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(_, _, _, _ string) error {
+			t.Fatal("SetProjectUserRole must not be called when user is not found")
+			return nil
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+	// Grant is for alice@example.com who is not in dest org.
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var manualActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-user:") {
+			manualActions = append(manualActions, a)
+		}
+	}
+	if len(manualActions) == 0 {
+		t.Errorf("expected manual action when user not found; got: %+v", report.Actions)
+	}
+	if len(ciam.projectRolesSet) != 0 {
+		t.Errorf("expected 0 project roles written; got %v", ciam.projectRolesSet)
+	}
+}
+
+// TestSyncCIAM_ProjectUserGrant_SetError_RecordsError verifies that a
+// SetProjectUserRole API error is recorded as an "error" action and does not
+// propagate as a top-level error.
+func TestSyncCIAM_ProjectUserGrant_SetError_RecordsError(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{{UserID: "uid-alice", Email: "alice@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+		setProjectUserRole: func(_, _, _, _ string) error {
+			return fmt.Errorf("project role API error")
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+
+	var errorActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "error" {
+			errorActions = append(errorActions, a)
+		}
+	}
+	if len(errorActions) == 0 {
+		t.Errorf("expected error action from SetProjectUserRole failure; got: %+v", report.Actions)
+	}
+}
+
+// TestSyncCIAM_ProjectGroupGrant_AddError_RecordsError verifies that an
+// AddProjectGroupRole API error is recorded as an "error" action and does not
+// propagate as a top-level error.
+func TestSyncCIAM_ProjectGroupGrant_AddError_RecordsError(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) { return nil, nil },
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) {
+			return []CIAMGroupInfo{{ID: "grp-security-id", Name: "security-team"}}, nil
+		},
+		addProjectGroupRole: func(_, _ string, _ []string, _ string) error {
+			return fmt.Errorf("project group role API error")
+		},
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return []project.OrgProject{
+				{ID: "dest-proj-uuid", Name: "my-project"},
+			}, nil
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectUserGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+
+	var errorActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "error" {
+			errorActions = append(errorActions, a)
+		}
+	}
+	if len(errorActions) == 0 {
+		t.Errorf("expected error action from AddProjectGroupRole failure; got: %+v", report.Actions)
+	}
+}
+
+// TestSyncCIAM_BuildDestProjectMap_ListError_ReportsError verifies that when
+// ListOrgProjects fails, an "error" action is recorded and project grants fall
+// back to manual (project not found in empty map).
+func TestSyncCIAM_BuildDestProjectMap_ListError_ReportsError(t *testing.T) {
+	ciam := &fakeCIAMWriter{
+		listOrgRoleGrants: func(_ string) ([]CIAMRoleGrant, error) {
+			return []CIAMRoleGrant{{UserID: "uid-alice", Email: "alice@example.com"}}, nil
+		},
+		listGroups: func(_ string) ([]CIAMGroupInfo, error) { return nil, nil },
+	}
+	fp := &fakeProjectWriter{
+		listOrgProjects: func(_ string) ([]project.OrgProject, error) {
+			return nil, fmt.Errorf("projects API down")
+		},
+	}
+
+	s := newCIAMTestSyncerWithProjects(ciam, "circleci", fp)
+	m := ciamManifest()
+	m.CIAM.Groups = nil
+	m.CIAM.OrgRoles = nil
+	m.CIAM.ProjectGroupGrants = nil
+
+	report, err := s.SyncCIAM(context.Background(), m, nil, Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected fatal error: %v", err)
+	}
+
+	// Should have an error action for the list failure.
+	var errorActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "error" {
+			errorActions = append(errorActions, a)
+		}
+	}
+	if len(errorActions) == 0 {
+		t.Errorf("expected error action from ListOrgProjects failure; got: %+v", report.Actions)
+	}
+
+	// The project grant should fall back to manual.
+	var manualActions []Action
+	for _, a := range report.Actions {
+		if a.Status == "manual" && strings.HasPrefix(a.Target, "ciam-project-user:") {
+			manualActions = append(manualActions, a)
+		}
+	}
+	if len(manualActions) == 0 {
+		t.Errorf("expected manual action for project grant when list fails; got: %+v", report.Actions)
 	}
 }
