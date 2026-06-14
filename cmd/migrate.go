@@ -36,6 +36,7 @@ func newMigrateCommand() *cobra.Command {
 		skipExtras          bool
 		skipRunner          bool
 		skipCIAM            bool
+		skipPreflight       bool
 		output              string
 		reportPath          string
 		runnerNamespace     string
@@ -166,6 +167,46 @@ Examples:
 			progressOut := cmd.OutOrStdout()
 			if jsonOutput {
 				progressOut = cmd.ErrOrStderr()
+			}
+
+			// --- preflight checks -------------------------------------------
+			// Run after token resolution so token checks are meaningful, but
+			// before any export/sync work begins. Build lightweight clients
+			// just for preflight (the full export clients are constructed below).
+			if !skipPreflight {
+				pfSrcOrgClient, pfErr := org.NewClient(cfg, srcToken)
+				pfDstOrgClient, pfErr2 := org.NewClient(cfg, dstToken)
+				pfProjClient, pfErr3 := project.NewClient(cfg, srcToken)
+
+				// Preflight client build failures are best-effort: log and continue.
+				var pfClients preflightClients
+				if pfErr == nil {
+					pfClients.srcOrg = pfSrcOrgClient
+					pfClients.srcFlags = pfSrcOrgClient
+				}
+				if pfErr2 == nil {
+					pfClients.dstOrg = pfDstOrgClient
+				}
+				if pfErr3 == nil {
+					pfClients.srcProjects = pfProjClient
+				}
+				if pfErr != nil || pfErr2 != nil || pfErr3 != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: preflight client init partial: src=%v dst=%v proj=%v\n",
+						pfErr, pfErr2, pfErr3)
+				}
+
+				pfDeps := preflightDeps{
+					cfg:           cfg,
+					srcToken:      srcToken,
+					dstToken:      dstToken,
+					sourceOrg:     sourceOrg,
+					destOrg:       destOrg,
+					githubToken:   githubToken,
+					destGitHubOrg: destGitHubOrg,
+				}
+				if pfRunErr := runMigratePreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfRunErr != nil {
+					return pfRunErr
+				}
 			}
 
 			// --- step 1: export from source org -------------------------------
@@ -395,6 +436,10 @@ Examples:
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
 			"must be repointed to the new value. New plaintext values are printed to stderr once and cannot "+
 			"be retrieved again. Default false: emit manual steps only.")
+	f.BoolVar(&skipPreflight, "skip-preflight", false,
+		"Skip the startup preflight checks (token validation, org reachability, cross-type warning, "+
+			"api-trigger flag, project discovery). Preflight runs by default before export/sync; use "+
+			"--skip-preflight in CI pipelines or when checks have already been verified manually.")
 
 	return cmd
 }
