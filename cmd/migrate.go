@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -44,6 +45,7 @@ func newMigrateCommand() *cobra.Command {
 		destRunnerNamespace string
 		jsonOutput          bool
 		createProjectTokens bool
+		followAll           bool
 	)
 
 	cmd := &cobra.Command{
@@ -153,6 +155,10 @@ Examples:
 			if missing != syncer.MissingSkip && missing != syncer.MissingPlaceholder {
 				return fmt.Errorf("--missing-secrets must be %q or %q", syncer.MissingSkip, syncer.MissingPlaceholder)
 			}
+			// --follow-all requires --github-token.
+			if followAll && githubToken == "" {
+				return fmt.Errorf("--follow-all requires --github-token (or $GITHUB_TOKEN) to list GitHub repositories")
+			}
 
 			srcToken := cfg.SourceTokenOrDefault()
 			if srcToken == "" {
@@ -190,6 +196,14 @@ Examples:
 				}
 				if pfErr3 == nil {
 					pfClients.srcProjects = pfProjClient
+					// Wire up the follow-all offer in preflight when a GitHub token is
+					// available.  The actual follow only runs if the user opts in interactively
+					// or the caller has set --follow-all (which runs it after preflight).
+					if githubToken != "" && pfProjClient != nil {
+						pfClients.followAllRunner = func(fCtx context.Context) error {
+							return runFollowAll(fCtx, sourceOrg, githubToken, pfProjClient, cmd.ErrOrStderr())
+						}
+					}
 				}
 				if pfErr != nil || pfErr2 != nil || pfErr3 != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: preflight client init partial: src=%v dst=%v proj=%v\n",
@@ -213,6 +227,21 @@ Examples:
 			// --preflight-only: exit after printing the preflight summary.
 			if preflightOnly {
 				return nil
+			}
+
+			// ── Optional: follow GitHub repos not yet set up in CircleCI ─────────
+			// When --follow-all is set, list every GitHub repo in the source org and
+			// follow any that are not already CircleCI projects.  This must run
+			// BEFORE the export so that newly-followed projects are discovered.
+			if followAll {
+				// Build a temporary project client for the follow-all step.
+				faClient, faErr := project.NewClient(cfg, srcToken)
+				if faErr != nil {
+					return fmt.Errorf("creating project client for follow-all: %w", faErr)
+				}
+				if faErr := runFollowAll(ctx, sourceOrg, githubToken, faClient, cmd.ErrOrStderr()); faErr != nil {
+					return faErr
+				}
 			}
 
 			// --- step 1: export from source org -------------------------------
@@ -450,6 +479,12 @@ Examples:
 		"Run the preflight checks and print the summary, then exit without performing export or sync. "+
 			"Exits non-zero if any check is a hard failure; exits 0 on warnings (unless --skip-preflight is also set). "+
 			"Use this to validate configuration before committing to a migration run.")
+	f.BoolVar(&followAll, "follow-all", false,
+		"(GitHub OAuth orgs only) Before exporting, list all GitHub repos in the source org and follow any "+
+			"not yet set up as CircleCI projects, making them visible to subsequent discovery. "+
+			"Requires --github-token. Archived repos are skipped. "+
+			"Webhook-validation errors on brand-new repos are warned and skipped, not fatal. "+
+			"Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.")
 
 	return cmd
 }

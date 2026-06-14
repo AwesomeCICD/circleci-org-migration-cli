@@ -48,6 +48,10 @@ type preflightClients struct {
 	dstOrg      orgGetter
 	srcFlags    featureFlagGetter
 	srcProjects projectLister
+	// followAllRunner, when non-nil, is called by the export preflight when the
+	// user opts in to the follow-all offer.  It should follow all un-onboarded
+	// GitHub repos in the source org.  If nil the offer is skipped.
+	followAllRunner func(ctx context.Context) error
 }
 
 // runMigratePreflight executes all preflight checks, prints the summary, and
@@ -113,7 +117,19 @@ func runMigratePreflight(
 		results = append(results, checkGitHubToken(deps.githubToken))
 	}
 
-	// ---- Check 8: Recommended order reminder ----------------------------
+	// ---- Check 8: Follow-all offer (best-effort, gh/ orgs only) ---------
+	var followAllOffered bool
+	if clients.followAllRunner != nil && srcOrg != nil && strings.HasPrefix(deps.sourceOrg, "gh/") {
+		results = append(results, preflight.Result{
+			Name:   "Follow-all offer",
+			Status: preflight.StatusOK,
+			Detail: "GitHub OAuth org: repositories never set up in CircleCI will not appear in discovery. " +
+				"Use --follow-all --github-token to onboard them automatically before export.",
+		})
+		followAllOffered = true
+	}
+
+	// ---- Check 9: Recommended order reminder ----------------------------
 	results = append(results, preflight.Result{
 		Name:   "Recommended order",
 		Status: preflight.StatusOK,
@@ -126,6 +142,25 @@ func runMigratePreflight(
 	if fail > 0 {
 		// Shouldn't reach here (hard failures returned early), but be safe.
 		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
+	}
+
+	// Interactive follow-all offer: prompt before the warnings confirmation.
+	if followAllOffered && isInteractiveTTY() {
+		p := NewPrompter(os.Stdin, out)
+		run, err := p.askBool(
+			"Follow all un-onboarded GitHub repos in the source org now? (requires github-token)",
+			false,
+		)
+		if err != nil {
+			return fmt.Errorf("preflight: reading follow-all confirmation: %w", err)
+		}
+		if run {
+			fmt.Fprintln(out, "Running follow-all...")
+			if faErr := clients.followAllRunner(ctx); faErr != nil {
+				// Non-fatal: warn and continue so the migration still runs.
+				fmt.Fprintf(out, "Warning: follow-all encountered an error: %v\n", faErr)
+			}
+		}
 	}
 
 	// Interactive confirm on warnings.
@@ -193,11 +228,46 @@ func runExportPreflight(
 		results = append(results, checkProjectDiscovery(ctx, clients.srcProjects, srcOrg))
 	}
 
+	// ---- Check 5: Follow-all offer (best-effort, GitHub OAuth orgs only) ---
+	// When a follow-all runner is wired up, surface guidance about un-onboarded
+	// repos. In interactive mode, offer to run follow-all now. In non-interactive
+	// mode, suggest re-running with --follow-all.
+	var followAllOffered bool
+	if clients.followAllRunner != nil && srcOrg != nil && strings.HasPrefix(deps.sourceOrg, "gh/") {
+		results = append(results, preflight.Result{
+			Name:   "Follow-all offer",
+			Status: preflight.StatusOK,
+			Detail: "GitHub OAuth org: repositories never set up in CircleCI will not appear in discovery. " +
+				"Use --follow-all --github-token to onboard them automatically before export.",
+		})
+		followAllOffered = true
+	}
+
 	// ---- Print summary ---------------------------------------------------
 	_, warn, fail := preflight.PrintSummary(out, results)
 
 	if fail > 0 {
 		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
+	}
+
+	// Interactive follow-all offer: prompt before the warnings confirmation so
+	// the user can follow repos before deciding whether to continue.
+	if followAllOffered && isInteractiveTTY() {
+		p := NewPrompter(os.Stdin, out)
+		run, err := p.askBool(
+			"Follow all un-onboarded GitHub repos in the source org now? (requires github-token)",
+			false,
+		)
+		if err != nil {
+			return fmt.Errorf("preflight: reading follow-all confirmation: %w", err)
+		}
+		if run {
+			fmt.Fprintln(out, "Running follow-all...")
+			if faErr := clients.followAllRunner(ctx); faErr != nil {
+				// Non-fatal: warn and continue so the export still runs.
+				fmt.Fprintf(out, "Warning: follow-all encountered an error: %v\n", faErr)
+			}
+		}
 	}
 
 	if warn > 0 && isInteractiveTTY() {

@@ -308,6 +308,30 @@ manual follow-ups that apply to *your* org.
   - `--skip-projects` — skip projects.
   - `--skip-extras` — skip checkout keys, webhooks, and schedules.
 
+### Follow all GitHub repos (opt-in, GitHub OAuth orgs only)
+
+The exporter discovers projects via CircleCI's private org-projects API, which
+covers all onboarded projects. The remaining gap: GitHub repos that were **never
+set up in CircleCI** won't appear. `--follow-all` closes that gap for GitHub
+OAuth (`gh/`) orgs by following every un-onboarded repo before the export runs.
+
+```bash
+circleci-migrate export --source-org gh/acme \
+  --follow-all --github-token $GITHUB_TOKEN
+```
+
+Rules:
+- Requires `--github-token` (or `$GITHUB_TOKEN`). Returns an error if absent.
+- Archived GitHub repos are skipped.
+- Brand-new repos with no branch may trigger a webhook-validation warning —
+  these are warned and skipped, not fatal; all other repos are still followed.
+- Not applicable to `circleci/` (App/standalone) orgs — a note is printed and
+  the flag is ignored.
+
+The preflight step (which runs by default before export) also offers to run
+follow-all interactively when `--github-token` is set, or prints a suggestion
+to re-run with `--follow-all --github-token` in non-interactive mode.
+
 ### Self-hosted runner resource classes
 
 There is no clean org→namespace lookup, so you must name the runner namespace

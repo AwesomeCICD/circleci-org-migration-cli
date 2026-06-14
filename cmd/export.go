@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
@@ -15,6 +16,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/github"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/spf13/cobra"
@@ -213,6 +215,9 @@ func newExportCommand() *cobra.Command {
 		runnerNamespace string
 		jsonOutput      bool
 		skipPreflight   bool
+		// follow-all: automatically follow GitHub repos not yet set up in CircleCI.
+		followAll   bool
+		githubToken string
 		// Usage export flags (opt-in; data stays local, never transferred to dest).
 		includeUsage bool
 		usageStart   string
@@ -265,8 +270,17 @@ Examples:
 			// into the canonical --project list.
 			projectSlugs = append(projectSlugs, projectsAlias...)
 
+			// Resolve the GitHub token from env when not supplied via flag.
+			if githubToken == "" {
+				githubToken = os.Getenv("GITHUB_TOKEN")
+			}
+
 			if orgSlug == "" {
 				return fmt.Errorf("--source-org is required (e.g. --source-org gh/acme)")
+			}
+			// --follow-all requires --github-token.
+			if followAll && githubToken == "" {
+				return fmt.Errorf("--follow-all requires --github-token (or $GITHUB_TOKEN) to list GitHub repositories")
 			}
 			token := cfg.SourceTokenOrDefault()
 			if token == "" {
@@ -291,17 +305,36 @@ Examples:
 			// clients can be reused for the export itself.
 			if !skipPreflight {
 				pfDeps := preflightDeps{
-					cfg:       cfg,
-					srcToken:  token,
-					sourceOrg: orgSlug,
+					cfg:         cfg,
+					srcToken:    token,
+					sourceOrg:   orgSlug,
+					githubToken: githubToken,
 				}
 				pfClients := preflightClients{
 					srcOrg:      orgClient,
 					srcFlags:    orgClient,
 					srcProjects: projClient,
 				}
+				// Wire up the follow-all offer when a GitHub token is available.
+				// The offer is only shown in interactive mode; in non-interactive mode
+				// it adds an informational note only.
+				if githubToken != "" {
+					pfClients.followAllRunner = func(fCtx context.Context) error {
+						return runFollowAll(fCtx, orgSlug, githubToken, projClient, cmd.ErrOrStderr())
+					}
+				}
 				if pfErr := runExportPreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfErr != nil {
 					return pfErr
+				}
+			}
+
+			// ── Optional: follow GitHub repos not yet set up in CircleCI ─────────
+			// When --follow-all is set, list every GitHub repo in the source org and
+			// follow any that are not already CircleCI projects.  This must run
+			// BEFORE the export so that newly-followed projects are discovered.
+			if followAll {
+				if faErr := runFollowAll(ctx, orgSlug, githubToken, projClient, cmd.ErrOrStderr()); faErr != nil {
+					return faErr
 				}
 			}
 
@@ -418,6 +451,16 @@ Examples:
 			"api-trigger flag state, project discovery count). Preflight runs by default before export; "+
 			"use --skip-preflight in CI pipelines or when checks have been verified manually.")
 
+	f.BoolVar(&followAll, "follow-all", false,
+		"(GitHub OAuth orgs only) List all GitHub repos in the source org and follow any that are not "+
+			"yet set up as CircleCI projects, so that a subsequent export discovers them. "+
+			"Requires --github-token. Archived repos are skipped. "+
+			"Webhook-validation errors on brand-new repos are warned and skipped, not fatal. "+
+			"Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.")
+	f.StringVar(&githubToken, "github-token", "",
+		"GitHub personal access token used by --follow-all to list org repositories. "+
+			"Falls back to $GITHUB_TOKEN.")
+
 	// Usage export flags (opt-in; data is local-only, never transferred to dest).
 	f.BoolVar(&includeUsage, "include-usage", false,
 		"(Opt-in) Request a historical usage report from the CircleCI Usage API and download the CSV files "+
@@ -443,4 +486,58 @@ Examples:
 	_ = f.MarkHidden("projects")
 
 	return cmd
+}
+
+// runFollowAll is the production follow-all implementation.
+// It calls ListOrgProjects to learn the current set of known CircleCI project
+// slugs, then delegates to exporter.FollowAll to follow GitHub repos that are
+// not yet in that set.
+//
+// projClient is used both to list already-known projects (via ListOrgProjects)
+// and to follow new ones (via FollowProject).
+func runFollowAll(ctx context.Context, orgSlug, githubToken string, projClient *project.Client, out io.Writer) error {
+	// Determine the CircleCI org ID so we can call ListOrgProjects.
+	// The org ID is embedded in circleci/<uuid> slugs; for gh/ orgs we can't
+	// cheaply look it up without an extra API call, so we pass an empty string
+	// to FollowAll and let it handle the gh/ prefix directly.
+	//
+	// Build a known-slugs map from all CircleCI projects already discovered via
+	// the private org-projects API.  On error we continue with an empty set —
+	// worst case we try to follow already-followed repos (which is harmless).
+	known := make(map[string]struct{})
+
+	// Only gh/ orgs reach this point (circleci/ orgs are short-circuited inside
+	// exporter.FollowAll), but we still try to build the known-slugs list when
+	// the source org has an ID.  For gh/ slugs we cannot derive the org UUID from
+	// the slug alone, so skip the ListOrgProjects pre-check; FollowAll will compare
+	// against the empty known set and rely on FollowProject returning gracefully
+	// for already-followed repos.
+	parts := strings.SplitN(orgSlug, "/", 2)
+	if len(parts) == 2 && parts[0] == "circleci" {
+		// circleci/ slug: org ID is the second segment.
+		orgID := parts[1]
+		if projects, err := projClient.ListOrgProjects(ctx, orgID); err == nil {
+			for _, p := range projects {
+				known[p.Slug] = struct{}{}
+			}
+		}
+	}
+	// For gh/ orgs: known stays empty; FollowProject is idempotent for already-followed repos.
+
+	follower := func(ctx context.Context, vcsType, org, repo string) error {
+		_, err := projClient.FollowProject(ctx, vcsType, org, repo)
+		return err
+	}
+
+	n, err := exporter.FollowAll(ctx, github.ListOrgRepos, follower, exporter.FollowAllOptions{
+		GitHubToken: githubToken,
+		OrgSlug:     orgSlug,
+		KnownSlugs:  known,
+		Out:         out,
+	})
+	if err != nil {
+		return fmt.Errorf("follow-all: %w", err)
+	}
+	fmt.Fprintf(out, "follow-all: %d repo(s) followed\n", n)
+	return nil
 }

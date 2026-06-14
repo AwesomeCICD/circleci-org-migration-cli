@@ -55,6 +55,14 @@ Examples:
 
 
 .SH OPTIONS
+\fB--follow-all\fP=false
+\[la]GitHub OAuth orgs only\[ra] List all GitHub repos in the source org and follow any that are not yet set up as CircleCI projects, so that a subsequent export discovers them. Requires --github-token. Archived repos are skipped. Webhook-validation errors on brand-new repos are warned and skipped, not fatal. Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.
+
+.PP
+\fB--github-token\fP=""
+	GitHub personal access token used by --follow-all to list org repositories. Falls back to $GITHUB_TOKEN.
+
+.PP
 \fB-h\fP, \fB--help\fP[=false]
 	help for export
 

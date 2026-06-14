@@ -100,6 +100,10 @@ Examples:
 	Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
 
 .PP
+\fB--follow-all\fP=false
+\[la]GitHub OAuth orgs only\[ra] Before exporting, list all GitHub repos in the source org and follow any not yet set up as CircleCI projects, making them visible to subsequent discovery. Requires --github-token. Archived repos are skipped. Webhook-validation errors on brand-new repos are warned and skipped, not fatal. Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.
+
+.PP
 \fB--github-token\fP=""
 	GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).
 
