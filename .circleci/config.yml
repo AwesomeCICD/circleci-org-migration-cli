@@ -10,8 +10,31 @@
 #   - Everything else   → only the ci workflow runs (unchanged behaviour).
 #
 # All jobs/workflows (ci, release, orb-publish) live in continue_config.yml.
+#
+# NIGHTLY LIVE E2E (#195):
+#   A scheduled trigger sets run-nightly-e2e=true. When that parameter is true
+#   the normal `setup` workflow is skipped and the `nightly-e2e` workflow runs
+#   instead, continuing to .circleci/nightly_config.yml (live export + sync
+#   --dry-run against a real scoped-token org). On every NORMAL push/tag the
+#   parameter defaults to false, so behaviour is unchanged.
+#
+#   To enable (one-time, human steps — see e2e-fixtures.yaml + issue #195):
+#     1. Create a CircleCI context "e2e-live" holding a minimally-scoped API
+#        token (E2E_CIRCLE_TOKEN) plus E2E_SOURCE_ORG / E2E_DEST_ORG (and an
+#        optional E2E_DEST_TOKEN for cross-org dry-runs).
+#     2. Create a Scheduled Pipeline trigger on `main` that passes the pipeline
+#        parameter run-nightly-e2e=true.
+#   Until both exist the nightly path never runs; if it is triggered without the
+#   token the e2e job halts cleanly (success), so a misfire can never go red.
 version: 2.1
 setup: true
+
+parameters:
+  # Set to true only by the nightly Scheduled Pipeline trigger. Defaults false
+  # so every ordinary push/tag keeps the existing setup behaviour.
+  run-nightly-e2e:
+    type: boolean
+    default: false
 
 orbs:
   # @3.x defaults to cimg/python:current; @1 used Python 3.9, whose get-pip.py
@@ -19,7 +42,10 @@ orbs:
   path-filtering: circleci/path-filtering@3.0.0
 
 workflows:
+  # Normal path — runs on every push/tag UNLESS the nightly trigger fired.
   setup:
+    when:
+      not: << pipeline.parameters.run-nightly-e2e >>
     jobs:
       - path-filtering/filter:
           base-revision: main
@@ -29,3 +55,14 @@ workflows:
           filters:
             tags:
               only: /.*/
+
+  # Nightly live-e2e path — runs ONLY when the scheduled trigger sets the
+  # parameter. Continues to a dedicated, self-contained continuation config so
+  # the normal ci/release/orb-publish workflows are never affected.
+  nightly-e2e:
+    when: << pipeline.parameters.run-nightly-e2e >>
+    jobs:
+      - path-filtering/filter:
+          name: continue-to-nightly
+          base-revision: main
+          config-path: .circleci/nightly_config.yml

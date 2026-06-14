@@ -23,6 +23,37 @@ auth:
   github_token_env: GITHUB_TOKEN
 
 # ---------------------------------------------------------------------------
+# Nightly live-e2e (CI) — consumed by .circleci/nightly_config.yml (#195).
+#
+# The nightly workflow runs ONLY when a Scheduled Pipeline trigger sets the
+# pipeline parameter run-nightly-e2e=true; it then runs `export` +
+# `sync --dry-run` (no --apply, zero writes) against the orgs below.
+#
+# Provisioning (one-time, by an org owner — NO secrets committed here):
+#   1. Create a CircleCI context named exactly "e2e-live" containing:
+#        E2E_CIRCLE_TOKEN  (required) — minimally-scoped CircleCI API token that
+#                                       can read source_org and dest_org.
+#        E2E_SOURCE_ORG    (required) — source.circleci_slug below.
+#        E2E_DEST_ORG      (required) — dest.circleci_slug below.
+#        E2E_DEST_TOKEN    (optional) — separate dest token; if omitted the dry
+#                                       run reuses E2E_CIRCLE_TOKEN for both.
+#   2. Create a Scheduled Pipeline trigger on `main` passing run-nightly-e2e=true.
+#
+# Until both exist the nightly path never runs; if triggered without
+# E2E_CIRCLE_TOKEN the job halts cleanly (success), so it can never go red.
+nightly_ci:
+  context: e2e-live
+  pipeline_parameter: run-nightly-e2e
+  required_env:
+    - E2E_CIRCLE_TOKEN
+    - E2E_SOURCE_ORG
+    - E2E_DEST_ORG
+  optional_env:
+    - E2E_DEST_TOKEN
+  source_org: gh/gh-oauth-cci-1   # designated throwaway OAuth org (read-only here)
+  dest_org: gh/gh-oauth-cci-2     # designated throwaway OAuth org (dry-run target)
+
+# ---------------------------------------------------------------------------
 # Dedicated dummy orgs for repeatable testing / future e2e. Two per scenario:
 # a SOURCE (populated with test data) and a DEST (empty, receives the migration).
 # Fill in slugs/org_ids as these are provisioned. Keep test data synthetic — no
@@ -30,14 +61,16 @@ auth:
 # ---------------------------------------------------------------------------
 fixtures:
   oauth_to_oauth:
-    description: GitHub OAuth org -> GitHub OAuth org (same-type).
+    description: GitHub OAuth org -> GitHub OAuth org (same-type). Used by the
+      nightly live-e2e (export + sync --dry-run). These are dedicated throwaway
+      OAuth orgs with matching repo names in both GitHub orgs.
     source:
-      circleci_slug: TBD   # e.g. gh/<dummy-src-oauth>
-      github_org: TBD
+      circleci_slug: gh/gh-oauth-cci-1
+      github_org: gh-oauth-cci-1
       org_id: TBD
     dest:
-      circleci_slug: TBD   # e.g. gh/<dummy-dst-oauth>
-      github_org: TBD
+      circleci_slug: gh/gh-oauth-cci-2
+      github_org: gh-oauth-cci-2
       org_id: TBD
     repos: []              # throwaway repos present in BOTH GitHub orgs
     seed:                  # synthetic data to create in source before a test
