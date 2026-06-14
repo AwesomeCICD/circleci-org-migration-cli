@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.10.0...v0.11.0) (2026-06-14)
+
+
+### Features
+
+* graceful OSS handling — best-effort SetOSS after main settings PATCH ([#251](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/251)) ([#253](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/253)) ([045720a](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/045720a541a8ceb641f276c7e27107f9b2ed7c72))
+* **migrate:** preflight checks + handleEnableBuilds TTY fix ([#249](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/249)) ([#254](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/254)) ([8ab18bf](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/8ab18bf27207b4e5d545e9d5fb2d545d8d5ed285))
+* **secrets capture:** guided trigger-flag detection before pipeline ([#250](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/250)) ([#252](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/252)) ([a4ce0ac](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/a4ce0ac5d1e8aa679a1940c7500f9aeb89ef3a2f))
+
+
+### Bug Fixes
+
+* **deps:** update go modules to v1.0.10 ([#241](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/241)) ([9f3125d](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/9f3125d2f5c19a7b90171e7d385f1f9d0ed84c22))
+* **sync:** stop sending unsupported 'oss' in project settings PATCH ([#247](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/247)) ([#248](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/248)) ([01660cd](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/01660cd8b43bd59f2ef8b564041c6e052ec28d2f))
+
 ## [0.10.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.9.0...v0.10.0) (2026-06-12)
 
 
