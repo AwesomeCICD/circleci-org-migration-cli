@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.11.0...v0.12.0) (2026-06-15)
+
+
+### Features
+
+* 'mapping generate' command — auto-match source→dest projects + report ([#262](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/262)) ([#264](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/264)) ([b8ab3e3](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/b8ab3e3bfdbeb505bce21ce5f01cf4f1d4400fd3))
+* **ci:** gated nightly live e2e (export + sync --dry-run) ([#195](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/195)) ([#260](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/260)) ([42f2b81](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/42f2b816130dd626c26ab313498ed0d6d6b78bb7))
+
+
+### Bug Fixes
+
+* **secrets transfer:** one pipeline per project for project env vars (scoping bug) ([#263](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/263)) ([#265](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/265)) ([d4b094e](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d4b094e18cc882ffcd5ce9f1fb35a200a0380687))
+
 ## [0.11.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.10.0...v0.11.0) (2026-06-14)
 
 
