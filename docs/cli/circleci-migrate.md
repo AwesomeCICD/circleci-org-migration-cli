@@ -39,6 +39,7 @@ Use "circleci-migrate [command] --help" for more information about a command.
 
 * [circleci-migrate doctor](circleci-migrate_doctor.md)	 - Run migration preflight checks without migrating.
 * [circleci-migrate export](circleci-migrate_export.md)	 - Export source-org data to a local manifest file.
+* [circleci-migrate mapping](circleci-migrate_mapping.md)	 - Generate and manage project slug mapping files.
 * [circleci-migrate migrate](circleci-migrate_migrate.md)	 - All-in-one: export source org and sync into destination org.
 * [circleci-migrate orb](circleci-migrate_orb.md)	 - Manage CircleCI orb references in pipeline configs.
 * [circleci-migrate secrets](circleci-migrate_secrets.md)	 - Capture secret values that the API cannot expose (RECOMMENDED: use 'secrets capture').

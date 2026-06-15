@@ -13,3 +13,10 @@ import "fmt"
 func noSourceTokenError() error {
 	return fmt.Errorf("no source API token: set --source-token, --token, CIRCLECI_SOURCE_TOKEN, or CIRCLECI_CLI_TOKEN")
 }
+
+// noDestTokenError returns the canonical error returned when no destination API
+// token can be resolved. It mirrors noSourceTokenError for the destination leg
+// of the fallback chain.
+func noDestTokenError() error {
+	return fmt.Errorf("no destination API token: set --dest-token, --token, CIRCLECI_DEST_TOKEN, or CIRCLECI_CLI_TOKEN")
+}

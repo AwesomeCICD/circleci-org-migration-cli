@@ -1,0 +1,50 @@
+.nh
+.TH "CIRCLECI-MIGRATE" "1" "Jun 2026" "circleci-migrate" "CircleCI Org Migration CLI"
+
+.SH NAME
+circleci-migrate-mapping - Generate and manage project slug mapping files.
+
+
+.SH SYNOPSIS
+\fBcircleci-migrate mapping [flags]\fP
+
+
+.SH DESCRIPTION
+mapping provides utilities for creating the mapping.json file that tells
+\&'sync' and 'secrets transfer' how source project slugs correspond to
+destination project slugs.
+
+.PP
+The most common use is 'mapping generate', which auto-matches projects by
+repo name (the last segment of the slug) so you don't have to hand-write
+mapping.json for a standard org rename.
+
+
+.SH OPTIONS
+\fB-h\fP, \fB--help\fP[=false]
+	help for mapping
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+\fB--debug\fP[=false]
+	Enable debug logging
+
+.PP
+\fB--dest-token\fP=""
+	API token for the destination org (env: CIRCLECI_DEST_TOKEN)
+
+.PP
+\fB--host\fP="https://circleci.com"
+	CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)
+
+.PP
+\fB--source-token\fP=""
+	API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
+
+.PP
+\fB--token\fP=""
+	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
+
+
+.SH SEE ALSO
+\fBcircleci-migrate(1)\fP, \fBcircleci-migrate-mapping-generate(1)\fP
