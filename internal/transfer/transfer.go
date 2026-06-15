@@ -5,12 +5,21 @@
 // pattern):
 //
 //   - A single dynamic/inline pipeline is triggered in the SOURCE org with one
-//     job per selected context.
+//     job per selected context.  Contexts are org-scoped so one pipeline on any
+//     host project can access all of them.
 //   - Each job imports the context (CircleCI unmasks the values into the job
 //     environment) and PUTs each value straight into the matching context in the
 //     DESTINATION org over TLS via the CircleCI API.
 //   - NO plaintext ever touches disk or build artifacts — strictly better
 //     security than the encrypted-bundle-artifact flow for context vars.
+//
+// Project env-var design (--include-project-vars):
+//
+//	Project env vars are STRICTLY project-scoped: they are only injected into a
+//	job when the pipeline runs under that exact project.  Therefore, project
+//	var transfer uses ONE PIPELINE PER SOURCE PROJECT, each triggered under
+//	that project's own slug so CircleCI injects its env vars correctly.  The
+//	per-project pipelines are polled concurrently (bounded worker pool).
 //
 // Trust model:
 //
@@ -50,6 +59,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
@@ -538,6 +548,204 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 	return sb.String()
 }
 
+// projectVarWorkerCount is the maximum number of concurrent per-project
+// pipeline triggers and polls.  A value of 4 balances API rate-limit headroom
+// against wall-clock time for large migrations.
+const projectVarWorkerCount = 4
+
+// buildSingleProjectTransferConfig builds an inline CircleCI YAML config that
+// transfers env vars for exactly ONE source project.  The generated pipeline
+// runs under that project's own slug so CircleCI injects the project's env vars
+// into the job environment.
+//
+// This is the core correctness fix for issue #263: project env vars are
+// strictly project-scoped, so each project must run its own pipeline under its
+// own slug — a single host-project pipeline cannot access another project's vars.
+func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver string) string {
+	destHost := opts.destHost()
+	destTokenEnvVar := opts.destTokenEnvVar()
+	destTokenCtx := opts.DestTokenContext
+
+	const projJobName = "circleci-migrate-transfer-project"
+
+	var sb strings.Builder
+	sb.WriteString("version: 2.1\n")
+	sb.WriteString("jobs:\n")
+
+	jobName := projJobName + "-" + sanitizeName(pp.SourceSlug)
+
+	sb.WriteString("  " + jobName + ":\n")
+	sb.WriteString("    docker:\n")
+	sb.WriteString("      - image: cimg/base:current\n")
+	sb.WriteString("    resource_class: small\n")
+	sb.WriteString("    steps:\n")
+	sb.WriteString(buildTransferInstallStep(ver))
+
+	// Project env-var transfer step.
+	// The source project's env vars are available in the job environment
+	// because the pipeline runs under that project's own slug (CircleCI
+	// injects project-scoped env vars only when the pipeline belongs to that
+	// exact project).  We POST each value to the destination project via the
+	// v1.1 envvar API.
+	//
+	// CircleCI project env-var API:
+	//   POST /api/v1.1/project/{slug}/envvar   → 201 (create or update)
+	//   PUT  /api/v1.1/project/{slug}/envvar   → not available; POST is idempotent-upsert
+	// We use POST (add-or-update) which returns 201 on create and 200 on update.
+	sb.WriteString("      - run:\n")
+	sb.WriteString(fmt.Sprintf("          name: Transfer project env vars for %q\n", pp.SourceSlug))
+	sb.WriteString("          command: |\n")
+	sb.WriteString("            set -euo pipefail\n")
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("            DEST_HOST=%q\n", destHost))
+	sb.WriteString(fmt.Sprintf("            DEST_PROJECT_SLUG=%q\n", pp.DestSlug))
+	sb.WriteString(fmt.Sprintf("            DEST_TOKEN=${%s:?%q env var is required (should be in the dest-token context)}\n",
+		destTokenEnvVar, destTokenEnvVar))
+	sb.WriteString("\n")
+	sb.WriteString("            # POST each project env var to the destination project.\n")
+	sb.WriteString("            # Values are available in the job environment from the source project\n")
+	sb.WriteString("            # because this pipeline runs under that project's own slug.\n")
+	sb.WriteString("            transfer_ok=true\n")
+	for _, varName := range pp.VarNames {
+		safeVar := strings.ReplaceAll(varName, "'", "'\\''")
+		sb.WriteString(fmt.Sprintf("            # Transfer project var %s\n", varName))
+		sb.WriteString(fmt.Sprintf("            val=${%s:-}\n", safeVar))
+		sb.WriteString("            body=$(jq -n --arg n \"" + varName + "\" --arg v \"$val\" '{\"name\": $n, \"value\": $v}')\n")
+		sb.WriteString("            http_code=$(curl -s -o /dev/null -w '%{http_code}' \\\n")
+		sb.WriteString("              -X POST \\\n")
+		sb.WriteString("              -H 'Content-Type: application/json' \\\n")
+		sb.WriteString("              -H \"Circle-Token: ${DEST_TOKEN}\" \\\n")
+		sb.WriteString("              -d \"$body\" \\\n")
+		sb.WriteString("              \"${DEST_HOST}/api/v1.1/project/${DEST_PROJECT_SLUG}/envvar\")\n")
+		sb.WriteString("            if [ \"$http_code\" != '201' ] && [ \"$http_code\" != '200' ]; then\n")
+		sb.WriteString(fmt.Sprintf("              echo \"ERROR: POST project var %s HTTP ${http_code}\" >&2\n", varName))
+		sb.WriteString("              transfer_ok=false\n")
+		sb.WriteString("            else\n")
+		sb.WriteString(fmt.Sprintf("              echo \"Transferred project var: %s\"\n", varName))
+		sb.WriteString("            fi\n")
+	}
+	sb.WriteString("            if [ \"$transfer_ok\" = 'false' ]; then\n")
+	sb.WriteString("              echo 'ERROR: one or more project env-var POSTs failed (see above).' >&2\n")
+	sb.WriteString("              exit 1\n")
+	sb.WriteString("            fi\n")
+	sb.WriteString(fmt.Sprintf("            echo 'Project env-var transfer complete for %q'\n", pp.SourceSlug))
+	sb.WriteString("\n")
+
+	// Workflow: single job, attached only to the dest-token context.
+	sb.WriteString("workflows:\n")
+	sb.WriteString("  transfer:\n")
+	sb.WriteString("    jobs:\n")
+	sb.WriteString("      - " + jobName + ":\n")
+	sb.WriteString("          context:\n")
+	sb.WriteString(fmt.Sprintf("            - %s\n", destTokenCtx))
+
+	return sb.String()
+}
+
+// projectPipelineResult records the outcome of a single per-project pipeline.
+type projectPipelineResult struct {
+	sourceSlug string
+	err        error // nil on success
+}
+
+// runProjectVarPipelines triggers one pipeline per non-skipped ProjectVarPlan,
+// each under that project's own slug, and polls them concurrently with a
+// bounded worker pool.  It returns a slice of results (one per active plan) and
+// a combined error if any project pipeline failed.
+//
+// Correctness invariant: every pipeline runs under pp.SourceSlug so CircleCI
+// injects THAT project's env vars into the job.  Using a shared host project
+// would give only the host project's vars, corrupting all other projects.
+func runProjectVarPipelines(ctx context.Context, deps Deps, activePlans []ProjectVarPlan, opts *Options, errOut io.Writer) ([]projectPipelineResult, error) {
+	results := make([]projectPipelineResult, len(activePlans))
+	sem := make(chan struct{}, projectVarWorkerCount)
+
+	var wg sync.WaitGroup
+	for i, pp := range activePlans {
+		wg.Add(1)
+		go func(idx int, plan ProjectVarPlan) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			results[idx] = projectPipelineResult{
+				sourceSlug: plan.SourceSlug,
+				err:        triggerAndPollProjectPipeline(ctx, deps, plan, opts, errOut),
+			}
+		}(i, pp)
+	}
+	wg.Wait()
+
+	// Collect errors; attempt all projects before returning.
+	var errs []string
+	for _, r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Sprintf("project %q: %v", r.sourceSlug, r.err))
+		}
+	}
+	if len(errs) > 0 {
+		return results, fmt.Errorf("transfer: %d project pipeline(s) failed:\n  %s",
+			len(errs), strings.Join(errs, "\n  "))
+	}
+	return results, nil
+}
+
+// triggerAndPollProjectPipeline triggers one inline pipeline for a single
+// project and polls it to terminal state.  It resolves the project and its
+// pipeline definition, builds a single-project config, triggers the run, and
+// waits for the workflow to complete.
+func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVarPlan, opts *Options, errOut io.Writer) error {
+	proj, err := deps.GetProject(ctx, pp.SourceSlug)
+	if err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+
+	defs, err := deps.ListPipelineDefinitions(ctx, proj.ID)
+	if err != nil {
+		return fmt.Errorf("list pipeline definitions: %w", err)
+	}
+	if len(defs) == 0 {
+		return fmt.Errorf("project %s has no pipeline definitions — is the repo connected to a GitHub App?", pp.SourceSlug)
+	}
+	defID := defs[0].ID
+
+	configYAML := buildSingleProjectTransferConfigWithVersion(pp, opts, version.Version)
+
+	fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s (definition %s)…\n", pp.SourceSlug, defID)
+
+	pipelineID, err := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branch(), configYAML, nil)
+	if err != nil {
+		if errors.Is(err, project.ErrPipelineSkipped) {
+			return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
+		}
+		return fmt.Errorf("trigger pipeline: %w", err)
+	}
+
+	fmt.Fprintf(errOut, "  [project vars] pipeline triggered for %s: %s\n", pp.SourceSlug, pipelineID)
+
+	pollCtx := ctx
+	if opts.PollTimeout > 0 {
+		var cancel context.CancelFunc
+		pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
+		defer cancel()
+	}
+
+	wf, err := pollWorkflow(pollCtx, deps, pipelineID, opts.pollInterval(), errOut)
+	if err != nil {
+		return fmt.Errorf("poll: %w", err)
+	}
+	if wf.Status != "success" {
+		return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
+	}
+	return nil
+}
+
+// buildSingleProjectTransferConfigWithVersion is the testable variant of
+// buildSingleProjectTransferConfig (allows pinning a version in tests).
+func buildSingleProjectTransferConfigWithVersion(pp ProjectVarPlan, opts *Options, ver string) string {
+	return buildSingleProjectTransferConfig(pp, opts, ver)
+}
+
 // buildTransferInstallStep is a lightweight install step.  We still install
 // circleci-migrate so operators get the same install pattern as capture;
 // the actual transfer work is done via curl + jq (both available in
@@ -720,7 +928,16 @@ var terminalStatuses = map[string]bool{
 var ErrWorkflowFailed = errors.New("transfer workflow did not succeed")
 
 // Transfer builds the plan and, when opts.DryRun is false, triggers the
-// transfer pipeline and waits for it to complete.
+// transfer pipeline(s) and waits for them to complete.
+//
+// Context transfer: one pipeline under the host project carries all context
+// jobs (contexts are org-scoped, so any host project works).
+//
+// Project env-var transfer (--include-project-vars): one pipeline per source
+// project, triggered under that project's own slug, run concurrently with a
+// bounded worker pool (projectVarWorkerCount).  This is the correct approach
+// because CircleCI project env vars are strictly project-scoped — a pipeline
+// running under a different project cannot access them.
 //
 // When opts.DryRun is true (the default), Transfer only prints the plan to
 // opts.Stdout and opts.Stderr — no pipeline is triggered.
@@ -740,7 +957,59 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		return nil
 	}
 
-	// Live run: resolve host project and pipeline definition.
+	// ── Phase 1: context transfer on host project ─────────────────────────────
+
+	var ctxErr error
+	if len(plan.Contexts) > 0 {
+		ctxErr = runContextPipeline(ctx, deps, m, &plan, &opts)
+	}
+
+	// ── Phase 2: per-project pipeline for project env vars ───────────────────
+
+	// Collect non-skipped project plans.
+	var activeProjPlans []ProjectVarPlan
+	for _, pp := range plan.Projects {
+		if !pp.Skipped && len(pp.VarNames) > 0 {
+			activeProjPlans = append(activeProjPlans, pp)
+		}
+	}
+
+	var projResults []projectPipelineResult
+	var projErr error
+	if len(activeProjPlans) > 0 {
+		fmt.Fprintf(opts.Stderr, "Triggering %d per-project pipeline(s) for project env-var transfer (concurrency: %d)…\n",
+			len(activeProjPlans), projectVarWorkerCount)
+		projResults, projErr = runProjectVarPipelines(ctx, deps, activeProjPlans, &opts, opts.Stderr)
+	}
+
+	// ── Summary ───────────────────────────────────────────────────────────────
+
+	if ctxErr == nil && len(plan.Contexts) > 0 {
+		fmt.Fprintf(opts.Stdout, "\nContext transfer pipeline succeeded: %d context(s), %d context variable(s).\n",
+			len(plan.Contexts), plan.TotalVars())
+	}
+
+	if len(activeProjPlans) > 0 {
+		successes := 0
+		for _, r := range projResults {
+			if r.err == nil {
+				successes++
+			}
+		}
+		fmt.Fprintf(opts.Stdout, "Project env-var transfer: %d/%d project pipeline(s) succeeded (%d project variable(s) targeted).\n",
+			successes, len(activeProjPlans), plan.TotalProjectVars())
+	}
+
+	// Return the first non-nil error (context error takes precedence).
+	if ctxErr != nil {
+		return ctxErr
+	}
+	return projErr
+}
+
+// runContextPipeline triggers and polls the single host-project pipeline that
+// carries all context transfer jobs.
+func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, plan *Plan, opts *Options) error {
 	if opts.HostProjectSlug == "" {
 		if len(m.Projects) == 0 {
 			return errors.New("transfer: a host project is required; pass --host-project or ensure the manifest contains projects")
@@ -763,9 +1032,11 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	}
 	defID := defs[0].ID
 
-	configYAML := buildTransferConfig(m, plan.Contexts, plan.Projects, &opts)
+	// Build context-only config (pass nil project plans — project vars are
+	// handled separately by per-project pipelines).
+	configYAML := buildTransferConfig(m, plan.Contexts, nil, opts)
 
-	fmt.Fprintf(opts.Stderr, "Triggering transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
+	fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
 
 	pipelineID, err := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branch(), configYAML, nil)
 	if err != nil {
@@ -774,9 +1045,8 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		}
 		return fmt.Errorf("transfer: trigger pipeline: %w", err)
 	}
-	fmt.Fprintf(opts.Stderr, "Pipeline triggered: %s\n", pipelineID)
+	fmt.Fprintf(opts.Stderr, "Context pipeline triggered: %s\n", pipelineID)
 
-	// Poll until terminal.
 	pollCtx := ctx
 	if opts.PollTimeout > 0 {
 		var cancel context.CancelFunc
@@ -791,20 +1061,6 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	if wf.Status != "success" {
 		return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
 	}
-
-	activeProjPlans := 0
-	for _, pp := range plan.Projects {
-		if !pp.Skipped {
-			activeProjPlans++
-		}
-	}
-	fmt.Fprintf(opts.Stdout, "\nTransfer pipeline succeeded: %d context(s), %d context variable(s)",
-		len(plan.Contexts), plan.TotalVars())
-	if activeProjPlans > 0 {
-		fmt.Fprintf(opts.Stdout, ", %d project(s), %d project variable(s)", activeProjPlans, plan.TotalProjectVars())
-	}
-	fmt.Fprintln(opts.Stdout, " transferred.")
-
 	return nil
 }
 
@@ -836,12 +1092,13 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 
 	if len(plan.Projects) > 0 {
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  project env vars:")
+		fmt.Fprintln(out, "  project env vars (one pipeline per source project, each run under its own slug):")
 		for _, pp := range plan.Projects {
 			if pp.Skipped {
 				fmt.Fprintf(out, "  SKIP project %q: %s\n", pp.SourceSlug, pp.SkipReason)
 			} else {
-				fmt.Fprintf(out, "  project %q → %q (%d variable(s))\n", pp.SourceSlug, pp.DestSlug, len(pp.VarNames))
+				fmt.Fprintf(out, "  project %q → %q (%d variable(s)) [pipeline under %s]\n",
+					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), pp.SourceSlug)
 				for _, v := range pp.VarNames {
 					fmt.Fprintf(out, "    %s\n", v)
 				}
