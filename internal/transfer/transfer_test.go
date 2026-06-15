@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
@@ -1016,4 +1017,443 @@ func TestOptionsDestProjectSlug_MissingEntry(t *testing.T) {
 	if ok {
 		t.Error("expected ok=false for unmapped project")
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// multiCallFakeTransferDeps — extended fake that records all TriggerPipelineRun
+// calls with their slugs, supporting concurrent callers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// triggerCall records one invocation of TriggerPipelineRun.
+type triggerCall struct {
+	slug string
+	yaml string
+}
+
+// multiCallFakeTransferDeps is a thread-safe Deps fake that records all
+// TriggerPipelineRun calls and can simulate per-slug failures for
+// ListPipelineDefinitions.
+type multiCallFakeTransferDeps struct {
+	mu sync.Mutex
+
+	// projErr is returned by GetProject (nil means success with a synthetic project).
+	projErr error
+
+	// defs / defsErr are returned by ListPipelineDefinitions for most slugs.
+	defs    []project.PipelineDefinition
+	defsErr error
+
+	// defsEmptyForSlugs is the set of slugs for which ListPipelineDefinitions
+	// returns an empty slice (simulates a project with no pipeline definitions).
+	defsEmptyForSlugs map[string]bool
+
+	// triggerID is the pipeline UUID returned by each TriggerPipelineRun call.
+	triggerID  string
+	triggerErr error
+
+	// triggerCalls records every TriggerPipelineRun invocation in order.
+	triggerCalls []triggerCall
+
+	// successWorkflow is returned for every GetPipelineWorkflows call.
+	successWorkflow project.Workflow
+}
+
+func (f *multiCallFakeTransferDeps) GetProject(_ context.Context, slug string) (*project.Project, error) {
+	if f.projErr != nil {
+		return nil, f.projErr
+	}
+	// Return a project whose slug and ID match the requested slug so callers
+	// can distinguish which project is being resolved.
+	return &project.Project{Slug: slug, ID: "id-" + slug}, nil
+}
+
+func (f *multiCallFakeTransferDeps) ListPipelineDefinitions(_ context.Context, projectID string) ([]project.PipelineDefinition, error) {
+	if f.defsErr != nil {
+		return nil, f.defsErr
+	}
+	// Strip the "id-" prefix to recover the slug used in defsEmptyForSlugs.
+	slug := strings.TrimPrefix(projectID, "id-")
+	if f.defsEmptyForSlugs[slug] {
+		return nil, nil
+	}
+	if len(f.defs) == 0 {
+		return []project.PipelineDefinition{{ID: "def-multi", Name: "build"}}, nil
+	}
+	return f.defs, nil
+}
+
+func (f *multiCallFakeTransferDeps) TriggerPipelineRun(_ context.Context, slug, _, _, configYAML string, _ map[string]any) (string, error) {
+	f.mu.Lock()
+	f.triggerCalls = append(f.triggerCalls, triggerCall{slug: slug, yaml: configYAML})
+	f.mu.Unlock()
+
+	if f.triggerErr != nil {
+		return "", f.triggerErr
+	}
+	return f.triggerID, nil
+}
+
+func (f *multiCallFakeTransferDeps) GetPipelineWorkflows(_ context.Context, _ string) ([]project.Workflow, error) {
+	wf := f.successWorkflow
+	if wf.Status == "" {
+		wf = project.Workflow{ID: "wf-ok", Name: "transfer", Status: "success"}
+	}
+	return []project.Workflow{wf}, nil
+}
+
+// happyMultiDeps returns a multiCallFakeTransferDeps configured for happy-path
+// tests with a pinned pipeline ID and success workflow.
+func happyMultiDeps() *multiCallFakeTransferDeps {
+	return &multiCallFakeTransferDeps{
+		triggerID:       "pipe-multi",
+		successWorkflow: project.Workflow{ID: "wf-ok", Name: "transfer", Status: "success"},
+	}
+}
+
+// manifestWithTwoMappedProjects returns a manifest with two projects that have
+// env vars and are both fully mapped.
+func manifestWithTwoMappedProjects() *manifest.Manifest {
+	return &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod", EnvVars: []manifest.ContextEnvVar{{Name: "AWS_KEY"}}},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", EnvVars: []manifest.ProjectEnvVar{{Name: "APP_SECRET"}}},
+			{Slug: "gh/acme/api", EnvVars: []manifest.ProjectEnvVar{{Name: "API_KEY"}}},
+		},
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: per-project pipeline correctness (issue #263)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestTransfer_ProjectVars_OnePerProject_Regression is the primary regression
+// test for issue #263.  It verifies that when --include-project-vars is set
+// and there are N mapped projects, Transfer triggers N+1 pipelines in total:
+//   - 1 host-project pipeline for contexts
+//   - 1 per-project pipeline per source project, each under THAT project's slug
+//
+// Previously, a single host-project pipeline was used for all projects, which
+// meant only the host project's env vars were injected; all other projects'
+// vars resolved to empty strings (silent corruption).
+func TestTransfer_ProjectVars_OnePerProject_Regression(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	// Expect 3 total triggers: 1 context pipeline + 2 per-project pipelines.
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 TriggerPipelineRun calls (1 ctx + 2 project), got %d: %v",
+			len(calls), slugsFromCalls(calls))
+	}
+
+	// The host pipeline must use the HostProjectSlug.
+	if calls[0].slug != "gh/acme/web" {
+		t.Errorf("first call (context pipeline) expected slug %q, got %q", "gh/acme/web", calls[0].slug)
+	}
+
+	// The two per-project pipelines must each use their own source slug.
+	projectSlugs := slugsFromCalls(calls[1:])
+	if !containsSlug(projectSlugs, "gh/acme/web") {
+		t.Errorf("expected per-project pipeline under gh/acme/web, got slugs: %v", projectSlugs)
+	}
+	if !containsSlug(projectSlugs, "gh/acme/api") {
+		t.Errorf("expected per-project pipeline under gh/acme/api, got slugs: %v", projectSlugs)
+	}
+
+	// Critically: neither per-project call may be the HOST project for the
+	// OTHER project — each must use its OWN slug.
+	for _, c := range calls[1:] {
+		if c.slug != "gh/acme/web" && c.slug != "gh/acme/api" {
+			t.Errorf("per-project call used unexpected slug %q (expected one of the source project slugs)", c.slug)
+		}
+	}
+}
+
+// TestTransfer_ProjectVars_ContextOnlyOnHostSlug verifies that the CONTEXT
+// pipeline is triggered under the HostProjectSlug, not under the per-project
+// slug.  This confirms the two pipelines are kept separate.
+func TestTransfer_ProjectVars_ContextOnlyOnHostSlug(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/host"
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	// First call must be the context pipeline on the host.
+	if len(calls) == 0 {
+		t.Fatal("no TriggerPipelineRun calls recorded")
+	}
+	if calls[0].slug != "gh/acme/host" {
+		t.Errorf("context pipeline slug = %q, want %q", calls[0].slug, "gh/acme/host")
+	}
+
+	// No per-project call should ever use the host slug.
+	for _, c := range calls[1:] {
+		if c.slug == "gh/acme/host" {
+			t.Errorf("per-project pipeline incorrectly used host slug %q; each project must use its own slug", c.slug)
+		}
+	}
+}
+
+// TestBuildSingleProjectTransferConfig_ContainsOnlyThatProject verifies that
+// buildSingleProjectTransferConfig generates a config that contains ONLY the
+// var names for the given project and NOT any other project's vars.
+func TestBuildSingleProjectTransferConfig_ContainsOnlyThatProject(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+	opts.DestOrgID = "dest-org-uuid"
+
+	webPlan := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"APP_SECRET", "DB_URL"},
+	}
+	apiPlan := ProjectVarPlan{
+		SourceSlug: "gh/acme/api",
+		DestSlug:   "gh/acme-new/api",
+		VarNames:   []string{"API_KEY"},
+	}
+
+	webCfg := buildSingleProjectTransferConfigWithVersion(webPlan, &opts, "v1.0.0")
+
+	// Must contain the web project's vars.
+	if !strings.Contains(webCfg, "APP_SECRET") {
+		t.Error("web config must contain APP_SECRET")
+	}
+	if !strings.Contains(webCfg, "DB_URL") {
+		t.Error("web config must contain DB_URL")
+	}
+
+	// Must NOT contain the api project's var.
+	if strings.Contains(webCfg, "API_KEY") {
+		t.Error("web config must NOT contain API_KEY (that belongs to gh/acme/api)")
+	}
+
+	// Must reference the dest project slug.
+	if !strings.Contains(webCfg, "gh/acme-new/web") {
+		t.Error("web config must reference dest slug gh/acme-new/web")
+	}
+	if strings.Contains(webCfg, "gh/acme-new/api") {
+		t.Error("web config must NOT reference api dest slug")
+	}
+
+	// API config must contain only API_KEY.
+	apiCfg := buildSingleProjectTransferConfigWithVersion(apiPlan, &opts, "v1.0.0")
+	if !strings.Contains(apiCfg, "API_KEY") {
+		t.Error("api config must contain API_KEY")
+	}
+	if strings.Contains(apiCfg, "APP_SECRET") || strings.Contains(apiCfg, "DB_URL") {
+		t.Error("api config must NOT contain web project vars")
+	}
+}
+
+// TestTransfer_ProjectVars_NoDefsForOneProject verifies that when one project
+// has no pipeline definitions, that project is reported as failed while other
+// projects are still attempted, and the overall command returns a non-nil error.
+func TestTransfer_ProjectVars_NoDefsForOneProject(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+
+	// Make gh/acme/api return empty pipeline definitions.
+	deps := happyMultiDeps()
+	deps.defsEmptyForSlugs = map[string]bool{
+		"gh/acme/api": true,
+	}
+
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	err := Transfer(context.Background(), deps, m, opts)
+
+	// Overall command must fail because one project has no definitions.
+	if err == nil {
+		t.Fatal("expected error when one project has no pipeline definitions")
+	}
+	if !strings.Contains(err.Error(), "gh/acme/api") {
+		t.Errorf("error must mention the failing project, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no pipeline definitions") {
+		t.Errorf("error must mention 'no pipeline definitions', got: %v", err)
+	}
+
+	// The OTHER project (gh/acme/web) must still have been attempted — its
+	// pipeline trigger call must appear in the recorded calls.
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	webAttempted := false
+	for _, c := range calls {
+		if c.slug == "gh/acme/web" {
+			webAttempted = true
+			break
+		}
+	}
+	if !webAttempted {
+		t.Error("gh/acme/web should still have been attempted despite gh/acme/api failing")
+	}
+}
+
+// TestTransfer_ProjectVarsOnly_NoContexts verifies that when the plan has no
+// contexts but does have project vars, the context pipeline is NOT triggered
+// (no wasted pipeline run) and project pipelines still execute.
+func TestTransfer_ProjectVarsOnly_NoContexts(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		// No contexts with vars.
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/web", EnvVars: []manifest.ProjectEnvVar{{Name: "APP_SECRET"}}},
+		},
+	}
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	// Only 1 trigger call expected: the per-project pipeline.
+	// The context pipeline must NOT fire when there are no contexts.
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 TriggerPipelineRun call (project only), got %d: %v", len(calls), slugsFromCalls(calls))
+	}
+	if calls[0].slug != "gh/acme/web" {
+		t.Errorf("project pipeline slug = %q, want %q", calls[0].slug, "gh/acme/web")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildSingleProjectTransferConfig: security properties
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildSingleProjectTransferConfig_DestTokenByName(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+	opts.DestTokenEnvVar = "CIRCLECI_DEST_TOKEN"
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"APP_SECRET"},
+	}
+
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+
+	// Token referenced by env-var name, not literal value.
+	if !strings.Contains(cfg, "${CIRCLECI_DEST_TOKEN") {
+		t.Error("config must reference dest token by ${ENV_VAR} notation")
+	}
+	if strings.Contains(cfg, "ccpaa_") {
+		t.Error("config must not contain a literal API token value")
+	}
+	// Dest-token context must be attached at the workflow level.
+	if !strings.Contains(cfg, "- migration-secrets") {
+		t.Error("config must include dest-token context in workflow job context list")
+	}
+}
+
+func TestBuildSingleProjectTransferConfig_UsesV11Endpoint(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"MY_VAR"},
+	}
+
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+
+	if !strings.Contains(cfg, "/api/v1.1/project/") {
+		t.Error("single-project config must use v1.1 envvar endpoint")
+	}
+	if !strings.Contains(cfg, "/envvar") {
+		t.Error("single-project config must reference /envvar path")
+	}
+	if !strings.Contains(cfg, "gh/acme-new/web") {
+		t.Error("single-project config must reference dest project slug")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers for per-project pipeline tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func slugsFromCalls(calls []triggerCall) []string {
+	out := make([]string, len(calls))
+	for i, c := range calls {
+		out[i] = c.slug
+	}
+	return out
+}
+
+func containsSlug(slugs []string, target string) bool {
+	for _, s := range slugs {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }

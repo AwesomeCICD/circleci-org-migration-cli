@@ -35,14 +35,19 @@ CREATE-MISSING DESTINATION CONTEXTS:
 
 PROJECT ENV-VAR TRANSFER (opt-in with --include-project-vars):
   Pass --include-project-vars to also transfer project-level env-var values.
-  Each source project's env vars are available in the job environment (CircleCI
-  injects them), and are POSTed to the matching destination project via the
-  v1.1 envvar API.
 
-  IMPORTANT: the destination project must already be onboarded/exist.
-  Resolution of source project slug → destination project slug requires an
-  explicit --mapping entry (keys containing "/" in the projects map). Projects
-  without a resolvable destination slug are SKIPPED and flagged in the plan:
+  IMPORTANT: project env vars are strictly project-scoped — CircleCI only
+  injects them when a pipeline runs under that exact project. Therefore,
+  'secrets transfer' triggers ONE SEPARATE PIPELINE per source project, each
+  under that project's own slug. Pipelines run concurrently (up to 4 at a
+  time). This is the only correct approach: a single shared host-project
+  pipeline would silently produce blank values for every project that is not
+  the host project (the bug this design explicitly prevents).
+
+  The destination project must already be onboarded/exist. Resolution of
+  source project slug → destination project slug requires an explicit --mapping
+  entry (keys containing "/" in the projects map). Projects without a
+  resolvable destination slug are SKIPPED and flagged in the plan:
 
     SKIP project "gh/acme/api": dest project for "gh/acme/api" unknown
     — provide --mapping or onboard it first; skipped
