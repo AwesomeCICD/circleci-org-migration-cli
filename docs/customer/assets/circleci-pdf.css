@@ -1,0 +1,96 @@
+/*
+ * circleci-pdf.css — CircleCI-branded stylesheet for converting the customer
+ * guides (Markdown) to PDF via pandoc + wkhtmltopdf (or weasyprint).
+ *
+ * Brand colours are defined as variables at the top — replace the hex values
+ * with the exact values from your current CircleCI brand kit if they differ.
+ * Drop the CircleCI logo at assets/circleci-logo.png to have it appear in the
+ * page header (see the @page rule and the build command in README.md).
+ */
+
+:root {
+  --cci-black: #161616;      /* primary brand dark */
+  --cci-ink: #22252a;        /* body text */
+  --cci-accent: #00C58E;     /* CircleCI green accent — adjust to brand kit */
+  --cci-accent-dark: #008f68;
+  --cci-grey: #6b7280;
+  --cci-light: #f5f6f7;
+  --cci-border: #e3e6e8;
+}
+
+html { font-size: 11pt; }
+
+body {
+  font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--cci-ink);
+  line-height: 1.5;
+  max-width: 50rem;
+  margin: 0 auto;
+}
+
+/* ---- Title block (from the YAML front matter) ---------------------------- */
+header#title-block-header {
+  border-bottom: 4px solid var(--cci-accent);
+  padding-bottom: 1rem;
+  margin-bottom: 2rem;
+}
+h1.title { color: var(--cci-black); font-size: 26pt; margin-bottom: .25rem; }
+p.subtitle { color: var(--cci-grey); font-size: 13pt; font-weight: 400; margin-top: 0; }
+p.author, p.date { color: var(--cci-grey); font-size: 10pt; margin: 0; }
+
+/* ---- Headings ------------------------------------------------------------ */
+h1, h2, h3, h4 { color: var(--cci-black); font-weight: 700; line-height: 1.25; }
+h1 { font-size: 20pt; border-bottom: 2px solid var(--cci-border); padding-bottom: .3rem; margin-top: 2rem; }
+h2 { font-size: 15pt; margin-top: 1.8rem; }
+h3 { font-size: 12.5pt; margin-top: 1.3rem; }
+
+/* ---- Links --------------------------------------------------------------- */
+a { color: var(--cci-accent-dark); text-decoration: none; }
+
+/* ---- Code ---------------------------------------------------------------- */
+code {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 9.5pt;
+  background: var(--cci-light);
+  padding: .1rem .3rem;
+  border-radius: 3px;
+}
+pre {
+  background: var(--cci-black);
+  color: #f4f4f4;
+  padding: .9rem 1.1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 9.5pt;
+  line-height: 1.45;
+}
+pre code { background: none; color: inherit; padding: 0; }
+
+/* ---- Tables -------------------------------------------------------------- */
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 10pt; }
+th, td { border: 1px solid var(--cci-border); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+thead th { background: var(--cci-black); color: #fff; font-weight: 600; }
+tbody tr:nth-child(even) { background: var(--cci-light); }
+
+/* ---- Blockquotes / callouts ---------------------------------------------- */
+blockquote {
+  border-left: 4px solid var(--cci-accent);
+  background: #f0fbf7;
+  margin: 1rem 0;
+  padding: .6rem 1rem;
+  color: var(--cci-ink);
+}
+
+/* ---- Checklists ---------------------------------------------------------- */
+ul.task-list { list-style: none; padding-left: .5rem; }
+ul.task-list li { margin: .25rem 0; }
+
+/* ---- Validation gates (lines beginning with ✅) -------------------------- */
+/* Rendered as bold green callouts via the leading emoji; no extra CSS needed. */
+
+/* ---- Page setup (wkhtmltopdf / weasyprint) ------------------------------- */
+@page {
+  size: A4;
+  margin: 22mm 18mm 20mm 18mm;
+  @bottom-center { content: "CircleCI — Confidential. Page " counter(page) " of " counter(pages); color: #6b7280; font-size: 8pt; }
+}
