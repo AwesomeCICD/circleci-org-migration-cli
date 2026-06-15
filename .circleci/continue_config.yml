@@ -470,26 +470,99 @@ jobs:
             echo "terraform fmt -check (oauth): OK"
             terraform fmt -check -recursive /tmp/tf-validate-standalone
             echo "terraform fmt -check (standalone): OK"
+      # -------------------------------------------------------------------------
+      # Provider plugin cache — persists downloaded provider binaries across runs.
+      #
+      # Cache key encodes:
+      #   tf1.15.6  — Terraform version (bump when upgrading Terraform)
+      #   {{ arch }} — executor CPU arch (cache is arch-specific)
+      #   v1        — manual revision suffix: bump this when the provider
+      #               constraint in the generated HCL changes (e.g. ~> 0.3 → ~> 0.4)
+      #               because the key cannot checksum auto-generated HCL files.
+      #
+      # Two-entry keys: list lets a warm cache from a previous run seed a new
+      # suffix even if the exact key misses.
+      # -------------------------------------------------------------------------
+      - restore_cache:
+          keys:
+            - tf-plugin-cache-v1-tf1.15.6-{{ arch }}
       - run:
           name: Terraform init + validate — OAuth fixture
           # Validates ALL resources: contexts, projects, restrictions, webhooks, runners.
           # pipelines.tf is absent for OAuth — provider rejects github_oauth.
-          # init downloads the CircleCI provider from the registry.
+          #
+          # TF_PLUGIN_CACHE_DIR: shared across both init steps so the second init
+          # reuses the provider binary downloaded by the first (no second download).
+          # The directory is also persisted to the CircleCI cache (see restore/save_cache
+          # steps surrounding these two init+validate steps) so a registry blip on a
+          # re-run does not re-download providers from scratch.
+          #
+          # tf_init_retry: wraps terraform init in a retry loop (up to 5 attempts,
+          # 10/20/30/40s backoff) to ride out transient registry 5xx/502/503 responses.
+          # A sustained outage still fails the job (final exit propagated).
           command: |
-            cd /tmp/tf-validate-oauth
-            terraform init -backend=false
-            terraform validate
+            export TF_PLUGIN_CACHE_DIR="${HOME}/.terraform.d/plugin-cache"
+            mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+            # Retry wrapper: up to 5 attempts with linear 10s-step backoff.
+            tf_init_retry() {
+              local dir="$1" attempt delay
+              for attempt in 1 2 3 4 5; do
+                if terraform -chdir="$dir" init -backend=false; then
+                  return 0
+                fi
+                if [ "$attempt" -lt 5 ]; then
+                  delay=$(( attempt * 10 ))
+                  echo "terraform init attempt ${attempt} failed; retrying in ${delay}s..."
+                  sleep "$delay"
+                fi
+              done
+              echo "terraform init failed after 5 attempts"
+              return 1
+            }
+
+            tf_init_retry /tmp/tf-validate-oauth
+            terraform -chdir=/tmp/tf-validate-oauth validate
             echo "terraform validate (oauth): OK"
       - run:
           name: Terraform init + validate — standalone fixture
           # Validates ALL M2 resources: contexts, projects, restrictions, webhooks,
           # runners, pipeline definitions, and triggers.
-          # Uses the same provider lock from the OAuth init (shared ~/.terraform.d cache).
+          #
+          # TF_PLUGIN_CACHE_DIR is set again here (no shell profile guarantee on
+          # cimg/base — each `run` step is a fresh shell). The same retry wrapper
+          # is redefined locally. The cached provider from the OAuth init step
+          # means this init normally requires zero registry traffic.
           command: |
-            cd /tmp/tf-validate-standalone
-            terraform init -backend=false
-            terraform validate
+            export TF_PLUGIN_CACHE_DIR="${HOME}/.terraform.d/plugin-cache"
+
+            # Retry wrapper (same logic as OAuth step above).
+            tf_init_retry() {
+              local dir="$1" attempt delay
+              for attempt in 1 2 3 4 5; do
+                if terraform -chdir="$dir" init -backend=false; then
+                  return 0
+                fi
+                if [ "$attempt" -lt 5 ]; then
+                  delay=$(( attempt * 10 ))
+                  echo "terraform init attempt ${attempt} failed; retrying in ${delay}s..."
+                  sleep "$delay"
+                fi
+              done
+              echo "terraform init failed after 5 attempts"
+              return 1
+            }
+
+            tf_init_retry /tmp/tf-validate-standalone
+            terraform -chdir=/tmp/tf-validate-standalone validate
             echo "terraform validate (standalone): OK"
+      # Save the downloaded provider to the CircleCI cache so future runs do not
+      # need to hit the registry at all (warm-cache path).
+      # Key matches restore_cache above; bump v1 when the provider constraint changes.
+      - save_cache:
+          key: tf-plugin-cache-v1-tf1.15.6-{{ arch }}
+          paths:
+            - ~/.terraform.d/plugin-cache
 
   # ===========================================================================
   # WAVE A — Cross-platform build matrix (parallel with lint + coverage)
