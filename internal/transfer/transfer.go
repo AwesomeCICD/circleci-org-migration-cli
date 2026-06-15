@@ -648,6 +648,21 @@ type projectPipelineResult struct {
 	err        error // nil on success
 }
 
+// lockedWriter serializes concurrent writes to an underlying io.Writer.  The
+// per-project transfer goroutines share a single progress writer (which may be
+// a bytes.Buffer or os.Stderr — neither safe for concurrent use), so all of
+// their writes are funneled through this mutex.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
 // runProjectVarPipelines triggers one pipeline per non-skipped ProjectVarPlan,
 // each under that project's own slug, and polls them concurrently with a
 // bounded worker pool.  It returns a slice of results (one per active plan) and
@@ -660,6 +675,12 @@ func runProjectVarPipelines(ctx context.Context, deps Deps, activePlans []Projec
 	results := make([]projectPipelineResult, len(activePlans))
 	sem := make(chan struct{}, projectVarWorkerCount)
 
+	// The worker goroutines below run concurrently and all log progress to
+	// errOut. io.Writer implementations such as bytes.Buffer and os.Stderr are
+	// not safe for concurrent writes, so funnel every goroutine's output
+	// through a single mutex-guarded writer to avoid a data race.
+	safeOut := &lockedWriter{w: errOut}
+
 	var wg sync.WaitGroup
 	for i, pp := range activePlans {
 		wg.Add(1)
@@ -670,7 +691,7 @@ func runProjectVarPipelines(ctx context.Context, deps Deps, activePlans []Projec
 
 			results[idx] = projectPipelineResult{
 				sourceSlug: plan.SourceSlug,
-				err:        triggerAndPollProjectPipeline(ctx, deps, plan, opts, errOut),
+				err:        triggerAndPollProjectPipeline(ctx, deps, plan, opts, safeOut),
 			}
 		}(i, pp)
 	}
