@@ -12,6 +12,7 @@ import (
 	"time"
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	apiOrb "github.com/AwesomeCICD/circleci-org-migration-cli/api/orb"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
@@ -213,6 +214,7 @@ func newExportCommand() *cobra.Command {
 		skipProjects    bool
 		skipExtras      bool
 		runnerNamespace string
+		orbNamespace    string
 		jsonOutput      bool
 		skipPreflight   bool
 		// follow-all: automatically follow GitHub repos not yet set up in CircleCI.
@@ -354,6 +356,14 @@ Examples:
 				ex.Runner = runnerClient
 			}
 
+			if orbNamespace != "" {
+				orbClient, oerr := apiOrb.NewClient(cfg, token)
+				if oerr != nil {
+					return fmt.Errorf("creating orb client: %w", oerr)
+				}
+				ex.Orb = orbClient
+			}
+
 			m, err := ex.Export(ctx, exporter.Options{
 				Host:            cfg.Host,
 				OrgSlug:         orgSlug,
@@ -362,6 +372,7 @@ Examples:
 				IncludeProjects: !skipProjects,
 				IncludeExtras:   !skipExtras,
 				RunnerNamespace: runnerNamespace,
+				OrbNamespace:    orbNamespace,
 			})
 			if err != nil {
 				return err
@@ -447,6 +458,10 @@ Examples:
 		"Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)")
 	f.StringVar(&runnerNamespace, "runner-namespace", "",
 		"Source runner namespace to capture self-hosted runner resource classes from (e.g. 'acme'). "+
+			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+	f.StringVar(&orbNamespace, "orb-namespace", "",
+		"Source orb namespace to capture published orbs from (e.g. 'acme'). "+
+			"Both public and private orbs are captured along with every stable version and its raw YAML source. "+
 			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
 
 	f.BoolVar(&skipPreflight, "skip-preflight", false,

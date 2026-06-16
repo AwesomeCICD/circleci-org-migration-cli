@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	apiOrb "github.com/AwesomeCICD/circleci-org-migration-cli/api/orb"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
@@ -39,12 +40,15 @@ func newMigrateCommand() *cobra.Command {
 		skipExtras          bool
 		skipRunner          bool
 		skipCIAM            bool
+		skipOrb             bool
 		skipPreflight       bool
 		preflightOnly       bool
 		output              string
 		reportPath          string
 		runnerNamespace     string
 		destRunnerNamespace string
+		orbNamespace        string
+		destOrbNamespace    string
 		jsonOutput          bool
 		createProjectTokens bool
 		followAll           bool
@@ -330,6 +334,16 @@ Examples:
 				ex.Runner = srcRunnerClient
 			}
 
+			// Wire up the orb client for the source when needed (skipped when
+			// --skip-orb is set).
+			if !skipOrb && orbNamespace != "" {
+				srcOrbClient, oerr := apiOrb.NewClient(cfg, srcToken)
+				if oerr != nil {
+					return fmt.Errorf("creating source orb client: %w", oerr)
+				}
+				ex.Orb = srcOrbClient
+			}
+
 			m, err := ex.Export(ctx, exporter.Options{
 				Host:            cfg.Host,
 				OrgSlug:         sourceOrg,
@@ -341,6 +355,12 @@ Examples:
 						return ""
 					}
 					return runnerNamespace
+				}(),
+				OrbNamespace: func() string {
+					if skipOrb {
+						return ""
+					}
+					return orbNamespace
 				}(),
 			})
 			if err != nil {
@@ -385,13 +405,15 @@ Examples:
 				GitHubToken:         githubToken,
 				DestGitHubOrg:       destGitHubOrg,
 				DestRunnerNamespace: destRunnerNamespace,
+				DestOrbNamespace:    destOrbNamespace,
 				CreateProjectTokens: createProjectTokens,
 			}
 
 			// Wire up the runner client for the destination when needed and not
 			// skipped.
 			wireRunner := !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0)
-			sy, err := buildSyncer(cfg, dstToken, cmd.ErrOrStderr(), wireRunner)
+			wireOrb := !skipOrb && (destOrbNamespace != "" || len(m.Orbs) > 0)
+			sy, err := buildSyncer(cfg, dstToken, cmd.ErrOrStderr(), wireRunner, wireOrb)
 			if err != nil {
 				return err
 			}
@@ -454,6 +476,31 @@ Examples:
 				repsBySection["CIAM"] = rep
 				if !jsonOutput {
 					printSyncReport(cmd, "CIAM", rep, m)
+				}
+			}
+
+			// Orbs (attempted when present in manifest, unless skipped).
+			if !skipOrb && (len(m.Orbs) > 0 || destOrbNamespace != "") {
+				var orbFlagMgr syncer.OrbFlagManager
+				if orgClient, oErr := org.NewClient(cfg, dstToken); oErr == nil {
+					orbFlagMgr = &orgOrbFlagAdapter{c: orgClient}
+				}
+				// Resolve destination org info for flag toggle.
+				destVCSType, destOrgName := "", ""
+				destSlug := destOrg
+				if mapping != nil && mapping.Org.To != "" {
+					destSlug = mapping.Org.To
+				}
+				if parts := strings.SplitN(destSlug, "/", 2); len(parts) == 2 {
+					destVCSType, destOrgName = parts[0], parts[1]
+				}
+				rep, syncErr := sy.SyncOrbs(ctx, m, opts, orbFlagMgr, destVCSType, destOrgName)
+				if syncErr != nil {
+					return syncErr
+				}
+				repsBySection["Orbs"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Orbs", rep, m)
 				}
 			}
 
@@ -536,6 +583,15 @@ Examples:
 		"Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). "+
 			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
 			"When omitted and the manifest contains runner classes, each is flagged for manual recreation.")
+	f.StringVar(&orbNamespace, "orb-namespace", "",
+		"Source orb namespace to capture published orbs from (e.g. 'acme'). "+
+			"Both public and private orbs are captured along with every stable version and its raw YAML source. "+
+			"The namespace must be supplied explicitly — there is no clean org→namespace lookup.")
+	f.StringVar(&destOrbNamespace, "dest-orb-namespace", "",
+		"Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). "+
+			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
+			"When omitted and the manifest contains orbs, each is flagged for manual recreation.")
+	f.BoolVar(&skipOrb, "skip-orb", false, "Skip exporting and syncing orbs")
 	f.BoolVar(&createProjectTokens, "create-project-tokens", false,
 		"When set AND --apply, recreate each captured project API token on the destination project. "+
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+

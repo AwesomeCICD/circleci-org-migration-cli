@@ -1,6 +1,7 @@
 package cmd_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,4 +326,149 @@ func parseOrbsSection(t *testing.T, configYAML string) map[string]any {
 		return nil
 	}
 	return m
+}
+
+// ---------------------------------------------------------------------------
+// orb inline — no orbs section (config has no "orbs:" key)
+// ---------------------------------------------------------------------------
+
+// TestOrbInline_NoOrbsSection verifies that a config with no "orbs:" key is
+// returned unchanged without error (covers the "no orbs section — nothing to
+// do" early-return path in inlineOrbs).
+func TestOrbInline_NoOrbsSection(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	// No orbs → fetchOrbSource should never be called.
+	withFakeOrbSource(t, map[string]string{})
+
+	noOrbConfig := `version: 2.1
+workflows:
+  main:
+    jobs:
+      - build
+jobs:
+  build:
+    docker:
+      - image: cimg/base:2023.06
+    steps:
+      - run: echo hello
+`
+	cfgPath := writeConfig(t, noOrbConfig)
+	out, _, err := runCmd(t, "orb", "inline", "--config", cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error for config without orbs: %v", err)
+	}
+	// The output should still be valid YAML containing the original content.
+	if !strings.Contains(out, "workflows") {
+		t.Errorf("output should contain 'workflows' key from original config; got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// orb inline — already-inline orb entry (not a scalar) is preserved as-is
+// ---------------------------------------------------------------------------
+
+// TestOrbInline_AlreadyInlineOrbSkipped verifies that when an orb entry is
+// already an inline mapping (not a scalar string), it is left untouched.
+// This covers the "skip entries that are already inline" branch in inlineOrbs.
+const configWithInlineOrb = `version: 2.1
+
+orbs:
+  foo: myns/foo@1.2.3
+  already-inline:
+    commands:
+      hello:
+        steps:
+          - run: echo already inline
+
+workflows:
+  main:
+    jobs:
+      - foo/build
+`
+
+func TestOrbInline_AlreadyInlineOrbSkipped(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	withFakeOrbSource(t, map[string]string{
+		"myns/foo@1.2.3": fooOrbSource,
+	})
+
+	cfgPath := writeConfig(t, configWithInlineOrb)
+	out, _, err := runCmd(t, "orb", "inline", "--config", cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// foo should be inlined (was a scalar).
+	assertOrbIsInline(t, out, "foo")
+
+	// already-inline should remain an inline mapping.
+	assertOrbIsInline(t, out, "already-inline")
+
+	// The hello command inside already-inline should still be present.
+	if !strings.Contains(out, "hello") {
+		t.Errorf("output should preserve pre-inlined orb content ('hello'); got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// orb inline — namespace filter with no-slash ref (refMatchesNamespace false)
+// ---------------------------------------------------------------------------
+
+// TestOrbInline_RefWithNoSlash_SkippedByNamespaceFilter verifies that an orb
+// ref with no slash (e.g. "bare-ref") is not matched by any namespace filter.
+// This covers the "slash < 0" early return in refMatchesNamespace.
+const configWithBareRef = `version: 2.1
+
+orbs:
+  bare: bare-ref
+
+workflows:
+  main:
+    jobs:
+      - build
+`
+
+func TestOrbInline_RefWithNoSlash_SkippedByNamespaceFilter(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+	// bare-ref has no slash, so it won't match any namespace.
+	withFakeOrbSource(t, map[string]string{})
+
+	cfgPath := writeConfig(t, configWithBareRef)
+	// With --namespace set, bare-ref won't match → nothing inlined, no error.
+	out, _, err := runCmd(t, "orb", "inline", "--config", cfgPath, "--namespace", "myns")
+	if err != nil {
+		t.Fatalf("unexpected error for bare ref with namespace filter: %v", err)
+	}
+	// "bare" orb should remain as a scalar (unchanged).
+	orbsMap := parseOrbsSection(t, out)
+	if val, ok := orbsMap["bare"]; ok {
+		if _, isStr := val.(string); !isStr {
+			t.Errorf("bare-ref orb should remain as scalar string, got %T: %v", val, val)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// orb inline — fetchOrbSource error is returned as command error
+// ---------------------------------------------------------------------------
+
+// TestOrbInline_FetchError_ReturnsError verifies that when fetchOrbSource
+// returns an error, the inline command propagates it.
+func TestOrbInline_FetchError_ReturnsError(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "fake-token")
+
+	original := cmd.ExposedFetchOrbSource()
+	cmd.SetFetchOrbSource(func(_, _, ref string) (string, error) {
+		return "", fmt.Errorf("network error for %s", ref)
+	})
+	t.Cleanup(func() { cmd.SetFetchOrbSource(original) })
+
+	cfgPath := writeConfig(t, sampleConfig)
+	_, _, err := runCmd(t, "orb", "inline", "--config", cfgPath)
+	if err == nil {
+		t.Fatal("expected error when fetchOrbSource fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "network error") {
+		t.Errorf("error %q should mention 'network error'", err.Error())
+	}
 }

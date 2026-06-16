@@ -52,6 +52,7 @@ circleci-migrate export --source-org <org-slug> [flags]
   -h, --help                      help for export
       --include-usage             (Opt-in) Request a historical usage report from the CircleCI Usage API and download the CSV files to a 'usage/' sub-directory next to the manifest. This data is a local baseline/record only — it does NOT transfer to the destination org.
       --json                      Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)
+      --orb-namespace string      Source orb namespace to capture published orbs from (e.g. 'acme'). Both public and private orbs are captured along with every stable version and its raw YAML source. The namespace must be supplied explicitly — there is no clean org→namespace lookup.
   -o, --output string             Path to write the JSON manifest (always written; use -o to change the path) (default "manifest.json")
       --project stringArray       Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)
       --report string             Path to write the human-readable audit report (default "migration-report.md")

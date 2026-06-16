@@ -107,6 +107,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --apply                          Write changes to the destination (default: dry run)
       --create-project-tokens          When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
       --dest-github-org string         Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
+      --dest-orb-namespace string      Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains orbs, each is flagged for manual recreation.
       --dest-org string                CircleCI organization slug for the destination org, e.g. gh/my-new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
       --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
       --dest-token-context string      Name of the source-org context that holds the destination API token (env var: CIRCLECI_DEST_TOKEN). Required when --transfer-secrets is set.
@@ -120,6 +121,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --mapping string                 Path to a source->destination mapping file (optional)
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")
       --no-input                       Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
+      --orb-namespace string           Source orb namespace to capture published orbs from (e.g. 'acme'). Both public and private orbs are captured along with every stable version and its raw YAML source. The namespace must be supplied explicitly — there is no clean org→namespace lookup.
   -o, --output string                  Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)
       --preflight-only                 Run the preflight checks and print the summary, then exit without performing export or sync. Exits non-zero if any check is a hard failure; exits 0 on warnings (unless --skip-preflight is also set). Use this to validate configuration before committing to a migration run.
       --remove-restrictions            When --transfer-secrets is set, temporarily remove project/expression restrictions from source contexts before the transfer pipeline runs, then restore them afterwards. Use when a context has restrictions that prevent the host project from using it. Group restrictions (including the default 'All members') are never removed.
@@ -129,6 +131,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-ciam                      Skip syncing CIAM roles and groups (standalone circleci-type orgs only)
       --skip-contexts                  Skip exporting and syncing contexts
       --skip-extras                    Skip checkout keys, webhooks, and schedules
+      --skip-orb                       Skip exporting and syncing orbs
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
       --skip-preflight                 Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
       --skip-projects                  Skip exporting and syncing projects

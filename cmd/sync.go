@@ -75,7 +75,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -135,6 +135,7 @@ func parseSyncOnly(raw string) (map[string]bool, error) {
 		"runner":       true,
 		"ciam":         true,
 		"extras":       true,
+		"orb":          true,
 	}
 	result := make(map[string]bool)
 	for _, part := range strings.Split(raw, ",") {
@@ -175,9 +176,11 @@ func newSyncCommand() *cobra.Command {
 		skipRunner          bool
 		skipCIAM            bool
 		skipExtras          bool
+		skipOrb             bool
 		githubToken         string
 		destGitHubOrg       string
 		destRunnerNamespace string
+		destOrbNamespace    string
 		jsonOutput          bool
 		createProjectTokens bool
 		onlyRaw             string
@@ -282,6 +285,7 @@ Examples:
 				skipRunner = !onlySet["runner"]
 				skipCIAM = !onlySet["ciam"]
 				skipExtras = !onlySet["extras"]
+				skipOrb = !onlySet["orb"]
 			}
 			// Apply --skip-terraform-managed: skip sections Terraform owns.
 			if skipTFManaged {
@@ -393,6 +397,7 @@ Examples:
 				GitHubToken:         githubToken,
 				DestGitHubOrg:       destGitHubOrg,
 				DestRunnerNamespace: destRunnerNamespace,
+				DestOrbNamespace:    destOrbNamespace,
 				CreateProjectTokens: createProjectTokens,
 			}
 
@@ -400,7 +405,8 @@ Examples:
 			// or the manifest has runner classes (so dry-run preview works).
 			// Skip when --skip-runner is set.
 			wireRunner := !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0)
-			sy, err := buildSyncer(cfg, token, cmd.ErrOrStderr(), wireRunner)
+			wireOrb := !skipOrb && (destOrbNamespace != "" || len(m.Orbs) > 0)
+			sy, err := buildSyncer(cfg, token, cmd.ErrOrStderr(), wireRunner, wireOrb)
 			if err != nil {
 				return err
 			}
@@ -470,6 +476,31 @@ Examples:
 				}
 			}
 
+			// Orbs (attempted when present in manifest, unless skipped).
+			if !skipOrb && (len(m.Orbs) > 0 || destOrbNamespace != "") {
+				// Build the OrbFlagManager adapter from the org client when available.
+				var orbFlagMgr syncer.OrbFlagManager
+				if orgClient, oErr := org.NewClient(cfg, token); oErr == nil {
+					orbFlagMgr = &orgOrbFlagAdapter{c: orgClient}
+				}
+				// Resolve destination org info for flag toggle.
+				destVCSType, destOrgName := "", ""
+				if destSlug != "" {
+					parts := strings.SplitN(destSlug, "/", 2)
+					if len(parts) == 2 {
+						destVCSType, destOrgName = parts[0], parts[1]
+					}
+				}
+				rep, err := sy.SyncOrbs(ctx, m, opts, orbFlagMgr, destVCSType, destOrgName)
+				if err != nil {
+					return err
+				}
+				repsBySection["Orbs"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Orbs", rep, m)
+				}
+			}
+
 			// Emit a warning when no bundle was loaded but the manifest contains
 			// context or project env vars that needed values.
 			if bundle == nil {
@@ -526,6 +557,11 @@ Examples:
 		"Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). "+
 			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
 			"When omitted and the manifest contains runner classes, each is flagged for manual recreation.")
+	f.StringVar(&destOrbNamespace, "dest-orb-namespace", "",
+		"Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). "+
+			"Must be supplied explicitly — the syncer never guesses the destination namespace. "+
+			"When omitted and the manifest contains orbs, each is flagged for manual recreation.")
+	f.BoolVar(&skipOrb, "skip-orb", false, "Skip syncing orbs")
 	f.BoolVar(&createProjectTokens, "create-project-tokens", false,
 		"When set AND --apply, recreate each captured project API token on the destination project. "+
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
@@ -533,7 +569,7 @@ Examples:
 			"be retrieved again. Default false: emit manual steps only.")
 	f.StringVar(&onlyRaw, "only", "",
 		"Comma-separated list of sections to sync, skipping all others. "+
-			"Accepted values: org-settings, contexts, projects, runner, ciam, extras. "+
+			"Accepted values: org-settings, contexts, projects, runner, ciam, extras, orb. "+
 			"Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). "+
 			"Mutually exclusive with --skip-terraform-managed.")
 	f.BoolVar(&skipTFManaged, "skip-terraform-managed", false,
@@ -791,6 +827,23 @@ func (a ciamWriterAdapter) AddProjectGroupRole(ctx context.Context, orgID, proje
 
 // Compile-time assertion that the adapter satisfies the syncer interface.
 var _ syncer.CIAMWriter = ciamWriterAdapter{}
+
+// orgOrbFlagAdapter adapts *org.Client to syncer.OrbFlagManager using the
+// existing GetFeatureFlags / UpdateFeatureFlags methods on the org client.
+type orgOrbFlagAdapter struct {
+	c *org.Client
+}
+
+func (a *orgOrbFlagAdapter) GetOrbFeatureFlags(ctx context.Context, vcsType, orgName string) (map[string]bool, error) {
+	return a.c.GetFeatureFlags(ctx, vcsType, orgName)
+}
+
+func (a *orgOrbFlagAdapter) UpdateOrbFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error {
+	return a.c.UpdateFeatureFlags(ctx, vcsType, orgName, flags)
+}
+
+// Compile-time assertion that the adapter satisfies the syncer.OrbFlagManager interface.
+var _ syncer.OrbFlagManager = (*orgOrbFlagAdapter)(nil)
 
 // loadBundleIfPresent loads the secret bundle at path if it exists; a missing
 // file is not an error (sync then reports all values as needing manual entry).

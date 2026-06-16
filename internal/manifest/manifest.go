@@ -42,6 +42,12 @@ type Manifest struct {
 	// translate "<srcNs>/<name>" → "<destNs>/<name>" when recreating classes.
 	RunnerNamespace       string                `json:"runner_namespace,omitempty"`
 	RunnerResourceClasses []RunnerResourceClass `json:"runner_resource_classes,omitempty"`
+	// OrbNamespace is the source CircleCI orb namespace whose published orbs
+	// were captured. Empty when the export was run without --orb-namespace.
+	// Stored so the syncer can map source→destination namespace references and
+	// generate the config-rewrite notice for operators.
+	OrbNamespace string        `json:"orb_namespace,omitempty"`
+	Orbs         []CapturedOrb `json:"orbs,omitempty"`
 	// CIAM captures CircleCI CIAM role/group data for standalone (circleci-type)
 	// orgs. It is nil for VCS-type orgs (GitHub OAuth, Bitbucket), whose identity
 	// is managed by the VCS provider and not migratable here. All identities are
@@ -113,6 +119,28 @@ type RunnerResourceClass struct {
 	Name string `json:"name"`
 	// Description is the human-readable description of the resource class.
 	Description string `json:"description,omitempty"`
+}
+
+// CapturedOrb is one orb captured from the source namespace, with all of its
+// stable (released) versions and their raw YAML source. Only stable (non-dev)
+// versions are captured; dev versions are ephemeral and not migratable.
+type CapturedOrb struct {
+	// Name is the fully-qualified orb name, e.g. "acme/my-orb".
+	Name string `json:"name"`
+	// IsPrivate reports whether the orb is private in the source namespace.
+	IsPrivate bool `json:"is_private"`
+	// Versions contains the released orb versions in semver-ascending order.
+	Versions []CapturedOrbVersion `json:"versions"`
+}
+
+// CapturedOrbVersion is one released version of a captured orb with its raw
+// YAML source. The source is stored verbatim so the syncer can republish it
+// in the destination namespace without any further API reads.
+type CapturedOrbVersion struct {
+	// Version is the semver string, e.g. "1.2.3".
+	Version string `json:"version"`
+	// Source is the raw orb YAML as returned by the CircleCI orb source API.
+	Source string `json:"source"`
 }
 
 // Source identifies the organization an export was taken from.

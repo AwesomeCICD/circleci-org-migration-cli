@@ -108,6 +108,12 @@ type Options struct {
 	// must be supplied explicitly — there is no clean org→namespace lookup.
 	// When empty, runner resource classes are silently skipped.
 	RunnerNamespace string
+	// OrbNamespace, when non-empty, captures all published orbs registered
+	// under this namespace via the orb v3 API. Both public and private orbs
+	// are fetched along with every stable (released) version and its raw YAML
+	// source. The namespace must be supplied explicitly — there is no clean
+	// org→namespace lookup. When empty, orb capture is silently skipped.
+	OrbNamespace string
 }
 
 // Exporter reads a source org via the injected clients.
@@ -119,6 +125,10 @@ type Exporter struct {
 	// When nil, runner resource classes are silently skipped even if
 	// Options.RunnerNamespace is set.
 	Runner RunnerAPI
+	// Orb, when set, is used to capture published orbs and their versions.
+	// When nil, orb capture is silently skipped even if Options.OrbNamespace
+	// is set.
+	Orb OrbAPI
 	// Out receives human-readable progress lines. If nil, progress is silent.
 	Out io.Writer
 }
@@ -171,6 +181,7 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*manifest.Manifest
 	}
 
 	e.exportRunnerResourceClasses(ctx, m, opts)
+	e.exportOrbs(ctx, m, opts)
 	e.exportCIAM(ctx, m, o)
 
 	m.SortStable()
