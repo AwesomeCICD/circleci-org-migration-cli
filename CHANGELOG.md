@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.14.0...v0.14.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **transfer:** drop unused install step + handle restricted contexts (--remove-restrictions); recommend in-pipeline transfer ([#278](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/278)) ([df81a6c](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/df81a6c8957cb513a4e59fa28d584e7789fc0a4e))
+
 ## [0.14.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.13.0...v0.14.0) (2026-06-16)
 
 
