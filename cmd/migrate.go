@@ -547,6 +547,9 @@ Examples:
 				return marshalJSON(cmd.OutOrStdout(), combined)
 			}
 
+			// Consolidated end-of-run summary across all sections.
+			printEndSummary(progressOut, repsBySection)
+
 			// ── Step 3 (opt-in): in-pipeline secrets transfer ─────────────────
 			// Only runs when --transfer-secrets is set. The project slug mapping
 			// is derived in-memory from --source-org / --dest-org so the user

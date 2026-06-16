@@ -65,6 +65,7 @@ import (
 	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/ui"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1554,77 +1555,94 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 // printPlan writes the transfer plan to stdout/stderr so operators can review
 // what would happen before committing to --apply.
 func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
-	fmt.Fprintln(errOut, "\n⚙  Transfer plan")
+	ren := ui.New(out)
+	errRen := ui.New(errOut)
+
+	// ── Header on stderr ──────────────────────────────────────────────────────
+	errRen.Section("Transfer plan", "")
 	fmt.Fprintf(errOut, "  Dest token: context=%q env-var=%q\n", plan.DestTokenContext, plan.DestTokenEnvVar)
 	fmt.Fprintf(errOut, "  Dest org ID: %s\n", opts.DestOrgID)
 	fmt.Fprintf(errOut, "  Dest host: %s\n", opts.destHost())
 	fmt.Fprintln(errOut, "")
 
+	// ── Contexts section ──────────────────────────────────────────────────────
 	if len(plan.Contexts) > 0 {
-		fmt.Fprintln(out, "  contexts (one pipeline, one job per context — jobs run in parallel):")
-	}
-	for _, cp := range plan.Contexts {
-		action := "update"
-		// The in-pipeline job performs create-if-missing automatically; we label
-		// the action accordingly in the plan to set operator expectations.
-		if cp.WillCreate {
-			action = "create"
-		}
-		if cp.SourceName == cp.DestName {
-			fmt.Fprintf(out, "  context %q [%s] → %d variable(s)\n", cp.SourceName, action, len(cp.VarNames))
-		} else {
-			fmt.Fprintf(out, "  context %q → %q [%s] (%d variable(s))\n", cp.SourceName, cp.DestName, action, len(cp.VarNames))
-		}
-		for _, v := range cp.VarNames {
-			fmt.Fprintf(out, "    %s\n", v)
-		}
-		if len(cp.BlockingRestrictions) > 0 {
-			fmt.Fprintf(out, "    WARN: %d project/expression restriction(s) — use --remove-restrictions or --host-project to a permitted project\n",
-				len(cp.BlockingRestrictions))
+		ren.Section("Contexts", "one pipeline, one job per context — jobs run in parallel")
+		for _, cp := range plan.Contexts {
+			action := "update"
+			// The in-pipeline job performs create-if-missing automatically; we label
+			// the action accordingly in the plan to set operator expectations.
+			if cp.WillCreate {
+				action = "create"
+			}
+			var label string
+			if cp.SourceName == cp.DestName {
+				label = fmt.Sprintf("context %q [%s] → %d variable(s)", cp.SourceName, action, len(cp.VarNames))
+			} else {
+				label = fmt.Sprintf("context %q → %q [%s] (%d variable(s))", cp.SourceName, cp.DestName, action, len(cp.VarNames))
+			}
+			ren.Item(action, label, "")
+			for _, v := range cp.VarNames {
+				fmt.Fprintf(out, "      %s\n", v)
+			}
+			if len(cp.BlockingRestrictions) > 0 {
+				fmt.Fprintf(out, "    WARN: %d project/expression restriction(s) — use --remove-restrictions or --host-project to a permitted project\n",
+					len(cp.BlockingRestrictions))
+			}
 		}
 	}
 
+	// ── Project secrets section ───────────────────────────────────────────────
 	if len(plan.Projects) > 0 {
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  project secrets (one pipeline per source project — each runs under that project's own slug):")
+		ren.Section("Project secrets", "one pipeline per source project")
 		for _, pp := range plan.Projects {
 			if pp.Skipped {
-				fmt.Fprintf(out, "  SKIP project %q: %s\n", pp.SourceSlug, pp.SkipReason)
+				ren.Item("skipped", fmt.Sprintf("SKIP project %q", pp.SourceSlug), pp.SkipReason)
 			} else {
 				sshNote := ""
 				if len(pp.SSHKeys) > 0 {
 					sshNote = fmt.Sprintf(", %d ssh key(s)", len(pp.SSHKeys))
 				}
-				fmt.Fprintf(out, "  project %q → %q (%d variable(s)%s) [pipeline under %s]\n",
+				label := fmt.Sprintf("project %q → %q (%d variable(s)%s) [pipeline under %s]",
 					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, pp.SourceSlug)
+				ren.Item("created", label, "")
 				for _, v := range pp.VarNames {
-					fmt.Fprintf(out, "    var: %s\n", v)
+					fmt.Fprintf(out, "      var: %s\n", v)
 				}
 				for _, k := range pp.SSHKeys {
 					hostLabel := k.Hostname
 					if hostLabel == "" {
 						hostLabel = "(global)"
 					}
-					fmt.Fprintf(out, "    ssh: fp=%s host=%s\n", k.Fingerprint, hostLabel)
+					fmt.Fprintf(out, "      ssh: fp=%s host=%s\n", k.Fingerprint, hostLabel)
 				}
 			}
 		}
 	}
 
+	// ── Totals ────────────────────────────────────────────────────────────────
 	activeProjCount := 0
 	for _, pp := range plan.Projects {
 		if !pp.Skipped {
 			activeProjCount++
 		}
 	}
-
+	fmt.Fprintln(out, "")
 	if activeProjCount > 0 {
-		fmt.Fprintf(out, "\nTotal: %d context(s), %d context variable(s); %d project(s), %d project variable(s), %d ssh key(s)\n",
+		fmt.Fprintf(out, "  Total: %d context(s), %d context variable(s); %d project(s), %d project variable(s), %d ssh key(s)\n",
 			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars(), plan.TotalSSHKeys())
 	} else {
-		fmt.Fprintf(out, "\nTotal: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
+		fmt.Fprintf(out, "  Total: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
 	}
-	fmt.Fprintln(errOut, "\nSECURITY NOTE: the dest API token must already be stored in the source org context")
+
+	// ── Security note on stderr ───────────────────────────────────────────────
+	fmt.Fprintln(errOut, "")
+	if errRen.ColorEnabled() {
+		// print a highlighted security note
+		fmt.Fprintf(errOut, "  SECURITY NOTE: the dest API token must already be stored in the source org context\n")
+	} else {
+		fmt.Fprintf(errOut, "SECURITY NOTE: the dest API token must already be stored in the source org context\n")
+	}
 	fmt.Fprintf(errOut, "  %q (env var: %s).\n", plan.DestTokenContext, plan.DestTokenEnvVar)
 	fmt.Fprintln(errOut, "  Source org admins with access to that context can read the dest token.\n  Use a scoped token and rotate it after transfer.")
 }
