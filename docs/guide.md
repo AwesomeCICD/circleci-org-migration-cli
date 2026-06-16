@@ -124,13 +124,14 @@ circleci-migrate migrate \
   API token (`CIRCLECI_DEST_TOKEN`). Required with `--transfer-secrets`.
 - `--include-project-vars` — also transfer project-level env-var values
   (destination project slugs are derived from `--dest-org`).
+- `--include-ssh-keys` — also transfer additional project SSH keys in-pipeline
+  (zero-disk; private key material is read with `jq --rawfile` and never echoed
+  to logs). Destination project slugs are derived from `--dest-org`. A project
+  with SSH keys but no env vars still triggers a per-project pipeline.
 - `--host-project <slug>` — the source project whose pipeline runs the context
   transfer. Defaults to the first project; prefer an **established** (long-
   followed) project, since a just-followed project's context authorization may
   not have propagated yet.
-
-> SSH keys are not moved by `--transfer-secrets`; use the `secrets capture` →
-> `sync --secrets` flow for additional project SSH keys.
 
 ### Preflight checks
 
@@ -594,14 +595,19 @@ Key flags:
   off). Each source project must be resolvable to a destination project slug
   via `--mapping`; projects without a mapping entry are **skipped** and clearly
   flagged in the plan. The destination project must already be onboarded.
+- `--include-ssh-keys` — also transfer additional project SSH keys via the
+  in-pipeline zero-disk path (default: off). The in-pipeline job uses
+  `add_ssh_keys` to materialize each key, matches by SHA256 fingerprint, reads
+  the private key with `jq --rawfile` (never echoed to logs), and POSTs it to
+  the destination project. A project with SSH keys but no env vars still triggers
+  a per-project pipeline. Requires a `--mapping` entry for each project.
 - `--mapping` — optional path to `mapping.json`. Entries in `projects` whose
   keys contain `/` are project slug overrides (source → dest project slug);
   entries whose keys have no `/` are context name → destination context name
   overrides.
 
 **Scope:** context env-var values by default; add `--include-project-vars` for
-project env vars too. SSH keys still require `secrets capture` with an
-encrypted bundle.
+project env vars and `--include-ssh-keys` for additional project SSH keys.
 
 ---
 

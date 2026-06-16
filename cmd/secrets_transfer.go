@@ -38,6 +38,14 @@ CREATE-MISSING DESTINATION CONTEXTS:
 PROJECT ENV-VAR TRANSFER (opt-in with --include-project-vars):
   Pass --include-project-vars to also transfer project-level env-var values.
 
+ADDITIONAL SSH KEY TRANSFER (opt-in with --include-ssh-keys):
+  Pass --include-ssh-keys to transfer additional project SSH keys in-pipeline
+  without writing private key material to disk or artifacts.  The in-pipeline
+  job uses add_ssh_keys to materialize each key, matches it by SHA256 fingerprint,
+  reads the private key VERBATIM with jq --rawfile (never echoed), and POSTs it
+  to the destination project via POST /api/v1.1/project/{slug}/ssh-key.
+  A project with SSH keys but no env vars still triggers a per-project pipeline.
+
   IMPORTANT: project env vars are strictly project-scoped — CircleCI only
   injects them when a pipeline runs under that exact project. Therefore,
   'secrets transfer' triggers ONE SEPARATE PIPELINE per source project, each
@@ -179,6 +187,7 @@ type transferFlags struct {
 	apply              bool
 	enableTrigger      bool
 	includeProjectVars bool
+	includeSSHKeys     bool
 	pollTimeout        time.Duration
 }
 
@@ -306,7 +315,7 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 	}
 
 	// Collect project slugs that will need the project-level flag.
-	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, tf.includeProjectVars)
+	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, tf.includeProjectVars, tf.includeSSHKeys)
 
 	// Enable the project-level api-trigger-with-config flag for each slug.
 	// Deferred restores are collected and run in reverse order at function exit.
@@ -330,6 +339,7 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		SelectedContextNames: selectedCtxNames,
 		Mapping:              combinedMapping,
 		IncludeProjectVars:   tf.includeProjectVars,
+		IncludeSSHKeys:       tf.includeSSHKeys,
 		DryRun:               !tf.apply,
 		PollTimeout:          tf.pollTimeout,
 		Stdout:               cmd.OutOrStdout(),
@@ -342,9 +352,10 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 // collectTransferProjectSlugs returns the deduplicated set of source project
 // slugs that will run pipelines during transfer. The host project always runs
 // (for the context-transfer pipeline). When includeProjectVars is true, every
-// source project that has a resolved destination slug also runs its own
-// per-project pipeline.
-func collectTransferProjectSlugs(hostSlug string, m *manifest.Manifest, combinedMapping map[string]string, includeProjectVars bool) []string {
+// source project that has a resolved destination slug and env vars runs its own
+// per-project pipeline. When includeSSHKeys is true, every source project that
+// has a resolved destination slug and SSH keys also runs its own pipeline.
+func collectTransferProjectSlugs(hostSlug string, m *manifest.Manifest, combinedMapping map[string]string, includeProjectVars, includeSSHKeys bool) []string {
 	seen := make(map[string]bool)
 	var out []string
 
@@ -357,16 +368,16 @@ func collectTransferProjectSlugs(hostSlug string, m *manifest.Manifest, combined
 
 	add(hostSlug)
 
-	if includeProjectVars {
-		for _, mp := range m.Projects {
-			if len(mp.EnvVars) == 0 {
-				continue
-			}
-			// Only add if the project can be resolved to a destination slug.
-			if combinedMapping != nil {
-				if _, ok := combinedMapping[mp.Slug]; ok {
-					add(mp.Slug)
-				}
+	for _, mp := range m.Projects {
+		needsEnvVars := includeProjectVars && len(mp.EnvVars) > 0
+		needsSSHKeys := includeSSHKeys && len(mp.SSHKeys) > 0
+		if !needsEnvVars && !needsSSHKeys {
+			continue
+		}
+		// Only add if the project can be resolved to a destination slug.
+		if combinedMapping != nil {
+			if _, ok := combinedMapping[mp.Slug]; ok {
+				add(mp.Slug)
 			}
 		}
 	}
@@ -549,6 +560,14 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 		"Also transfer project env-var values to the destination projects (default: off, context-only). "+
 			"Requires each source project to be resolvable to a destination project slug via --mapping; "+
 			"projects without a mapping entry are skipped with a warning. "+
+			"Destination project must already be onboarded/exist in the destination org.")
+	f.BoolVar(&tf.includeSSHKeys, "include-ssh-keys", false, //nolint:gosec // flag name, not a credential
+		"Also transfer additional project SSH keys to the destination projects via the in-pipeline "+
+			"zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with "+
+			"jq --rawfile and POSTed to the destination — never echoed to logs). "+
+			"Requires each source project to be resolvable to a destination project slug via --mapping; "+
+			"projects without a mapping entry are skipped. "+
+			"A project with SSH keys but no env vars still triggers a per-project pipeline. "+
 			"Destination project must already be onboarded/exist in the destination org.")
 	f.DurationVar(&tf.pollTimeout, "poll-timeout", 30*time.Minute,
 		"Maximum time to wait for the transfer pipeline to complete (0 = no timeout)")

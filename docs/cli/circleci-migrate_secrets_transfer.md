@@ -25,6 +25,14 @@ CREATE-MISSING DESTINATION CONTEXTS:
 PROJECT ENV-VAR TRANSFER (opt-in with --include-project-vars):
   Pass --include-project-vars to also transfer project-level env-var values.
 
+ADDITIONAL SSH KEY TRANSFER (opt-in with --include-ssh-keys):
+  Pass --include-ssh-keys to transfer additional project SSH keys in-pipeline
+  without writing private key material to disk or artifacts.  The in-pipeline
+  job uses add_ssh_keys to materialize each key, matches it by SHA256 fingerprint,
+  reads the private key VERBATIM with jq --rawfile (never echoed), and POSTs it
+  to the destination project via POST /api/v1.1/project/{slug}/ssh-key.
+  A project with SSH keys but no env vars still triggers a per-project pipeline.
+
   IMPORTANT: project env vars are strictly project-scoped — CircleCI only
   injects them when a pipeline runs under that exact project. Therefore,
   'secrets transfer' triggers ONE SEPARATE PIPELINE per source project, each
@@ -170,6 +178,7 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
   -h, --help                        help for transfer
       --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works. Auto-picked from the manifest when omitted.
       --include-project-vars        Also transfer project env-var values to the destination projects (default: off, context-only). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped with a warning. Destination project must already be onboarded/exist in the destination org.
+      --include-ssh-keys            Also transfer additional project SSH keys to the destination projects via the in-pipeline zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with jq --rawfile and POSTed to the destination — never echoed to logs). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped. A project with SSH keys but no env vars still triggers a per-project pipeline. Destination project must already be onboarded/exist in the destination org.
       --manifest string             Path to the export manifest (required)
       --mapping string              Path to mapping.json for context name overrides (optional). Entries in the 'projects' map whose keys do not contain '/' are treated as context name → destination name mappings.
       --poll-timeout duration       Maximum time to wait for the transfer pipeline to complete (0 = no timeout) (default 30m0s)

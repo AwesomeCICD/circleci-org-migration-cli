@@ -52,6 +52,7 @@ func newMigrateCommand() *cobra.Command {
 		transferSecrets    bool
 		destTokenContext   string
 		includeProjectVars bool
+		includeSSHKeys     bool
 		transferHostProj   string
 	)
 
@@ -94,7 +95,8 @@ IN-PIPELINE SECRETS TRANSFER (opt-in):
   --dest-org: for gh/ and bb/ dest orgs the dest slug is
   <provider>/<dest-org-name>/<repo>; this is the same derivation used by
   'mapping generate'. Pass --include-project-vars to also transfer project
-  env-var values.
+  env-var values. Pass --include-ssh-keys to also transfer additional project
+  SSH keys in-pipeline (zero-disk; private key material is never echoed to logs).
 
   Requires:
     --dest-token-context <name>   source-org context that holds CIRCLECI_DEST_TOKEN
@@ -142,7 +144,13 @@ Examples:
   circleci-migrate migrate \
     --source-org gh/acme --dest-org gh/acme-new \
     --transfer-secrets --dest-token-context migration-secrets \
-    --include-project-vars --apply`,
+    --include-project-vars --apply
+
+  # In-pipeline transfer including project env vars AND SSH keys:
+  circleci-migrate migrate \
+    --source-org gh/acme --dest-org gh/acme-new \
+    --transfer-secrets --dest-token-context migration-secrets \
+    --include-project-vars --include-ssh-keys --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			cfg := configFromContext(ctx)
@@ -464,7 +472,7 @@ Examples:
 			// is derived in-memory from --source-org / --dest-org so the user
 			// does not need to produce a mapping.json separately.
 			if transferSecrets {
-				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars); err != nil {
+				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars, includeSSHKeys); err != nil {
 					return err
 				}
 			}
@@ -557,6 +565,12 @@ Examples:
 	f.BoolVar(&includeProjectVars, "include-project-vars", false,
 		"When --transfer-secrets is set, also transfer project-level env-var values to the "+
 			"corresponding destination projects. "+
+			"Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). "+
+			"Projects without a derivable destination slug are skipped.")
+	f.BoolVar(&includeSSHKeys, "include-ssh-keys", false, //nolint:gosec // flag name, not a credential
+		"When --transfer-secrets is set, also transfer additional project SSH keys to the "+
+			"destination projects via the in-pipeline zero-disk path. "+
+			"Private key material is read with jq --rawfile and never echoed to logs. "+
 			"Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). "+
 			"Projects without a derivable destination slug are skipped.")
 	f.StringVar(&transferHostProj, "host-project", "",
@@ -875,12 +889,13 @@ func BuildMigrateMapping(mappingPath, srcOrg, dstOrg string) (*manifest.Mapping,
 //	destTokenContext  — source-org context name holding CIRCLECI_DEST_TOKEN
 //	apply             — true → trigger the pipeline; false → dry run only
 //	includeProjectVars — true → also transfer project env-var values
+//	includeSSHKeys    — true → also transfer additional project SSH keys
 func runMigrateSecretsTransfer(
 	cmd *cobra.Command,
 	cfg *settings.Config,
 	m *manifest.Manifest,
 	srcToken, sourceOrg, destOrg, destTokenContext, hostProjectOverride string,
-	apply, includeProjectVars bool,
+	apply, includeProjectVars, includeSSHKeys bool,
 ) error {
 	stderr := cmd.ErrOrStderr()
 
@@ -941,7 +956,7 @@ func runMigrateSecretsTransfer(
 	} else if len(m.Projects) > 0 {
 		hostSlug = normalizeVCSPrefix(m.Projects[0].Slug)
 	}
-	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars)
+	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars, includeSSHKeys)
 	for _, slug := range slugsNeedingFlag {
 		restore, pErr := maybeEnableProjectTrigger(cmd, projClient, slug, true /* autoEnable */, orgFlagEnabled)
 		if pErr != nil {
@@ -962,6 +977,7 @@ func runMigrateSecretsTransfer(
 		DestTokenEnvVar:    "CIRCLECI_DEST_TOKEN",
 		Mapping:            combinedMapping,
 		IncludeProjectVars: includeProjectVars,
+		IncludeSSHKeys:     includeSSHKeys,
 		DryRun:             !apply,
 		PollTimeout:        30 * time.Minute,
 		Stdout:             cmd.OutOrStdout(),
