@@ -153,6 +153,15 @@ type Options struct {
 	// are skipped with a WARN line in the plan.
 	IncludeProjectVars bool
 
+	// IncludeSSHKeys controls whether additional project SSH keys are also
+	// transferred via the in-pipeline zero-disk path (add_ssh_keys materializes
+	// each key; the script reads + POSTs it to the destination).  Default false.
+	// When true, each source project that has SSH keys AND can be resolved to a
+	// destination project slug is included in (or added to) the per-project
+	// pipeline.  A project with only SSH keys (no env vars, or IncludeProjectVars
+	// is off) will still get a per-project pipeline when IncludeSSHKeys is true.
+	IncludeSSHKeys bool
+
 	// DryRun controls whether the transfer is actually executed.
 	// When true (the default), only a plan is printed and no pipeline is triggered.
 	// Pass DryRun: false (--apply) to execute.
@@ -242,7 +251,16 @@ type ContextPlan struct {
 	WillCreate bool
 }
 
-// ProjectVarPlan describes what would be transferred for one project's env vars.
+// SSHKeyPlan describes one additional SSH key that would be transferred for a project.
+type SSHKeyPlan struct {
+	// Fingerprint is the bare SHA256 fingerprint (no "SHA256:" prefix).
+	Fingerprint string
+	// Hostname is the target host this key is scoped to (may be empty for global keys).
+	Hostname string
+}
+
+// ProjectVarPlan describes what would be transferred for one project's env vars
+// (and optionally additional SSH keys).
 type ProjectVarPlan struct {
 	// SourceSlug is the project slug in the source org.
 	SourceSlug string
@@ -251,6 +269,9 @@ type ProjectVarPlan struct {
 	DestSlug string
 	// VarNames are the env-var names that would be transferred.
 	VarNames []string
+	// SSHKeys are the additional SSH keys to transfer in-pipeline for this project.
+	// Only populated when IncludeSSHKeys is set in Options.
+	SSHKeys []SSHKeyPlan
 	// Skipped is true when the destination project cannot be resolved.
 	Skipped bool
 	// SkipReason is a human-readable explanation of why Skipped is true.
@@ -285,6 +306,17 @@ func (p *Plan) TotalProjectVars() int {
 	for _, pv := range p.Projects {
 		if !pv.Skipped {
 			n += len(pv.VarNames)
+		}
+	}
+	return n
+}
+
+// TotalSSHKeys returns the total number of SSH keys to transfer across all projects.
+func (p *Plan) TotalSSHKeys() int {
+	n := 0
+	for _, pv := range p.Projects {
+		if !pv.Skipped {
+			n += len(pv.SSHKeys)
 		}
 	}
 	return n
@@ -555,13 +587,23 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 const projectVarWorkerCount = 4
 
 // buildSingleProjectTransferConfig builds an inline CircleCI YAML config that
-// transfers env vars for exactly ONE source project.  The generated pipeline
-// runs under that project's own slug so CircleCI injects the project's env vars
-// into the job environment.
+// transfers env vars (and optionally additional SSH keys) for exactly ONE source
+// project.  The generated pipeline runs under that project's own slug so CircleCI
+// injects the project's env vars into the job environment.
 //
 // This is the core correctness fix for issue #263: project env vars are
 // strictly project-scoped, so each project must run its own pipeline under its
 // own slug — a single host-project pipeline cannot access another project's vars.
+//
+// When pp.SSHKeys is non-empty the generated config also:
+//   - Adds an add_ssh_keys step that materialises the keys to ~/.ssh/id_rsa_<md5>.
+//   - Runs a script that walks the materialised files, recomputes each key's SHA256
+//     fingerprint (to match the manifest's catalogued fingerprints), reads the
+//     private key VERBATIM via jq --rawfile (never echoed), and POSTs it to the
+//     destination project via POST /api/v1.1/project/{slug}/ssh-key.
+//
+// SECURITY: private key material is read with jq --rawfile (no echo/cat to stdout).
+// HTTP 201 and 200 are both treated as success (idempotent).
 func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver string) string {
 	destHost := opts.destHost()
 	destTokenEnvVar := opts.destTokenEnvVar()
@@ -582,7 +624,18 @@ func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver stri
 	sb.WriteString("    steps:\n")
 	sb.WriteString(buildTransferInstallStep(ver))
 
-	// Project env-var transfer step.
+	// ── SSH key materialisation (add_ssh_keys step) ────────────────────────────
+	// When SSH keys are to be transferred, the add_ssh_keys step materialises
+	// them to ~/.ssh/id_rsa_<md5fp> so the subsequent script can walk the files.
+	if len(pp.SSHKeys) > 0 {
+		sb.WriteString("      - add_ssh_keys:\n")
+		sb.WriteString("          fingerprints:\n")
+		for _, k := range pp.SSHKeys {
+			sb.WriteString(fmt.Sprintf("            - \"SHA256:%s\"\n", k.Fingerprint))
+		}
+	}
+
+	// ── Project env-var transfer step ─────────────────────────────────────────
 	// The source project's env vars are available in the job environment
 	// because the pipeline runs under that project's own slug (CircleCI
 	// injects project-scoped env vars only when the pipeline belongs to that
@@ -593,44 +646,119 @@ func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver stri
 	//   POST /api/v1.1/project/{slug}/envvar   → 201 (create or update)
 	//   PUT  /api/v1.1/project/{slug}/envvar   → not available; POST is idempotent-upsert
 	// We use POST (add-or-update) which returns 201 on create and 200 on update.
-	sb.WriteString("      - run:\n")
-	sb.WriteString(fmt.Sprintf("          name: Transfer project env vars for %q\n", pp.SourceSlug))
-	sb.WriteString("          command: |\n")
-	sb.WriteString("            set -euo pipefail\n")
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("            DEST_HOST=%q\n", destHost))
-	sb.WriteString(fmt.Sprintf("            DEST_PROJECT_SLUG=%q\n", pp.DestSlug))
-	sb.WriteString(fmt.Sprintf("            DEST_TOKEN=${%s:?%q env var is required (should be in the dest-token context)}\n",
-		destTokenEnvVar, destTokenEnvVar))
-	sb.WriteString("\n")
-	sb.WriteString("            # POST each project env var to the destination project.\n")
-	sb.WriteString("            # Values are available in the job environment from the source project\n")
-	sb.WriteString("            # because this pipeline runs under that project's own slug.\n")
-	sb.WriteString("            transfer_ok=true\n")
-	for _, varName := range pp.VarNames {
-		safeVar := strings.ReplaceAll(varName, "'", "'\\''")
-		sb.WriteString(fmt.Sprintf("            # Transfer project var %s\n", varName))
-		sb.WriteString(fmt.Sprintf("            val=${%s:-}\n", safeVar))
-		sb.WriteString("            body=$(jq -n --arg n \"" + varName + "\" --arg v \"$val\" '{\"name\": $n, \"value\": $v}')\n")
-		sb.WriteString("            http_code=$(curl -s -o /dev/null -w '%{http_code}' \\\n")
-		sb.WriteString("              -X POST \\\n")
-		sb.WriteString("              -H 'Content-Type: application/json' \\\n")
-		sb.WriteString("              -H \"Circle-Token: ${DEST_TOKEN}\" \\\n")
-		sb.WriteString("              -d \"$body\" \\\n")
-		sb.WriteString("              \"${DEST_HOST}/api/v1.1/project/${DEST_PROJECT_SLUG}/envvar\")\n")
-		sb.WriteString("            if [ \"$http_code\" != '201' ] && [ \"$http_code\" != '200' ]; then\n")
-		sb.WriteString(fmt.Sprintf("              echo \"ERROR: POST project var %s HTTP ${http_code}\" >&2\n", varName))
-		sb.WriteString("              transfer_ok=false\n")
-		sb.WriteString("            else\n")
-		sb.WriteString(fmt.Sprintf("              echo \"Transferred project var: %s\"\n", varName))
+	if len(pp.VarNames) > 0 {
+		sb.WriteString("      - run:\n")
+		sb.WriteString(fmt.Sprintf("          name: Transfer project env vars for %q\n", pp.SourceSlug))
+		sb.WriteString("          command: |\n")
+		sb.WriteString("            set -euo pipefail\n")
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("            DEST_HOST=%q\n", destHost))
+		sb.WriteString(fmt.Sprintf("            DEST_PROJECT_SLUG=%q\n", pp.DestSlug))
+		sb.WriteString(fmt.Sprintf("            DEST_TOKEN=${%s:?%q env var is required (should be in the dest-token context)}\n",
+			destTokenEnvVar, destTokenEnvVar))
+		sb.WriteString("\n")
+		sb.WriteString("            # POST each project env var to the destination project.\n")
+		sb.WriteString("            # Values are available in the job environment from the source project\n")
+		sb.WriteString("            # because this pipeline runs under that project's own slug.\n")
+		sb.WriteString("            transfer_ok=true\n")
+		for _, varName := range pp.VarNames {
+			safeVar := strings.ReplaceAll(varName, "'", "'\\''")
+			sb.WriteString(fmt.Sprintf("            # Transfer project var %s\n", varName))
+			sb.WriteString(fmt.Sprintf("            val=${%s:-}\n", safeVar))
+			sb.WriteString("            body=$(jq -n --arg n \"" + varName + "\" --arg v \"$val\" '{\"name\": $n, \"value\": $v}')\n")
+			sb.WriteString("            http_code=$(curl -s -o /dev/null -w '%{http_code}' \\\n")
+			sb.WriteString("              -X POST \\\n")
+			sb.WriteString("              -H 'Content-Type: application/json' \\\n")
+			sb.WriteString("              -H \"Circle-Token: ${DEST_TOKEN}\" \\\n")
+			sb.WriteString("              -d \"$body\" \\\n")
+			sb.WriteString("              \"${DEST_HOST}/api/v1.1/project/${DEST_PROJECT_SLUG}/envvar\")\n")
+			sb.WriteString("            if [ \"$http_code\" != '201' ] && [ \"$http_code\" != '200' ]; then\n")
+			sb.WriteString(fmt.Sprintf("              echo \"ERROR: POST project var %s HTTP ${http_code}\" >&2\n", varName))
+			sb.WriteString("              transfer_ok=false\n")
+			sb.WriteString("            else\n")
+			sb.WriteString(fmt.Sprintf("              echo \"Transferred project var: %s\"\n", varName))
+			sb.WriteString("            fi\n")
+		}
+		sb.WriteString("            if [ \"$transfer_ok\" = 'false' ]; then\n")
+		sb.WriteString("              echo 'ERROR: one or more project env-var POSTs failed (see above).' >&2\n")
+		sb.WriteString("              exit 1\n")
 		sb.WriteString("            fi\n")
+		sb.WriteString(fmt.Sprintf("            echo 'Project env-var transfer complete for %q'\n", pp.SourceSlug))
+		sb.WriteString("\n")
 	}
-	sb.WriteString("            if [ \"$transfer_ok\" = 'false' ]; then\n")
-	sb.WriteString("              echo 'ERROR: one or more project env-var POSTs failed (see above).' >&2\n")
-	sb.WriteString("              exit 1\n")
-	sb.WriteString("            fi\n")
-	sb.WriteString(fmt.Sprintf("            echo 'Project env-var transfer complete for %q'\n", pp.SourceSlug))
-	sb.WriteString("\n")
+
+	// ── SSH key transfer step ──────────────────────────────────────────────────
+	// Walks the materialised key files from the add_ssh_keys step above, matches
+	// each file by recomputing its SHA256 fingerprint, reads the private key
+	// material VERBATIM with jq --rawfile (never echoed), and POSTs it to the
+	// destination project.
+	//
+	// POST /api/v1.1/project/{slug}/ssh-key
+	//   Body: {"hostname": "<host>", "private_key": "<pem>"}
+	//   Success: 201 or 200 (idempotent — already-present key is a no-op).
+	//
+	// SECURITY:
+	//   - Keys are never echoed; jq --rawfile captures file contents without
+	//     shell interpolation or command substitution (which strips trailing
+	//     newlines, producing invalid keys).
+	//   - curl -s: silent; no response body printed.
+	//   - The dest token is referenced only as ${CIRCLECI_DEST_TOKEN}.
+	if len(pp.SSHKeys) > 0 {
+		sb.WriteString("      - run:\n")
+		sb.WriteString(fmt.Sprintf("          name: Transfer additional SSH keys for %q\n", pp.SourceSlug))
+		sb.WriteString("          command: |\n")
+		sb.WriteString("            set -euo pipefail\n")
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("            DEST_HOST=%q\n", destHost))
+		sb.WriteString(fmt.Sprintf("            DEST_PROJECT_SLUG=%q\n", pp.DestSlug))
+		// #nosec G101 -- DEST_TOKEN_VAR is the NAME of the env var, not a credential
+		sb.WriteString(fmt.Sprintf("            DEST_TOKEN=${%s:?%q env var is required (should be in the dest-token context)}\n",
+			destTokenEnvVar, destTokenEnvVar))
+		sb.WriteString("\n")
+		sb.WriteString("            # fingerprint (bare SHA256) → hostname lookup from manifest catalog.\n")
+		sb.WriteString("            # Keys are base64+= chars; hostnames are hostname-safe — no shell-specials.\n")
+		sb.WriteString("            declare -A FP_TO_HOST\n")
+		for _, k := range pp.SSHKeys {
+			sb.WriteString(fmt.Sprintf("            FP_TO_HOST[%q]=%q\n", k.Fingerprint, k.Hostname))
+		}
+		sb.WriteString("\n")
+		sb.WriteString("            transfer_ok=true\n")
+		sb.WriteString(`            for f in "$HOME"/.ssh/id_rsa_* "$HOME"/.ssh/id_ed25519_* "$HOME"/.ssh/id_ecdsa_*; do
+              [ -f "$f" ] || continue
+              # Recompute SHA256 fingerprint: "2048 SHA256:<fp> comment (RSA)"
+              fp_line=$(ssh-keygen -lf "$f" -E sha256 2>/dev/null) || continue
+              # Extract bare fingerprint after "SHA256:"
+              fp=$(echo "$fp_line" | grep -oP '(?<=SHA256:)[A-Za-z0-9+/=]+') || continue
+              # Skip if not in our catalog
+              if [ -z "${FP_TO_HOST[$fp]+set}" ]; then
+                continue
+              fi
+              host="${FP_TO_HOST[$fp]}"
+              # Read private key VERBATIM with jq --rawfile; never echo key material.
+              # --rawfile preserves the trailing newline (command substitution strips it,
+              # producing an invalid OpenSSH key that CircleCI would reject).
+              body=$(jq -n --arg hn "$host" --rawfile pk "$f" '{"hostname":$hn,"private_key":$pk}')
+              http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+                -X POST \
+                -H 'Content-Type: application/json' \
+                -H "Circle-Token: ${DEST_TOKEN}" \
+                -d "$body" \
+                "${DEST_HOST}/api/v1.1/project/${DEST_PROJECT_SLUG}/ssh-key")
+              if [ "$http_code" != '201' ] && [ "$http_code" != '200' ]; then
+                echo "ERROR: POST ssh-key fp=${fp} host=${host} HTTP ${http_code}" >&2
+                transfer_ok=false
+              else
+                echo "Transferred SSH key: fp=${fp} host=${host}"
+              fi
+            done
+`)
+		sb.WriteString("            if [ \"$transfer_ok\" = 'false' ]; then\n")
+		sb.WriteString("              echo 'ERROR: one or more SSH key POSTs failed (see above).' >&2\n")
+		sb.WriteString("              exit 1\n")
+		sb.WriteString("            fi\n")
+		sb.WriteString(fmt.Sprintf("            echo 'SSH key transfer complete for %q'\n", pp.SourceSlug))
+		sb.WriteString("\n")
+	}
 
 	// Workflow: single job, attached only to the dest-token context.
 	sb.WriteString("workflows:\n")
@@ -919,47 +1047,113 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 		})
 	}
 
-	if len(ctxPlans) == 0 && !opts.IncludeProjectVars {
+	if len(ctxPlans) == 0 && !opts.IncludeProjectVars && !opts.IncludeSSHKeys {
 		return Plan{}, errors.New("transfer: no contexts with env-var values found in manifest (nothing to transfer)")
 	}
 
-	// Project env-var plans (only when IncludeProjectVars is set).
-	var projPlans []ProjectVarPlan
+	// Per-project plans: merge env-var and SSH-key data into a single
+	// ProjectVarPlan per source project.  A project that can be resolved to a
+	// dest slug gets one plan entry; an unresolvable project is skipped.
+	//
+	// We use a map keyed by source slug to accumulate both env vars and SSH keys
+	// into a single plan entry, then append to projPlans in stable manifest order.
+	type partialPlan struct {
+		destSlug string
+		varNames []string
+		sshKeys  []SSHKeyPlan
+		skipped  bool
+		skipMsg  string
+	}
+	partial := make(map[string]*partialPlan)
+	var projOrder []string // stable source-slug order
+
+	ensureEntry := func(srcSlug string) *partialPlan {
+		if _, ok := partial[srcSlug]; !ok {
+			partial[srcSlug] = &partialPlan{}
+			projOrder = append(projOrder, srcSlug)
+		}
+		return partial[srcSlug]
+	}
+
+	// ── Project env-var contribution ─────────────────────────────────────────
 	if opts.IncludeProjectVars {
 		for _, mp := range m.Projects {
 			if len(mp.EnvVars) == 0 {
 				continue
 			}
-
+			p := ensureEntry(mp.Slug)
 			destSlug, ok := opts.destProjectSlug(mp.Slug)
 			if !ok {
-				projPlans = append(projPlans, ProjectVarPlan{
-					SourceSlug: mp.Slug,
-					Skipped:    true,
-					SkipReason: fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug),
-				})
+				p.skipped = true
+				p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
 				continue
 			}
-
+			p.destSlug = destSlug
 			varNames := make([]string, 0, len(mp.EnvVars))
 			for _, ev := range mp.EnvVars {
 				varNames = append(varNames, ev.Name)
 			}
 			sort.Strings(varNames)
+			p.varNames = varNames
+		}
+	}
 
+	// ── SSH-key contribution ───────────────────────────────────────────────────
+	if opts.IncludeSSHKeys {
+		for _, mp := range m.Projects {
+			if len(mp.SSHKeys) == 0 {
+				continue
+			}
+			p := ensureEntry(mp.Slug)
+			// If already skipped due to an unresolvable dest slug, keep it skipped.
+			if p.skipped {
+				continue
+			}
+			if p.destSlug == "" {
+				destSlug, ok := opts.destProjectSlug(mp.Slug)
+				if !ok {
+					p.skipped = true
+					p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+					continue
+				}
+				p.destSlug = destSlug
+			}
+			keys := make([]SSHKeyPlan, 0, len(mp.SSHKeys))
+			for _, k := range mp.SSHKeys {
+				keys = append(keys, SSHKeyPlan{
+					Fingerprint: k.Fingerprint,
+					Hostname:    k.Hostname,
+				})
+			}
+			p.sshKeys = keys
+		}
+	}
+
+	// Build the final ordered projPlans slice.
+	var projPlans []ProjectVarPlan
+	for _, slug := range projOrder {
+		p := partial[slug]
+		if p.skipped {
 			projPlans = append(projPlans, ProjectVarPlan{
-				SourceSlug: mp.Slug,
-				DestSlug:   destSlug,
-				VarNames:   varNames,
+				SourceSlug: slug,
+				Skipped:    true,
+				SkipReason: p.skipMsg,
+			})
+		} else {
+			projPlans = append(projPlans, ProjectVarPlan{
+				SourceSlug: slug,
+				DestSlug:   p.destSlug,
+				VarNames:   p.varNames,
+				SSHKeys:    p.sshKeys,
 			})
 		}
 	}
 
 	if len(ctxPlans) == 0 && len(projPlans) == 0 {
-		return Plan{}, errors.New("transfer: no contexts or projects with env-var values found in manifest (nothing to transfer)")
+		return Plan{}, errors.New("transfer: no contexts or projects with transferable data found in manifest (nothing to transfer)")
 	}
-	// If only project-var mode and ALL projects are skipped, that's a usable but
-	// warning-worthy plan — we return it; the caller sees the SKIP lines.
+	// If only project-var/SSH-key mode and ALL projects are skipped, that's a
+	// usable but warning-worthy plan — we return it; the caller sees the SKIP lines.
 
 	return Plan{
 		Contexts:         ctxPlans,
@@ -1045,12 +1239,15 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		ctxErr = runContextPipeline(ctx, deps, m, &plan, &opts)
 	}
 
-	// ── Phase 2: per-project pipeline for project env vars ───────────────────
+	// ── Phase 2: per-project pipeline for project env vars and/or SSH keys ──────
 
-	// Collect non-skipped project plans.
+	// Collect non-skipped project plans that have something to transfer: env vars
+	// (when IncludeProjectVars is set) and/or SSH keys (when IncludeSSHKeys is set).
+	// A project with only SSH keys still needs its own pipeline even if VarNames
+	// is empty.
 	var activeProjPlans []ProjectVarPlan
 	for _, pp := range plan.Projects {
-		if !pp.Skipped && len(pp.VarNames) > 0 {
+		if !pp.Skipped && (len(pp.VarNames) > 0 || len(pp.SSHKeys) > 0) {
 			activeProjPlans = append(activeProjPlans, pp)
 		}
 	}
@@ -1059,10 +1256,10 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	var projErr error
 	if len(activeProjPlans) > 0 {
 		if len(activeProjPlans) > 1 {
-			fmt.Fprintf(opts.Stderr, "Triggering %d per-project pipeline(s) for project env-var transfer (concurrency: %d)…\n",
+			fmt.Fprintf(opts.Stderr, "Triggering %d per-project pipeline(s) for project env-var/SSH-key transfer (concurrency: %d)…\n",
 				len(activeProjPlans), projectVarWorkerCount)
 		} else {
-			fmt.Fprintf(opts.Stderr, "Triggering project env-var transfer pipeline for %s…\n",
+			fmt.Fprintf(opts.Stderr, "Triggering project transfer pipeline for %s…\n",
 				activeProjPlans[0].SourceSlug)
 		}
 		projResults, projErr = runProjectVarPipelines(ctx, deps, activeProjPlans, &opts, opts.Stderr)
@@ -1082,8 +1279,8 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 				successes++
 			}
 		}
-		fmt.Fprintf(opts.Stdout, "Project env-var transfer: %d/%d project pipeline(s) succeeded (%d project variable(s) targeted).\n",
-			successes, len(activeProjPlans), plan.TotalProjectVars())
+		fmt.Fprintf(opts.Stdout, "Project transfer: %d/%d project pipeline(s) succeeded (%d project variable(s), %d SSH key(s) targeted).\n",
+			successes, len(activeProjPlans), plan.TotalProjectVars(), plan.TotalSSHKeys())
 	}
 
 	// Return the first non-nil error (context error takes precedence).
@@ -1213,15 +1410,26 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 
 	if len(plan.Projects) > 0 {
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  project env vars (one pipeline per source project — each pipeline captures ALL of that project's env vars in a single job):")
+		fmt.Fprintln(out, "  project secrets (one pipeline per source project — each runs under that project's own slug):")
 		for _, pp := range plan.Projects {
 			if pp.Skipped {
 				fmt.Fprintf(out, "  SKIP project %q: %s\n", pp.SourceSlug, pp.SkipReason)
 			} else {
-				fmt.Fprintf(out, "  project %q → %q (%d variable(s)) [pipeline under %s]\n",
-					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), pp.SourceSlug)
+				sshNote := ""
+				if len(pp.SSHKeys) > 0 {
+					sshNote = fmt.Sprintf(", %d ssh key(s)", len(pp.SSHKeys))
+				}
+				fmt.Fprintf(out, "  project %q → %q (%d variable(s)%s) [pipeline under %s]\n",
+					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, pp.SourceSlug)
 				for _, v := range pp.VarNames {
-					fmt.Fprintf(out, "    %s\n", v)
+					fmt.Fprintf(out, "    var: %s\n", v)
+				}
+				for _, k := range pp.SSHKeys {
+					hostLabel := k.Hostname
+					if hostLabel == "" {
+						hostLabel = "(global)"
+					}
+					fmt.Fprintf(out, "    ssh: fp=%s host=%s\n", k.Fingerprint, hostLabel)
 				}
 			}
 		}
@@ -1235,8 +1443,8 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 	}
 
 	if activeProjCount > 0 {
-		fmt.Fprintf(out, "\nTotal: %d context(s), %d context variable(s); %d project(s), %d project variable(s)\n",
-			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars())
+		fmt.Fprintf(out, "\nTotal: %d context(s), %d context variable(s); %d project(s), %d project variable(s), %d ssh key(s)\n",
+			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars(), plan.TotalSSHKeys())
 	} else {
 		fmt.Fprintf(out, "\nTotal: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
 	}

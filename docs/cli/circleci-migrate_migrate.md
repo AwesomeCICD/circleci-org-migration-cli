@@ -40,7 +40,8 @@ IN-PIPELINE SECRETS TRANSFER (opt-in):
   --dest-org: for gh/ and bb/ dest orgs the dest slug is
   <provider>/<dest-org-name>/<repo>; this is the same derivation used by
   'mapping generate'. Pass --include-project-vars to also transfer project
-  env-var values.
+  env-var values. Pass --include-ssh-keys to also transfer additional project
+  SSH keys in-pipeline (zero-disk; private key material is never echoed to logs).
 
   Requires:
     --dest-token-context <name>   source-org context that holds CIRCLECI_DEST_TOKEN
@@ -90,6 +91,12 @@ Examples:
     --transfer-secrets --dest-token-context migration-secrets \
     --include-project-vars --apply
 
+  # In-pipeline transfer including project env vars AND SSH keys:
+  circleci-migrate migrate \
+    --source-org gh/acme --dest-org gh/acme-new \
+    --transfer-secrets --dest-token-context migration-secrets \
+    --include-project-vars --include-ssh-keys --apply
+
 ```
 circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flags]
 ```
@@ -108,6 +115,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
   -h, --help                           help for migrate
       --host-project string            When --transfer-secrets is set, the source-org project slug whose pipeline runs the context transfer (e.g. gh/acme/web). Defaults to the first project. Prefer an ESTABLISHED (long-followed) project — a just-followed project's context authorization may not have propagated yet.
       --include-project-vars           When --transfer-secrets is set, also transfer project-level env-var values to the corresponding destination projects. Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). Projects without a derivable destination slug are skipped.
+      --include-ssh-keys               When --transfer-secrets is set, also transfer additional project SSH keys to the destination projects via the in-pipeline zero-disk path. Private key material is read with jq --rawfile and never echoed to logs. Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). Projects without a derivable destination slug are skipped.
       --json                           Print a machine-readable JSON summary to stdout instead of the human-readable output; progress is written to stderr
       --mapping string                 Path to a source->destination mapping file (optional)
       --missing-secrets string         How to handle variables with no captured value: skip|placeholder (default "skip")

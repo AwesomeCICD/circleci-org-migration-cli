@@ -56,6 +56,7 @@ IGNORE="
 --strict
 --namespace
 --ssh-keys
+--rawfile
 "
 
 is_ignored() {

@@ -91,7 +91,7 @@ func TestCollectTransferProjectSlugs_HostOnly(t *testing.T) {
 		"gh/old-org/api": "gh/new-org/api",
 	}
 
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, false)
+	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, false, false)
 
 	if len(slugs) != 1 || slugs[0] != "gh/old-org/web" {
 		t.Errorf("slugs = %v; want [gh/old-org/web]", slugs)
@@ -109,7 +109,7 @@ func TestCollectTransferProjectSlugs_IncludeProjectVars(t *testing.T) {
 		// gh/old-org/nomapping intentionally absent
 	}
 
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, true)
+	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, true, false)
 
 	seen := make(map[string]bool)
 	for _, s := range slugs {
@@ -141,7 +141,7 @@ func TestCollectTransferProjectSlugs_IncludeProjectVars(t *testing.T) {
 // returns just the host slug.
 func TestCollectTransferProjectSlugs_EmptyManifest(t *testing.T) {
 	m := &manifest.Manifest{}
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true)
+	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true, false)
 	if len(slugs) != 1 || slugs[0] != "gh/old-org/web" {
 		t.Errorf("slugs = %v; want [gh/old-org/web]", slugs)
 	}
@@ -151,7 +151,7 @@ func TestCollectTransferProjectSlugs_EmptyManifest(t *testing.T) {
 // includeProjectVars=true still returns only the host (no mapping → no projects).
 func TestCollectTransferProjectSlugs_NilMapping(t *testing.T) {
 	m := makeManifestWithProjects("gh/old-org/web", "gh/old-org/api")
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true)
+	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true, false)
 	if len(slugs) != 1 {
 		t.Errorf("slugs = %v; want only host slug with nil mapping", slugs)
 	}

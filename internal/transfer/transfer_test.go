@@ -1672,3 +1672,531 @@ func containsSlug(slugs []string, target string) bool {
 	}
 	return false
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSH key transfer (--include-ssh-keys)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// manifestWithSSHKeys returns a manifest with two projects: one has SSH keys,
+// one has env vars, one has both.
+func manifestWithSSHKeys() *manifest.Manifest {
+	return &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Contexts: []manifest.Context{
+			{
+				Name:    "deploy-prod",
+				EnvVars: []manifest.ContextEnvVar{{Name: "AWS_KEY"}},
+			},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				EnvVars: []manifest.ProjectEnvVar{
+					{Name: "APP_SECRET"},
+				},
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Fingerprint: "abc123=", Hostname: "github.com"},
+					{Fingerprint: "def456=", Hostname: ""},
+				},
+			},
+			{
+				Slug: "gh/acme/api",
+				// Only SSH keys, no env vars.
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Fingerprint: "ghi789=", Hostname: "gitlab.com"},
+				},
+			},
+			{
+				Slug: "gh/acme/cli",
+				// Only env vars, no SSH keys.
+				EnvVars: []manifest.ProjectEnvVar{{Name: "CLI_SECRET"}},
+			},
+		},
+	}
+}
+
+// TestBuildPlan_IncludeSSHKeys_PopulatesSSHKeyPlans verifies that when
+// IncludeSSHKeys is set, SSH keys are included in the project plans.
+func TestBuildPlan_IncludeSSHKeys_PopulatesSSHKeyPlans(t *testing.T) {
+	m := manifestWithSSHKeys()
+	opts := baseOpts()
+	opts.IncludeSSHKeys = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+		// gh/acme/cli intentionally not mapped to test skipping
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have plans for web (ssh keys mapped) and api (ssh keys mapped);
+	// cli has no SSH keys so it won't appear.
+	var webPlan, apiPlan *ProjectVarPlan
+	for i := range plan.Projects {
+		switch plan.Projects[i].SourceSlug {
+		case "gh/acme/web":
+			webPlan = &plan.Projects[i]
+		case "gh/acme/api":
+			apiPlan = &plan.Projects[i]
+		}
+	}
+
+	if webPlan == nil {
+		t.Fatal("expected gh/acme/web in plan (has SSH keys)")
+	}
+	if webPlan.Skipped {
+		t.Errorf("gh/acme/web should not be skipped")
+	}
+	if len(webPlan.SSHKeys) != 2 {
+		t.Errorf("gh/acme/web expected 2 SSH keys, got %d", len(webPlan.SSHKeys))
+	}
+	// Fingerprints should be present.
+	fps := map[string]bool{}
+	for _, k := range webPlan.SSHKeys {
+		fps[k.Fingerprint] = true
+	}
+	if !fps["abc123="] || !fps["def456="] {
+		t.Errorf("expected fingerprints abc123= and def456=, got: %+v", webPlan.SSHKeys)
+	}
+	// Hostname check.
+	for _, k := range webPlan.SSHKeys {
+		if k.Fingerprint == "abc123=" && k.Hostname != "github.com" {
+			t.Errorf("abc123= hostname = %q, want github.com", k.Hostname)
+		}
+	}
+
+	if apiPlan == nil {
+		t.Fatal("expected gh/acme/api in plan (has SSH keys)")
+	}
+	if apiPlan.Skipped {
+		t.Errorf("gh/acme/api should not be skipped")
+	}
+	if len(apiPlan.SSHKeys) != 1 {
+		t.Errorf("gh/acme/api expected 1 SSH key, got %d", len(apiPlan.SSHKeys))
+	}
+	if apiPlan.SSHKeys[0].Fingerprint != "ghi789=" {
+		t.Errorf("gh/acme/api fingerprint = %q, want ghi789=", apiPlan.SSHKeys[0].Fingerprint)
+	}
+
+	// TotalSSHKeys should be 3 (2 from web + 1 from api).
+	if n := plan.TotalSSHKeys(); n != 3 {
+		t.Errorf("TotalSSHKeys = %d, want 3", n)
+	}
+}
+
+// TestBuildPlan_IncludeSSHKeys_ProjectWithOnlySSHKeys verifies that a project
+// with only SSH keys (no env vars) gets a plan entry when IncludeSSHKeys is true
+// even when IncludeProjectVars is false.
+func TestBuildPlan_IncludeSSHKeys_ProjectWithOnlySSHKeys(t *testing.T) {
+	m := manifestWithSSHKeys()
+	opts := baseOpts()
+	opts.IncludeSSHKeys = true
+	opts.IncludeProjectVars = false // env vars off
+	opts.Mapping = map[string]string{
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var apiPlan *ProjectVarPlan
+	for i := range plan.Projects {
+		if plan.Projects[i].SourceSlug == "gh/acme/api" {
+			apiPlan = &plan.Projects[i]
+		}
+	}
+	if apiPlan == nil {
+		t.Fatal("expected gh/acme/api in plan (SSH keys, no env vars, IncludeSSHKeys=true)")
+	}
+	if apiPlan.Skipped {
+		t.Errorf("gh/acme/api should not be skipped")
+	}
+	if len(apiPlan.SSHKeys) != 1 {
+		t.Errorf("gh/acme/api expected 1 SSH key, got %d", len(apiPlan.SSHKeys))
+	}
+	// Env vars should be empty (IncludeProjectVars is off).
+	if len(apiPlan.VarNames) != 0 {
+		t.Errorf("gh/acme/api should have no env vars when IncludeProjectVars=false, got: %v", apiPlan.VarNames)
+	}
+}
+
+// TestBuildPlan_IncludeSSHKeys_SkippedWhenNoMapping verifies that a project with
+// SSH keys but no mapping entry is included as skipped.
+func TestBuildPlan_IncludeSSHKeys_SkippedWhenNoMapping(t *testing.T) {
+	m := manifestWithSSHKeys()
+	opts := baseOpts()
+	opts.IncludeSSHKeys = true
+	// No mapping — all projects should be skipped.
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, pp := range plan.Projects {
+		if !pp.Skipped {
+			t.Errorf("project %q should be skipped (no mapping), got Skipped=false", pp.SourceSlug)
+		}
+	}
+}
+
+// TestBuildPlan_MergeProjectVarsAndSSHKeys verifies that when both
+// IncludeProjectVars and IncludeSSHKeys are set, a project with both env vars
+// and SSH keys gets a single plan entry containing both.
+func TestBuildPlan_MergeProjectVarsAndSSHKeys(t *testing.T) {
+	m := manifestWithSSHKeys()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	opts.IncludeSSHKeys = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+		"gh/acme/cli": "gh/acme-new/cli",
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var webPlan *ProjectVarPlan
+	for i := range plan.Projects {
+		if plan.Projects[i].SourceSlug == "gh/acme/web" {
+			webPlan = &plan.Projects[i]
+		}
+	}
+	if webPlan == nil {
+		t.Fatal("expected gh/acme/web in plan")
+	}
+	if webPlan.Skipped {
+		t.Errorf("gh/acme/web should not be skipped")
+	}
+	// gh/acme/web has 1 env var (APP_SECRET) and 2 SSH keys.
+	if len(webPlan.VarNames) != 1 || webPlan.VarNames[0] != "APP_SECRET" {
+		t.Errorf("gh/acme/web VarNames = %v, want [APP_SECRET]", webPlan.VarNames)
+	}
+	if len(webPlan.SSHKeys) != 2 {
+		t.Errorf("gh/acme/web expected 2 SSH keys, got %d", len(webPlan.SSHKeys))
+	}
+}
+
+// TestBuildSingleProjectTransferConfig_SSHKeysAddStep verifies that when a
+// ProjectVarPlan has SSH keys, the generated config includes:
+//   - an add_ssh_keys step with the fingerprints
+//   - the SSH-key transfer run step with the correct POST endpoint
+//   - jq --rawfile usage (no echo of key material)
+func TestBuildSingleProjectTransferConfig_SSHKeysAddStep(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"APP_SECRET"},
+		SSHKeys: []SSHKeyPlan{
+			{Fingerprint: "abc123=", Hostname: "github.com"},
+			{Fingerprint: "def456=", Hostname: ""},
+		},
+	}
+
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+
+	// Must contain add_ssh_keys with the correct fingerprints.
+	if !strings.Contains(cfg, "add_ssh_keys:") {
+		t.Error("expected add_ssh_keys step in config")
+	}
+	if !strings.Contains(cfg, "SHA256:abc123=") {
+		t.Error("expected SHA256:abc123= fingerprint in add_ssh_keys")
+	}
+	if !strings.Contains(cfg, "SHA256:def456=") {
+		t.Error("expected SHA256:def456= fingerprint in add_ssh_keys")
+	}
+
+	// Must contain the SSH-key transfer run step.
+	if !strings.Contains(cfg, "Transfer additional SSH keys") {
+		t.Error("expected SSH key transfer step name in config")
+	}
+
+	// Must POST to /api/v1.1/project/{slug}/ssh-key.
+	if !strings.Contains(cfg, "/api/v1.1/project/") {
+		t.Error("expected v1.1 project endpoint in ssh-key transfer step")
+	}
+	if !strings.Contains(cfg, "/ssh-key") {
+		t.Error("expected /ssh-key path in config")
+	}
+
+	// Must use jq --rawfile (no echo of key material).
+	if !strings.Contains(cfg, "jq --rawfile") || !strings.Contains(cfg, "--rawfile pk") {
+		t.Error("expected jq --rawfile usage for safe private key capture")
+	}
+
+	// Must use ssh-keygen to match fingerprints.
+	if !strings.Contains(cfg, "ssh-keygen -lf") {
+		t.Error("expected ssh-keygen -lf for fingerprint matching")
+	}
+
+	// Must build JSON body with hostname and private_key fields.
+	if !strings.Contains(cfg, `"hostname"`) {
+		t.Error("expected hostname field in POST body")
+	}
+	if !strings.Contains(cfg, `"private_key"`) {
+		t.Error("expected private_key field in POST body")
+	}
+
+	// Must reference the dest project slug.
+	if !strings.Contains(cfg, "gh/acme-new/web") {
+		t.Error("expected dest project slug in ssh-key transfer step")
+	}
+
+	// Env-var transfer step should also be present.
+	if !strings.Contains(cfg, "APP_SECRET") {
+		t.Error("expected APP_SECRET var in config (env-var transfer step)")
+	}
+}
+
+// TestBuildSingleProjectTransferConfig_SSHKeysOnly verifies that a plan with
+// SSH keys but NO env vars still generates a valid config (no env-var step,
+// but add_ssh_keys and SSH-key transfer steps are present).
+func TestBuildSingleProjectTransferConfig_SSHKeysOnly(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/api",
+		DestSlug:   "gh/acme-new/api",
+		// No VarNames.
+		SSHKeys: []SSHKeyPlan{
+			{Fingerprint: "ghi789=", Hostname: "gitlab.com"},
+		},
+	}
+
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+
+	// Must contain add_ssh_keys.
+	if !strings.Contains(cfg, "add_ssh_keys:") {
+		t.Error("expected add_ssh_keys step in config")
+	}
+	if !strings.Contains(cfg, "SHA256:ghi789=") {
+		t.Error("expected SHA256:ghi789= fingerprint")
+	}
+
+	// Must contain the SSH key transfer step.
+	if !strings.Contains(cfg, "Transfer additional SSH keys") {
+		t.Error("expected SSH key transfer step")
+	}
+
+	// Must NOT contain an env-var transfer step (no env vars).
+	if strings.Contains(cfg, "Transfer project env vars") {
+		t.Error("config must NOT contain env-var transfer step when VarNames is empty")
+	}
+
+	// Must NOT contain /envvar (no env-var transfer).
+	if strings.Contains(cfg, "/envvar") {
+		t.Error("config must NOT contain /envvar endpoint when there are no env vars")
+	}
+
+	// Must be syntactically valid YAML (starts with version: 2.1).
+	if !strings.HasPrefix(cfg, "version: 2.1") {
+		t.Error("config must start with 'version: 2.1'")
+	}
+
+	// Dest-token context must appear in the workflow.
+	if !strings.Contains(cfg, "- migration-secrets") {
+		t.Error("expected dest-token context in workflow job context list")
+	}
+}
+
+// TestBuildSingleProjectTransferConfig_SSHKeysNeverEchoed verifies that the
+// generated config never contains an echo or cat of a private key variable.
+func TestBuildSingleProjectTransferConfig_SSHKeysNeverEchoed(t *testing.T) {
+	opts := baseOpts()
+	opts.DestTokenContext = "migration-secrets"
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		SSHKeys: []SSHKeyPlan{
+			{Fingerprint: "abc123=", Hostname: "github.com"},
+		},
+	}
+
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+
+	// Forbidden patterns that would expose key material.
+	forbidden := []string{
+		"echo $pk",
+		"echo \"$pk\"",
+		"cat $pk",
+		"cat \"$pk\"",
+	}
+	for _, pattern := range forbidden {
+		if strings.Contains(cfg, pattern) {
+			t.Errorf("config must not contain %q (key material exposure)", pattern)
+		}
+	}
+}
+
+// TestBuildPlan_IncludeSSHKeys_OffByDefault verifies that when IncludeSSHKeys
+// is false (default), SSH keys are NOT included in project plans.
+func TestBuildPlan_IncludeSSHKeys_OffByDefault(t *testing.T) {
+	m := manifestWithSSHKeys()
+	opts := baseOpts()
+	// IncludeSSHKeys is false by default; IncludeProjectVars also false.
+	// The plan should have no project plans (no contexts with SSH keys are included).
+	// With contexts only there should be a valid plan (there is one context with a var).
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(plan.Projects) != 0 {
+		t.Errorf("expected no project plans when IncludeSSHKeys=false, got %d", len(plan.Projects))
+	}
+	if plan.TotalSSHKeys() != 0 {
+		t.Errorf("expected TotalSSHKeys=0 when IncludeSSHKeys=false, got %d", plan.TotalSSHKeys())
+	}
+}
+
+// TestTransfer_SSHKeysOnly_TriggersPerProjectPipeline verifies that a project
+// with only SSH keys (no env vars) triggers a per-project pipeline when
+// IncludeSSHKeys is true.
+func TestTransfer_SSHKeysOnly_TriggersPerProjectPipeline(t *testing.T) {
+	// Manifest: no context vars, one project with only SSH keys.
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod", EnvVars: []manifest.ContextEnvVar{{Name: "AWS_KEY"}}},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/api",
+				// No env vars — only SSH keys.
+				SSHKeys: []manifest.ProjectSSHKey{
+					{Fingerprint: "ghi789=", Hostname: "gitlab.com"},
+				},
+			},
+		},
+	}
+
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/api"
+	opts.IncludeSSHKeys = true
+	opts.Mapping = map[string]string{
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	// 2 calls: 1 context pipeline + 1 per-project pipeline for SSH keys.
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 TriggerPipelineRun calls (1 ctx + 1 ssh-key project), got %d: %v",
+			len(calls), slugsFromCalls(calls))
+	}
+
+	// The per-project pipeline must use gh/acme/api slug.
+	if !containsSlug(slugsFromCalls(calls), "gh/acme/api") {
+		t.Errorf("expected per-project pipeline under gh/acme/api")
+	}
+
+	// The per-project pipeline config (last call for gh/acme/api) must contain add_ssh_keys.
+	// The first call is the context pipeline (no add_ssh_keys); the second is the
+	// per-project pipeline (has add_ssh_keys + ssh-key POST).
+	// Find the per-project pipeline by looking for the one that has add_ssh_keys.
+	var perProjectYAML string
+	for _, c := range calls {
+		if c.slug == "gh/acme/api" && strings.Contains(c.yaml, "add_ssh_keys") {
+			perProjectYAML = c.yaml
+			break
+		}
+	}
+	if perProjectYAML == "" {
+		t.Fatal("no per-project pipeline config found with add_ssh_keys for gh/acme/api")
+	}
+	if !strings.Contains(perProjectYAML, "SHA256:ghi789=") {
+		t.Error("per-project pipeline config must contain the SSH key fingerprint SHA256:ghi789=")
+	}
+	if !strings.Contains(perProjectYAML, "/ssh-key") {
+		t.Error("per-project pipeline config must reference the /ssh-key endpoint")
+	}
+}
+
+// TestPrintPlan_ShowsSSHKeyCount verifies that the plan output includes SSH key
+// counts when present.
+func TestPrintPlan_ShowsSSHKeyCount(t *testing.T) {
+	plan := &Plan{
+		Contexts: []ContextPlan{
+			{SourceName: "deploy-prod", DestName: "deploy-prod", VarNames: []string{"AWS_KEY"}},
+		},
+		Projects: []ProjectVarPlan{
+			{
+				SourceSlug: "gh/acme/web",
+				DestSlug:   "gh/acme-new/web",
+				VarNames:   []string{"APP_SECRET"},
+				SSHKeys: []SSHKeyPlan{
+					{Fingerprint: "abc123=", Hostname: "github.com"},
+				},
+			},
+		},
+		DestTokenContext: "migration-secrets",
+		DestTokenEnvVar:  "CIRCLECI_DEST_TOKEN",
+	}
+	opts := baseOpts()
+
+	var out, errOut bytes.Buffer
+	printPlan(&out, &errOut, plan, &opts)
+
+	outStr := out.String()
+
+	// Should mention SSH key count.
+	if !strings.Contains(outStr, "ssh key") {
+		t.Error("expected 'ssh key' in plan output when SSH keys are present")
+	}
+	// Should show the fingerprint.
+	if !strings.Contains(outStr, "abc123=") {
+		t.Error("expected fingerprint abc123= in plan output")
+	}
+	// Should show the hostname.
+	if !strings.Contains(outStr, "github.com") {
+		t.Error("expected hostname github.com in plan output")
+	}
+}
+
+// TestPlan_TotalSSHKeys verifies the TotalSSHKeys helper.
+func TestPlan_TotalSSHKeys(t *testing.T) {
+	p := Plan{
+		Projects: []ProjectVarPlan{
+			{SourceSlug: "a", DestSlug: "a-new", SSHKeys: []SSHKeyPlan{{Fingerprint: "fp1", Hostname: "h1"}, {Fingerprint: "fp2", Hostname: ""}}},
+			{SourceSlug: "b", Skipped: true}, // skipped — should not count
+			{SourceSlug: "c", DestSlug: "c-new", SSHKeys: []SSHKeyPlan{{Fingerprint: "fp3", Hostname: "h3"}}},
+		},
+	}
+	if got := p.TotalSSHKeys(); got != 3 {
+		t.Errorf("TotalSSHKeys = %d, want 3", got)
+	}
+}
+
+// TestPlan_TotalSSHKeys_Empty verifies that an empty plan returns 0.
+func TestPlan_TotalSSHKeys_Empty(t *testing.T) {
+	p := Plan{}
+	if n := p.TotalSSHKeys(); n != 0 {
+		t.Errorf("TotalSSHKeys of empty plan = %d, want 0", n)
+	}
+}
