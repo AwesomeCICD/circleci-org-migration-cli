@@ -170,6 +170,12 @@ type Options struct {
 	// manifest contains runner classes, each is flagged as needing manual
 	// recreation (the syncer never guesses the destination namespace).
 	DestRunnerNamespace string
+	// DestOrbNamespace is the destination orb namespace to publish captured
+	// orb versions into. When set, the syncer republishes each captured
+	// version under this namespace. When empty and the manifest contains orbs,
+	// each is flagged as needing manual action (the syncer never guesses the
+	// destination namespace).
+	DestOrbNamespace string
 	// CreateProjectTokens controls whether captured project API tokens are
 	// automatically recreated on the destination project. Default false —
 	// creating a token mints a NEW one-time secret and every consumer must be
@@ -201,6 +207,9 @@ type Syncer struct {
 	// Runner, when set, is used to create runner resource classes in the
 	// destination namespace. When nil, runner classes are flagged as manual.
 	Runner RunnerWriter
+	// Orb, when set, is used to publish captured orb versions into the
+	// destination namespace. When nil, orbs are flagged as manual.
+	Orb OrbWriter
 	// CIAM, when set, is used to sync CIAM role/group data for circleci-type
 	// destination orgs. When nil, CIAM sync is silently skipped.
 	CIAM CIAMWriter

@@ -371,6 +371,19 @@ explicitly:
 circleci-migrate export --source-org gh/acme --runner-namespace acme-runners
 ```
 
+### Orb namespace capture (opt-in)
+
+Use `--orb-namespace` to capture all published orbs (public and private) under a
+namespace, along with every stable version and its raw YAML source. The namespace
+must be supplied explicitly — there is no clean org→namespace lookup.
+
+```bash
+circleci-migrate export --source-org gh/acme --orb-namespace acme
+```
+
+After export, captured orbs appear in the manifest. During sync, supply
+`--dest-orb-namespace` to republish them into the destination namespace.
+
 ### Usage data snapshot (opt-in)
 
 `--include-usage` also downloads a historical usage report (gzip CSV) from the
@@ -686,6 +699,7 @@ repointed. Default is off (the report emits manual steps only).
 | `--skip-extras` | Checkout keys, additional SSH keys, webhooks, schedules |
 | `--skip-runner` | Self-hosted runner resource classes |
 | `--skip-ciam` | CIAM roles and groups (standalone `circleci`-type orgs only) |
+| `--skip-orb` | Orbs (captured orb versions) |
 
 ### Runner resource classes
 
@@ -697,6 +711,25 @@ runner classes are flagged for manual recreation.
 circleci-migrate sync --manifest manifest.json --secrets secrets.json \
   --mapping mapping.json --dest-runner-namespace acme-new-runners --apply --yes
 ```
+
+### Orb namespace sync
+
+Supply `--dest-orb-namespace` to republish captured orb versions into the
+destination namespace. The syncer publishes each stable version idempotently
+(existing versions are skipped) and enables the required orb-publishing feature
+flags on the destination org for the duration of the publish, then restores them.
+
+After publishing, a **CONFIG REWRITE REQUIRED** notice lists every source→destination
+orb mapping that must be updated in `.circleci/config.yml` before cutover.
+
+```bash
+circleci-migrate sync --manifest manifest.json \
+  --dest-orb-namespace acme-new --apply
+```
+
+When `--dest-orb-namespace` is omitted and the manifest contains orbs, each orb
+is flagged as `manual` with instructions to re-run with `--dest-orb-namespace`
+or submit a support ticket to CircleCI for a direct namespace transfer.
 
 ### Machine-readable output
 
@@ -844,6 +877,26 @@ circleci-migrate sync --manifest manifest.json --secrets secrets.json \
 
 The destination namespace must already exist. Resource-class tokens are treated
 as secrets — supply a bundle or use `--missing-secrets placeholder`.
+
+### 7h. Orb namespace transfer
+
+Capture all published orbs and republish them into a destination namespace:
+
+```bash
+# Export with orb capture
+circleci-migrate export --source-org gh/acme --orb-namespace acme -o manifest.json
+
+# Sync — republishes each version idempotently
+circleci-migrate sync --manifest manifest.json \
+  --dest-orb-namespace acme-new --apply
+```
+
+After publishing you will see a **CONFIG REWRITE REQUIRED** section listing every
+`acme/<orb>` → `acme-new/<orb>` mapping that operators must update in project
+`.circleci/config.yml` files before cutover.
+
+Use `--skip-orb` to exclude orb sync when running `migrate` or `sync` without
+orb capture.
 
 ---
 

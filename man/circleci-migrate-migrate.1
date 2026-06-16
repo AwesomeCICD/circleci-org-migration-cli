@@ -136,6 +136,10 @@ Examples:
 	Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
 
 .PP
+\fB--dest-orb-namespace\fP=""
+	Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains orbs, each is flagged for manual recreation.
+
+.PP
 \fB--dest-org\fP=""
 	CircleCI organization slug for the destination org, e.g. gh/my-new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
 
@@ -188,6 +192,10 @@ Examples:
 	Disable all interactive prompts; error if a required value is missing (implied when stdin is not a TTY)
 
 .PP
+\fB--orb-namespace\fP=""
+	Source orb namespace to capture published orbs from (e.g. 'acme'). Both public and private orbs are captured along with every stable version and its raw YAML source. The namespace must be supplied explicitly — there is no clean org→namespace lookup.
+
+.PP
 \fB-o\fP, \fB--output\fP=""
 	Optional: save the exported manifest to this path (omit to keep migration entirely in-memory)
 
@@ -222,6 +230,10 @@ Examples:
 .PP
 \fB--skip-extras\fP[=false]
 	Skip checkout keys, webhooks, and schedules
+
+.PP
+\fB--skip-orb\fP[=false]
+	Skip exporting and syncing orbs
 
 .PP
 \fB--skip-org-settings\fP[=false]

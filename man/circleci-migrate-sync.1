@@ -96,6 +96,10 @@ Examples:
 	Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
 
 .PP
+\fB--dest-orb-namespace\fP=""
+	Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains orbs, each is flagged for manual recreation.
+
+.PP
 \fB--dest-runner-namespace\fP=""
 	Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
 
@@ -125,7 +129,7 @@ Examples:
 
 .PP
 \fB--only\fP=""
-	Comma-separated list of sections to sync, skipping all others. Accepted values: org-settings, contexts, projects, runner, ciam, extras. Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). Mutually exclusive with --skip-terraform-managed.
+	Comma-separated list of sections to sync, skipping all others. Accepted values: org-settings, contexts, projects, runner, ciam, extras, orb. Example: --only org-settings,ciam,extras (to sync only CLI-only sections after terraform apply). Mutually exclusive with --skip-terraform-managed.
 
 .PP
 \fB--secrets\fP="secrets.json"
@@ -142,6 +146,10 @@ Examples:
 .PP
 \fB--skip-extras\fP[=false]
 	Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
+
+.PP
+\fB--skip-orb\fP[=false]
+	Skip syncing orbs
 
 .PP
 \fB--skip-org-settings\fP[=false]

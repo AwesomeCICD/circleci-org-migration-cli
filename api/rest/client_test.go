@@ -537,6 +537,68 @@ func TestDoRequest_DebugLogging_DoesNotAffectResult(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// NewBearer — Authorization: Bearer header switch
+// ---------------------------------------------------------------------------
+
+// TestNewBearer_SendsBearerHeaderNotCircleToken verifies that a Client built
+// with NewBearer sends "Authorization: Bearer <token>" instead of
+// "Circle-Token: <token>". This is required for the orb v3 API.
+func TestNewBearer_SendsBearerHeaderNotCircleToken(t *testing.T) {
+	const wantToken = "my-bearer-token" // nosec G101 -- test value, not a real credential
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+wantToken {
+			t.Errorf("Authorization = %q; want %q", auth, "Bearer "+wantToken)
+		}
+		if r.Header.Get("Circle-Token") != "" {
+			t.Error("Circle-Token must NOT be present when bearerAuth is set")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, "{}")
+	}))
+	t.Cleanup(srv.Close)
+
+	base := mustParseURL(t, srv.URL+"/api/v3/")
+	c := rest.NewBearer(base, wantToken, srv.Client())
+
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("orb/packages"), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if _, err := c.DoRequest(req, nil); err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+}
+
+// TestNew_SendsCircleTokenNotBearer verifies that the default (non-Bearer)
+// client still sends Circle-Token and NOT Authorization: Bearer.
+func TestNew_SendsCircleTokenNotBearer(t *testing.T) {
+	const wantToken = "circle-token-value" // nosec G101 -- test value, not a real credential
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Circle-Token") != wantToken {
+			t.Errorf("Circle-Token = %q; want %q", r.Header.Get("Circle-Token"), wantToken)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Error("Authorization header must NOT be present for non-bearer clients")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, "{}")
+	}))
+	t.Cleanup(srv.Close)
+
+	base := mustParseURL(t, srv.URL+"/api/v2/")
+	c := rest.New(base, wantToken, srv.Client())
+
+	req, err := c.NewRequest(context.Background(), http.MethodGet, relURL("context"), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if _, err := c.DoRequest(req, nil); err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+}
+
 // TestDoRequest_ContextCancellationAborts verifies that a cancelled context
 // (e.g. the operator hitting Ctrl-C) aborts an in-flight request promptly with
 // a context error, rather than blocking until the per-request timeout. The

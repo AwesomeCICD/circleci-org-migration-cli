@@ -46,6 +46,11 @@ type Client struct {
 	// "circleci-migrate export".  When non-empty it is forwarded as the
 	// Circleci-Cli-Command request header, mirroring the official circleci-cli.
 	commandPath string
+	// bearerAuth, when true, sends "Authorization: Bearer <token>" instead of
+	// "Circle-Token: <token>". Used by clients that target the v3 API
+	// (e.g. the orb client on app.circleci.com/api/v3) which requires Bearer
+	// auth rather than the Circle-Token header.
+	bearerAuth bool
 }
 
 // New constructs a Client from explicit parameters.
@@ -56,6 +61,16 @@ func New(baseURL *url.URL, token string, httpClient *http.Client) *Client {
 		client:      httpClient,
 		commandPath: defaultCommandPath,
 	}
+}
+
+// NewBearer constructs a Client that sends "Authorization: Bearer <token>"
+// instead of "Circle-Token: <token>". It is used by API clients that target
+// the v3 endpoint on app.circleci.com, which requires Bearer auth.
+// httpClient may be nil (a default http.Client is used in that case).
+func NewBearer(baseURL *url.URL, token string, httpClient *http.Client) *Client {
+	c := New(baseURL, token, httpClient)
+	c.bearerAuth = true
+	return c
 }
 
 // SetCommandPath records the active cobra command path (e.g.
@@ -130,7 +145,11 @@ func (c *Client) NewRequest(ctx context.Context, method string, u *url.URL, payl
 
 func (c *Client) enrichRequestHeaders(req *http.Request, payload interface{}) {
 	if c.circleToken != "" {
-		req.Header.Set("Circle-Token", c.circleToken)
+		if c.bearerAuth {
+			req.Header.Set("Authorization", "Bearer "+c.circleToken)
+		} else {
+			req.Header.Set("Circle-Token", c.circleToken)
+		}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", version.UserAgent())

@@ -75,6 +75,10 @@ Examples:
 	Print a machine-readable JSON summary to stdout instead of the human-readable summary (manifest and report files are still written)
 
 .PP
+\fB--orb-namespace\fP=""
+	Source orb namespace to capture published orbs from (e.g. 'acme'). Both public and private orbs are captured along with every stable version and its raw YAML source. The namespace must be supplied explicitly — there is no clean org→namespace lookup.
+
+.PP
 \fB-o\fP, \fB--output\fP="manifest.json"
 	Path to write the JSON manifest (always written; use -o to change the path)
 
