@@ -682,6 +682,23 @@ builds). You are then prompted to enable builds; `--yes` / `-y` auto-confirms
 (only meaningful with `--apply`; no effect in a dry run). Without a TTY, builds
 are not enabled unless `--yes` is passed.
 
+### Context restrictions
+
+Context restrictions are transferred automatically when sync has all the
+information it needs:
+
+| Restriction type | Behaviour |
+|---|---|
+| `expression` | Copied verbatim to the destination context. |
+| `group` | Resolved by name to the destination group UUID (group must exist in the destination org; falls back to `manual` if not found). |
+| `project` | **Auto-remapped**: source project UUID → source slug (from manifest) → destination slug (via mapping) → destination project UUID. Falls back to `manual` if any step fails (see note below). |
+
+**Project restriction ordering note:** `sync` processes contexts _before_
+projects. On the first run, destination projects may not exist yet, causing
+project restrictions to fall back to `manual` with a re-run instruction.
+Simply re-run `sync --apply` after projects have been created to resolve them.
+The re-run is idempotent — existing restrictions are skipped.
+
 ### Project API tokens
 
 `--create-project-tokens` (with `--apply`) recreates each captured project API

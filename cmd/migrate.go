@@ -453,6 +453,22 @@ Examples:
 				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); enableErr != nil {
 					return enableErr
 				}
+
+				// Now that destination projects exist, apply the project-type
+				// context restrictions that SyncContexts deferred. This makes a
+				// single run resolve project restrictions (contexts sync before
+				// projects, so they could not be resolved inline).
+				if !skipContexts {
+					prDestSlug := destOrg
+					if mapping != nil && mapping.Org.To != "" {
+						prDestSlug = mapping.Org.To
+					}
+					prRep := sy.ApplyDeferredProjectRestrictions(ctx, &syncer.Report{DestOrgSlug: prDestSlug, Applied: opts.Apply}, opts)
+					repsBySection["Context Project Restrictions"] = prRep
+					if !jsonOutput {
+						printSyncReport(cmd, "Context Project Restrictions", prRep, m)
+					}
+				}
 			}
 
 			// Runner resource classes (skipped when --skip-runner is set).

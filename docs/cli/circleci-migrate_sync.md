@@ -43,9 +43,16 @@ Resources synced (in order):
     is provided or the manifest contains runner classes.
 
 By default sync performs a DRY RUN and writes nothing — review the plan, then
-re-run with --apply. Group and project-type context restrictions are flagged
-for manual recreation (group writes are not GA; project restriction values are
-source-org IDs).
+re-run with --apply. Context restrictions are handled as follows:
+  • expression — copied verbatim.
+  • group — resolved by name to the destination group UUID (requires the group
+    to exist in the destination; falls back to "manual" if not found).
+  • project — remapped automatically: source project UUID → source slug →
+    destination slug (via mapping) → destination project UUID. Requires that
+    the destination project already exists; if it does not (i.e. sync runs
+    contexts before projects on the first pass), the restriction falls back to
+    "manual" with a re-run instruction. Re-run sync after projects are created
+    to resolve remaining project restrictions.
 
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable

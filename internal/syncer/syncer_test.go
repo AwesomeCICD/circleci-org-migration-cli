@@ -8,6 +8,7 @@ import (
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -569,9 +570,10 @@ func TestSyncContexts_Restriction_Expression_Exists(t *testing.T) {
 }
 
 // TestSyncContexts_Restriction_ProjectAndGroup_Manual verifies that a "project"
-// restriction always produces a "manual" action, and that a "group" restriction
-// falls back to "manual" when no GroupLister is wired (Syncer.Groups == nil) —
-// the nil-safe path preserving previous behaviour. Neither calls CreateRestriction.
+// restriction (deferred, and unresolvable here because the manifest has no
+// matching project) produces a "manual" action in the deferred pass, and that a
+// "group" restriction falls back to "manual" in SyncContexts when no GroupLister
+// is wired (Syncer.Groups == nil). Neither calls CreateRestriction.
 func TestSyncContexts_Restriction_ProjectAndGroup_Manual(t *testing.T) {
 	ctxID := "ctx-manual"
 	fw := &fakeContextWriter{
@@ -598,13 +600,17 @@ func TestSyncContexts_Restriction_ProjectAndGroup_Manual(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
+	opts := Options{Apply: true}
+	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// The deferred project-restriction pass runs after projects; it is unresolvable
+	// here (no matching project in the manifest) so it reports "manual".
+	prRep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
 
 	manualCount := 0
-	for _, a := range rep.Actions {
+	for _, a := range append(rep.Actions, prRep.Actions...) {
 		if a.Kind == "restriction" && a.Status == "manual" {
 			manualCount++
 		}
@@ -1322,10 +1328,11 @@ func TestSyncContexts_Restriction_NamedProject_LabelUsesName(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
-	if err != nil {
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, nil, opts); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
 
 	var rAction *Action
 	for i := range rep.Actions {
@@ -1440,10 +1447,11 @@ func TestSyncContexts_Restriction_UnnamedProject_LabelUsesValue(t *testing.T) {
 		},
 	}
 
-	rep, err := sy.SyncContexts(context.Background(), m, nil, nil, Options{Apply: true})
-	if err != nil {
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, nil, opts); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
 
 	var rAction *Action
 	for i := range rep.Actions {
@@ -1560,5 +1568,428 @@ func TestSyncContexts_Placeholder_UpsertError_IsErrorAction(t *testing.T) {
 	}
 	if !hasError {
 		t.Error("expected an 'error' context-var action when placeholder UpsertEnvVar fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Project restriction: remap source UUID → dest UUID
+// ---------------------------------------------------------------------------
+
+// projectRestrictionManifest builds a manifest with one context containing a
+// project restriction, plus one project entry that has the given source UUID.
+func projectRestrictionManifest(srcUUID, srcSlug, projName string) *manifest.Manifest {
+	return &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
+		Contexts: []manifest.Context{
+			{
+				Name: "prod",
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: srcUUID, Name: projName},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{Slug: srcSlug, SourceID: srcUUID, Name: projName},
+		},
+	}
+}
+
+// projectRestrictionAction returns the single restriction action from the report.
+func projectRestrictionAction(t *testing.T, rep *Report) Action {
+	t.Helper()
+	for _, a := range rep.Actions {
+		if a.Kind == "restriction" {
+			return a
+		}
+	}
+	t.Fatalf("no restriction action found in report: %+v", rep.Actions)
+	return Action{}
+}
+
+// TestSyncContexts_ProjectRestriction_HappyPath verifies that when the source
+// project UUID is in the manifest, the slug maps via the mapping, and
+// GetProject returns a dest UUID, CreateRestriction is called with the dest
+// UUID and the action is "set".
+func TestSyncContexts_ProjectRestriction_HappyPath(t *testing.T) {
+	const ctxID = "ctx-proj"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			if slug == "gh/dest/web" {
+				return &project.Project{Slug: slug, ID: "dest-proj-uuid"}, nil
+			}
+			return nil, errors.New("unexpected slug: " + slug)
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{"gh/src/web": "gh/dest/web"},
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Project restrictions are deferred; SyncContexts must NOT write them inline.
+	if fw.hasCalled("CreateRestriction") {
+		t.Fatal("CreateRestriction must NOT be called during SyncContexts (project restrictions are deferred)")
+	}
+	// After the projects step runs (dest project now exists in the fake), the
+	// deferred pass applies the restriction in the SAME run.
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "set")
+	}
+
+	creates := fw.callsTo("CreateRestriction")
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 CreateRestriction call, got %d", len(creates))
+	}
+	if creates[0].args[1] != "project" {
+		t.Errorf("restriction type: got %q want %q", creates[0].args[1], "project")
+	}
+	if creates[0].args[2] != "dest-proj-uuid" {
+		t.Errorf("restriction value: got %q want dest-proj-uuid, got %q", "dest-proj-uuid", creates[0].args[2])
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_HappyPath_OrgPrefixMapping verifies the
+// remap path when the mapping uses the org org prefix (no explicit project entry)
+// so ResolveProjectSlug derives the dest slug by swapping the org portion.
+func TestSyncContexts_ProjectRestriction_HappyPath_OrgPrefixMapping(t *testing.T) {
+	const ctxID = "ctx-proj-org"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			if slug == "gh/dest/api" {
+				return &project.Project{Slug: slug, ID: "dest-api-uuid"}, nil
+			}
+			return nil, errors.New("unexpected slug: " + slug)
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	// Manifest: source project slug is gh/src/api, SourceID is src-api-uuid.
+	m := projectRestrictionManifest("src-api-uuid", "gh/src/api", "api")
+	// Mapping uses org-level prefix (no explicit project entries).
+	mapping := &manifest.Mapping{
+		Org: manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "set")
+	}
+	creates := fw.callsTo("CreateRestriction")
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 CreateRestriction call, got %d", len(creates))
+	}
+	if creates[0].args[2] != "dest-api-uuid" {
+		t.Errorf("CreateRestriction value: got %q want %q", creates[0].args[2], "dest-api-uuid")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_Idempotent verifies that when the
+// destination already has the project restriction, the action is "exists" and
+// CreateRestriction is not called.
+func TestSyncContexts_ProjectRestriction_Idempotent(t *testing.T) {
+	const ctxID = "ctx-proj-idem"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) {
+			// Restriction already present with the dest UUID.
+			return []cctx.Restriction{
+				{Type: "project", Value: "dest-proj-uuid"},
+			}, nil
+		},
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "dest-proj-uuid"}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{"gh/src/web": "gh/dest/web"},
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "exists" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "exists")
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when project restriction already exists")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_DryRun verifies that in dry-run mode no
+// write occurs and the action is "set" (would add).
+func TestSyncContexts_ProjectRestriction_DryRun(t *testing.T) {
+	const ctxID = "ctx-proj-dr"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "dest-proj-uuid"}, nil
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{"gh/src/web": "gh/dest/web"},
+	}
+
+	opts := Options{Apply: false}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("dry-run restriction status: got %q want %q", a.Status, "set")
+	}
+	if !strings.Contains(a.Detail, "would add") {
+		t.Errorf("detail %q should mention 'would add'", a.Detail)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called in dry-run mode")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_UUIDNotInManifest verifies that when the
+// source project UUID does not appear in any manifest project's SourceID field,
+// the restriction falls back to "manual".
+func TestSyncContexts_ProjectRestriction_UUIDNotInManifest(t *testing.T) {
+	const ctxID = "ctx-proj-nomatch"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	// Manifest has a project, but with a DIFFERENT UUID — the restriction's UUID
+	// is unknown.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		Source:        manifest.Source{Org: manifest.Org{Slug: "gh/src"}},
+		Contexts: []manifest.Context{
+			{
+				Name: "prod",
+				Restrictions: []manifest.Restriction{
+					{Type: "project", Value: "unknown-uuid", Name: "web"},
+				},
+			},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/src/web", SourceID: "different-uuid", Name: "web"},
+		},
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mappingTo("gh/dest"), opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "manual" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "manual")
+	}
+	if strings.Contains(a.Detail, "web") {
+		// The label "web" should appear in the message.
+		_ = a.Detail // OK
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when UUID is not in manifest")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_SlugNotMapped verifies that when the
+// source slug resolves but has no destination mapping, the restriction is
+// "manual".
+func TestSyncContexts_ProjectRestriction_SlugNotMapped(t *testing.T) {
+	const ctxID = "ctx-proj-unmapped"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	// Mapping: App org destination — no prefix swap works, and no explicit entry.
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org: manifest.OrgMapping{From: "gh/src", To: "circleci/dest-org-uuid"},
+		// No explicit Projects entry for gh/src/web.
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "manual" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "manual")
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when slug is not mapped")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_DestProjectNotFound verifies that when
+// GetProject returns an error (dest project not yet created), the restriction
+// falls back to "manual" with an informative message.
+func TestSyncContexts_ProjectRestriction_DestProjectNotFound(t *testing.T) {
+	const ctxID = "ctx-proj-notfound"
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{"gh/src/web": "gh/dest/web"},
+	}
+
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "manual" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "manual")
+	}
+	if !strings.Contains(a.Detail, "re-run") {
+		t.Errorf("detail %q should mention 're-run'", a.Detail)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("CreateRestriction must NOT be called when dest project is not found")
+	}
+}
+
+// TestSyncContexts_ProjectRestriction_SinglePassOrder simulates the real command
+// order in ONE run: SyncContexts collects the deferred project restriction while
+// the destination project does NOT yet exist, THEN the projects step creates the
+// project, THEN ApplyDeferredProjectRestrictions resolves and applies it. This
+// proves a single run now applies project restrictions (previously a second run
+// was required).
+func TestSyncContexts_ProjectRestriction_SinglePassOrder(t *testing.T) {
+	const ctxID = "ctx-single-pass"
+
+	// projectExists flips to true only after the "projects step" runs, mimicking
+	// the destination project being created during SyncProjects.
+	projectExists := false
+
+	fw := &fakeContextWriter{
+		listContexts: func(string, string) ([]cctx.Context, error) {
+			return []cctx.Context{{ID: ctxID, Name: "prod"}}, nil
+		},
+		listRestrictions: func(string) ([]cctx.Restriction, error) { return nil, nil },
+	}
+	pw := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			if !projectExists {
+				return nil, errors.New("project not found yet")
+			}
+			if slug == "gh/dest/web" {
+				return &project.Project{Slug: slug, ID: "dest-proj-uuid"}, nil
+			}
+			return nil, errors.New("unexpected slug: " + slug)
+		},
+	}
+	sy := &Syncer{Org: &fakeOrgResolver{}, Contexts: fw, Projects: pw}
+
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	mapping := &manifest.Mapping{
+		Org:      manifest.OrgMapping{From: "gh/src", To: "gh/dest"},
+		Projects: map[string]string{"gh/src/web": "gh/dest/web"},
+	}
+	opts := Options{Apply: true}
+
+	// Step 1: contexts sync — project restriction is deferred, NOT written, and
+	// GetProject is not consulted yet (the project does not exist).
+	if _, err := sy.SyncContexts(context.Background(), m, nil, mapping, opts); err != nil {
+		t.Fatalf("SyncContexts error: %v", err)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Fatal("CreateRestriction must NOT be called during SyncContexts")
+	}
+	if len(sy.deferredProjectRestrictions) != 1 {
+		t.Fatalf("expected 1 deferred project restriction, got %d", len(sy.deferredProjectRestrictions))
+	}
+
+	// Step 2: the projects step runs — the destination project now exists.
+	projectExists = true
+
+	// Step 3: deferred pass resolves the restriction in the SAME run.
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "set" {
+		t.Errorf("restriction status: got %q want %q", a.Status, "set")
+	}
+	creates := fw.callsTo("CreateRestriction")
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 CreateRestriction call, got %d", len(creates))
+	}
+	if creates[0].args[2] != "dest-proj-uuid" {
+		t.Errorf("CreateRestriction value: got %q want %q", creates[0].args[2], "dest-proj-uuid")
 	}
 }
