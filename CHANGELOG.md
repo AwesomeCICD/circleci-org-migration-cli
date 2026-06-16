@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.12.0...v0.13.0) (2026-06-16)
+
+
+### Features
+
+* migration usability fixes (Fixes 1-6) ([#271](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/271)) ([2e3acf0](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2e3acf0579218807ed696a1a76b4533129c03133))
+* migration-flow fixes ([#272](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/272) mapping derivation, [#273](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/273) follow existing, [#274](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/274) poll unauthorized) + migrate --transfer-secrets ([#275](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/275)) ([98136a2](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/98136a2fa95047911949dd58c6844e2bc6528125))
+
+
+### Bug Fixes
+
+* **trigger:** inline-config pipeline trigger for OAuth orgs (dual-path) + poll errored pipelines ([#269](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/269)) ([c4666b0](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/c4666b0ce3ccf0307fc0cec2442f9dc4057d22a2))
+
 ## [0.12.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.11.0...v0.12.0) (2026-06-15)
 
 
