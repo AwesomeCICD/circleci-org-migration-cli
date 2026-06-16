@@ -103,12 +103,30 @@ them — encrypted by default, never stored in plain text.
 `migrate` is the all-in-one command that runs export → sync in one step (with an
 interactive walkthrough when run with no flags).
 
+#### Interactive walkthrough — secrets step (Step 3a)
+
+When you run `migrate` with no flags on a TTY, the guided walkthrough asks how
+you want to move secret **values** to the destination.  Step 3a presents three
+choices (in-pipeline transfer is the recommended default):
+
+1. **in-pipeline transfer (RECOMMENDED)** — runs a pipeline in the SOURCE org
+   that pushes context and (optionally) project env-var values and SSH keys
+   directly to the destination.  No plaintext is written to disk.  Requires a
+   destination API token stored in a source-org context (`CIRCLECI_DEST_TOKEN`).
+   Follow-up prompts collect: the context name, whether to include project vars,
+   SSH keys, whether to temporarily lift context restrictions, and an optional
+   host-project override (blank = auto-pick).
+2. **captured secrets bundle (advanced)** — supply a `secrets.json` produced by
+   `secrets capture`.  Follow-up prompts ask for the bundle path and how to
+   handle missing values (`skip` or `placeholder`).
+3. **none** — migrate structure only; set values manually later.  The
+   missing-values step still asks how to handle empty variables.
+
 ### One-command migration with in-pipeline secret transfer
 
-By default `migrate` needs a pre-captured `--secrets` bundle to carry secret
-**values**. Alternatively, pass `--transfer-secrets` to move context and project
-env-var values **in-pipeline** (zero-disk) as part of the same command — no
-bundle file required:
+The in-pipeline transfer is also available non-interactively.  Pass
+`--transfer-secrets` to move context and project env-var values **in-pipeline**
+(zero-disk) as part of the `migrate` command — no bundle file required:
 
 ```bash
 circleci-migrate migrate \

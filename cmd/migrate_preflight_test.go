@@ -543,6 +543,65 @@ func TestRunExportPreflight_NoFollowAllRunner_NoOffer(t *testing.T) {
 	}
 }
 
+// TestRunExportPreflight_TTY_WarningsDeclined covers the warnings-continue
+// prompt cancel branch: a TTY with warnings present and a "no" answer returns
+// the "export cancelled at preflight" error. No follow-all runner is wired so
+// only the warnings prompt reads os.Stdin.
+func TestRunExportPreflight_TTY_WarningsDeclined(t *testing.T) {
+	overrideTTY(t, true)
+	withStdin(t, "n\n") // continue despite warnings? no
+
+	deps := preflightDeps{srcToken: "tok", sourceOrg: "gh/acme"}
+	srcOrg := &org.Organization{ID: "org-id", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: srcOrg},
+		srcFlags:    &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: nil}, // 0 projects → Warn
+		// followAllRunner nil → no follow-all prompt.
+	}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, clients, &buf)
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected 'cancelled' error on declined warnings; got: %v", err)
+	}
+}
+
+// TestRunExportPreflight_FollowAllOffer_TTY_RunsRunner covers the interactive
+// TTY follow-all path: with a TTY and a "yes" answer, the runner is invoked.
+// The runner returns an error to also cover the non-fatal warning branch. All
+// other checks pass (api-trigger enabled, one project discovered) so no
+// warnings-continue prompt fires — keeping a single prompt read off os.Stdin.
+func TestRunExportPreflight_FollowAllOffer_TTY_RunsRunner(t *testing.T) {
+	overrideTTY(t, true)
+	withStdin(t, "y\n") // run follow-all? yes
+
+	runnerCalled := false
+	deps := preflightDeps{srcToken: "tok", sourceOrg: "gh/acme"}
+	srcOrg := &org.Organization{ID: "org-id", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	clients := preflightClients{
+		srcOrg:   &fakeOrgGetter{org: srcOrg},
+		srcFlags: &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{
+			{Name: "web", Slug: "gh/acme/web"},
+		}},
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return errors.New("boom") // exercise the non-fatal warning branch
+		},
+	}
+	var buf strings.Builder
+	err := runExportPreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("expected nil error; got: %v", err)
+	}
+	if !runnerCalled {
+		t.Error("followAllRunner should have been called on interactive 'yes'")
+	}
+	if !strings.Contains(buf.String(), "Running follow-all") {
+		t.Errorf("expected 'Running follow-all' in output; got: %q", buf.String())
+	}
+}
+
 // TestRunExportPreflight_CircleCIOrg_NoOffer verifies that the follow-all offer
 // is NOT shown for circleci/ orgs (App/standalone), where follow-all is N/A.
 func TestRunExportPreflight_CircleCIOrg_NoOffer(t *testing.T) {
@@ -567,6 +626,81 @@ func TestRunExportPreflight_CircleCIOrg_NoOffer(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "Follow-all offer") {
 		t.Errorf("follow-all offer must not appear for circleci/ orgs; got: %q", buf.String())
+	}
+}
+
+// TestRunMigratePreflight_TTY_WarningsDeclined covers the warnings-continue
+// cancel branch in runMigratePreflight: a cross-type warning on a TTY with a
+// "no" answer returns the "migration cancelled at preflight" error. No
+// follow-all runner is wired so only the warnings prompt reads os.Stdin.
+func TestRunMigratePreflight_TTY_WarningsDeclined(t *testing.T) {
+	overrideTTY(t, true)
+	withStdin(t, "n\n") // continue despite warnings? no
+
+	deps := preflightDeps{
+		srcToken:  "tok-src",
+		dstToken:  "tok-dst",
+		sourceOrg: "gh/acme",
+		destOrg:   "circleci/dst-uuid",
+	}
+	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	// Different type → cross-type warning.
+	dstOrg := &org.Organization{ID: "dst-uuid", Name: "acme-new", VCSType: "circleci", Slug: "circleci/dst-uuid"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: srcOrg},
+		dstOrg:      &fakeOrgGetter{org: dstOrg},
+		srcFlags:    &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{{Name: "web", Slug: "gh/acme/web"}}},
+		// followAllRunner nil → no follow-all prompt.
+	}
+	var buf strings.Builder
+	err := runMigratePreflight(context.Background(), deps, clients, &buf)
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected 'cancelled' error on declined warnings; got: %v", err)
+	}
+}
+
+// TestRunMigratePreflight_FollowAllOffer_TTY_RunsRunner covers the interactive
+// TTY follow-all path in runMigratePreflight: a TTY plus a "yes" answer invokes
+// the runner. The runner errors to exercise the non-fatal warning branch. All
+// other checks pass (same-type orgs, api-trigger on, a project discovered) so
+// no warnings-continue prompt fires — keeping a single os.Stdin read.
+func TestRunMigratePreflight_FollowAllOffer_TTY_RunsRunner(t *testing.T) {
+	overrideTTY(t, true)
+	withStdin(t, "y\n") // run follow-all? yes
+
+	runnerCalled := false
+	deps := preflightDeps{
+		srcToken:    "tok-src",
+		dstToken:    "tok-dst",
+		sourceOrg:   "gh/acme",
+		destOrg:     "gh/acme-new",
+		githubToken: "ghp_token",
+	}
+	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
+	dstOrg := &org.Organization{ID: "dst-uuid", Name: "acme-new", VCSType: "github", Slug: "gh/acme-new"}
+	clients := preflightClients{
+		srcOrg:   &fakeOrgGetter{org: srcOrg},
+		dstOrg:   &fakeOrgGetter{org: dstOrg},
+		srcFlags: &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{
+			{Name: "web", Slug: "gh/acme/web"},
+		}},
+		followAllRunner: func(_ context.Context) error {
+			runnerCalled = true
+			return errors.New("boom") // non-fatal warning branch
+		},
+	}
+	var buf strings.Builder
+	err := runMigratePreflight(context.Background(), deps, clients, &buf)
+	if err != nil {
+		t.Errorf("expected nil error; got: %v", err)
+	}
+	if !runnerCalled {
+		t.Error("followAllRunner should have been called on interactive 'yes'")
+	}
+	if !strings.Contains(buf.String(), "Running follow-all") {
+		t.Errorf("expected 'Running follow-all' in output; got: %q", buf.String())
 	}
 }
 
