@@ -202,6 +202,12 @@ Examples:
 				skipProjects = wt.SkipProjects
 				skipOrgSettings = wt.SkipOrgSettings
 				skipExtras = wt.SkipExtras
+				skipOrb = wt.SkipOrb
+				skipRunner = wt.SkipRunner
+				orbNamespace = wt.OrbNamespace
+				destOrbNamespace = wt.DestOrbNamespace
+				runnerNamespace = wt.RunnerNamespace
+				destRunnerNamespace = wt.DestRunnerNamespace
 				// In-pipeline transfer fields.
 				transferSecrets = wt.TransferSecrets
 				destTokenContext = wt.DestTokenContext
@@ -686,6 +692,8 @@ var migrateComponents = []string{
 	"projects",
 	"org settings",
 	"extras (checkout keys, webhooks, schedules)",
+	"orbs",
+	"runners (self-hosted runner resource classes)",
 }
 
 // MigrateWalkthroughResult holds all values returned by the interactive guided
@@ -730,6 +738,14 @@ type MigrateWalkthroughResult struct {
 	SkipProjects    bool
 	SkipOrgSettings bool
 	SkipExtras      bool
+	SkipOrb         bool
+	SkipRunner      bool
+
+	// --- orb / runner namespaces (set by guided mode when selected) ---
+	OrbNamespace        string
+	DestOrbNamespace    string
+	RunnerNamespace     string
+	DestRunnerNamespace string
 }
 
 // valueMethodInPipeline is the display label for the recommended in-pipeline
@@ -855,6 +871,10 @@ func RunMigrateWalkthroughWith(
 	result.SkipProjects = true
 	result.SkipOrgSettings = true
 	result.SkipExtras = true
+	result.SkipOrb = true
+	result.SkipRunner = true
+	wantsOrbs := false
+	wantsRunners := false
 	for _, c := range chosen {
 		switch c {
 		case migrateComponents[0]: // contexts
@@ -865,6 +885,67 @@ func RunMigrateWalkthroughWith(
 			result.SkipOrgSettings = false
 		case migrateComponents[3]: // extras
 			result.SkipExtras = false
+		case migrateComponents[4]: // orbs
+			result.SkipOrb = false
+			wantsOrbs = true
+		case migrateComponents[5]: // runners
+			result.SkipRunner = false
+			wantsRunners = true
+		}
+	}
+
+	// --- Step 3 namespace prompts (orbs / runners) ---------------------------
+	// When orbs are selected, prompt for source and destination namespaces.
+	// Default to the org short-name (e.g. "acme" from "gh/acme"); for
+	// circleci/<uuid> orgs there is no short name so we default to empty.
+	if wantsOrbs {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Most orgs use their org name as the orb namespace.")
+		fmt.Fprintln(out, "  Leave blank to skip orbs.")
+		srcOrbDefault := orgShortName(sourceOrg)
+		result.OrbNamespace, err = p.askWithDefault("Source orb namespace", srcOrbDefault)
+		if err != nil {
+			return result, err
+		}
+		if result.OrbNamespace == "" {
+			// User cleared the value — treat as skipped.
+			result.SkipOrb = true
+		} else {
+			dstOrbDefault := orgShortName(destOrg)
+			result.DestOrbNamespace, err = p.askWithDefault("Destination orb namespace", dstOrbDefault)
+			if err != nil {
+				return result, err
+			}
+			if result.DestOrbNamespace == "" {
+				result.SkipOrb = true
+				result.OrbNamespace = ""
+			}
+		}
+	}
+
+	// When runners are selected, prompt for source and destination namespaces
+	// with the same defaulting logic.
+	if wantsRunners {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Most orgs use their org name as the runner namespace.")
+		fmt.Fprintln(out, "  Leave blank to skip runners.")
+		srcRunnerDefault := orgShortName(sourceOrg)
+		result.RunnerNamespace, err = p.askWithDefault("Source runner namespace", srcRunnerDefault)
+		if err != nil {
+			return result, err
+		}
+		if result.RunnerNamespace == "" {
+			result.SkipRunner = true
+		} else {
+			dstRunnerDefault := orgShortName(destOrg)
+			result.DestRunnerNamespace, err = p.askWithDefault("Destination runner namespace", dstRunnerDefault)
+			if err != nil {
+				return result, err
+			}
+			if result.DestRunnerNamespace == "" {
+				result.SkipRunner = true
+				result.RunnerNamespace = ""
+			}
 		}
 	}
 
@@ -1003,8 +1084,14 @@ func RunMigrateWalkthroughWith(
 		fmt.Fprintln(out, "")
 		fmt.Fprintf(out, "  Source:      %s\n", sourceOrg)
 		fmt.Fprintf(out, "  Destination: %s\n", destOrg)
-		selected := componentsLabel(result.SkipContexts, result.SkipProjects, result.SkipOrgSettings, result.SkipExtras)
+		selected := componentsLabel(result.SkipContexts, result.SkipProjects, result.SkipOrgSettings, result.SkipExtras, result.SkipOrb, result.SkipRunner)
 		fmt.Fprintf(out, "  Migrating:   %s\n", selected)
+		if !result.SkipOrb {
+			fmt.Fprintf(out, "  Orbs:        %s → %s\n", result.OrbNamespace, result.DestOrbNamespace)
+		}
+		if !result.SkipRunner {
+			fmt.Fprintf(out, "  Runners:     %s → %s\n", result.RunnerNamespace, result.DestRunnerNamespace)
+		}
 		fmt.Fprintln(out, "")
 
 		// Print a secrets summary line describing the chosen path.
@@ -1042,9 +1129,8 @@ func RunMigrateWalkthroughWith(
 	// End-of-walkthrough pointer to advanced flags not covered by the prompts.
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  Advanced options not covered above (set via flags, re-run with --help):")
-	fmt.Fprintln(out, "    --runner-namespace / --dest-runner-namespace  migrate self-hosted runner resource classes")
-	fmt.Fprintln(out, "    --dest-github-org                             when repos moved to a new GitHub org (App orgs)")
-	fmt.Fprintln(out, "    --mapping                                     per-project source->destination slug overrides")
+	fmt.Fprintln(out, "    --dest-github-org   when repos moved to a new GitHub org (App orgs)")
+	fmt.Fprintln(out, "    --mapping           per-project source->destination slug overrides")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  Terraform alternative (IaC path):")
 	fmt.Fprintln(out, "    To manage contexts, projects, webhooks, runners, and pipelines as Terraform")
@@ -1067,7 +1153,7 @@ func yesNo(b bool) string {
 
 // componentsLabel builds a short human-readable list of selected migration
 // components, used in the apply confirmation summary.
-func componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras bool) string {
+func componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras, skipOrb, skipRunner bool) string {
 	var parts []string
 	if !skipContexts {
 		parts = append(parts, "contexts")
@@ -1081,10 +1167,31 @@ func componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras boo
 	if !skipExtras {
 		parts = append(parts, "extras")
 	}
+	if !skipOrb {
+		parts = append(parts, "orbs")
+	}
+	if !skipRunner {
+		parts = append(parts, "runners")
+	}
 	if len(parts) == 0 {
 		return "(none)"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// orgShortName extracts the short org name from a slug like "gh/acme" → "acme".
+// For "circleci/<uuid>" orgs (App/standalone), the UUID is not a usable
+// namespace name, so we return empty string to let the user type the value.
+func orgShortName(slug string) string {
+	parts := strings.SplitN(slug, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return ""
+	}
+	// circleci/<uuid> orgs: the second segment is a UUID — not a namespace name.
+	if parts[0] == "circleci" {
+		return ""
+	}
+	return parts[1]
 }
 
 // migrateJSONOutput is the combined machine-readable result of a migrate

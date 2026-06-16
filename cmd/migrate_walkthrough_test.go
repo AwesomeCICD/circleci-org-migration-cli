@@ -66,13 +66,18 @@ func TestRunMigrateWalkthroughWith_DryRunAllComponents(t *testing.T) {
 	// 1. source org slug
 	// 2. dest org slug
 	// 3. multiselect components (empty = all = default)
-	// 4. secrets method → "3" (none — structure only)
-	// 5. missing secrets choice → "1" (first option: skip)
-	// 6. dry run first? → "y"
+	// 4-7. namespace defaults for orbs and runners (accept with empty)
+	// 8. secrets method → "3" (none — structure only)
+	// 9. missing secrets choice → "1" (first option: skip)
+	// 10. dry run first? → "y"
 	lines := []string{
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: accept default (all)
+		"",            // source orb namespace: accept default (acme)
+		"",            // dest orb namespace: accept default (acme-new)
+		"",            // source runner namespace: accept default (acme)
+		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip (first choice)
 		"y",           // dry run (yes to "perform dry run")
@@ -108,6 +113,10 @@ func TestRunMigrateWalkthroughWith_ApplyWithConfirmation(t *testing.T) {
 		"gh/src", // source org
 		"gh/dst", // dest org
 		"",       // components: default (all)
+		"",       // source orb namespace: accept default (src)
+		"",       // dest orb namespace: accept default (dst)
+		"",       // source runner namespace: accept default (src)
+		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
 		"n",      // do NOT do dry run → apply=true
@@ -135,6 +144,10 @@ func TestRunMigrateWalkthroughWith_ApplyCancelled(t *testing.T) {
 		"gh/src", // source org
 		"gh/dst", // dest org
 		"",       // components: default
+		"",       // source orb namespace: accept default (src)
+		"",       // dest orb namespace: accept default (dst)
+		"",       // source runner namespace: accept default (src)
+		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
 		"n",      // do NOT do dry run → apply=true
@@ -161,6 +174,10 @@ func TestRunMigrateWalkthroughWith_WithSecretsBundle(t *testing.T) {
 		"gh/src",          // source org
 		"gh/dst",          // dest org
 		"",                // components: default
+		"",                // source orb namespace: accept default (src)
+		"",                // dest orb namespace: accept default (dst)
+		"",                // source runner namespace: accept default (src)
+		"",                // dest runner namespace: accept default (dst)
 		"2",               // secrets method: bundle
 		"my-secrets.json", // path to bundle
 		"1",               // missing-secrets: skip
@@ -189,6 +206,10 @@ func TestRunMigrateWalkthroughWith_SourceOrgPreset(t *testing.T) {
 	input := strings.Join([]string{
 		"gh/dst", // dest org (source already given)
 		"",       // components: default
+		"",       // source orb namespace: accept default (preset-src)
+		"",       // dest orb namespace: accept default (dst)
+		"",       // source runner namespace: accept default (preset-src)
+		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
 		"y",      // dry run
@@ -299,6 +320,10 @@ func TestMigrateWalkthrough_Step3SubStepLabels(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default (acme)
+		"",            // dest orb namespace: accept default (acme-new)
+		"",            // source runner namespace: accept default (acme)
+		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none (Step 3a choice)
 		"1",           // missing-secrets: skip (Step 3b)
 		"y",           // dry run
@@ -344,6 +369,10 @@ func TestRunMigrateWalkthroughWith_ConfigIsolation(t *testing.T) {
 			srcTok,   // source token (prompted because env is empty)
 			dstTok,   // dest token (prompted because env is empty)
 			"",       // components: default (all)
+			"",       // source orb namespace: accept default (src)
+			"",       // dest orb namespace: accept default (dst)
+			"",       // source runner namespace: accept default (src)
+			"",       // dest runner namespace: accept default (dst)
 			"3",      // secrets method: none
 			"1",      // missing-secrets: skip
 			"y",      // dry run
@@ -400,17 +429,22 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer(t *testing.T) {
 	// 1. source org
 	// 2. dest org
 	// 3. components: default (all)
-	// 4. secrets method → "1" (in-pipeline transfer)
-	// 5. dest token context name
-	// 6. include project vars? → "y"
-	// 7. include SSH keys? → "n"
-	// 8. remove restrictions? → "y"
-	// 9. host project (blank = auto)
-	// 10. dry run? → "y"
+	// 4-7. namespace defaults for orbs and runners
+	// 8. secrets method → "1" (in-pipeline transfer)
+	// 9. dest token context name
+	// 10. include project vars? → "y"
+	// 11. include SSH keys? → "n"
+	// 12. remove restrictions? → "y"
+	// 13. host project (blank = auto)
+	// 14. dry run? → "y"
 	lines := []string{
 		"gh/acme",           // source org
 		"gh/acme-new",       // dest org
 		"",                  // components: all
+		"",                  // source orb namespace: accept default (acme)
+		"",                  // dest orb namespace: accept default (acme-new)
+		"",                  // source runner namespace: accept default (acme)
+		"",                  // dest runner namespace: accept default (acme-new)
 		"1",                 // secrets method: in-pipeline (RECOMMENDED)
 		"migration-secrets", // dest token context name
 		"y",                 // include project vars
@@ -462,6 +496,10 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer_WithHostProject(t *testing
 		"gh/acme",           // source org
 		"gh/acme-new",       // dest org
 		"",                  // components: all
+		"",                  // source orb namespace: accept default (acme)
+		"",                  // dest orb namespace: accept default (acme-new)
+		"",                  // source runner namespace: accept default (acme)
+		"",                  // dest runner namespace: accept default (acme-new)
 		"1",                 // secrets method: in-pipeline
 		"migration-secrets", // dest token context name
 		"y",                 // include project vars
@@ -497,6 +535,10 @@ func TestRunMigrateWalkthroughWith_NoneMethod(t *testing.T) {
 		"gh/src", // source org
 		"gh/dst", // dest org
 		"",       // components: default
+		"",       // source orb namespace: accept default (src)
+		"",       // dest orb namespace: accept default (dst)
+		"",       // source runner namespace: accept default (src)
+		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
 		"y",      // dry run
@@ -530,6 +572,10 @@ func TestMigrateWalkthrough_Step3aLeadsWithInPipeline(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default (acme)
+		"",            // dest orb namespace: accept default (acme-new)
+		"",            // source runner namespace: accept default (acme)
+		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
@@ -575,6 +621,10 @@ func TestMigrateWalkthrough_InPipelineApplySummary(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default (acme)
+		"",            // dest orb namespace: accept default (acme-new)
+		"",            // source runner namespace: accept default (acme)
+		"",            // dest runner namespace: accept default (acme-new)
 		"1",           // secrets method: in-pipeline
 		"my-ctx",      // dest token context
 		"y",           // include project vars
@@ -592,5 +642,251 @@ func TestMigrateWalkthrough_InPipelineApplySummary(t *testing.T) {
 
 	if !strings.Contains(output, `in-pipeline transfer via context "my-ctx"`) {
 		t.Errorf("expected apply summary to mention in-pipeline transfer via context; got:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — orbs and runners in guided mode
+// ---------------------------------------------------------------------------
+
+// TestRunMigrateWalkthroughWith_OrbsAndRunners_Selected verifies that selecting
+// orbs and runners in the guided walkthrough prompts for namespaces and sets the
+// result fields and skip flags correctly.
+func TestRunMigrateWalkthroughWith_OrbsAndRunners_Selected(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	// Select only orbs (5) and runners (6) from the component list.
+	// Items 5 and 6 correspond to migrateComponents[4] and migrateComponents[5].
+	lines := []string{
+		"gh/acme",      // source org
+		"gh/acme-new",  // dest org
+		"5,6",          // components: orbs + runners only
+		"acme-ns",      // source orb namespace (custom value)
+		"acme-new-ns",  // dest orb namespace (custom value)
+		"acme-run",     // source runner namespace (custom value)
+		"acme-new-run", // dest runner namespace (custom value)
+		"3",            // secrets method: none
+		"1",            // missing-secrets: skip
+		"y",            // dry run
+	}
+
+	res, err := runWalkthroughWithInput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// Orbs should be selected (not skipped), with namespaces captured.
+	if res.SkipOrb {
+		t.Error("expected SkipOrb=false (orbs were selected)")
+	}
+	if res.OrbNamespace != "acme-ns" {
+		t.Errorf("OrbNamespace = %q, want %q", res.OrbNamespace, "acme-ns")
+	}
+	if res.DestOrbNamespace != "acme-new-ns" {
+		t.Errorf("DestOrbNamespace = %q, want %q", res.DestOrbNamespace, "acme-new-ns")
+	}
+
+	// Runners should be selected (not skipped), with namespaces captured.
+	if res.SkipRunner {
+		t.Error("expected SkipRunner=false (runners were selected)")
+	}
+	if res.RunnerNamespace != "acme-run" {
+		t.Errorf("RunnerNamespace = %q, want %q", res.RunnerNamespace, "acme-run")
+	}
+	if res.DestRunnerNamespace != "acme-new-run" {
+		t.Errorf("DestRunnerNamespace = %q, want %q", res.DestRunnerNamespace, "acme-new-run")
+	}
+
+	// Other components should be skipped (only 5,6 were selected).
+	if !res.SkipContexts {
+		t.Error("expected SkipContexts=true (not selected)")
+	}
+	if !res.SkipProjects {
+		t.Error("expected SkipProjects=true (not selected)")
+	}
+	if !res.SkipOrgSettings {
+		t.Error("expected SkipOrgSettings=true (not selected)")
+	}
+	if !res.SkipExtras {
+		t.Error("expected SkipExtras=true (not selected)")
+	}
+}
+
+// TestRunMigrateWalkthroughWith_OrbsAndRunners_Deselected verifies that when
+// orbs and runners are deselected (e.g. via a subset not including them),
+// SkipOrb and SkipRunner are true and no namespace prompts appear.
+func TestRunMigrateWalkthroughWith_OrbsAndRunners_Deselected(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	// Select only contexts (1) and projects (2) — no orbs or runners.
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"1,2",         // components: contexts + projects only (no orbs/runners)
+		"3",           // secrets method: none (no namespace prompts)
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	res, err := runWalkthroughWithInput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// Orbs and runners should be skipped.
+	if !res.SkipOrb {
+		t.Error("expected SkipOrb=true (not selected)")
+	}
+	if !res.SkipRunner {
+		t.Error("expected SkipRunner=true (not selected)")
+	}
+	if res.OrbNamespace != "" {
+		t.Errorf("expected OrbNamespace empty, got %q", res.OrbNamespace)
+	}
+	if res.DestOrbNamespace != "" {
+		t.Errorf("expected DestOrbNamespace empty, got %q", res.DestOrbNamespace)
+	}
+	if res.RunnerNamespace != "" {
+		t.Errorf("expected RunnerNamespace empty, got %q", res.RunnerNamespace)
+	}
+	if res.DestRunnerNamespace != "" {
+		t.Errorf("expected DestRunnerNamespace empty, got %q", res.DestRunnerNamespace)
+	}
+
+	// The selected components should NOT be skipped.
+	if res.SkipContexts {
+		t.Error("expected SkipContexts=false (was selected)")
+	}
+	if res.SkipProjects {
+		t.Error("expected SkipProjects=false (was selected)")
+	}
+}
+
+// TestRunMigrateWalkthroughWith_OrbsAndRunners_DefaultNamespace verifies that
+// when orbs+runners are selected with empty input (accepting defaults), the org
+// short name is used as the default namespace for a gh/ org.
+func TestRunMigrateWalkthroughWith_OrbsAndRunners_DefaultNamespace(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	lines := []string{
+		"gh/acme",     // source org → short name = acme
+		"gh/acme-new", // dest org → short name = acme-new
+		"5,6",         // components: orbs + runners
+		"",            // source orb namespace: accept default (acme)
+		"",            // dest orb namespace: accept default (acme-new)
+		"",            // source runner namespace: accept default (acme)
+		"",            // dest runner namespace: accept default (acme-new)
+		"3",           // secrets method: none
+		"1",           // missing-secrets: skip
+		"y",           // dry run
+	}
+
+	res, err := runWalkthroughWithInput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	if res.OrbNamespace != "acme" {
+		t.Errorf("OrbNamespace = %q, want %q (derived from gh/acme)", res.OrbNamespace, "acme")
+	}
+	if res.DestOrbNamespace != "acme-new" {
+		t.Errorf("DestOrbNamespace = %q, want %q (derived from gh/acme-new)", res.DestOrbNamespace, "acme-new")
+	}
+	if res.RunnerNamespace != "acme" {
+		t.Errorf("RunnerNamespace = %q, want %q (derived from gh/acme)", res.RunnerNamespace, "acme")
+	}
+	if res.DestRunnerNamespace != "acme-new" {
+		t.Errorf("DestRunnerNamespace = %q, want %q (derived from gh/acme-new)", res.DestRunnerNamespace, "acme-new")
+	}
+	if res.SkipOrb {
+		t.Error("expected SkipOrb=false when namespaces were accepted")
+	}
+	if res.SkipRunner {
+		t.Error("expected SkipRunner=false when namespaces were accepted")
+	}
+}
+
+// TestRunMigrateWalkthroughWith_OrbsAndRunners_CircleCIOrg verifies that for a
+// circleci/<uuid> org (App/standalone), the default namespace is empty and the
+// user is expected to type one; if left blank, orbs/runners are skipped.
+func TestRunMigrateWalkthroughWith_OrbsAndRunners_CircleCIOrg(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	lines := []string{
+		"circleci/abc-uuid-123", // source org (App/standalone — no short name)
+		"circleci/def-uuid-456", // dest org
+		"5,6",                   // components: orbs + runners
+		"",                      // source orb namespace: blank → skip
+		// No dest orb namespace prompt because source was blank → SkipOrb=true
+		"", // source runner namespace: blank → skip
+		// No dest runner namespace prompt because source was blank → SkipRunner=true
+		"3", // secrets method: none
+		"1", // missing-secrets: skip
+		"y", // dry run
+	}
+
+	res, err := runWalkthroughWithInput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	// With circleci/ orgs the default is empty, and user entered empty → skip.
+	if !res.SkipOrb {
+		t.Error("expected SkipOrb=true when user left orb namespace blank for circleci/ org")
+	}
+	if !res.SkipRunner {
+		t.Error("expected SkipRunner=true when user left runner namespace blank for circleci/ org")
+	}
+	if res.OrbNamespace != "" {
+		t.Errorf("expected OrbNamespace empty, got %q", res.OrbNamespace)
+	}
+	if res.RunnerNamespace != "" {
+		t.Errorf("expected RunnerNamespace empty, got %q", res.RunnerNamespace)
+	}
+}
+
+// TestRunMigrateWalkthroughWith_OrbsAndRunners_ApplySummary verifies that when
+// apply mode is chosen with orbs and runners selected, the apply summary
+// includes the namespace lines.
+func TestRunMigrateWalkthroughWith_OrbsAndRunners_ApplySummary(t *testing.T) {
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+
+	lines := []string{
+		"gh/acme",     // source org
+		"gh/acme-new", // dest org
+		"5,6",         // components: orbs + runners
+		"acme",        // source orb namespace
+		"acme-new",    // dest orb namespace
+		"acme",        // source runner namespace
+		"acme-new",    // dest runner namespace
+		"3",           // secrets method: none
+		"1",           // missing-secrets: skip
+		"n",           // do NOT dry run → apply=true
+		"y",           // confirm apply
+	}
+
+	output, err := runWalkthroughCaptureOutput(t, lines)
+	if err != nil {
+		t.Fatalf("walkthrough error: %v", err)
+	}
+
+	if !strings.Contains(output, "Orbs:") {
+		t.Errorf("expected 'Orbs:' line in apply summary; got:\n%s", output)
+	}
+	if !strings.Contains(output, "acme → acme-new") {
+		t.Errorf("expected 'acme → acme-new' namespace mapping in apply summary; got:\n%s", output)
+	}
+	if !strings.Contains(output, "Runners:") {
+		t.Errorf("expected 'Runners:' line in apply summary; got:\n%s", output)
 	}
 }

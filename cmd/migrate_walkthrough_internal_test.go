@@ -50,6 +50,10 @@ func TestRunMigrateWalkthrough_Wrapper(t *testing.T) {
 
 	lines := []string{
 		"",  // components: default (all)
+		"",  // source orb namespace: accept default (src)
+		"",  // dest orb namespace: accept default (dst)
+		"",  // source runner namespace: accept default (src)
+		"",  // dest runner namespace: accept default (dst)
 		"3", // secrets method: none
 		"1", // missing-secrets: skip
 		"y", // dry run
@@ -83,6 +87,10 @@ func TestRunMigrateWalkthrough_Wrapper_PropagatesError(t *testing.T) {
 
 	lines := []string{
 		"",  // components: default
+		"",  // source orb namespace: accept default (src)
+		"",  // dest orb namespace: accept default (dst)
+		"",  // source runner namespace: accept default (src)
+		"",  // dest runner namespace: accept default (dst)
 		"3", // secrets method: none
 		"1", // missing-secrets: skip
 		"n", // do NOT dry run → apply=true
@@ -218,6 +226,10 @@ func TestMigrateCmd_Interactive_WalkthroughToValidation(t *testing.T) {
 		"fake-src-tok", // source token (prompted)
 		"fake-dst-tok", // dest token (prompted)
 		"",             // components: default (all)
+		"",             // source orb namespace: accept default (acme)
+		"",             // dest orb namespace: accept default (acme-new)
+		"",             // source runner namespace: accept default (acme)
+		"",             // dest runner namespace: accept default (acme-new)
 		"3",            // secrets method: none
 		"1",            // missing-secrets: skip
 		"y",            // dry run (apply=false)

@@ -238,7 +238,7 @@ func TestPrintSyncReport_NoAttentionItems(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestComponentsLabel_AllSelected(t *testing.T) {
-	got := componentsLabel(false, false, false, false)
+	got := componentsLabel(false, false, false, false, false, false)
 	if !strings.Contains(got, "contexts") {
 		t.Errorf("expected 'contexts' in %q", got)
 	}
@@ -251,29 +251,48 @@ func TestComponentsLabel_AllSelected(t *testing.T) {
 	if !strings.Contains(got, "extras") {
 		t.Errorf("expected 'extras' in %q", got)
 	}
+	if !strings.Contains(got, "orbs") {
+		t.Errorf("expected 'orbs' in %q", got)
+	}
+	if !strings.Contains(got, "runners") {
+		t.Errorf("expected 'runners' in %q", got)
+	}
 }
 
 func TestComponentsLabel_NoneSelected(t *testing.T) {
-	got := componentsLabel(true, true, true, true)
+	got := componentsLabel(true, true, true, true, true, true)
 	if got != "(none)" {
 		t.Errorf("expected '(none)', got %q", got)
 	}
 }
 
 func TestComponentsLabel_ContextsOnly(t *testing.T) {
-	got := componentsLabel(false, true, true, true)
+	got := componentsLabel(false, true, true, true, true, true)
 	if got != "contexts" {
 		t.Errorf("expected 'contexts', got %q", got)
 	}
 }
 
 func TestComponentsLabel_ProjectsAndOrgSettings(t *testing.T) {
-	got := componentsLabel(true, false, false, true)
+	got := componentsLabel(true, false, false, true, true, true)
 	if !strings.Contains(got, "projects") {
 		t.Errorf("expected 'projects' in %q", got)
 	}
 	if !strings.Contains(got, "org settings") {
 		t.Errorf("expected 'org settings' in %q", got)
+	}
+	if strings.Contains(got, "contexts") {
+		t.Errorf("should not contain 'contexts', got %q", got)
+	}
+}
+
+func TestComponentsLabel_OrbsAndRunners(t *testing.T) {
+	got := componentsLabel(true, true, true, true, false, false)
+	if !strings.Contains(got, "orbs") {
+		t.Errorf("expected 'orbs' in %q", got)
+	}
+	if !strings.Contains(got, "runners") {
+		t.Errorf("expected 'runners' in %q", got)
 	}
 	if strings.Contains(got, "contexts") {
 		t.Errorf("should not contain 'contexts', got %q", got)

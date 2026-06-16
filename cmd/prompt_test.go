@@ -20,6 +20,8 @@ type skipResults struct {
 	projects    bool
 	orgSettings bool
 	extras      bool
+	orb         bool
+	runner      bool
 }
 
 // runWalkthrough drives the interactive guided walkthrough with scripted input
@@ -53,6 +55,8 @@ func runWalkthrough(t *testing.T, input string) (skips skipResults, outApply boo
 		projects:    res.SkipProjects,
 		orgSettings: res.SkipOrgSettings,
 		extras:      res.SkipExtras,
+		orb:         res.SkipOrb,
+		runner:      res.SkipRunner,
 	}, res.Apply, walkErr
 }
 
@@ -68,7 +72,8 @@ func TestPrompt_AskRequired_RepromptOnEmpty(t *testing.T) {
 
 	// First source-org line is empty → re-prompt; second provides a valid slug.
 	// "3" → secrets method: none; "1" → missing-secrets: skip; "y" → dry run.
-	input := "\ngh/acme\ngh/acme-new\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "\ngh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt: %v", err)
@@ -87,7 +92,8 @@ func TestPrompt_DryRun_DefaultYes_EmptyInput(t *testing.T) {
 
 	// Empty line on dry-run prompt → accept default (dry run, not apply).
 	// "3" → secrets method: none; "1" → missing-secrets: skip; "" → dry run default.
-	input := "gh/acme\ngh/acme-new\nall\n3\n1\n\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\n\n"
 	_, outApply, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -105,7 +111,8 @@ func TestPrompt_Apply_Confirmed(t *testing.T) {
 
 	// "3" → secrets method: none; "1" → missing-secrets: skip;
 	// "n" → skip dry run (wants apply); "y" → confirm apply.
-	input := "gh/acme\ngh/acme-new\nall\n3\n1\nn\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\nn\ny\n"
 	_, outApply, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -123,7 +130,8 @@ func TestPrompt_Apply_Cancelled(t *testing.T) {
 
 	// "3" → secrets method: none; "1" → missing-secrets: skip;
 	// "n" → skip dry run (wants apply); "n" → decline apply confirmation.
-	input := "gh/acme\ngh/acme-new\nall\n3\n1\nn\nn\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\nn\nn\n"
 	_, _, err := runWalkthrough(t, input)
 	if err == nil {
 		t.Fatal("expected error when user cancels apply confirmation")
@@ -143,14 +151,15 @@ func TestPrompt_MultiSelect_All(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	input := "gh/acme\ngh/acme-new\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if skips.contexts || skips.projects || skips.orgSettings || skips.extras {
-		t.Errorf("expected no skips with 'all', got: contexts=%v projects=%v orgSettings=%v extras=%v",
-			skips.contexts, skips.projects, skips.orgSettings, skips.extras)
+	if skips.contexts || skips.projects || skips.orgSettings || skips.extras || skips.orb || skips.runner {
+		t.Errorf("expected no skips with 'all', got: contexts=%v projects=%v orgSettings=%v extras=%v orb=%v runner=%v",
+			skips.contexts, skips.projects, skips.orgSettings, skips.extras, skips.orb, skips.runner)
 	}
 }
 
@@ -161,12 +170,13 @@ func TestPrompt_MultiSelect_EmptyLine(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// Empty line on multi-select prompt → "all" default.
-	input := "gh/acme\ngh/acme-new\n\n3\n1\ny\n"
+	// Four more empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\n\n\n\n\n\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if skips.contexts || skips.projects || skips.orgSettings || skips.extras {
+	if skips.contexts || skips.projects || skips.orgSettings || skips.extras || skips.orb || skips.runner {
 		t.Errorf("expected all selected with empty line, got: %+v", skips)
 	}
 }
@@ -181,9 +191,9 @@ func TestPrompt_MultiSelect_None(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !skips.contexts || !skips.projects || !skips.orgSettings || !skips.extras {
-		t.Errorf("expected all skips with 'none', got: contexts=%v projects=%v orgSettings=%v extras=%v",
-			skips.contexts, skips.projects, skips.orgSettings, skips.extras)
+	if !skips.contexts || !skips.projects || !skips.orgSettings || !skips.extras || !skips.orb || !skips.runner {
+		t.Errorf("expected all skips with 'none', got: contexts=%v projects=%v orgSettings=%v extras=%v orb=%v runner=%v",
+			skips.contexts, skips.projects, skips.orgSettings, skips.extras, skips.orb, skips.runner)
 	}
 }
 
@@ -219,12 +229,13 @@ func TestPrompt_MultiSelect_InvalidThenValid(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// "99" is out of range → reprompt; "all" is accepted on the second attempt.
-	input := "gh/acme\ngh/acme-new\n99\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\n99\nall\n\n\n\n\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt: %v", err)
 	}
-	if skips.contexts || skips.projects || skips.orgSettings || skips.extras {
+	if skips.contexts || skips.projects || skips.orgSettings || skips.extras || skips.orb || skips.runner {
 		t.Errorf("expected no skips after 'all'; got: %+v", skips)
 	}
 }
@@ -240,7 +251,8 @@ func TestPrompt_MissingSecrets_Placeholder(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// "3" → secrets method: none; "2" → missing-secrets: placeholder; "y" → dry run.
-	input := "gh/acme\ngh/acme-new\nall\n3\n2\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n2\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -259,7 +271,8 @@ func TestPrompt_SecretsBundle_Provided(t *testing.T) {
 
 	// "2" → secrets method: bundle; "my-secrets.json" → path;
 	// "1" → missing-secrets: skip; "y" → dry run.
-	input := "gh/acme\ngh/acme-new\nall\n2\nmy-secrets.json\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n2\nmy-secrets.json\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -278,7 +291,8 @@ func TestPrompt_TokensAlreadySet_SkipsTokenPrompts(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-set-dst")
 
 	// No token lines in input — the walkthrough must not block on them.
-	input := "gh/acme\ngh/acme-new\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -299,7 +313,8 @@ func TestPrompt_TokenPrompts_WhenNotSetInEnv(t *testing.T) {
 	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Provide token values inline in the scripted input.
-	input := "gh/acme\ngh/acme-new\nmy-src-token\nmy-dst-token\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\nmy-src-token\nmy-dst-token\nall\n\n\n\n\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error when providing tokens interactively: %v", err)
@@ -315,7 +330,8 @@ func TestPrompt_TokenPrompts_EmptyThenValid(t *testing.T) {
 	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Empty source token → re-prompt; second entry is valid.
-	input := "gh/acme\ngh/acme-new\n\nmy-src-token\nmy-dst-token\nall\n3\n1\ny\n"
+	// Four empty lines accept namespace defaults for orbs and runners.
+	input := "gh/acme\ngh/acme-new\n\nmy-src-token\nmy-dst-token\nall\n\n\n\n\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt for token: %v", err)
@@ -384,6 +400,10 @@ func TestPromptSeparator_BlankLineBeforeMultiSelect(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default
+		"",            // dest orb namespace: accept default
+		"",            // source runner namespace: accept default
+		"",            // dest runner namespace: accept default
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
@@ -412,6 +432,10 @@ func TestPromptSeparator_StepHeaderContainsStepNumber(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default
+		"",            // dest orb namespace: accept default
+		"",            // source runner namespace: accept default
+		"",            // dest runner namespace: accept default
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
@@ -441,6 +465,10 @@ func TestPromptSeparator_BlankLineBeforeBoolQuestion(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
+		"",            // source orb namespace: accept default
+		"",            // dest orb namespace: accept default
+		"",            // source runner namespace: accept default
+		"",            // dest runner namespace: accept default
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
@@ -474,6 +502,10 @@ func TestPromptOptionList_NumbersHaveIndentation(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all (multi-select list printed here)
+		"",            // source orb namespace: accept default
+		"",            // dest orb namespace: accept default
+		"",            // source runner namespace: accept default
+		"",            // dest runner namespace: accept default
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip (choice list printed here)
 		"y",           // dry run
