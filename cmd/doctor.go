@@ -6,6 +6,7 @@ import (
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
 	"github.com/spf13/cobra"
 )
 
@@ -76,11 +77,13 @@ Examples:
 				var pfSrcOrgClient orgGetter
 				var pfFlagClient featureFlagGetter
 				var pfProjClient projectLister
+				var pfOrgMgr capture.OrgFlagManager
 
 				if srcToken != "" {
 					if c, err := org.NewClient(cfg, srcToken); err == nil {
 						pfSrcOrgClient = c
 						pfFlagClient = c
+						pfOrgMgr = c
 					}
 					if c, err := project.NewClient(cfg, srcToken); err == nil {
 						pfProjClient = c
@@ -95,6 +98,7 @@ Examples:
 				clients := preflightClients{
 					srcOrg:      pfSrcOrgClient,
 					srcFlags:    pfFlagClient,
+					srcOrgMgr:   pfOrgMgr,
 					srcProjects: pfProjClient,
 				}
 				return runExportPreflight(ctx, deps, clients, out)
@@ -134,6 +138,7 @@ Examples:
 			if pfErr == nil {
 				pfClients.srcOrg = pfSrcOrgClient
 				pfClients.srcFlags = pfSrcOrgClient
+				pfClients.srcOrgMgr = pfSrcOrgClient
 			}
 			if pfErr2 == nil {
 				pfClients.dstOrg = pfDstOrgClient
@@ -161,11 +166,15 @@ Examples:
 
 	f := cmd.Flags()
 	f.StringVar(&sourceOrg, "source-org", "",
-		"Source organization slug: gh/<org> or circleci/<org-id>. "+
+		"CircleCI organization slug for the source org, e.g. gh/my-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. "+
 			"When provided, source-side checks are run (token, reachability, api-trigger flag, project discovery). "+
 			"May be combined with --dest-org to run both sides.")
 	f.StringVar(&destOrg, "dest-org", "",
-		"Destination organization slug: gh/<org> or circleci/<org-id>. "+
+		"CircleCI organization slug for the destination org, e.g. gh/my-new-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. "+
 			"When provided, destination-side checks are run (token, reachability, cross-type warning, GitHub token). "+
 			"May be combined with --source-org to run both sides.")
 	f.StringVar(&githubToken, "github-token", "",

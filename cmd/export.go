@@ -313,6 +313,7 @@ Examples:
 				pfClients := preflightClients{
 					srcOrg:      orgClient,
 					srcFlags:    orgClient,
+					srcOrgMgr:   orgClient,
 					srcProjects: projClient,
 				}
 				// Wire up the follow-all offer when a GitHub token is available.
@@ -430,7 +431,9 @@ Examples:
 
 	// Canonical flags (new names).
 	f.StringVar(&orgSlug, "source-org", "",
-		"Source organization slug: gh/<org> or circleci/<org-id> (required)")
+		"CircleCI organization slug for the source org, e.g. gh/my-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. (required)")
 	f.StringVarP(&output, "output", "o", "manifest.json",
 		"Path to write the JSON manifest (always written; use -o to change the path)")
 	f.StringVar(&reportPath, "report", "migration-report.md",

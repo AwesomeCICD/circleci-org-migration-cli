@@ -127,15 +127,26 @@ Examples:
 			matched, unmatchedSrc, destOnly := matchProjects(srcSlugs, destProjects)
 
 			// ── Write the mapping file ───────────────────────────────────────
-			// Derive the org mapping from the first matched pair (informational
-			// only — ResolveProjectSlug will use the explicit Projects map).
-			orgFrom := m.Source.Org.Slug
+			// Normalize VCS provider prefixes so org.from, org.to, and all project
+			// slugs use consistent short forms (gh/, bb/) rather than mixing
+			// "github/" with "gh/" or "bitbucket/" with "bb/". This ensures that
+			// ResolveProjectSlug, sync, and secrets transfer all operate on the same
+			// prefix convention.
+			orgFrom := normalizeVCSPrefix(m.Source.Org.Slug)
+			normalizedDestOrgSlug := normalizeVCSPrefix(destOrgSlug)
+
+			// Re-normalize project slug keys so they match what the manifest records.
+			normalizedMatched := make(map[string]string, len(matched))
+			for src, dst := range matched {
+				normalizedMatched[normalizeVCSPrefix(src)] = normalizeVCSPrefix(dst)
+			}
+
 			mp := &manifest.Mapping{
 				Org: manifest.OrgMapping{
 					From: orgFrom,
-					To:   destOrgSlug,
+					To:   normalizedDestOrgSlug,
 				},
-				Projects: matched,
+				Projects: normalizedMatched,
 			}
 
 			// outputPath defaults to a sibling of the manifest so the user
@@ -198,7 +209,9 @@ Examples:
 	f := cmd.Flags()
 	f.StringVar(&manifestPath, "manifest", "", "Path to the export manifest (required)")
 	f.StringVar(&destOrgSlug, "dest-org", "",
-		"Destination org slug, e.g. gh/new-org or circleci/<org-id> (required)")
+		"CircleCI organization slug for the destination org, e.g. gh/new-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. (required)")
 	f.StringVarP(&outputPath, "output", "o", "",
 		"Path to write the mapping file (default: mapping.json next to the manifest)")
 
@@ -272,6 +285,25 @@ func matchProjects(
 func repoName(slug string) string {
 	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
 		return slug[idx+1:]
+	}
+	return slug
+}
+
+// normalizeVCSPrefix canonicalizes the VCS provider prefix of a CircleCI slug:
+//
+//	"github/<rest>"    → "gh/<rest>"
+//	"bitbucket/<rest>" → "bb/<rest>"
+//	anything else      → unchanged
+//
+// This ensures org.from/org.to and project slug keys all use the same short
+// form that 'sync' and 'secrets transfer' expect, avoiding silent mismatches
+// when the user passes "--dest-org github/my-org" instead of "gh/my-org".
+func normalizeVCSPrefix(slug string) string {
+	if strings.HasPrefix(slug, "github/") {
+		return "gh/" + strings.TrimPrefix(slug, "github/")
+	}
+	if strings.HasPrefix(slug, "bitbucket/") {
+		return "bb/" + strings.TrimPrefix(slug, "bitbucket/")
 	}
 	return slug
 }

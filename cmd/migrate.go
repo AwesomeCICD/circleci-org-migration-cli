@@ -190,6 +190,7 @@ Examples:
 				if pfErr == nil {
 					pfClients.srcOrg = pfSrcOrgClient
 					pfClients.srcFlags = pfSrcOrgClient
+					pfClients.srcOrgMgr = pfSrcOrgClient
 				}
 				if pfErr2 == nil {
 					pfClients.dstOrg = pfDstOrgClient
@@ -418,9 +419,13 @@ Examples:
 
 	f := cmd.Flags()
 	f.StringVar(&sourceOrg, "source-org", "",
-		"Source organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)")
+		"CircleCI organization slug for the source org, e.g. gh/my-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)")
 	f.StringVar(&destOrg, "dest-org", "",
-		"Destination organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)")
+		"CircleCI organization slug for the destination org, e.g. gh/my-new-org "+
+			"(shown in CircleCI → Organization Settings → Overview). "+
+			"This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)")
 	f.StringVar(&secretsPath, "secrets", "secrets.json",
 		"Path to a captured secret bundle (optional)")
 	f.StringVar(&mappingPath, "mapping", "",

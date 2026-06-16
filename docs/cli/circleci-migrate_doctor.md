@@ -37,10 +37,10 @@ circleci-migrate doctor [--source-org <slug>] [--dest-org <slug>] [flags]
 
 ```
       --dest-github-org string   Destination GitHub organization owner (e.g. 'acme-new'). Use when repos have moved to a new GitHub org. Triggers the GitHub-token check.
-      --dest-org string          Destination organization slug: gh/<org> or circleci/<org-id>. When provided, destination-side checks are run (token, reachability, cross-type warning, GitHub token). May be combined with --source-org to run both sides.
+      --dest-org string          CircleCI organization slug for the destination org, e.g. gh/my-new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. When provided, destination-side checks are run (token, reachability, cross-type warning, GitHub token). May be combined with --source-org to run both sides.
       --github-token string      GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN.
   -h, --help                     help for doctor
-      --source-org string        Source organization slug: gh/<org> or circleci/<org-id>. When provided, source-side checks are run (token, reachability, api-trigger flag, project discovery). May be combined with --dest-org to run both sides.
+      --source-org string        CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. When provided, source-side checks are run (token, reachability, api-trigger flag, project discovery). May be combined with --dest-org to run both sides.
 ```
 
 ### Options inherited from parent commands

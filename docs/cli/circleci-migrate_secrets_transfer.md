@@ -28,10 +28,9 @@ PROJECT ENV-VAR TRANSFER (opt-in with --include-project-vars):
   IMPORTANT: project env vars are strictly project-scoped — CircleCI only
   injects them when a pipeline runs under that exact project. Therefore,
   'secrets transfer' triggers ONE SEPARATE PIPELINE per source project, each
-  under that project's own slug. Pipelines run concurrently (up to 4 at a
-  time). This is the only correct approach: a single shared host-project
-  pipeline would silently produce blank values for every project that is not
-  the host project (the bug this design explicitly prevents).
+  under that project's own slug. This is the only correct approach: a single
+  shared host-project pipeline would silently produce blank values for every
+  project that is not the host project (the bug this design explicitly prevents).
 
   The destination project must already be onboarded/exist. Resolution of
   source project slug → destination project slug requires an explicit --mapping
@@ -40,6 +39,17 @@ PROJECT ENV-VAR TRANSFER (opt-in with --include-project-vars):
 
     SKIP project "gh/acme/api": dest project for "gh/acme/api" unknown
     — provide --mapping or onboard it first; skipped
+
+TRIGGER FLAGS (REQUIRED FOR --apply):
+  For the in-pipeline unversioned-config trigger to work, BOTH of the following
+  flags must be enabled:
+    1. Org-level:     allow_api_trigger_with_config  (CircleCI org settings)
+    2. Project-level: api-trigger-with-config         (per-project settings)
+
+  'secrets transfer' checks and enables both flags automatically:
+    - In interactive mode: prompts before enabling each flag.
+    - With --enable-trigger (non-interactive): enables both automatically.
+    - Both flags are restored to their prior values after the transfer (defer).
 
 WHEN TO USE:
   - You trust the source org's pipeline infrastructure and want the simplest,
@@ -69,11 +79,12 @@ DRY RUN (default — safe to run without --apply):
   is triggered.
 
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <uuid> --dest-token-context migration-secrets
+    --dest-org gh/dest-org --dest-token-context migration-secrets
 
 APPLY — execute the transfer:
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <uuid> --dest-token-context migration-secrets --apply
+    --dest-org gh/dest-org --dest-token-context migration-secrets \
+    --enable-trigger --apply
 
 TRUST MODEL & SECURITY:
   The in-pipeline jobs need the destination API token. The CLI does NOT embed
@@ -96,18 +107,18 @@ TRUST MODEL & SECURITY:
 Examples:
   # Dry run — see what would be transferred (no pipeline triggered):
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <dest-org-uuid> \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets
 
   # Transfer all contexts with values (requires --apply):
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <dest-org-uuid> \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets \
     --enable-trigger --apply
 
   # Transfer contexts and project env vars:
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <dest-org-uuid> \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets \
     --mapping mapping.json \
     --include-project-vars \
@@ -115,27 +126,33 @@ Examples:
 
   # Transfer specific contexts only:
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <dest-org-uuid> \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets \
     --context deploy-prod --context shared \
     --apply
 
   # Custom dest token env-var name:
   circleci-migrate secrets transfer --manifest manifest.json \
-    --dest-org-id <dest-org-uuid> \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets \
     --dest-token-env-var MY_DEST_API_TOKEN \
     --apply
 
-  # Custom dest host (CircleCI Server installations):
+  # Explicit dest org UUID (alternative to --dest-org slug lookup):
   circleci-migrate secrets transfer --manifest manifest.json \
     --dest-org-id <dest-org-uuid> \
+    --dest-token-context migration-secrets \
+    --apply
+
+  # Custom dest host (CircleCI Server installations):
+  circleci-migrate secrets transfer --manifest manifest.json \
+    --dest-org gh/dest-org \
     --dest-token-context migration-secrets \
     --dest-host https://circleci.example.com \
     --apply
 
 ```
-circleci-migrate secrets transfer [--manifest <file>] --dest-org-id <uuid> --dest-token-context <ctx> [flags]
+circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --dest-org-id <uuid>) --dest-token-context <ctx> [flags]
 ```
 
 ### Options
@@ -145,12 +162,13 @@ circleci-migrate secrets transfer [--manifest <file>] --dest-org-id <uuid> --des
       --branch string               Branch to check out for the transfer pipeline run (default "main")
       --context stringArray         Context name(s) to transfer (default: all contexts with at least one env var in the manifest)
       --dest-host string            Destination CircleCI host URL (default: https://circleci.com; override for Server installs)
-      --dest-org-id string          Destination org UUID (required). Find it in your manifest ('source.org.id') or the CircleCI org settings page. The in-pipeline job lists destination contexts by owner ID.
+      --dest-org string             CircleCI organization slug for the destination org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. The CLI resolves it to the org UUID automatically. Use --dest-org-id to supply the UUID directly.
+      --dest-org-id string          Destination org UUID (explicit override; alternative to --dest-org). Find it in your manifest ('source.org.id') or the CircleCI org settings page.
       --dest-token-context string   Name of the SOURCE-org context that holds the destination API token (the env var within that context is set by --dest-token-env-var). SECURITY: source-org admins with access to this context can read the token. Use a scoped token and rotate it after transfer.
       --dest-token-env-var string   Name of the env var inside --dest-token-context that holds the destination API token (default: CIRCLECI_DEST_TOKEN) (default "CIRCLECI_DEST_TOKEN")
-      --enable-trigger              Enable api-trigger-with-config at the org level if not already on, and restore after transfer (the project-level flag must be enabled separately or already be on)
+      --enable-trigger              Automatically enable api-trigger-with-config (both org-level and per-project) if not already on, and restore the prior values after the transfer completes. In interactive mode you are prompted for each flag; in non-interactive mode this flag is required when any trigger flag is off.
   -h, --help                        help for transfer
-      --host-project string         Source-org project slug under which the transfer pipeline runs. Any project with api-trigger-with-config enabled works. Auto-picked from the manifest when omitted.
+      --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works. Auto-picked from the manifest when omitted.
       --include-project-vars        Also transfer project env-var values to the destination projects (default: off, context-only). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped with a warning. Destination project must already be onboarded/exist in the destination org.
       --manifest string             Path to the export manifest (required)
       --mapping string              Path to mapping.json for context name overrides (optional). Entries in the 'projects' map whose keys do not contain '/' are treated as context name → destination name mappings.

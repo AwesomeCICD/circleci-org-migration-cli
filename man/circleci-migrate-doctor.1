@@ -48,7 +48,7 @@ Examples:
 
 .PP
 \fB--dest-org\fP=""
-	Destination organization slug: gh/ or circleci/\&. When provided, destination-side checks are run (token, reachability, cross-type warning, GitHub token). May be combined with --source-org to run both sides.
+	CircleCI organization slug for the destination org, e.g. gh/my-new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. When provided, destination-side checks are run (token, reachability, cross-type warning, GitHub token). May be combined with --source-org to run both sides.
 
 .PP
 \fB--github-token\fP=""
@@ -60,7 +60,7 @@ Examples:
 
 .PP
 \fB--source-org\fP=""
-	Source organization slug: gh/ or circleci/\&. When provided, source-side checks are run (token, reachability, api-trigger flag, project discovery). May be combined with --dest-org to run both sides.
+	CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. When provided, source-side checks are run (token, reachability, api-trigger flag, project discovery). May be combined with --dest-org to run both sides.
 
 
 .SH OPTIONS INHERITED FROM PARENT COMMANDS

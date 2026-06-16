@@ -40,7 +40,7 @@ circleci-migrate mapping generate --manifest <file> --dest-org <slug> -o <mappin
 ### Options
 
 ```
-      --dest-org string   Destination org slug, e.g. gh/new-org or circleci/<org-id> (required)
+      --dest-org string   CircleCI organization slug for the destination org, e.g. gh/new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required)
   -h, --help              help for generate
       --manifest string   Path to the export manifest (required)
   -o, --output string     Path to write the mapping file (default: mapping.json next to the manifest)
