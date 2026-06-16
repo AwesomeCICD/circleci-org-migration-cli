@@ -101,6 +101,13 @@ type ProjectWriter interface {
 	ListAdditionalSSHKeys(ctx context.Context, slug string) ([]project.SSHKeyMeta, error)
 	AddAdditionalSSHKey(ctx context.Context, slug, hostname, privateKey string) error
 
+	// IsProjectFollowed returns true when the authenticated token's user (or the
+	// org's service account) is already following the project — i.e., the project
+	// has an active webhook / deploy key in the VCS.  Used by SyncProjects to
+	// queue unfollowed destination projects for the enable-builds step even when
+	// they were not freshly created in the current run.
+	IsProjectFollowed(ctx context.Context, vcsType, org, repo string) (bool, error)
+
 	// Project API token management (optional auto-create path).
 	ListProjectTokens(ctx context.Context, slug string) ([]project.ProjectAPIToken, error)
 	CreateProjectToken(ctx context.Context, slug, scope, label string) (string, error)

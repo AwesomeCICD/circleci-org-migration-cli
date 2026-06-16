@@ -9,12 +9,25 @@ matches them against the projects captured in the export manifest by repo
 name (the last '/'-separated segment of the slug, e.g. "web" from
 "gh/acme/web").
 
+For VCS-integrated (GitHub / Bitbucket) destination orgs the dest slug is
+deterministic: <provider>/<dest-org>/<repo>.  When a source project has no
+onboarded dest project by that repo name, generate DERIVES the expected dest
+slug and writes it to mapping.json in a separate "derived" bucket.  These
+entries let sync and secrets transfer proceed without manual mapping edits,
+but you must ensure the destination project is onboarded before running those
+commands (otherwise they will fail to find the project).
+
+Only gh/ and bb/ providers support slug derivation.  circleci/ (App/standalone)
+slugs contain UUIDs and cannot be derived — these projects remain "unmatched".
+
 Output:
   • A mapping.json file ready for use with 'sync --mapping' and
     'secrets transfer --mapping'.
-  • A human-readable report printed to stdout with three sections:
-      matched       — source slug → dest slug (written to mapping.json)
-      unmatched     — source projects with no matching dest project
+  • A human-readable report printed to stdout with four sections:
+      matched       — source slug → dest slug (project onboarded, written)
+      derived       — source slug → derived dest slug (project NOT yet onboarded,
+                      written — create the project first, then re-run sync)
+      unmatched     — source projects with no derivable dest slug (circleci/ orgs)
       dest-only     — dest projects with no source counterpart (info only)
 
 Exit code is 0 even when there are unmatched entries — the report is the

@@ -11,12 +11,14 @@ import (
 //
 // JSON shape confirmed from the CircleCI v1.1 API:
 //
-//	{"feature_flags": {"api-trigger-with-config": bool, "drop-all-build-requests": bool, ...}}
+//	{"following": bool, "has_usable_key": bool, "feature_flags": {...}}
 //
 // The feature_flags map may also contain non-boolean values (e.g. arrays for
 // some orb-related flags); we decode as map[string]any and extract only the
-// two bool keys we care about, ignoring the rest.
+// bool keys we care about, ignoring the rest.
 type v11ProjectSettingsResponse struct {
+	Following    bool           `json:"following"`
+	HasUsableKey bool           `json:"has_usable_key"`
 	FeatureFlags map[string]any `json:"feature_flags"`
 }
 
@@ -95,6 +97,32 @@ func (c *Client) SetV11ProjectFeatureFlags(ctx context.Context, slug string, fla
 		return fmt.Errorf("SetV11ProjectFeatureFlags %q: %w", slug, err)
 	}
 	return nil
+}
+
+// IsProjectFollowed returns true when the authenticated user's token is already
+// following the project (i.e., a webhook / deploy key is installed).  It reads
+// the "following" field from GET /api/v1.1/project/{slug}/settings.
+//
+// If the settings call fails, the function returns false and a non-nil error.
+// Callers in the syncer treat this as a non-fatal warning and queue the project
+// for the enable-builds step rather than skipping it.
+func (c *Client) IsProjectFollowed(ctx context.Context, vcsType, org, repo string) (bool, error) {
+	slug := vcsType + "/" + org + "/" + repo
+	u, err := slugSubresource(slug, "settings")
+	if err != nil {
+		return false, fmt.Errorf("IsProjectFollowed: %w", err)
+	}
+
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
+	if err != nil {
+		return false, fmt.Errorf("IsProjectFollowed: build request: %w", err)
+	}
+
+	var raw v11ProjectSettingsResponse
+	if _, err := c.v11.DoRequest(req, &raw); err != nil {
+		return false, fmt.Errorf("IsProjectFollowed %q: %w", slug, err)
+	}
+	return raw.Following, nil
 }
 
 // projectSnakeToKebab converts a snake_case string to kebab-case.

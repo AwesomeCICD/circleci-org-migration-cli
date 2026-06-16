@@ -294,8 +294,10 @@ func TestMappingGenerateCommand_WritesMapping(t *testing.T) {
 	if mp.Projects["gh/old-org/web"] != "gh/new-org/web" {
 		t.Errorf("mapping[gh/old-org/web] = %q; want gh/new-org/web", mp.Projects["gh/old-org/web"])
 	}
-	if _, ok := mp.Projects["gh/old-org/missing"]; ok {
-		t.Errorf("mapping should not contain gh/old-org/missing (no dest project)")
+	// gh/old-org/missing has no onboarded dest project but the dest org is
+	// gh/ so the slug is DERIVED as gh/new-org/missing and written to the mapping.
+	if mp.Projects["gh/old-org/missing"] != "gh/new-org/missing" {
+		t.Errorf("mapping[gh/old-org/missing] = %q; want gh/new-org/missing (derived)", mp.Projects["gh/old-org/missing"])
 	}
 	if mp.Org.From != "gh/old-org" {
 		t.Errorf("org.from = %q; want gh/old-org", mp.Org.From)
@@ -309,14 +311,15 @@ func TestMappingGenerateCommand_WritesMapping(t *testing.T) {
 	if !strings.Contains(out, "Matched") {
 		t.Errorf("stdout missing 'Matched' section:\n%s", out)
 	}
-	if !strings.Contains(out, "Unmatched source") {
-		t.Errorf("stdout missing 'Unmatched source' section:\n%s", out)
+	// gh/old-org/missing should appear in the "derived" section, not "Unmatched source"
+	if !strings.Contains(out, "derived") {
+		t.Errorf("stdout missing 'derived' section:\n%s", out)
 	}
 	if !strings.Contains(out, "gh/old-org/web") {
 		t.Errorf("stdout missing matched project gh/old-org/web:\n%s", out)
 	}
 	if !strings.Contains(out, "gh/old-org/missing") {
-		t.Errorf("stdout missing unmatched project gh/old-org/missing:\n%s", out)
+		t.Errorf("stdout missing derived project gh/old-org/missing:\n%s", out)
 	}
 	// dest-only: extra has no source counterpart
 	if !strings.Contains(out, "gh/new-org/extra") {
@@ -624,6 +627,255 @@ func TestMappingGenerateCommand_DefaultOutputPath(t *testing.T) {
 	defaultOut := filepath.Join(tmpDir, "mapping.json")
 	if _, statErr := os.Stat(defaultOut); statErr != nil {
 		t.Errorf("expected default output file %s to exist: %v", defaultOut, statErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deriveDestSlug unit tests (Issue #272)
+// ---------------------------------------------------------------------------
+
+// deriveDestSlugHelper mirrors the logic of cmd.deriveDestSlug for use in
+// package cmd_test without requiring the function to be exported.
+func deriveDestSlugHelper(srcSlug, normalizedDestOrgSlug string) (string, bool) {
+	provider := ""
+	switch {
+	case strings.HasPrefix(normalizedDestOrgSlug, "gh/"):
+		provider = "gh"
+	case strings.HasPrefix(normalizedDestOrgSlug, "bb/"):
+		provider = "bb"
+	default:
+		return "", false
+	}
+	destOrgName := strings.TrimPrefix(normalizedDestOrgSlug, provider+"/")
+	if destOrgName == "" || strings.Contains(destOrgName, "/") {
+		return "", false
+	}
+	repo := repoNameHelper(srcSlug)
+	if repo == "" || repo == srcSlug {
+		return "", false
+	}
+	return provider + "/" + destOrgName + "/" + repo, true
+}
+
+// TestDeriveDestSlug_GHProvider verifies that gh/ source slugs produce derived
+// dest slugs with the correct provider, dest org, and repo.
+func TestDeriveDestSlug_GHProvider(t *testing.T) {
+	cases := []struct {
+		srcSlug     string
+		destOrgSlug string
+		wantDst     string
+		wantOK      bool
+	}{
+		{"gh/old-org/web", "gh/new-org", "gh/new-org/web", true},
+		{"gh/old-org/api", "gh/new-org", "gh/new-org/api", true},
+		{"github/old-org/web", "gh/new-org", "gh/new-org/web", true}, // non-normalized src
+	}
+	for _, tc := range cases {
+		got, ok := deriveDestSlugHelper(tc.srcSlug, tc.destOrgSlug)
+		if ok != tc.wantOK || got != tc.wantDst {
+			t.Errorf("deriveDestSlug(%q, %q) = (%q, %v); want (%q, %v)",
+				tc.srcSlug, tc.destOrgSlug, got, ok, tc.wantDst, tc.wantOK)
+		}
+	}
+}
+
+// TestDeriveDestSlug_BBProvider verifies that bb/ dest org slugs work.
+func TestDeriveDestSlug_BBProvider(t *testing.T) {
+	got, ok := deriveDestSlugHelper("bb/old-org/service", "bb/new-org")
+	if !ok || got != "bb/new-org/service" {
+		t.Errorf("deriveDestSlug bb: got (%q, %v); want (bb/new-org/service, true)", got, ok)
+	}
+}
+
+// TestDeriveDestSlug_CircleCIProviderNotDerived verifies that circleci/ dest
+// org slugs return ("", false) because those slugs contain UUIDs.
+func TestDeriveDestSlug_CircleCIProviderNotDerived(t *testing.T) {
+	got, ok := deriveDestSlugHelper("gh/old-org/web", "circleci/aaaabbbb-cccc-dddd-eeee-ffffgggghhhh")
+	if ok || got != "" {
+		t.Errorf("deriveDestSlug circleci/: got (%q, %v); want (\"\", false)", got, ok)
+	}
+}
+
+// TestDeriveDestSlug_NoSlashInSrc verifies that a srcSlug with no slash
+// returns ("", false) because there is no extractable repo name.
+func TestDeriveDestSlug_NoSlashInSrc(t *testing.T) {
+	got, ok := deriveDestSlugHelper("somerepo", "gh/new-org")
+	if ok || got != "" {
+		t.Errorf("deriveDestSlug no-slash src: got (%q, %v); want (\"\", false)", got, ok)
+	}
+}
+
+// TestDeriveDestSlug_MalformedDestOrgSlug verifies that a dest org slug with
+// multiple slashes (invalid form) returns ("", false).
+func TestDeriveDestSlug_MalformedDestOrgSlug(t *testing.T) {
+	// "gh/new-org/sub" is not a valid org slug (extra segment) — should not derive.
+	got, ok := deriveDestSlugHelper("gh/old-org/web", "gh/new-org/sub")
+	if ok || got != "" {
+		t.Errorf("deriveDestSlug malformed dest org: got (%q, %v); want (\"\", false)", got, ok)
+	}
+}
+
+// TestDeriveDestSlug_EmptyDestOrgName verifies that "gh/" (empty org name)
+// returns ("", false).
+func TestDeriveDestSlug_EmptyDestOrgName(t *testing.T) {
+	got, ok := deriveDestSlugHelper("gh/old-org/web", "gh/")
+	if ok || got != "" {
+		t.Errorf("deriveDestSlug empty org name: got (%q, %v); want (\"\", false)", got, ok)
+	}
+}
+
+// TestMappingGenerateCommand_DerivedSlugs verifies that when a source project
+// has no onboarded dest project, generate writes the derived slug to
+// mapping.json and reports it in the "derived" section.
+func TestMappingGenerateCommand_DerivedSlugs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v2/organization/"):
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"id": "dest-org-uuid", "name": "new-org",
+				"slug": "gh/new-org", "vcs_type": "github",
+			})
+		case r.URL.Path == "/api/private/project":
+			// Only "web" is onboarded; "worker" is not yet onboarded.
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": "p1", "slug": "gh/new-org/web", "name": "web"},
+				},
+				"next_page_token": "",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	// Source org has "web" (will match) and "worker" (will be derived).
+	manifestPath := filepath.Join(tmpDir, "manifest.json")
+	writeTestManifest(t, manifestPath, []string{"gh/old-org/web", "gh/old-org/worker"})
+	outputPath := filepath.Join(tmpDir, "mapping.json")
+
+	root := cmd.MakeCommands()
+	root.PersistentFlags().Set("host", srv.URL) //nolint:errcheck
+	var outBuf, errBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{
+		"mapping", "generate",
+		"--manifest", manifestPath,
+		"--dest-org", "gh/new-org",
+		"-o", outputPath,
+		"--dest-token", "fake-test-token",
+	})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("mapping generate: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+	}
+
+	// Verify the mapping file.
+	mp, err := manifest.LoadMapping(outputPath)
+	if err != nil {
+		t.Fatalf("LoadMapping: %v", err)
+	}
+	// "web" is onboarded → matched directly.
+	if mp.Projects["gh/old-org/web"] != "gh/new-org/web" {
+		t.Errorf("matched entry: mapping[gh/old-org/web] = %q; want gh/new-org/web", mp.Projects["gh/old-org/web"])
+	}
+	// "worker" is not onboarded → derived.
+	if mp.Projects["gh/old-org/worker"] != "gh/new-org/worker" {
+		t.Errorf("derived entry: mapping[gh/old-org/worker] = %q; want gh/new-org/worker", mp.Projects["gh/old-org/worker"])
+	}
+
+	// Verify the stdout report.
+	out := outBuf.String()
+	if !strings.Contains(out, "derived") {
+		t.Errorf("stdout missing 'derived' section:\n%s", out)
+	}
+	if !strings.Contains(out, "gh/old-org/worker") {
+		t.Errorf("stdout missing derived slug gh/old-org/worker:\n%s", out)
+	}
+	// "Unmatched source projects" section should be empty (count 0).
+	if !strings.Contains(out, "Unmatched source projects (0)") {
+		t.Errorf("expected zero unmatched source projects in output:\n%s", out)
+	}
+	// worker should NOT appear in "Unmatched source" section.
+	unmatchedIdx := strings.Index(out, "Unmatched source")
+	derivedIdx := strings.Index(out, "derived")
+	if unmatchedIdx >= 0 && derivedIdx >= 0 {
+		// worker entry should be in derived section, i.e. appear before Unmatched section.
+		workerIdx := strings.Index(out, "gh/old-org/worker")
+		if workerIdx > unmatchedIdx {
+			t.Errorf("gh/old-org/worker appears after 'Unmatched source' — should be in 'derived' section:\n%s", out)
+		}
+	}
+}
+
+// TestMappingGenerateCommand_CircleCIOrgNoDerivation verifies that when the
+// dest org is a circleci/ (App/standalone) org, unmatched source projects
+// are NOT derived and remain in the "Unmatched source" section.
+func TestMappingGenerateCommand_CircleCIOrgNoDerivation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v2/organization/"):
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"id":   "aaaabbbb-cccc-dddd-eeee-ffffgggghhhh",
+				"name": "app-org",
+				"slug": "circleci/aaaabbbb-cccc-dddd-eeee-ffffgggghhhh",
+			})
+		case r.URL.Path == "/api/private/project":
+			// No onboarded projects.
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"items":           []interface{}{},
+				"next_page_token": "",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	manifestPath := filepath.Join(tmpDir, "manifest.json")
+	writeTestManifest(t, manifestPath, []string{"gh/old-org/web"})
+	outputPath := filepath.Join(tmpDir, "mapping.json")
+
+	root := cmd.MakeCommands()
+	root.PersistentFlags().Set("host", srv.URL) //nolint:errcheck
+	var outBuf, errBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{
+		"mapping", "generate",
+		"--manifest", manifestPath,
+		"--dest-org", "circleci/aaaabbbb-cccc-dddd-eeee-ffffgggghhhh",
+		"-o", outputPath,
+		"--dest-token", "fake-test-token",
+	})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("mapping generate: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+	}
+
+	mp, err := manifest.LoadMapping(outputPath)
+	if err != nil {
+		t.Fatalf("LoadMapping: %v", err)
+	}
+	// No derivation for circleci/ org: mapping should be empty.
+	if len(mp.Projects) != 0 {
+		t.Errorf("expected empty projects mapping for circleci/ dest org, got: %v", mp.Projects)
+	}
+
+	out := outBuf.String()
+	// The project should appear in Unmatched source, not derived.
+	if !strings.Contains(out, "Unmatched source") {
+		t.Errorf("stdout missing 'Unmatched source' section:\n%s", out)
+	}
+	if !strings.Contains(out, "gh/old-org/web") {
+		t.Errorf("stdout missing unmatched project gh/old-org/web:\n%s", out)
+	}
+	// derived section should show (none).
+	if !strings.Contains(out, "derived — dest project not yet onboarded) (0)") {
+		t.Errorf("stdout should show 0 derived entries for circleci/ org:\n%s", out)
 	}
 }
 

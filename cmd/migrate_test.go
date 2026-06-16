@@ -524,3 +524,74 @@ func TestMigrateCmd_AllNewFlagsRegistered(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #272/#273/#274 — --transfer-secrets, --dest-token-context,
+// --include-project-vars flag registration and validation
+// ---------------------------------------------------------------------------
+
+// TestMigrateCmd_TransferSecretsFlags_Registered verifies that the three new
+// in-pipeline-transfer flags are registered on the migrate subcommand.
+func TestMigrateCmd_TransferSecretsFlags_Registered(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	for _, name := range []string{"transfer-secrets", "dest-token-context", "include-project-vars"} {
+		if migSub.Flags().Lookup(name) == nil {
+			t.Errorf("migrate flag --%s not registered", name)
+		}
+	}
+}
+
+// TestMigrateCmd_TransferSecrets_MissingDestTokenContext_ReturnsError verifies
+// that --transfer-secrets without --dest-token-context returns an error that
+// mentions both "transfer-secrets" and "dest-token-context".
+func TestMigrateCmd_TransferSecrets_MissingDestTokenContext_ReturnsError(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	_, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--transfer-secrets",
+		// --dest-token-context intentionally omitted
+	)
+	if err == nil {
+		t.Fatal("expected error when --transfer-secrets is set without --dest-token-context, got nil")
+	}
+	if !strings.Contains(err.Error(), "dest-token-context") {
+		t.Errorf("error %q does not mention 'dest-token-context'", err.Error())
+	}
+}
+
+// TestMigrateCmd_TransferSecrets_MutuallyExclusiveWithSecrets_ReturnsError
+// verifies that passing both --transfer-secrets and --secrets returns an error
+// that mentions "mutually exclusive".
+func TestMigrateCmd_TransferSecrets_MutuallyExclusiveWithSecrets_ReturnsError(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	dir := t.TempDir()
+	dummySecrets := filepath.Join(dir, "secrets.json")
+	if err := os.WriteFile(dummySecrets, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write dummy secrets: %v", err)
+	}
+
+	_, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--transfer-secrets",
+		"--dest-token-context", "migration-secrets",
+		"--secrets", dummySecrets,
+	)
+	if err == nil {
+		t.Fatal("expected error when --transfer-secrets and --secrets are both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention 'mutually exclusive'", err.Error())
+	}
+}

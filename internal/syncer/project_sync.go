@@ -167,6 +167,27 @@ func (s *Syncer) SyncProjects(ctx context.Context, m *manifest.Manifest, bundle 
 			// Project already exists in destination — record it so re-runs are
 			// visible in the report summary.
 			report.add("project", dst, "exists", "reusing existing project")
+
+			// Issue #273: if the existing project is not followed (no webhook /
+			// deploy key), queue it for the enable-builds step so a re-run is
+			// idempotent for projects that were created but never followed.
+			provider2, orgName2, repo2, splitErr2 := project.SplitSlug(dst)
+			if splitErr2 == nil && strings.ToLower(provider2) != "circleci" {
+				followed, followErr := s.Projects.IsProjectFollowed(ctx, provider2, orgName2, repo2)
+				if followErr != nil {
+					// Non-fatal: warn and skip the check; don't block the sync.
+					s.logf("warning: could not check follow state of %q: %v — skipping auto-queue", dst, followErr)
+				} else if !followed {
+					report.add("project", dst, "exists", "not followed — queuing for enable-builds")
+					report.PendingEnable = append(report.PendingEnable, EnableTarget{
+						Kind:    "follow",
+						Slug:    dst,
+						VCSType: provider2,
+						Org:     orgName2,
+						Repo:    repo2,
+					})
+				}
+			}
 		}
 
 		s.syncProjectSettings(ctx, report, p, dst, opts)
