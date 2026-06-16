@@ -996,9 +996,12 @@ func sanitizeName(name string) string {
 // NEVER removed — they are org-type specific and cannot always be recreated via
 // API.  Only project and expression restrictions are touched.
 //
-// The caller must defer the returned cleanup immediately (done inside the
-// closure for robustness).
-func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *Plan, opts *Options) error {
+// It returns a cleanup func that the CALLER must defer — the removed
+// restrictions must stay lifted across the ENTIRE context-pipeline run, so the
+// restore cannot happen when this function returns. cleanup is always non-nil
+// (a no-op when nothing was removed) and is safe to call once.
+func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *Plan, opts *Options) (func(), error) {
+	noop := func() {}
 	// Collect contexts with blocking restrictions from the plan.
 	type blockedCtx struct {
 		ctxPlan    *ContextPlan
@@ -1024,7 +1027,7 @@ func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *
 	}
 
 	if len(blocked) == 0 {
-		return nil // no blocking restrictions
+		return noop, nil // no blocking restrictions
 	}
 
 	if !opts.RemoveRestrictions {
@@ -1042,7 +1045,7 @@ func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *
 		if hostSlug == "" && len(m.Projects) > 0 {
 			hostSlug = m.Projects[0].Slug
 		}
-		return fmt.Errorf(
+		return noop, fmt.Errorf(
 			"transfer: %d context(s) have project/expression restriction(s) that prevent the transfer "+
 				"pipeline from reading them under host project %q:\n  %s\n"+
 				"Re-run with --remove-restrictions (temporarily lifts the restriction on the source and "+
@@ -1052,10 +1055,18 @@ func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *
 
 	// --remove-restrictions: validate that a ContextClient is wired.
 	if opts.ContextClient == nil {
-		return fmt.Errorf("transfer: --remove-restrictions requires a context API client (ContextClient must be set in Options)")
+		return noop, fmt.Errorf("transfer: --remove-restrictions requires a context API client (ContextClient must be set in Options)")
 	}
 
-	// Remove blocking restrictions and register deferred restores.
+	// Remove blocking restrictions and collect restore closures. The caller
+	// defers the returned cleanup so the restrictions stay lifted across the
+	// ENTIRE context-pipeline run, then are restored afterwards.
+	var restores []func()
+	cleanup := func() {
+		for _, r := range restores {
+			r()
+		}
+	}
 	for _, b := range blocked {
 		if b.mc == nil || b.mc.SourceID == "" {
 			fmt.Fprintf(opts.Stderr,
@@ -1065,25 +1076,16 @@ func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *
 		}
 		restore, err := prepareTransferRestrictionRemoval(ctx, opts.Stderr, opts.ContextClient, b.mc)
 		if err != nil {
-			return fmt.Errorf("transfer: preparing restriction removal for context %q: %w", b.ctxPlan.SourceName, err)
+			// Restore anything already removed before surfacing the error.
+			cleanup()
+			return noop, fmt.Errorf("transfer: preparing restriction removal for context %q: %w", b.ctxPlan.SourceName, err)
 		}
-		// Capture the restore closure for deferred execution.  We cannot defer
-		// inside a loop (the loop variable would be captured), so we rely on the
-		// caller to execute the restore closures collected here.  Instead, run
-		// restore in a deferred-like goroutine pattern using a named cleanup slice.
-		//
-		// The simplest safe pattern: wrap each restore in a goroutine-free
-		// immediate-register approach by using a package-level deferred slice.
-		// Since Go doesn't support dynamic defer in a sub-function, we invoke the
-		// restore inline via a separate cleanup slice that the caller runs.
-		//
-		// DESIGN: the deferred-cleanup approach here is safe: if the transfer
-		// fails mid-way, the contexts that were already "unlocked" will be
-		// re-locked by the restore closures that were registered.
-		defer restore() //nolint:revive // intentional: each iteration's restore is independent
+		if restore != nil {
+			restores = append(restores, restore)
+		}
 	}
 
-	return nil
+	return cleanup, nil
 }
 
 // prepareTransferRestrictionRemoval fetches live restriction IDs for mc,
@@ -1393,9 +1395,14 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	// pipeline to come back "unauthorized" if the host project is not in the
 	// allowed set.  Detect this before triggering so the operator gets an
 	// actionable error rather than a misleading "unauthorized" retry loop.
-	if err := handleContextRestrictions(ctx, m, &plan, &opts); err != nil {
+	restrictionCleanup, err := handleContextRestrictions(ctx, m, &plan, &opts)
+	if err != nil {
 		return err
 	}
+	// Keep restrictions lifted across BOTH the context and per-project pipelines,
+	// then restore. (Must outlive runContextPipeline — restoring earlier would
+	// re-block the context pipeline and cause an 'unauthorized' workflow.)
+	defer restrictionCleanup()
 
 	// ── Phase 1: context transfer on host project ─────────────────────────────
 

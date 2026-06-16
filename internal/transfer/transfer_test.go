@@ -2352,7 +2352,7 @@ func TestHandleContextRestrictions_NoBlocking(t *testing.T) {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	if err := handleContextRestrictions(context.Background(), m, &plan, &opts); err != nil {
+	if _, err := handleContextRestrictions(context.Background(), m, &plan, &opts); err != nil {
 		t.Errorf("expected nil, got: %v", err)
 	}
 }
@@ -2374,7 +2374,7 @@ func TestHandleContextRestrictions_FailFastWithoutFlag(t *testing.T) {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	_, gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
 	if gotErr == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -2405,7 +2405,7 @@ func TestHandleContextRestrictions_FailFastMentionsHostProject(t *testing.T) {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	_, gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
 	if gotErr == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -2430,7 +2430,7 @@ func TestHandleContextRestrictions_NoClientError(t *testing.T) {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	_, gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
 	if gotErr == nil {
 		t.Fatal("expected an error when ContextClient is nil, got nil")
 	}
@@ -2516,22 +2516,18 @@ func TestHandleContextRestrictions_RemoveAndRestore(t *testing.T) {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	// handleContextRestrictions registers deferred restores — we call it here
-	// without defer, then manually invoke a "restore" trigger via a helper that
-	// mirrors what Transfer() does at function exit.
-	//
-	// Because the restore closures are registered with `defer restore()` inside
-	// handleContextRestrictions itself, they execute when handleContextRestrictions
-	// returns — this test can only verify the DELETE calls that happened before
-	// the function returned.
-	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	// handleContextRestrictions removes blocking restrictions immediately and
+	// returns a cleanup() that the caller (Transfer) defers — so the restriction
+	// stays lifted across the whole pipeline run, then is restored by cleanup().
+	cleanup, gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
 	if gotErr != nil {
 		t.Fatalf("expected nil error, got: %v", gotErr)
 	}
 
-	// The project restriction should have been deleted.
+	// The project restriction should have been deleted up front (BEFORE cleanup).
 	fake.mu.Lock()
 	deleteCalls := append([]string(nil), fake.deleteCalls...)
+	createCallsBefore := len(fake.createCalls)
 	fake.mu.Unlock()
 
 	if len(deleteCalls) != 1 {
@@ -2539,6 +2535,20 @@ func TestHandleContextRestrictions_RemoveAndRestore(t *testing.T) {
 	}
 	if deleteCalls[0] != "live-restr-1" {
 		t.Errorf("expected delete of 'live-restr-1', got %q", deleteCalls[0])
+	}
+	// CRITICAL: the restriction must NOT be restored before cleanup() runs —
+	// otherwise the context pipeline would see it again and be 'unauthorized'.
+	if createCallsBefore != 0 {
+		t.Errorf("restriction restored too early: %d create call(s) before cleanup()", createCallsBefore)
+	}
+
+	// Now run cleanup() (what Transfer defers) — the restriction must be restored.
+	cleanup()
+	fake.mu.Lock()
+	createCallsAfter := len(fake.createCalls)
+	fake.mu.Unlock()
+	if createCallsAfter != 1 {
+		t.Errorf("expected 1 restore (create) call after cleanup(), got %d", createCallsAfter)
 	}
 }
 
@@ -2569,7 +2579,7 @@ func TestHandleContextRestrictions_GroupRestrictionsNotDeleted(t *testing.T) {
 	}
 
 	// No blocking restrictions (all group), so handleContextRestrictions is a no-op.
-	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	_, gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
 	if gotErr != nil {
 		t.Fatalf("expected nil, got: %v", gotErr)
 	}
