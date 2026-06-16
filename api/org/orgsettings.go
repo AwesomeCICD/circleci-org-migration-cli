@@ -299,14 +299,26 @@ func (c *Client) GetPolicyBundle(ctx context.Context, ownerID string) (map[strin
 		return nil, fmt.Errorf("GetPolicyBundle: build request: %w", err)
 	}
 
-	var raw map[string]string
+	// The bundle is returned keyed by policy name, each value an object with the
+	// Rego source under "content" (plus name/created_by/created_at metadata):
+	//   {"<policy>": {"name":"<policy>","content":"<rego>","created_at":"…"}}
+	// Flatten to policyName → Rego content (what PutPolicyBundle expects).
+	var raw map[string]struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
 	if _, err := c.v2.DoRequest(req, &raw); err != nil {
 		return nil, fmt.Errorf("GetPolicyBundle %s: %w", ownerID, err)
 	}
-	if raw == nil {
-		raw = map[string]string{}
+	out := make(map[string]string, len(raw))
+	for name, p := range raw {
+		key := name
+		if p.Name != "" {
+			key = p.Name
+		}
+		out[key] = p.Content
 	}
-	return raw, nil
+	return out, nil
 }
 
 // PutPolicyBundle replaces the org's config policy bundle.
