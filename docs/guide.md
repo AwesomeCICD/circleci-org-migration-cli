@@ -1178,10 +1178,66 @@ circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN
 
 ## 9. Step 4 — Validate, enable, rotate
 
+### `validate` — automated gap analysis
+
+The `validate` command compares the source org against the destination org
+in-memory (no files written) and reports which items are present, missing, or
+require manual attention:
+
+```bash
+# Human-readable report (exit 0 = no gaps, exit 1 = gaps found)
+circleci-migrate validate \
+  --source-org gh/acme --dest-org gh/acme-new
+
+# With a mapping file (same format as 'sync --mapping')
+circleci-migrate validate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --mapping mapping.json
+
+# Include runner and orb comparisons
+circleci-migrate validate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --dest-runner-namespace acme-new \
+  --dest-orb-namespace acme-new
+
+# Machine-readable JSON (for CI pipelines or tooling)
+circleci-migrate validate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --json
+```
+
+**What `validate` checks:**
+
+| Section | Status types |
+|---|---|
+| Contexts (env-var names, restrictions) | ✓ matched / ✗ missing |
+| Projects (env-var names, settings, SSH keys, checkout keys) | ✓ matched / ✗ missing |
+| Org Settings (feature flags, OIDC, URL-orb allow list, config policies, retention, release tracker, contacts, OTel) | ✓ matched / ⚠ manual |
+| Runner Resource Classes (`--dest-runner-namespace` required) | ✓ matched / ✗ missing / skipped |
+| Orbs (`--dest-orb-namespace` required) | ✓ matched / ✗ missing / skipped |
+| SSO | ⚠ always manual (DNS + IdP reconfiguration required) |
+| CIAM roles | ⚠ always manual (UUIDs differ between orgs) |
+
+Exit codes: `0` = no missing items; `1` = gaps found. Items marked `⚠ manual`
+do **not** cause a non-zero exit but appear in a prominent NEEDS ATTENTION block.
+
+**Flags (`validate`-specific):**
+
+| Flag | Description |
+|---|---|
+| `--source-org` | Source org slug (e.g. `gh/acme`). **Required.** |
+| `--dest-org` | Destination org slug (e.g. `gh/acme-new`). **Required.** |
+| `--mapping` | Path to a `mapping.json` file (same format as `sync --mapping`). Optional. |
+| `--dest-runner-namespace` | Destination runner namespace. When omitted the Runner section is skipped. |
+| `--dest-orb-namespace` | Destination orb namespace. When omitted the Orb section is skipped. |
+| `--json` | Emit machine-readable JSON instead of the human report. |
+| `--no-input` | Disable prompts; fail immediately on missing required flags. |
+
 After sync (and any `terraform apply`) completes, follow the
 [cutover runbook](cutover-runbook.md):
 
-1. Validate contexts and env-var names against the audit report.
+1. Run `validate` to confirm no gaps remain — fix any `✗ missing` items before
+   cutover.
 2. Verify project settings, webhooks, and schedules.
 3. Enable builds when ready (the sync prompt or `--yes`).
 4. Recreate items that don't transfer — see
