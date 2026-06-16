@@ -458,6 +458,92 @@ func TestSyncOrbs_FlagToggleAndRestore(t *testing.T) {
 	}
 }
 
+// TestSyncOrbs_EmitRewriteNotice_SameNamespace verifies that when the source
+// and destination namespaces are identical, no config-rewrite-notice is added
+// to the report. This covers the m.OrbNamespace == destNs early-return branch
+// in emitRewriteNotice.
+func TestSyncOrbs_EmitRewriteNotice_SameNamespace(t *testing.T) {
+	ow := &fakeOrbWriter{}
+	sy := minimalOrbSyncer()
+	sy.Orb = ow
+
+	// Source namespace == dest namespace → no rewrite notice expected.
+	m := orbManifestWith("acme",
+		simpleOrb("acme/my-orb", false, simpleVer("1.0.0", "src")),
+	)
+	rep, err := sy.SyncOrbs(context.Background(), m, Options{
+		Apply:            true,
+		DestOrbNamespace: "acme", // same as OrbNamespace in manifest
+	}, nil, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No config-rewrite-notice should appear.
+	for _, a := range rep.Actions {
+		if a.Kind == "orb" && a.Target == "config-rewrite-notice" {
+			t.Errorf("no config-rewrite-notice expected when src==dest namespace; got action: %+v", a)
+		}
+	}
+}
+
+// TestSyncOrbs_EmitRewriteNotice_EmptyOrbNamespace verifies that when the
+// manifest's OrbNamespace is empty, no config-rewrite-notice is emitted (early
+// return in emitRewriteNotice).
+func TestSyncOrbs_EmitRewriteNotice_EmptyOrbNamespace(t *testing.T) {
+	ow := &fakeOrbWriter{}
+	sy := minimalOrbSyncer()
+	sy.Orb = ow
+
+	// OrbNamespace is intentionally left empty.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		OrbNamespace:  "", // empty
+		Orbs: []manifest.CapturedOrb{
+			simpleOrb("my-orb", false, simpleVer("1.0.0", "src")),
+		},
+	}
+	rep, err := sy.SyncOrbs(context.Background(), m, Options{
+		Apply:            true,
+		DestOrbNamespace: "acme-new",
+	}, nil, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Kind == "orb" && a.Target == "config-rewrite-notice" {
+			t.Errorf("no config-rewrite-notice expected when OrbNamespace is empty; got: %+v", a)
+		}
+	}
+}
+
+// TestSyncOrbs_DryRun_SameNamespace_NoRewriteNotice verifies that the dry-run
+// path also skips the rewrite notice when source and destination namespaces are
+// identical (covers emitRewriteNotice same-namespace branch in the dry-run call).
+func TestSyncOrbs_DryRun_SameNamespace_NoRewriteNotice(t *testing.T) {
+	ow := &fakeOrbWriter{}
+	sy := minimalOrbSyncer()
+	sy.Orb = ow
+
+	m := orbManifestWith("acme",
+		simpleOrb("acme/my-orb", false, simpleVer("1.0.0", "src")),
+	)
+	rep, err := sy.SyncOrbs(context.Background(), m, Options{
+		Apply:            false, // dry run
+		DestOrbNamespace: "acme",
+	}, nil, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range rep.Actions {
+		if a.Kind == "orb" && a.Target == "config-rewrite-notice" {
+			t.Errorf("no config-rewrite-notice expected for same namespace in dry-run; got: %+v", a)
+		}
+	}
+}
+
 // TestSyncOrbs_OrbShortName verifies the orbShortName helper.
 func TestSyncOrbs_OrbShortName(t *testing.T) {
 	tests := []struct {

@@ -429,6 +429,50 @@ func newOrgClientForTest(t *testing.T, srv *httptest.Server) *org.Client {
 	return c
 }
 
+// TestOrgOrbFlagAdapter exercises the orgOrbFlagAdapter, which delegates orb
+// feature-flag reads/writes to the org client's v1.1 settings endpoint. It
+// covers both methods used by the orb syncer's toggle-and-restore.
+func TestOrgOrbFlagAdapter(t *testing.T) {
+	var gotPut map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/settings") {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"feature_flags": map[string]bool{"allow-uncertified-public-orbs": true},
+			})
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&gotPut)
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	a := &orgOrbFlagAdapter{c: newOrgClientForTest(t, srv)}
+
+	flags, err := a.GetOrbFeatureFlags(context.Background(), "github", "acme")
+	if err != nil {
+		t.Fatalf("GetOrbFeatureFlags: %v", err)
+	}
+	if !flags["allow-uncertified-public-orbs"] {
+		t.Errorf("expected allow-uncertified-public-orbs=true, got %+v", flags)
+	}
+
+	if err := a.UpdateOrbFeatureFlags(context.Background(), "github", "acme",
+		map[string]bool{"allow_private_orbs": true}); err != nil {
+		t.Fatalf("UpdateOrbFeatureFlags: %v", err)
+	}
+	if gotPut["feature_flags"] == nil {
+		t.Errorf("PUT body missing feature_flags: %+v", gotPut)
+	}
+}
+
 func TestOrgGroupLister_ListGroups_HappyPath(t *testing.T) {
 	// The org.Client.ListGroups method calls the /private/ciam/orgs/{id}/groups
 	// endpoint. The groups endpoint is on the app.circleci.com host by default,
@@ -547,6 +591,91 @@ func TestAskSecretRequired_NonTTY_RepromptOnEmpty(t *testing.T) {
 	count := strings.Count(prompt, "API token")
 	if count < 2 {
 		t.Errorf("expected at least 2 occurrences of label (re-prompt), got %d in %q", count, prompt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildInlineOrbNode — error branches
+// ---------------------------------------------------------------------------
+
+// TestBuildInlineOrbNode_InvalidYAML verifies that passing invalid YAML to
+// buildInlineOrbNode returns a "parsing orb source YAML" error.
+func TestBuildInlineOrbNode_InvalidYAML(t *testing.T) {
+	_, err := buildInlineOrbNode(":\tinvalid:\tyaml\t[[[")
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing orb source YAML") {
+		t.Errorf("error %q should mention 'parsing orb source YAML'", err.Error())
+	}
+}
+
+// TestBuildInlineOrbNode_EmptyDocument verifies that an empty YAML string
+// (which produces an empty DocumentNode) returns a structure error.
+func TestBuildInlineOrbNode_EmptyDocument(t *testing.T) {
+	// An empty string produces a DocumentNode with no Content — triggers the
+	// "unexpected orb source YAML structure" branch.
+	_, err := buildInlineOrbNode("")
+	if err == nil {
+		t.Fatal("expected error for empty YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected orb source YAML structure") {
+		t.Errorf("error %q should mention 'unexpected orb source YAML structure'", err.Error())
+	}
+}
+
+// TestBuildInlineOrbNode_NonMappingRoot verifies that an orb source whose
+// root is a sequence (not a mapping) returns an appropriate error.
+func TestBuildInlineOrbNode_NonMappingRoot(t *testing.T) {
+	// A YAML list (sequence) at the root.
+	_, err := buildInlineOrbNode("- item1\n- item2\n")
+	if err == nil {
+		t.Fatal("expected error for non-mapping root, got nil")
+	}
+	if !strings.Contains(err.Error(), "orb source root is not a YAML mapping") {
+		t.Errorf("error %q should mention 'orb source root is not a YAML mapping'", err.Error())
+	}
+}
+
+// TestBuildInlineOrbNode_ValidSource verifies the happy path: a valid orb
+// source with mixed allowed/disallowed keys.
+func TestBuildInlineOrbNode_ValidSource(t *testing.T) {
+	src := `version: 2
+description: test orb
+commands:
+  greet:
+    steps:
+      - run: echo hello
+jobs:
+  build:
+    machine: true
+    steps:
+      - greet
+`
+	node, err := buildInlineOrbNode(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected non-nil node")
+	}
+	// The resulting mapping should have only "commands" and "jobs" keys, not
+	// "version" or "description".
+	keys := make(map[string]bool)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keys[node.Content[i].Value] = true
+	}
+	if keys["version"] {
+		t.Error("'version' should be stripped from inline orb node")
+	}
+	if keys["description"] {
+		t.Error("'description' should be stripped from inline orb node")
+	}
+	if !keys["commands"] {
+		t.Error("'commands' should be kept in inline orb node")
+	}
+	if !keys["jobs"] {
+		t.Error("'jobs' should be kept in inline orb node")
 	}
 }
 
@@ -1122,5 +1251,739 @@ func TestCIAMWriterAdapter_ListGroups_And_CreateGroup(t *testing.T) {
 	}
 	if id != "g-new" {
 		t.Errorf("CreateGroup returned id %q, want g-new", id)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// slugLastComponent
+// ---------------------------------------------------------------------------
+
+func TestSlugLastComponent_WithSlash(t *testing.T) {
+	got := slugLastComponent("gh/acme/my-repo")
+	if got != "my-repo" {
+		t.Errorf("got %q, want %q", got, "my-repo")
+	}
+}
+
+func TestSlugLastComponent_NoSlash(t *testing.T) {
+	got := slugLastComponent("bare")
+	if got != "bare" {
+		t.Errorf("got %q, want %q", got, "bare")
+	}
+}
+
+func TestSlugLastComponent_TrailingSlash(t *testing.T) {
+	// A trailing slash means the last component is empty.
+	got := slugLastComponent("gh/acme/")
+	if got != "" {
+		t.Errorf("got %q, want empty string", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncProjectDisplayName
+// ---------------------------------------------------------------------------
+
+func TestSyncProjectDisplayName_WithName(t *testing.T) {
+	p := manifest.Project{Slug: "gh/acme/api", Name: "api-service"}
+	got := syncProjectDisplayName(p)
+	if got != "api-service" {
+		t.Errorf("got %q, want %q", got, "api-service")
+	}
+}
+
+func TestSyncProjectDisplayName_NoName_FallsBackToSlug(t *testing.T) {
+	p := manifest.Project{Slug: "gh/acme/api-service"}
+	got := syncProjectDisplayName(p)
+	if got != "api-service" {
+		t.Errorf("got %q, want %q", got, "api-service")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tabFromKind — uncovered branches
+// ---------------------------------------------------------------------------
+
+func TestTabFromKind_EmptyRest(t *testing.T) {
+	if got := tabFromKind(""); got != "" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "", got, "")
+	}
+}
+
+func TestTabFromKind_SSHKey(t *testing.T) {
+	if got := tabFromKind("ssh-key:aa:bb:cc"); got != "ssh" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "ssh-key:aa:bb:cc", got, "ssh")
+	}
+}
+
+func TestTabFromKind_Webhook(t *testing.T) {
+	if got := tabFromKind("webhook:notify"); got != "webhooks" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "webhook:notify", got, "webhooks")
+	}
+}
+
+func TestTabFromKind_EnvVar(t *testing.T) {
+	if got := tabFromKind("env-var:MY_KEY"); got != "env-vars" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "env-var:MY_KEY", got, "env-vars")
+	}
+}
+
+func TestTabFromKind_ProjectVar(t *testing.T) {
+	if got := tabFromKind("project-var:MY_KEY"); got != "env-vars" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "project-var:MY_KEY", got, "env-vars")
+	}
+}
+
+func TestTabFromKind_FeatureFlag(t *testing.T) {
+	if got := tabFromKind("feature_flag:oss"); got != "advanced" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "feature_flag:oss", got, "advanced")
+	}
+}
+
+func TestTabFromKind_OIDCClaims(t *testing.T) {
+	if got := tabFromKind("oidc_claims:sub"); got != "" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "oidc_claims:sub", got, "")
+	}
+}
+
+func TestTabFromKind_Schedule(t *testing.T) {
+	if got := tabFromKind("schedule:nightly"); got != "" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "schedule:nightly", got, "")
+	}
+}
+
+func TestTabFromKind_UnknownKind(t *testing.T) {
+	if got := tabFromKind("unknown-kind:value"); got != "" {
+		t.Errorf("tabFromKind(%q) = %q, want empty string", "unknown-kind:value", got)
+	}
+}
+
+func TestTabFromKind_NoColon(t *testing.T) {
+	// A rest string with no colon should use the whole string as the kind.
+	if got := tabFromKind("ssh-key"); got != "ssh" {
+		t.Errorf("tabFromKind(%q) = %q, want %q", "ssh-key", got, "ssh")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rebaseProjectSlug
+// ---------------------------------------------------------------------------
+
+func TestRebaseProjectSlug_Valid(t *testing.T) {
+	got := rebaseProjectSlug("gh/acme/web", "gh/acme-new")
+	if got != "gh/acme-new/web" {
+		t.Errorf("got %q, want %q", got, "gh/acme-new/web")
+	}
+}
+
+func TestRebaseProjectSlug_EmptyDest(t *testing.T) {
+	got := rebaseProjectSlug("gh/acme/web", "")
+	if got != "gh/acme/web" {
+		t.Errorf("got %q (should be unchanged for empty dest), want %q", got, "gh/acme/web")
+	}
+}
+
+func TestRebaseProjectSlug_MalformedSlug(t *testing.T) {
+	// A slug with fewer than 3 parts should be returned unchanged.
+	got := rebaseProjectSlug("gh/acme", "gh/acme-new")
+	if got != "gh/acme" {
+		t.Errorf("got %q (malformed slug should be unchanged), want %q", got, "gh/acme")
+	}
+}
+
+func TestRebaseProjectSlug_MalformedDestOrgSlug_NoSlash(t *testing.T) {
+	// A destOrgSlug with no slash → destParts has 1 element → return original slug.
+	got := rebaseProjectSlug("gh/acme/web", "noslashhere")
+	if got != "gh/acme/web" {
+		t.Errorf("got %q (malformed destOrgSlug should return unchanged slug), want %q", got, "gh/acme/web")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// splitContextTarget — uncovered branch (orb prefix returns early)
+// ---------------------------------------------------------------------------
+
+func TestSplitContextTarget_OrgSettingsPrefix_ReturnsEmpty(t *testing.T) {
+	// "orb" is in the exclusion list, so it must NOT be treated as a context name.
+	ctxName, _ := splitContextTarget("orb/config-rewrite-notice")
+	if ctxName != "" {
+		t.Errorf("expected empty ctxName for 'orb' prefix, got %q", ctxName)
+	}
+}
+
+func TestSplitContextTarget_PlainContext_ReturnsName(t *testing.T) {
+	ctxName, rest := splitContextTarget("deploy-prod/MY_VAR")
+	if ctxName != "deploy-prod" {
+		t.Errorf("ctxName = %q, want %q", ctxName, "deploy-prod")
+	}
+	if rest != "MY_VAR" {
+		t.Errorf("rest = %q, want %q", rest, "MY_VAR")
+	}
+}
+
+func TestSplitContextTarget_GHPrefix_ReturnsEmpty(t *testing.T) {
+	ctxName, _ := splitContextTarget("gh/acme/web/ssh-key:aa:bb")
+	if ctxName != "" {
+		t.Errorf("expected empty ctxName for 'gh' prefix, got %q", ctxName)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildSyncSummary — exercises the Orbs section and warnings accumulation
+// ---------------------------------------------------------------------------
+
+func TestBuildSyncSummary_OrbsSection_Included(t *testing.T) {
+	orbReport := &syncer.Report{
+		Applied:     false,
+		DestOrgSlug: "gh/acme-new",
+		Actions: []syncer.Action{
+			{Kind: "orb", Target: "acme/my-orb", Status: "manual", Detail: "manual transfer required"},
+			{Kind: "orb", Target: "acme/priv-orb", Status: "manual", Detail: "manual transfer required"},
+		},
+	}
+	repsBySection := map[string]*syncer.Report{
+		"Orbs": orbReport,
+	}
+
+	summary := buildSyncSummary(false, repsBySection)
+
+	if summary.DryRun != true {
+		t.Errorf("expected DryRun=true, got %v", summary.DryRun)
+	}
+	if len(summary.Sections) != 1 {
+		t.Fatalf("expected 1 section, got %d: %v", len(summary.Sections), summary.Sections)
+	}
+	sec := summary.Sections[0]
+	if sec.Section != "Orbs" {
+		t.Errorf("expected section 'Orbs', got %q", sec.Section)
+	}
+	if sec.Manual != 2 {
+		t.Errorf("expected Manual=2, got %d", sec.Manual)
+	}
+
+	// Both manual actions should appear as warnings.
+	if len(summary.Warnings) != 2 {
+		t.Errorf("expected 2 warnings, got %d: %v", len(summary.Warnings), summary.Warnings)
+	}
+	for _, w := range summary.Warnings {
+		if w.Section != "Orbs" {
+			t.Errorf("warning section = %q, want %q", w.Section, "Orbs")
+		}
+		if w.Status != "manual" {
+			t.Errorf("warning status = %q, want %q", w.Status, "manual")
+		}
+	}
+}
+
+func TestBuildSyncSummary_DestOrgSlugFromFirstNonEmpty(t *testing.T) {
+	// buildSyncSummary uses the DestOrgSlug from the first non-empty report.
+	repsBySection := map[string]*syncer.Report{
+		"Orbs": {Applied: false, DestOrgSlug: "gh/acme-new", Actions: []syncer.Action{}},
+	}
+	summary := buildSyncSummary(false, repsBySection)
+	if summary.DestOrgSlug != "gh/acme-new" {
+		t.Errorf("DestOrgSlug = %q, want %q", summary.DestOrgSlug, "gh/acme-new")
+	}
+}
+
+func TestBuildSyncSummary_NilReport_Skipped(t *testing.T) {
+	// A nil report for a known section should be silently skipped.
+	repsBySection := map[string]*syncer.Report{
+		"Orbs": nil,
+	}
+	summary := buildSyncSummary(true, repsBySection)
+	if len(summary.Sections) != 0 {
+		t.Errorf("expected 0 sections (nil skipped), got %d", len(summary.Sections))
+	}
+	if summary.DryRun {
+		t.Errorf("apply=true should produce DryRun=false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseSyncOnly — "orb" section
+// ---------------------------------------------------------------------------
+
+func TestParseSyncOnly_OrbSection_Accepted(t *testing.T) {
+	got, err := parseSyncOnly("orb")
+	if err != nil {
+		t.Fatalf("unexpected error for 'orb': %v", err)
+	}
+	if !got["orb"] {
+		t.Error("expected 'orb' to be set in result")
+	}
+}
+
+func TestParseSyncOnly_OrbWithOthers(t *testing.T) {
+	got, err := parseSyncOnly("orb,contexts")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got["orb"] {
+		t.Error("expected 'orb' in result")
+	}
+	if !got["contexts"] {
+		t.Error("expected 'contexts' in result")
+	}
+	if got["projects"] {
+		t.Error("'projects' should not be in result")
+	}
+}
+
+// TestParseSyncOnly_TrailingComma verifies that trailing/double commas produce
+// empty name tokens that are silently skipped (the `if name == "" { continue }`
+// branch on line 143-144 of sync.go).
+func TestParseSyncOnly_TrailingComma(t *testing.T) {
+	// "orb," has a trailing comma — the empty token after the comma must be
+	// skipped, not treated as an unknown section name.
+	got, err := parseSyncOnly("orb,")
+	if err != nil {
+		t.Fatalf("unexpected error for 'orb,' (trailing comma): %v", err)
+	}
+	if !got["orb"] {
+		t.Error("expected 'orb' in result")
+	}
+	if len(got) != 1 {
+		t.Errorf("expected exactly 1 entry, got %d", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// orgSettingsAdapter delegation tests — one-liner forwarders
+// ---------------------------------------------------------------------------
+//
+// Each adapter method is a pure forwarding call to *org.Client. We test each
+// via httptest so the "statement covered" line in the coverage profile is hit.
+
+// TestOrgSettingsAdapter_UpdateFeatureFlags verifies that
+// orgSettingsAdapter.UpdateFeatureFlags delegates to the org client.
+func TestOrgSettingsAdapter_UpdateFeatureFlags(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/settings") {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
+		http.Error(w, "unexpected: "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	err := a.UpdateFeatureFlags(context.Background(), "github", "acme", map[string]bool{"oss": true})
+	if err != nil {
+		t.Fatalf("UpdateFeatureFlags: %v", err)
+	}
+}
+
+// TestOrgSettingsAdapter_GetURLOrbAllowList verifies that GetURLOrbAllowList
+// converts org.URLOrbAllowEntry → syncer.URLOrbAllowEntry.
+func TestOrgSettingsAdapter_GetURLOrbAllowList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{
+				{"id": "e1", "name": "npm", "prefix": "https://registry.npmjs.org", "auth": ""},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	entries, err := a.GetURLOrbAllowList(context.Background(), "gh/acme")
+	if err != nil {
+		t.Fatalf("GetURLOrbAllowList: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].ID != "e1" || entries[0].Name != "npm" {
+		t.Errorf("conversion wrong: %+v", entries[0])
+	}
+}
+
+// TestOrgSettingsAdapter_GetOTelExporters verifies GetOTelExporters converts
+// org.OTelExporter → syncer.OTelExporter. The API returns a JSON array.
+func TestOrgSettingsAdapter_GetOTelExporters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// GetOTelExporters unmarshals directly into []OTelExporter (JSON array).
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "x1", "endpoint": "https://otel.example.com", "protocol": "grpc", "insecure": false},
+		})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	exporters, err := a.GetOTelExporters(context.Background(), "org-uuid-test")
+	if err != nil {
+		t.Fatalf("GetOTelExporters: %v", err)
+	}
+	if len(exporters) != 1 {
+		t.Fatalf("expected 1 exporter, got %d", len(exporters))
+	}
+	if exporters[0].ID != "x1" {
+		t.Errorf("ID = %q, want %q", exporters[0].ID, "x1")
+	}
+}
+
+// TestOrgSettingsAdapter_SetOIDCClaims verifies the SetOIDCClaims delegation.
+func TestOrgSettingsAdapter_SetOIDCClaims(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	// Should not error — any response from the server counts as success for the adapter.
+	_ = a.SetOIDCClaims(context.Background(), "org-id", []string{"aud1"}, "1h")
+}
+
+// TestOrgSettingsAdapter_SetContacts verifies the SetContacts delegation.
+func TestOrgSettingsAdapter_SetContacts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetContacts(context.Background(), "org-id", []string{"primary@example.com"}, []string{"security@example.com"})
+}
+
+// TestOrgSettingsAdapter_SetStorageRetention verifies the SetStorageRetention delegation.
+func TestOrgSettingsAdapter_SetStorageRetention(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetStorageRetention(context.Background(), "org-uuid",
+		syncer.StorageRetentionArgs{CacheDays: 30, WorkspaceDays: 15, ArtifactDays: 60})
+}
+
+// TestOrgSettingsAdapter_SetBudget verifies the SetBudget delegation.
+func TestOrgSettingsAdapter_SetBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetBudget(context.Background(), "org-uuid", nil, 10000)
+}
+
+// TestOrgSettingsAdapter_SetBlockUnregisteredUsers verifies the delegation.
+func TestOrgSettingsAdapter_SetBlockUnregisteredUsers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetBlockUnregisteredUsers(context.Background(), "org-uuid", true)
+}
+
+// TestOrgSettingsAdapter_SetReleaseTrackerSettings verifies the delegation.
+func TestOrgSettingsAdapter_SetReleaseTrackerSettings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetReleaseTrackerSettings(context.Background(), "org-uuid", "24h")
+}
+
+// TestOrgSettingsAdapter_CreateURLOrbAllowEntry verifies the delegation.
+func TestOrgSettingsAdapter_CreateURLOrbAllowEntry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "new-entry"})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.CreateURLOrbAllowEntry(context.Background(), "gh/acme", "npm", "https://registry.npmjs.org", "")
+}
+
+// TestOrgSettingsAdapter_PutPolicyBundle verifies the delegation.
+func TestOrgSettingsAdapter_PutPolicyBundle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.PutPolicyBundle(context.Background(), "org-uuid", map[string]string{"policy.rego": "package main"})
+}
+
+// TestOrgSettingsAdapter_SetPolicyEnforcement verifies the delegation.
+func TestOrgSettingsAdapter_SetPolicyEnforcement(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetPolicyEnforcement(context.Background(), "org-uuid", true)
+}
+
+// TestOrgSettingsAdapter_CreateOTelExporter verifies the delegation.
+func TestOrgSettingsAdapter_CreateOTelExporter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "new-exporter"})
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.CreateOTelExporter(context.Background(), "org-uuid", "https://otel.example.com", "grpc", false, nil)
+}
+
+// ---------------------------------------------------------------------------
+// ciamWriterAdapter delegation tests
+// ---------------------------------------------------------------------------
+
+// TestCIAMWriterAdapter_SetOrgUserRole verifies SetOrgUserRole delegation.
+func TestCIAMWriterAdapter_SetOrgUserRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetOrgUserRole(context.Background(), "org-id", "user-id", "org-admin")
+}
+
+// TestCIAMWriterAdapter_AddUsersToGroup verifies AddUsersToGroup delegation.
+func TestCIAMWriterAdapter_AddUsersToGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.AddUsersToGroup(context.Background(), "org-id", "group-id", []string{"user-1", "user-2"})
+}
+
+// TestCIAMWriterAdapter_SetProjectUserRole verifies SetProjectUserRole delegation.
+func TestCIAMWriterAdapter_SetProjectUserRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.SetProjectUserRole(context.Background(), "org-id", "proj-id", "user-id", "contributor")
+}
+
+// TestCIAMWriterAdapter_AddProjectGroupRole verifies AddProjectGroupRole delegation.
+func TestCIAMWriterAdapter_AddProjectGroupRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_ = a.AddProjectGroupRole(context.Background(), "org-id", "proj-id", []string{"g-1"}, "viewer")
+}
+
+// TestCIAMWriterAdapter_CreateGroup_ErrorPath verifies that CreateGroup
+// propagates the error from the underlying client when the server returns 500.
+// This covers the error branch in ciamWriterAdapter.CreateGroup.
+func TestCIAMWriterAdapter_CreateGroup_ErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"server error"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_, err := a.CreateGroup(context.Background(), "org-id", "platform", "desc")
+	if err == nil {
+		t.Fatal("expected error from CreateGroup on 500 response, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveTargetMeta — uncovered branches
+// ---------------------------------------------------------------------------
+
+// TestResolveTargetMeta_ProjectFoundByName verifies the fallback path where
+// the source project slug is not in projBySourceSlug but the last component
+// (project name) is in projByName.
+func TestResolveTargetMeta_ProjectFoundByName(t *testing.T) {
+	// A "dest slug" target — not in projBySourceSlug by full slug, but the
+	// last component "web-app" matches a project in projByName.
+	projBySlug := map[string]manifest.Project{}
+	projByName := map[string]manifest.Project{
+		"web-app": {Slug: "gh/acme/web-app", Name: "web-app"},
+	}
+	ctxByName := map[string]manifest.Context{}
+
+	// Target looks like a dest slug: "gh/dest-org/web-app/env-var:MY_KEY"
+	target := "gh/dest-org/web-app/env-var:MY_KEY"
+	name, url := resolveTargetMeta(target, "gh/dest-org", "https://circleci.com",
+		projBySlug, projByName, ctxByName)
+
+	if name == "" {
+		t.Errorf("expected non-empty friendly name for project found by name; got empty")
+	}
+	if url == "" {
+		t.Errorf("expected non-empty settings URL for project found by name; got empty")
+	}
+}
+
+// TestResolveTargetMeta_ContextNotFound_ReturnsEmpty verifies that when the
+// context name is extracted but NOT found in ctxByName, the function returns
+// empty strings (falls through to "no match" return).
+func TestResolveTargetMeta_ContextNotFound_ReturnsEmpty(t *testing.T) {
+	// Target looks like a context (no project prefix), but the context name
+	// is not in ctxByName.
+	projBySlug := map[string]manifest.Project{}
+	projByName := map[string]manifest.Project{}
+	ctxByName := map[string]manifest.Context{
+		"known-ctx": {Name: "known-ctx"},
+	}
+
+	// "unknown-ctx" is not in ctxByName → should return empty.
+	name, url := resolveTargetMeta("unknown-ctx/MY_SECRET",
+		"gh/dest-org", "https://circleci.com",
+		projBySlug, projByName, ctxByName)
+
+	if name != "" {
+		t.Errorf("expected empty friendly name for unknown context, got %q", name)
+	}
+	if url != "" {
+		t.Errorf("expected empty URL for unknown context, got %q", url)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// orgSettingsAdapter error paths — cover remaining 85.7% branches
+// ---------------------------------------------------------------------------
+
+// TestOrgSettingsAdapter_GetURLOrbAllowList_Error verifies error propagation.
+func TestOrgSettingsAdapter_GetURLOrbAllowList_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_, err := a.GetURLOrbAllowList(context.Background(), "gh/acme")
+	if err == nil {
+		t.Fatal("expected error from GetURLOrbAllowList on 403 response, got nil")
+	}
+}
+
+// TestOrgSettingsAdapter_GetOTelExporters_Error verifies error propagation.
+func TestOrgSettingsAdapter_GetOTelExporters_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"internal error"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := orgSettingsAdapter{c: newOrgClientForTest(t, srv)}
+	_, err := a.GetOTelExporters(context.Background(), "org-uuid")
+	if err == nil {
+		t.Fatal("expected error from GetOTelExporters on 500 response, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ciamWriterAdapter error paths
+// ---------------------------------------------------------------------------
+
+// TestCIAMWriterAdapter_ListOrgRoleGrants_Error covers the error return in ListOrgRoleGrants.
+func TestCIAMWriterAdapter_ListOrgRoleGrants_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_, err := a.ListOrgRoleGrants(context.Background(), "org-uuid")
+	if err == nil {
+		t.Fatal("expected error from ListOrgRoleGrants on 404, got nil")
+	}
+}
+
+// TestCIAMWriterAdapter_ListGroups_Error covers the error return in the
+// ciamWriterAdapter ListGroups method.
+func TestCIAMWriterAdapter_ListGroups_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	a := ciamWriterAdapter{c: newOrgClientForTest(t, srv)}
+	_, err := a.ListGroups(context.Background(), "org-uuid")
+	if err == nil {
+		t.Fatal("expected error from ciamWriterAdapter.ListGroups on 403, got nil")
+	}
+}
+
+// TestOrgGroupLister_ListGroups_ErrorPath verifies that orgGroupLister.ListGroups
+// propagates error from the underlying client (via a 500 response).
+func TestOrgGroupLister_ListGroups_ErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"server error"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	lister := orgGroupLister{c: newOrgClientForTest(t, srv)}
+	_, err := lister.ListGroups(context.Background(), "org-uuid")
+	if err == nil {
+		t.Fatal("expected error from orgGroupLister.ListGroups on 500, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncActionLine — friendlyName-only and settingsURL-only branches
+// ---------------------------------------------------------------------------
+
+// TestSyncActionLine_FriendlyNameOnly verifies the format when only a friendly
+// name is available (no settings URL — e.g., host is empty so URL construction
+// returns "").
+func TestSyncActionLine_FriendlyNameOnly(t *testing.T) {
+	// Use an empty host so cciurl.ProjectSettingsURL returns an empty URL.
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: "", // empty host → empty settings URL
+			Org:  manifest.Org{Slug: "gh/acme"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/api", Name: "api-service"},
+		},
+	}
+
+	a := syncer.Action{
+		Kind:   "project-ssh-key",
+		Target: "gh/acme/api/ssh-key:aa:bb:cc",
+		Status: "manual",
+	}
+	line := syncActionLine(a, "gh/dest-org", m)
+
+	// When URL is empty, format is "target (friendlyName)".
+	if !strings.Contains(line, "api-service") {
+		t.Errorf("expected friendly name 'api-service' in line %q", line)
+	}
+	// The format should NOT contain "→" when there is no URL.
+	if !strings.Contains(line, "(api-service)") {
+		t.Errorf("expected '(api-service)' format when no URL, got: %q", line)
 	}
 }

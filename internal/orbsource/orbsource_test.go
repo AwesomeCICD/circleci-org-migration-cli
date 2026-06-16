@@ -166,3 +166,25 @@ func TestFetchOrbSource_HTTP4xx(t *testing.T) {
 		t.Errorf("error %q does not mention 401", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FetchOrbSource public wrapper — covers the exported function (line 65)
+// ---------------------------------------------------------------------------
+
+// TestFetchOrbSource_Public_ReturnsErrorOnBadURL verifies that the public
+// FetchOrbSource function is reachable and returns an error when the host URL
+// is unreachable. This covers the exported wrapper line (currently 0%).
+//
+// We use an address that is guaranteed to refuse connections (127.0.0.1:1 is
+// always closed on modern OSes) so we don't rely on a running server.
+func TestFetchOrbSource_Public_ReturnsErrorOnBadURL(t *testing.T) {
+	_, err := FetchOrbSource("http://127.0.0.1:1", "tok", "myns/myorb@1.0.0")
+	if err == nil {
+		t.Fatal("expected error from FetchOrbSource with unreachable host, got nil")
+	}
+	// The error must mention an HTTP or connection failure.
+	errStr := err.Error()
+	if !strings.Contains(errStr, "orbsource:") {
+		t.Errorf("error %q should mention 'orbsource:' prefix", errStr)
+	}
+}
