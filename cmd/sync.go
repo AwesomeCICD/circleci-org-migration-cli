@@ -13,6 +13,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/cciurl"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -542,6 +543,9 @@ Examples:
 				return marshalJSON(cmd.OutOrStdout(), summary)
 			}
 
+			// Consolidated end-of-run summary across all sections.
+			printEndSummary(cmd.OutOrStdout(), repsBySection)
+
 			return nil
 		},
 	}
@@ -929,19 +933,22 @@ func loadBundleWithFeedback(path string, isDefault bool, errW io.Writer) (*manif
 
 func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report, m *manifest.Manifest) {
 	out := cmd.OutOrStdout()
+	ren := ui.New(out)
+
 	mode := "DRY RUN (no changes written; re-run with --apply to apply)"
 	if rep.Applied {
 		mode = "APPLIED"
 	}
-	fmt.Fprintf(out, "== %s sync — %s ==\n", section, mode)
-	fmt.Fprintf(out, "  Destination: %s\n\n", rep.DestOrgSlug)
+	ren.Section(section+" sync", mode)
+	ren.KeyVal("Destination", rep.DestOrgSlug)
+	fmt.Fprintln(out, "")
 
 	counts := rep.Counts()
-	for _, status := range []string{"created", "exists", "set", "manual", "skipped", "error"} {
-		if n := counts[status]; n > 0 {
-			fmt.Fprintf(out, "  %-8s %d\n", status+":", n)
-		}
+	uiCounts := ui.Counts{}
+	for k, v := range counts {
+		uiCounts[k] = v
 	}
+	ren.CountsLine(uiCounts)
 
 	// Surface the items needing attention (manual + error) explicitly.
 	var attention []syncer.Action
@@ -951,13 +958,34 @@ func printSyncReport(cmd *cobra.Command, section string, rep *syncer.Report, m *
 		}
 	}
 	if len(attention) > 0 {
-		fmt.Fprintf(out, "\n  Needs attention:\n")
 		sort.Slice(attention, func(i, j int) bool { return attention[i].Target < attention[j].Target })
+		items := make([]ui.AttentionItem, 0, len(attention))
 		for _, a := range attention {
 			line := syncActionLine(a, rep.DestOrgSlug, m)
-			fmt.Fprintf(out, "    [%s] %s — %s\n", a.Status, line, a.Detail)
+			items = append(items, ui.AttentionItem{
+				Status: a.Status,
+				Label:  line,
+				Detail: a.Detail,
+			})
 		}
+		ren.AttentionBlock(items)
 	}
+}
+
+// printEndSummary prints the consolidated end-of-run rollup across all sections.
+// It is called after all per-section reports have been printed. When no reports
+// are provided (e.g. all sections were skipped) it prints nothing.
+func printEndSummary(out io.Writer, repsBySection map[string]*syncer.Report) {
+	if len(repsBySection) == 0 {
+		return
+	}
+	ren := ui.New(out)
+	var tc ui.TotalCounts
+	for _, rep := range repsBySection {
+		counts := rep.Counts()
+		tc.Add(ui.Counts(counts))
+	}
+	ren.EndSummary(tc)
 }
 
 // syncActionLine enriches an action's Target with a friendly project/context

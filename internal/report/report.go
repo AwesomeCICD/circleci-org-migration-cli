@@ -11,40 +11,62 @@ import (
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/cciurl"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/ui"
 )
 
 // Summary returns a concise, human-readable overview of an export for printing
 // to the terminal.
+//
+// When the output will be written to a real TTY the renderer will emit styled
+// (colored) output; when written to a pipe/buffer it falls back to clean plain
+// text.  The caller controls color by passing a pre-configured *ui.Renderer via
+// SummaryWith. The plain-text Summary() variant always uses a non-TTY renderer
+// so that unit tests and saved output remain stable.
 func Summary(m *manifest.Manifest) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CircleCI export summary\n")
-	fmt.Fprintf(&b, "  Source org : %s  (%s)\n", orDash(m.Source.Org.Name), orDash(m.Source.Org.Slug))
+	ren := ui.NewRendererColor(&b, false)
+	writeSummary(&b, ren, m)
+	return b.String()
+}
+
+// SummaryWith writes the export summary using the supplied renderer. This
+// allows cmd-layer callers (e.g. migrate) to pass a renderer whose color
+// setting was auto-detected from the real output writer.
+func SummaryWith(ren *ui.Renderer, m *manifest.Manifest) string {
+	var b strings.Builder
+	rendererForBuf := ui.NewRendererColor(&b, ren.ColorEnabled())
+	writeSummary(&b, rendererForBuf, m)
+	return b.String()
+}
+
+func writeSummary(b *strings.Builder, ren *ui.Renderer, m *manifest.Manifest) {
+	ren.Section("CircleCI export summary", "")
+	fmt.Fprintf(b, "  Source org : %s  (%s)\n", orDash(m.Source.Org.Name), orDash(m.Source.Org.Slug))
 	if m.Source.Org.ID != "" {
-		fmt.Fprintf(&b, "  Org ID     : %s\n", m.Source.Org.ID)
+		fmt.Fprintf(b, "  Org ID     : %s\n", m.Source.Org.ID)
 	}
-	fmt.Fprintf(&b, "  Host       : %s\n", orDash(m.Source.Host))
+	fmt.Fprintf(b, "  Host       : %s\n", orDash(m.Source.Host))
 	if m.GeneratedAt != "" {
-		fmt.Fprintf(&b, "  Generated  : %s\n", m.GeneratedAt)
+		fmt.Fprintf(b, "  Generated  : %s\n", m.GeneratedAt)
 	}
 
 	cv := countContextVars(m)
 	pv := countProjectVars(m)
-	fmt.Fprintf(&b, "\n  Contexts   : %d  (%d env-var name(s); values captured separately)\n", len(m.Contexts), cv)
-	fmt.Fprintf(&b, "  Projects   : %d  (%d env-var name(s); values captured separately)\n", len(m.Projects), pv)
+	fmt.Fprintf(b, "\n  Contexts   : %d  (%d env-var name(s); values captured separately)\n", len(m.Contexts), cv)
+	fmt.Fprintf(b, "  Projects   : %d  (%d env-var name(s); values captured separately)\n", len(m.Projects), pv)
 
 	byCode := warningsByCode(m)
-	fmt.Fprintf(&b, "  Warnings   : %d\n", len(m.Warnings))
+	fmt.Fprintf(b, "  Warnings   : %d\n", len(m.Warnings))
 	if len(byCode) > 0 {
 		for _, c := range sortedKeys(byCode) {
-			fmt.Fprintf(&b, "    - %s (%d)\n", c, byCode[c])
+			fmt.Fprintf(b, "    - %s (%d)\n", c, byCode[c])
 		}
 	}
 
-	fmt.Fprintf(&b, "\n  Note: this manifest holds env-var NAMES only — secret values are never\n")
-	fmt.Fprintf(&b, "  written to disk. To move the values to the destination, run the in-pipeline\n")
-	fmt.Fprintf(&b, "  'secrets transfer' flow (recommended) — the values go org→org without ever\n")
-	fmt.Fprintf(&b, "  leaving CircleCI. See docs/guide.md.\n")
-	return b.String()
+	fmt.Fprintf(b, "\n  Note: this manifest holds env-var NAMES only — secret values are never\n")
+	fmt.Fprintf(b, "  written to disk. To move the values to the destination, run the in-pipeline\n")
+	fmt.Fprintf(b, "  'secrets transfer' flow (recommended) — the values go org→org without ever\n")
+	fmt.Fprintf(b, "  leaving CircleCI. See docs/guide.md.\n")
 }
 
 // Markdown returns a full audit document describing everything captured and
