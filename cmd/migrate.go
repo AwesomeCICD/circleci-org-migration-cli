@@ -729,15 +729,15 @@ type MigrateWalkthroughResult struct {
 	SkipExtras      bool
 }
 
-// secretsMethodInPipeline is the display label for the recommended in-pipeline
+// valueMethodInPipeline is the display label for the recommended in-pipeline
 // transfer option in the Step 3a choice.
-const secretsMethodInPipeline = "in-pipeline transfer (RECOMMENDED)"
+const valueMethodInPipeline = "in-pipeline transfer (RECOMMENDED)"
 
-// secretsMethodBundle is the display label for the captured-bundle option.
-const secretsMethodBundle = "captured secrets bundle (advanced)"
+// valueMethodBundle is the display label for the captured-bundle option.
+const valueMethodBundle = "captured secrets bundle (advanced)"
 
-// secretsMethodNone is the display label for the structure-only option.
-const secretsMethodNone = "none — migrate structure only; set values manually later" //nosec G101 -- UI menu label, not a credential
+// valueMethodNone is the display label for the structure-only option.
+const valueMethodNone = "none — migrate structure only; set values manually later"
 
 // runMigrateWalkthrough conducts the interactive guided migration walkthrough.
 // It writes prompts to cmd.ErrOrStderr() and reads answers from os.Stdin.
@@ -883,14 +883,14 @@ func RunMigrateWalkthroughWith(
 
 	secretsMethod, err := p.askChoice(
 		"Choose secrets migration method:",
-		[]string{secretsMethodInPipeline, secretsMethodBundle, secretsMethodNone},
+		[]string{valueMethodInPipeline, valueMethodBundle, valueMethodNone},
 	)
 	if err != nil {
 		return result, err
 	}
 
 	switch secretsMethod {
-	case secretsMethodInPipeline:
+	case valueMethodInPipeline:
 		// In-pipeline transfer path.
 		result.TransferSecrets = true
 
@@ -944,7 +944,7 @@ func RunMigrateWalkthroughWith(
 		result.SecretsPath = ""
 		result.Missing = syncer.MissingSkip
 
-	case secretsMethodBundle:
+	case valueMethodBundle:
 		// Captured-bundle path — existing behaviour.
 		result.SecretsPath, err = p.askWithDefault("Path to secrets bundle", "secrets.json")
 		if err != nil {
@@ -964,7 +964,7 @@ func RunMigrateWalkthroughWith(
 		}
 		result.Missing = missingChoice
 
-	default: // secretsMethodNone
+	default: // valueMethodNone
 		// Structure-only path.
 		result.SecretsPath = ""
 
