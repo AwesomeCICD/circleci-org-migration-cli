@@ -20,6 +20,7 @@ import (
 	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/github"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // resolveRepoID is a package-level variable so tests can inject a stub.
@@ -214,6 +215,28 @@ type Syncer struct {
 	// destination orgs. When nil, CIAM sync is silently skipped.
 	CIAM CIAMWriter
 	Out  io.Writer
+
+	// deferredProjectRestrictions accumulates project-type context restrictions
+	// discovered during SyncContexts. They are NOT applied inline because the
+	// destination projects do not exist yet when contexts are synced. The caller
+	// must run ApplyDeferredProjectRestrictions AFTER SyncProjects so each
+	// restriction can be remapped to a destination project UUID in the same run.
+	deferredProjectRestrictions []deferredProjectRestriction
+}
+
+// deferredProjectRestriction is one project-type context restriction whose
+// remap (source project UUID → dest project UUID) is deferred until after the
+// destination projects have been created. It carries everything the deferred
+// pass needs: the destination context ID (captured when the context was
+// created/reused), the existing restrictions on that context (for idempotency),
+// the source restriction, and the per-run remap inputs.
+type deferredProjectRestriction struct {
+	target        string               // report target label, e.g. "prod [project]"
+	ctxID         string               // destination context ID (empty in dry-run for would-be-created contexts)
+	existing      []cctx.Restriction   // restrictions already on the dest context
+	restriction   manifest.Restriction // the source project restriction
+	srcUUIDToSlug map[string]string    // source project UUID → source slug index
+	mapping       *manifest.Mapping    // project-slug remap
 }
 
 // logf writes a human-progress line to both s.Out (for user-facing output) and

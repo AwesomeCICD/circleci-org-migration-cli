@@ -45,6 +45,15 @@ func (s *Syncer) SyncContexts(ctx context.Context, m *manifest.Manifest, bundle 
 	var groupCache map[string]string
 	groupCacheLoaded := false
 
+	// Build a source-project-UUID → source-slug index once for the run.
+	// Used by the deferred project-restriction pass to remap project restrictions.
+	srcUUIDToSlug := buildSrcUUIDToSlug(m)
+
+	// Reset any project restrictions deferred by a previous SyncContexts call on
+	// this Syncer instance, then accumulate fresh ones for this run. They are
+	// applied later by ApplyDeferredProjectRestrictions (after SyncProjects).
+	s.deferredProjectRestrictions = nil
+
 	for _, c := range m.Contexts {
 		ctxID, err := s.ensureContext(ctx, report, c.Name, destOrgID, byName, opts)
 		if err != nil {
@@ -52,9 +61,23 @@ func (s *Syncer) SyncContexts(ctx context.Context, m *manifest.Manifest, bundle 
 			continue
 		}
 		s.syncContextVars(ctx, report, c, bundle, ctxID, opts)
-		s.syncContextRestrictions(ctx, report, c, ctxID, destOrgID, &groupCache, &groupCacheLoaded, opts)
+		s.syncContextRestrictions(ctx, report, c, ctxID, destOrgID, &groupCache, &groupCacheLoaded, srcUUIDToSlug, mapping, opts)
 	}
 	return report, nil
+}
+
+// buildSrcUUIDToSlug builds a map from source project UUID (SourceID) to slug
+// for every project in the manifest that has a SourceID set. Used to remap
+// project-type context restrictions from the source org's UUID to the
+// destination project's slug / UUID.
+func buildSrcUUIDToSlug(m *manifest.Manifest) map[string]string {
+	out := make(map[string]string, len(m.Projects))
+	for _, p := range m.Projects {
+		if p.SourceID != "" {
+			out[p.SourceID] = p.Slug
+		}
+	}
+	return out
 }
 
 // ensureContext returns the destination context ID, creating it if absent.
@@ -112,7 +135,7 @@ func (s *Syncer) writeVar(ctx context.Context, ctxID, name, value string, apply 
 	return s.Contexts.UpsertEnvVar(ctx, ctxID, name, value)
 }
 
-func (s *Syncer) syncContextRestrictions(ctx context.Context, report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, opts Options) {
+func (s *Syncer) syncContextRestrictions(ctx context.Context, report *Report, c manifest.Context, ctxID, destOrgID string, groupCache *map[string]string, groupCacheLoaded *bool, srcUUIDToSlug map[string]string, mapping *manifest.Mapping, opts Options) {
 	var existing []cctx.Restriction
 	if opts.Apply && ctxID != "" {
 		rs, err := s.Contexts.ListRestrictions(ctx, ctxID)
@@ -132,9 +155,20 @@ func (s *Syncer) syncContextRestrictions(ctx context.Context, report *Report, c 
 			s.syncExpressionRestriction(ctx, report, target, ctxID, existing, r, opts)
 		case "group":
 			s.syncGroupRestriction(ctx, report, target, ctxID, destOrgID, existing, r, groupCache, groupCacheLoaded, opts)
+		case "project":
+			// Defer: the destination project does not exist yet (contexts sync
+			// before projects). Collect the work and apply it after SyncProjects
+			// via ApplyDeferredProjectRestrictions, so a single run resolves it.
+			s.deferredProjectRestrictions = append(s.deferredProjectRestrictions, deferredProjectRestriction{
+				target:        target,
+				ctxID:         ctxID,
+				existing:      existing,
+				restriction:   r,
+				srcUUIDToSlug: srcUUIDToSlug,
+				mapping:       mapping,
+			})
 		default:
-			// project-type values are source-org UUIDs (need remap) and have no
-			// name-based equivalent in the destination — manual handling.
+			// Unknown restriction type — manual handling.
 			report.add("restriction", target, "manual", fmt.Sprintf("%s restriction %q must be recreated manually", r.Type, restrictionLabel(r)))
 		}
 	}
@@ -210,6 +244,98 @@ func (s *Syncer) resolveDestGroup(ctx context.Context, name, destOrgID string, g
 	return uuid, ok
 }
 
+// ApplyDeferredProjectRestrictions applies the project-type context restrictions
+// that SyncContexts deferred. It MUST run AFTER SyncProjects, so the destination
+// projects exist and can be resolved to UUIDs. Each restriction action is
+// appended to report. When no project restrictions were deferred this is a
+// no-op (and returns the report unchanged).
+//
+// The per-restriction remap path is:
+//
+//  1. source project UUID (r.Value) → source slug (via the srcUUIDToSlug index
+//     built from manifest.Project.SourceID entries)
+//  2. source slug → dest slug (via mapping.ResolveProjectSlug)
+//  3. dest slug → dest project UUID (via s.Projects.GetProject)
+//  4. CreateRestriction on the dest context with the dest UUID.
+//
+// If any step fails — including the destination project genuinely not existing
+// (e.g. it was not migrated) — the restriction falls back to "manual" with a
+// clear message explaining which step failed and what the operator should do.
+//
+// Dry-run (opts.Apply == false) reports "set"/"would add" without writing, the
+// same as the other restriction types.
+func (s *Syncer) ApplyDeferredProjectRestrictions(ctx context.Context, report *Report, opts Options) *Report {
+	if report == nil {
+		report = &Report{Applied: opts.Apply}
+	}
+	for _, d := range s.deferredProjectRestrictions {
+		s.applyDeferredProjectRestriction(ctx, report, d, opts)
+	}
+	return report
+}
+
+func (s *Syncer) applyDeferredProjectRestriction(ctx context.Context, report *Report, d deferredProjectRestriction, opts Options) {
+	srcUUID := d.restriction.Value
+	label := restrictionLabel(d.restriction)
+	target := d.target
+
+	// Step 1: source UUID → source slug.
+	srcSlug, ok := d.srcUUIDToSlug[srcUUID]
+	if !ok {
+		report.add("restriction", target, "manual",
+			fmt.Sprintf("project restriction %q (source UUID %q) not found in manifest — "+
+				"ensure the project was exported, then re-run", label, srcUUID))
+		return
+	}
+
+	// Step 2: source slug → dest slug.
+	mapping := d.mapping
+	if mapping == nil {
+		mapping = manifest.IdentityMapping(srcSlug)
+	}
+	destSlug, ok := mapping.ResolveProjectSlug(srcSlug)
+	if !ok {
+		report.add("restriction", target, "manual",
+			fmt.Sprintf("project restriction %q: no destination mapping for source slug %q — "+
+				"add a projects entry to your mapping file, then re-run", label, srcSlug))
+		return
+	}
+
+	// Step 3: dest slug → dest project UUID. By the time this runs the projects
+	// step has executed, so a missing project means the project was not migrated.
+	destProj, err := s.Projects.GetProject(ctx, destSlug)
+	if err != nil || destProj == nil || destProj.ID == "" {
+		if err != nil {
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: destination project %q not found (%v) — "+
+					"migrate that project, then re-run", label, destSlug, err))
+		} else {
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: destination project %q returned no UUID — "+
+					"migrate that project, then re-run", label, destSlug))
+		}
+		return
+	}
+	destUUID := destProj.ID
+
+	// Idempotency: skip if the restriction is already present.
+	if hasProjectRestriction(d.existing, destUUID) {
+		report.add("restriction", target, "exists", fmt.Sprintf("project restriction %q already present", label))
+		return
+	}
+
+	if !opts.Apply || d.ctxID == "" {
+		report.add("restriction", target, "set", fmt.Sprintf("would add project restriction %q", label))
+		return
+	}
+
+	if err := s.Contexts.CreateRestriction(ctx, d.ctxID, "project", destUUID); err != nil {
+		report.add("restriction", target, "error", err.Error())
+		return
+	}
+	report.add("restriction", target, "set", fmt.Sprintf("added project restriction %q", label))
+}
+
 func hasExpressionRestriction(existing []cctx.Restriction, value string) bool {
 	for _, e := range existing {
 		if e.Type == "expression" && e.Value == value {
@@ -222,6 +348,15 @@ func hasExpressionRestriction(existing []cctx.Restriction, value string) bool {
 func hasGroupRestriction(existing []cctx.Restriction, value string) bool {
 	for _, e := range existing {
 		if e.Type == "group" && e.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProjectRestriction(existing []cctx.Restriction, value string) bool {
+	for _, e := range existing {
+		if e.Type == "project" && e.Value == value {
 			return true
 		}
 	}
