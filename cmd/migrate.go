@@ -952,6 +952,8 @@ func runMigrateSecretsTransfer(
 		}
 	}
 
+	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
+	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
 		HostProjectSlug:    hostSlug,
 		Branch:             "main",
