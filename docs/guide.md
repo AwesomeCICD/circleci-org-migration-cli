@@ -103,6 +103,35 @@ them — encrypted by default, never stored in plain text.
 `migrate` is the all-in-one command that runs export → sync in one step (with an
 interactive walkthrough when run with no flags).
 
+### One-command migration with in-pipeline secret transfer
+
+By default `migrate` needs a pre-captured `--secrets` bundle to carry secret
+**values**. Alternatively, pass `--transfer-secrets` to move context and project
+env-var values **in-pipeline** (zero-disk) as part of the same command — no
+bundle file required:
+
+```bash
+circleci-migrate migrate \
+  --source-org github/acme --dest-org github/acme-new \
+  --transfer-secrets --dest-token-context migration-secrets \
+  --include-project-vars --apply --yes
+```
+
+- `--transfer-secrets` — after sync creates+follows the destination projects,
+  run the in-pipeline transfer for context env vars (and project env vars with
+  `--include-project-vars`). Mutually exclusive with `--secrets`.
+- `--dest-token-context <name>` — the source-org context holding the destination
+  API token (`CIRCLECI_DEST_TOKEN`). Required with `--transfer-secrets`.
+- `--include-project-vars` — also transfer project-level env-var values
+  (destination project slugs are derived from `--dest-org`).
+- `--host-project <slug>` — the source project whose pipeline runs the context
+  transfer. Defaults to the first project; prefer an **established** (long-
+  followed) project, since a just-followed project's context authorization may
+  not have propagated yet.
+
+> SSH keys are not moved by `--transfer-secrets`; use the `secrets capture` →
+> `sync --secrets` flow for additional project SSH keys.
+
 ### Preflight checks
 
 Before work begins, each command runs **preflight checks** that detect common

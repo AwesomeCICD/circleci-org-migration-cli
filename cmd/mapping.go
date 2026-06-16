@@ -46,12 +46,25 @@ matches them against the projects captured in the export manifest by repo
 name (the last '/'-separated segment of the slug, e.g. "web" from
 "gh/acme/web").
 
+For VCS-integrated (GitHub / Bitbucket) destination orgs the dest slug is
+deterministic: <provider>/<dest-org>/<repo>.  When a source project has no
+onboarded dest project by that repo name, generate DERIVES the expected dest
+slug and writes it to mapping.json in a separate "derived" bucket.  These
+entries let sync and secrets transfer proceed without manual mapping edits,
+but you must ensure the destination project is onboarded before running those
+commands (otherwise they will fail to find the project).
+
+Only gh/ and bb/ providers support slug derivation.  circleci/ (App/standalone)
+slugs contain UUIDs and cannot be derived — these projects remain "unmatched".
+
 Output:
   • A mapping.json file ready for use with 'sync --mapping' and
     'secrets transfer --mapping'.
-  • A human-readable report printed to stdout with three sections:
-      matched       — source slug → dest slug (written to mapping.json)
-      unmatched     — source projects with no matching dest project
+  • A human-readable report printed to stdout with four sections:
+      matched       — source slug → dest slug (project onboarded, written)
+      derived       — source slug → derived dest slug (project NOT yet onboarded,
+                      written — create the project first, then re-run sync)
+      unmatched     — source projects with no derivable dest slug (circleci/ orgs)
       dest-only     — dest projects with no source counterpart (info only)
 
 Exit code is 0 even when there are unmatched entries — the report is the
@@ -126,6 +139,25 @@ Examples:
 			// ── Match by repo name ───────────────────────────────────────────
 			matched, unmatchedSrc, destOnly := matchProjects(srcSlugs, destProjects)
 
+			// Normalize the dest org slug once (used for derivation and output).
+			normalizedDestOrgSlug := normalizeVCSPrefix(destOrgSlug)
+
+			// ── Derive dest slugs for unmatched VCS-integrated projects ──────
+			// For gh/ and bb/ dest orgs the dest slug is deterministic:
+			//   <provider>/<dest-org-name>/<repo>
+			// Write these derived entries to the mapping (so sync/transfer can
+			// proceed) but report them in a distinct bucket so the user knows the
+			// project is not yet onboarded.
+			derived := make(map[string]string)
+			var stillUnmatched []string
+			for _, src := range unmatchedSrc {
+				if dst, ok := deriveDestSlug(src, normalizedDestOrgSlug); ok {
+					derived[normalizeVCSPrefix(src)] = dst
+				} else {
+					stillUnmatched = append(stillUnmatched, src)
+				}
+			}
+
 			// ── Write the mapping file ───────────────────────────────────────
 			// Normalize VCS provider prefixes so org.from, org.to, and all project
 			// slugs use consistent short forms (gh/, bb/) rather than mixing
@@ -133,12 +165,17 @@ Examples:
 			// ResolveProjectSlug, sync, and secrets transfer all operate on the same
 			// prefix convention.
 			orgFrom := normalizeVCSPrefix(m.Source.Org.Slug)
-			normalizedDestOrgSlug := normalizeVCSPrefix(destOrgSlug)
 
 			// Re-normalize project slug keys so they match what the manifest records.
-			normalizedMatched := make(map[string]string, len(matched))
+			normalizedMatched := make(map[string]string, len(matched)+len(derived))
 			for src, dst := range matched {
 				normalizedMatched[normalizeVCSPrefix(src)] = normalizeVCSPrefix(dst)
+			}
+			// Merge derived entries; never overwrite an onboarded match.
+			for src, dst := range derived {
+				if _, exists := normalizedMatched[src]; !exists {
+					normalizedMatched[src] = dst
+				}
 			}
 
 			mp := &manifest.Mapping{
@@ -168,8 +205,13 @@ Examples:
 			for s := range matched {
 				matchedSrc = append(matchedSrc, s)
 			}
+			derivedSrc := make([]string, 0, len(derived))
+			for s := range derived {
+				derivedSrc = append(derivedSrc, s)
+			}
 			sort.Strings(matchedSrc)
-			sort.Strings(unmatchedSrc)
+			sort.Strings(derivedSrc)
+			sort.Strings(stillUnmatched)
 			sort.Strings(destOnly)
 
 			fmt.Fprintf(w, "Mapping written to: %s\n\n", out)
@@ -183,11 +225,21 @@ Examples:
 			}
 
 			fmt.Fprintln(w)
-			fmt.Fprintf(w, "Unmatched source projects (%d):\n", len(unmatchedSrc))
-			if len(unmatchedSrc) == 0 {
+			fmt.Fprintf(w, "Matched (derived — dest project not yet onboarded) (%d):\n", len(derived))
+			if len(derived) == 0 {
 				fmt.Fprintln(w, "  (none)")
 			}
-			for _, src := range unmatchedSrc {
+			for _, src := range derivedSrc {
+				fmt.Fprintf(w, "  %s -> %s\n", src, derived[src])
+				fmt.Fprintf(w, "    → Slug derived; onboard %q in the destination org before running sync.\n", repoName(src))
+			}
+
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "Unmatched source projects (%d):\n", len(stillUnmatched))
+			if len(stillUnmatched) == 0 {
+				fmt.Fprintln(w, "  (none)")
+			}
+			for _, src := range stillUnmatched {
 				repo := repoName(src)
 				fmt.Fprintf(w, "  %s\n", src)
 				fmt.Fprintf(w, "    → Onboard %q in the destination org first, or add a manual entry to %s.\n", repo, out)
@@ -306,4 +358,48 @@ func normalizeVCSPrefix(slug string) string {
 		return "bb/" + strings.TrimPrefix(slug, "bitbucket/")
 	}
 	return slug
+}
+
+// deriveDestSlug constructs an expected destination project slug for a source
+// project that has no onboarded match in the destination org.
+//
+// For VCS-integrated (GitHub / Bitbucket) destination orgs the slug is
+// deterministic: <provider>/<dest-org-name>/<repo>.  The provider and org name
+// are extracted from normalizedDestOrgSlug (which must already be in short form,
+// e.g. "gh/new-org").  The repo name is taken from the last segment of srcSlug.
+//
+// Derivation is only possible for "gh/" and "bb/" providers.  "circleci/"
+// (GitHub App / standalone) slugs contain UUIDs in the org position and cannot
+// be predicted — those return ("", false).
+//
+// Parameters:
+//
+//	srcSlug             — normalized source project slug, e.g. "gh/old-org/web"
+//	normalizedDestOrgSlug — normalized dest org slug, e.g. "gh/new-org"
+func deriveDestSlug(srcSlug, normalizedDestOrgSlug string) (string, bool) {
+	// Only derive for gh/ and bb/ dest orgs.
+	provider := ""
+	switch {
+	case strings.HasPrefix(normalizedDestOrgSlug, "gh/"):
+		provider = "gh"
+	case strings.HasPrefix(normalizedDestOrgSlug, "bb/"):
+		provider = "bb"
+	default:
+		return "", false
+	}
+
+	// Extract the dest org name (segment after the provider prefix).
+	destOrgName := strings.TrimPrefix(normalizedDestOrgSlug, provider+"/")
+	if destOrgName == "" || strings.Contains(destOrgName, "/") {
+		// Malformed dest org slug — bail out.
+		return "", false
+	}
+
+	repo := repoName(srcSlug)
+	if repo == "" || repo == srcSlug {
+		// srcSlug has no slash — can't determine the repo name safely.
+		return "", false
+	}
+
+	return provider + "/" + destOrgName + "/" + repo, true
 }

@@ -1446,6 +1446,213 @@ func TestBuildSingleProjectTransferConfig_UsesV11Endpoint(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Issue #274 — unauthorized/not_run are terminal; unauthorized auto-retries
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestTerminalStatuses_UnauthorizedAndNotRunAreTerminal verifies that both
+// "unauthorized" and "not_run" are included in terminalStatuses so the poller
+// stops instead of hanging to poll-timeout.
+func TestTerminalStatuses_UnauthorizedAndNotRunAreTerminal(t *testing.T) {
+	for _, s := range []string{"unauthorized", "not_run"} {
+		if !terminalStatuses[s] {
+			t.Errorf("terminalStatuses[%q] = false; want true", s)
+		}
+	}
+	// Existing terminal statuses must still be present.
+	for _, s := range []string{"success", "failed", "error", "canceled"} {
+		if !terminalStatuses[s] {
+			t.Errorf("terminalStatuses[%q] = false; regression — was previously terminal", s)
+		}
+	}
+}
+
+// retryFakeTransferDeps is a Deps fake that returns "unauthorized" for the first
+// N pipeline polls, then "success" for the (N+1)th.  It counts how many times
+// TriggerPipelineRun is called.
+type retryFakeTransferDeps struct {
+	mu           sync.Mutex
+	triggerCount int
+	failCount    int // number of times to return "unauthorized" before success
+	proj         *project.Project
+	defs         []project.PipelineDefinition
+}
+
+func (f *retryFakeTransferDeps) GetProject(_ context.Context, slug string) (*project.Project, error) {
+	if f.proj != nil {
+		return f.proj, nil
+	}
+	return &project.Project{Slug: slug, ID: "id-" + slug}, nil
+}
+
+func (f *retryFakeTransferDeps) ListPipelineDefinitions(_ context.Context, _ string) ([]project.PipelineDefinition, error) {
+	if len(f.defs) > 0 {
+		return f.defs, nil
+	}
+	return []project.PipelineDefinition{{ID: "def-1", Name: "build"}}, nil
+}
+
+func (f *retryFakeTransferDeps) TriggerPipelineRun(_ context.Context, _, _, _, _ string, _ map[string]any) (string, error) {
+	f.mu.Lock()
+	f.triggerCount++
+	f.mu.Unlock()
+	return "pipe-retry", nil
+}
+
+func (f *retryFakeTransferDeps) GetPipelineWorkflows(_ context.Context, _ string) ([]project.Workflow, error) {
+	f.mu.Lock()
+	remaining := f.failCount
+	if remaining > 0 {
+		f.failCount--
+	}
+	f.mu.Unlock()
+
+	if remaining > 0 {
+		return []project.Workflow{{ID: "wf-1", Name: "transfer", Status: "unauthorized"}}, nil
+	}
+	return []project.Workflow{{ID: "wf-1", Name: "transfer", Status: "success"}}, nil
+}
+
+func (f *retryFakeTransferDeps) GetPipeline(_ context.Context, _ string) (*project.Pipeline, error) {
+	return &project.Pipeline{State: "pending"}, nil
+}
+
+// TestTriggerAndPollProjectPipeline_UnauthorizedThenSuccess verifies that when
+// the workflow returns "unauthorized" followed by "success", the pipeline trigger
+// is retried and ultimately succeeds without an error.
+func TestTriggerAndPollProjectPipeline_UnauthorizedThenSuccess(t *testing.T) {
+	deps := &retryFakeTransferDeps{failCount: 1} // unauthorized once, then success
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"MY_VAR"},
+	}
+	opts := &Options{
+		DestOrgID:        "dest-org-uuid",
+		DestTokenContext: "migration-secrets",
+		// Use a very short poll interval so the test doesn't wait 30 s.
+		PollInterval: 1,
+		Stdout:       &bytes.Buffer{},
+		Stderr:       &bytes.Buffer{},
+	}
+
+	var errOut bytes.Buffer
+	err := triggerAndPollProjectPipeline(context.Background(), deps, pp, opts, &errOut)
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+
+	// TriggerPipelineRun should have been called twice: initial + 1 retry.
+	deps.mu.Lock()
+	count := deps.triggerCount
+	deps.mu.Unlock()
+	if count != 2 {
+		t.Errorf("expected 2 TriggerPipelineRun calls (initial + 1 retry), got %d", count)
+	}
+
+	// The retry message should appear in the progress output.
+	if !strings.Contains(errOut.String(), "unauthorized") {
+		t.Errorf("expected 'unauthorized' in progress output, got: %s", errOut.String())
+	}
+}
+
+// TestRunContextPipeline_UnauthorizedThenSuccess verifies the context pipeline
+// path also retries on an "unauthorized" workflow (e.g. a just-followed host
+// project whose context authorization hasn't propagated) and then succeeds.
+func TestRunContextPipeline_UnauthorizedThenSuccess(t *testing.T) {
+	deps := &retryFakeTransferDeps{failCount: 1} // unauthorized once, then success
+	m := &manifest.Manifest{}
+	plan := &Plan{
+		Contexts: []ContextPlan{{SourceName: "deploy-prod", DestName: "deploy-prod", VarNames: []string{"K"}}},
+	}
+	opts := &Options{
+		HostProjectSlug:  "gh/acme/web",
+		DestOrgID:        "dest-org-uuid",
+		DestTokenContext: "migration-secrets",
+		PollInterval:     1, // short, so we don't sleep 30s
+		Stdout:           &bytes.Buffer{},
+		Stderr:           &bytes.Buffer{},
+	}
+
+	var errOut bytes.Buffer
+	opts.Stderr = &errOut
+	if err := runContextPipeline(context.Background(), deps, m, plan, opts); err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	deps.mu.Lock()
+	count := deps.triggerCount
+	deps.mu.Unlock()
+	if count != 2 {
+		t.Errorf("expected 2 TriggerPipelineRun calls (initial + 1 retry), got %d", count)
+	}
+	if !strings.Contains(errOut.String(), "unauthorized") {
+		t.Errorf("expected 'unauthorized' retry message, got: %s", errOut.String())
+	}
+}
+
+// TestTriggerAndPollProjectPipeline_UnauthorizedAllRetries verifies that when
+// all retries are exhausted the function returns a wrapped ErrWorkflowFailed
+// with an actionable message.
+func TestTriggerAndPollProjectPipeline_UnauthorizedAllRetries(t *testing.T) {
+	// Always unauthorized (more fails than retries).
+	deps := &retryFakeTransferDeps{failCount: unauthorizedRetryMax + 5}
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"MY_VAR"},
+	}
+	opts := &Options{
+		DestOrgID:        "dest-org-uuid",
+		DestTokenContext: "migration-secrets",
+		PollInterval:     1,
+		Stdout:           &bytes.Buffer{},
+		Stderr:           &bytes.Buffer{},
+	}
+
+	err := triggerAndPollProjectPipeline(context.Background(), deps, pp, opts, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected error when all retries exhausted")
+	}
+	if !errors.Is(err, ErrWorkflowFailed) {
+		t.Errorf("expected ErrWorkflowFailed, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error should mention 'unauthorized', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "retries") {
+		t.Errorf("error should mention 'retries', got: %v", err)
+	}
+
+	// Should have been triggered unauthorizedRetryMax+1 times.
+	deps.mu.Lock()
+	count := deps.triggerCount
+	deps.mu.Unlock()
+	if count != unauthorizedRetryMax+1 {
+		t.Errorf("expected %d TriggerPipelineRun calls, got %d", unauthorizedRetryMax+1, count)
+	}
+}
+
+// TestPollWorkflow_NotRunIsTerminal verifies that a "not_run" workflow status
+// is recognized as terminal (poll returns immediately).
+func TestPollWorkflow_NotRunIsTerminal(t *testing.T) {
+	deps := &fakeTransferDeps{
+		proj:      &project.Project{Slug: "gh/acme/web", ID: "proj-uuid"},
+		defs:      []project.PipelineDefinition{{ID: "def-1", Name: "build"}},
+		triggerID: "pipe-1",
+		workflows: [][]project.Workflow{
+			{{ID: "wf-1", Name: "transfer", Status: "not_run"}},
+		},
+	}
+
+	wf, err := pollWorkflow(context.Background(), deps, "pipe-1", 1, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("pollWorkflow returned error: %v", err)
+	}
+	if wf.Status != "not_run" {
+		t.Errorf("expected status not_run, got %q", wf.Status)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers for per-project pipeline tests
 // ─────────────────────────────────────────────────────────────────────────────
 

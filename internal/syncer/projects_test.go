@@ -27,6 +27,7 @@ type fakeProjectWriter struct {
 	getProject                func(slug string) (*project.Project, error)
 	createProjectShell        func(provider, org, name string) (*project.Project, error)
 	followProject             func(vcsType, org, repo string) (*project.FollowResult, error)
+	isProjectFollowed         func(vcsType, org, repo string) (bool, error)
 	listEnvVars               func(slug string) ([]project.EnvVar, error)
 	createEnvVar              func(slug, name, value string) error
 	updateSettings            func(provider, org, proj string, s *project.AdvancedSettings) error
@@ -80,6 +81,15 @@ func (f *fakeProjectWriter) FollowProject(_ context.Context, vcsType, org, repo 
 		return f.followProject(vcsType, org, repo)
 	}
 	return &project.FollowResult{Followed: true}, nil
+}
+
+func (f *fakeProjectWriter) IsProjectFollowed(_ context.Context, vcsType, org, repo string) (bool, error) {
+	f.calls = append(f.calls, projectCall{"IsProjectFollowed", []string{vcsType, org, repo}})
+	if f.isProjectFollowed != nil {
+		return f.isProjectFollowed(vcsType, org, repo)
+	}
+	// Default: project is followed (safe default — won't queue it unnecessarily).
+	return true, nil
 }
 
 func (f *fakeProjectWriter) ListEnvVars(_ context.Context, slug string) ([]project.EnvVar, error) {
@@ -3826,5 +3836,136 @@ func TestSyncProjectAPITokens_FlagOn_DryRun_NoCreate(t *testing.T) {
 	}
 	if createdCount != 1 {
 		t.Errorf("expected 1 would-create token action, got %d", createdCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #273 — enable-builds: follow existing-but-unfollowed projects
+// ---------------------------------------------------------------------------
+
+// TestSyncProjects_ExistingUnfollowed_QueuesForEnable verifies that when a
+// mapped project already exists in the destination but is NOT followed, it is
+// queued in PendingEnable so the enable-builds step follows it.
+func TestSyncProjects_ExistingUnfollowed_QueuesForEnable(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		// Report the project as NOT followed.
+		isProjectFollowed: func(vcsType, org, repo string) (bool, error) {
+			return false, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifest("gh/src", manifest.Project{Slug: "gh/src/web", Name: "web"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// IsProjectFollowed must have been called.
+	if !fp.hasCalled("IsProjectFollowed") {
+		t.Error("expected IsProjectFollowed to be called for existing project")
+	}
+
+	// Project must be in PendingEnable.
+	if len(rep.PendingEnable) == 0 {
+		t.Fatal("expected PendingEnable to contain the unfollowed project, got empty")
+	}
+	pe := rep.PendingEnable[0]
+	if pe.Kind != "follow" {
+		t.Errorf("PendingEnable[0].Kind = %q, want 'follow'", pe.Kind)
+	}
+	if pe.Slug != "gh/dst/web" {
+		t.Errorf("PendingEnable[0].Slug = %q, want gh/dst/web", pe.Slug)
+	}
+}
+
+// TestSyncProjects_ExistingFollowed_NotQueued verifies that when a mapped
+// project already exists AND is already followed, it is NOT queued in
+// PendingEnable.
+func TestSyncProjects_ExistingFollowed_NotQueued(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		// Report the project as already followed.
+		isProjectFollowed: func(vcsType, org, repo string) (bool, error) {
+			return true, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifest("gh/src", manifest.Project{Slug: "gh/src/web", Name: "web"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// PendingEnable should be empty (already followed).
+	if len(rep.PendingEnable) != 0 {
+		t.Errorf("expected PendingEnable to be empty for already-followed project, got %v", rep.PendingEnable)
+	}
+}
+
+// TestSyncProjects_ExistingUnfollowed_IsProjectFollowedError_NonFatal verifies
+// that when IsProjectFollowed returns an error, the sync continues (non-fatal)
+// and the project is NOT queued for enable-builds (safe conservative default).
+func TestSyncProjects_ExistingUnfollowed_IsProjectFollowedError_NonFatal(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		isProjectFollowed: func(vcsType, org, repo string) (bool, error) {
+			return false, fmt.Errorf("network error checking follow state")
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifest("gh/src", manifest.Project{Slug: "gh/src/web", Name: "web"})
+	// Must not return an error.
+	_, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("IsProjectFollowed error must not propagate as top-level error, got: %v", err)
+	}
+}
+
+// TestSyncProjects_DryRun_ExistingUnfollowed_NotQueued verifies that in dry-run
+// mode, existing-but-unfollowed projects are still checked and queued in
+// PendingEnable (so the dry-run report shows what would be done).
+func TestSyncProjects_DryRun_ExistingUnfollowed_Queued(t *testing.T) {
+	fp := &fakeProjectWriter{
+		getProject: func(slug string) (*project.Project, error) {
+			return &project.Project{Slug: slug, ID: "proj-dst-uuid", Name: "web"}, nil
+		},
+		isProjectFollowed: func(vcsType, org, repo string) (bool, error) {
+			return false, nil
+		},
+	}
+	sy := &Syncer{
+		Org:      &fakeOrgResolver{},
+		Projects: fp,
+	}
+
+	m := projectManifest("gh/src", manifest.Project{Slug: "gh/src/web", Name: "web"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, mappingTo("gh/dst"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Even in dry-run mode, unfollowed projects should be queued in PendingEnable
+	// so the report shows them.
+	if len(rep.PendingEnable) == 0 {
+		t.Error("dry-run: expected PendingEnable to contain unfollowed project so the report shows it")
 	}
 }

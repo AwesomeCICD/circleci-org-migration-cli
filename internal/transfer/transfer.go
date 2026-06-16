@@ -716,6 +716,11 @@ func runProjectVarPipelines(ctx context.Context, deps Deps, activePlans []Projec
 // project and polls it to terminal state.  It resolves the project and its
 // pipeline definition, builds a single-project config, triggers the run, and
 // waits for the workflow to complete.
+//
+// When the workflow returns "unauthorized" the trigger+poll is automatically
+// retried up to unauthorizedRetryMax times with a unauthorizedRetryDelay delay.
+// This covers the common case where a freshly-followed project's context
+// authorization has not yet propagated.
 func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVarPlan, opts *Options, errOut io.Writer) error {
 	proj, err := deps.GetProject(ctx, pp.SourceSlug)
 	if err != nil {
@@ -733,33 +738,65 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 
 	configYAML := buildSingleProjectTransferConfigWithVersion(pp, opts, version.Version)
 
-	fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s (definition %s)…\n", pp.SourceSlug, defID)
+	// retryDelay is unauthorizedRetryDelay unless the caller has set a custom
+	// PollInterval (used by tests to avoid real sleeps).
+	retryDelay := opts.pollInterval()
+	if retryDelay > unauthorizedRetryDelay {
+		retryDelay = unauthorizedRetryDelay
+	}
 
-	pipelineID, err := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branch(), configYAML, nil)
-	if err != nil {
-		if errors.Is(err, project.ErrPipelineSkipped) {
-			return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
+	for attempt := 0; attempt <= unauthorizedRetryMax; attempt++ {
+		if attempt > 0 {
+			fmt.Fprintf(errOut,
+				"  [project vars] workflow unauthorized — likely a just-onboarded project whose context authorization hasn't propagated; retrying in %s… (attempt %d/%d)\n",
+				retryDelay, attempt, unauthorizedRetryMax)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting to retry unauthorized pipeline: %w", ctx.Err())
+			case <-time.After(retryDelay):
+			}
 		}
-		return fmt.Errorf("trigger pipeline: %w", err)
-	}
 
-	fmt.Fprintf(errOut, "  [project vars] pipeline triggered for %s: %s\n", pp.SourceSlug, pipelineID)
+		fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s (definition %s)…\n", pp.SourceSlug, defID)
 
-	pollCtx := ctx
-	if opts.PollTimeout > 0 {
+		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branch(), configYAML, nil)
+		if trigErr != nil {
+			if errors.Is(trigErr, project.ErrPipelineSkipped) {
+				return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
+			}
+			return fmt.Errorf("trigger pipeline: %w", trigErr)
+		}
+
+		fmt.Fprintf(errOut, "  [project vars] pipeline triggered for %s: %s\n", pp.SourceSlug, pipelineID)
+
+		pollCtx := ctx
 		var cancel context.CancelFunc
-		pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
-		defer cancel()
-	}
+		if opts.PollTimeout > 0 {
+			pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
+		}
 
-	wf, err := pollWorkflow(pollCtx, deps, pipelineID, opts.pollInterval(), errOut)
-	if err != nil {
-		return fmt.Errorf("poll: %w", err)
+		wf, pollErr := pollWorkflow(pollCtx, deps, pipelineID, opts.pollInterval(), errOut)
+		if cancel != nil {
+			cancel()
+		}
+		if pollErr != nil {
+			return fmt.Errorf("poll: %w", pollErr)
+		}
+		if wf.Status == "unauthorized" {
+			if attempt < unauthorizedRetryMax {
+				// retry in the next loop iteration
+				continue
+			}
+			return fmt.Errorf("%w: status=%q workflow=%q — context authorization did not propagate after %d retries; check that the context is accessible to this project",
+				ErrWorkflowFailed, wf.Status, wf.Name, unauthorizedRetryMax)
+		}
+		if wf.Status != "success" {
+			return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
+		}
+		return nil
 	}
-	if wf.Status != "success" {
-		return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
-	}
-	return nil
+	// unreachable (loop always returns), but satisfies the compiler.
+	return fmt.Errorf("%w: exhausted retries", ErrWorkflowFailed)
 }
 
 // buildSingleProjectTransferConfigWithVersion is the testable variant of
@@ -938,12 +975,34 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 
 // terminalStatuses is the set of CircleCI workflow statuses that indicate the
 // pipeline has finished (success, failure, or cancellation).
+//
+// "unauthorized" is included so that a freshly-followed project whose context
+// authorization hasn't propagated yet stops the poll rather than hanging until
+// --poll-timeout. The caller (triggerAndPollProjectPipeline) recognises this
+// status and retries the full trigger+poll sequence automatically.
+//
+// "not_run" is included for workflows that were never executed (e.g. the
+// pipeline was blocked by a branch filter) — polling indefinitely for a
+// workflow that will never run is never correct.
 var terminalStatuses = map[string]bool{
-	"success":  true,
-	"failed":   true,
-	"error":    true,
-	"canceled": true,
+	"success":      true,
+	"failed":       true,
+	"error":        true,
+	"canceled":     true,
+	"unauthorized": true,
+	"not_run":      true,
 }
+
+// unauthorizedRetryMax is the maximum number of times a per-project pipeline
+// trigger is automatically retried when the workflow returns "unauthorized".
+// Freshly-followed projects can take a minute or two for context authorization
+// to propagate; two retries covers the typical propagation window.
+const unauthorizedRetryMax = 2
+
+// unauthorizedRetryDelay is the wait between automatic retries when
+// "unauthorized" is returned. Callers can override via Options.PollInterval for
+// tests (the retry delay is always the poll interval value).
+const unauthorizedRetryDelay = 30 * time.Second
 
 // ErrWorkflowFailed is returned when the transfer workflow finishes in a
 // non-success terminal state.
@@ -1063,32 +1122,64 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 	// handled separately by per-project pipelines).
 	configYAML := buildTransferConfig(m, plan.Contexts, nil, opts)
 
-	fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
+	// The context pipeline runs under the (often auto-picked) host project. When
+	// that project was just followed (e.g. the one-command migrate flow follows
+	// projects then immediately transfers), its context authorization may not
+	// have propagated yet → workflow status "unauthorized". Retry the trigger a
+	// few times, mirroring the per-project path.
+	retryDelay := opts.pollInterval()
+	if retryDelay > unauthorizedRetryDelay {
+		retryDelay = unauthorizedRetryDelay
+	}
 
-	pipelineID, err := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branch(), configYAML, nil)
-	if err != nil {
-		if errors.Is(err, project.ErrPipelineSkipped) {
-			return fmt.Errorf("transfer: pipeline run was skipped — check api-trigger-with-config is enabled and the config is valid")
+	for attempt := 0; attempt <= unauthorizedRetryMax; attempt++ {
+		if attempt > 0 {
+			fmt.Fprintf(opts.Stderr,
+				"Context pipeline unauthorized — likely a just-onboarded host project whose context authorization hasn't propagated; retrying in %s… (attempt %d/%d)\n",
+				retryDelay, attempt, unauthorizedRetryMax)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("transfer: context cancelled while waiting to retry unauthorized context pipeline: %w", ctx.Err())
+			case <-time.After(retryDelay):
+			}
 		}
-		return fmt.Errorf("transfer: trigger pipeline: %w", err)
-	}
-	fmt.Fprintf(opts.Stderr, "Context pipeline triggered: %s\n", pipelineID)
 
-	pollCtx := ctx
-	if opts.PollTimeout > 0 {
+		fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
+
+		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branch(), configYAML, nil)
+		if trigErr != nil {
+			if errors.Is(trigErr, project.ErrPipelineSkipped) {
+				return fmt.Errorf("transfer: pipeline run was skipped — check api-trigger-with-config is enabled and the config is valid")
+			}
+			return fmt.Errorf("transfer: trigger pipeline: %w", trigErr)
+		}
+		fmt.Fprintf(opts.Stderr, "Context pipeline triggered: %s\n", pipelineID)
+
+		pollCtx := ctx
 		var cancel context.CancelFunc
-		pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
-		defer cancel()
+		if opts.PollTimeout > 0 {
+			pollCtx, cancel = context.WithTimeout(ctx, opts.PollTimeout)
+		}
+		wf, pollErr := pollWorkflow(pollCtx, deps, pipelineID, opts.pollInterval(), opts.Stderr)
+		if cancel != nil {
+			cancel()
+		}
+		if pollErr != nil {
+			return fmt.Errorf("transfer: poll: %w", pollErr)
+		}
+		if wf.Status == "unauthorized" {
+			if attempt < unauthorizedRetryMax {
+				continue
+			}
+			return fmt.Errorf("%w: status=%q workflow=%q — context authorization did not propagate after %d retries; pass --host-project to an established (long-followed) project",
+				ErrWorkflowFailed, wf.Status, wf.Name, unauthorizedRetryMax)
+		}
+		if wf.Status != "success" {
+			return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
+		}
+		return nil
 	}
-
-	wf, err := pollWorkflow(pollCtx, deps, pipelineID, opts.pollInterval(), opts.Stderr)
-	if err != nil {
-		return fmt.Errorf("transfer: poll: %w", err)
-	}
-	if wf.Status != "success" {
-		return fmt.Errorf("%w: status=%q workflow=%q", ErrWorkflowFailed, wf.Status, wf.Name)
-	}
-	return nil
+	return fmt.Errorf("%w: exhausted retries", ErrWorkflowFailed)
 }
 
 // printPlan writes the transfer plan to stdout/stderr so operators can review

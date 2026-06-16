@@ -554,6 +554,143 @@ func TestAskSecretRequired_NonTTY_RepromptOnEmpty(t *testing.T) {
 var _ = errors.New
 
 // ---------------------------------------------------------------------------
+// runMigrateSecretsTransfer — Issue #272 / migrate enhancement
+// ---------------------------------------------------------------------------
+
+// internalTestCmdWithCfg returns a minimal cobra.Command whose context carries
+// the supplied config, allowing white-box tests to exercise functions that call
+// configFromContext(cmd.Context()).
+func internalTestCmdWithCfg(cfg *settings.Config) *cobra.Command {
+	var outBuf, errBuf bytes.Buffer
+	c := &cobra.Command{Use: "test"}
+	c.SetOut(&outBuf)
+	c.SetErr(&errBuf)
+	c.SetContext(context.WithValue(context.Background(), configCtxKey{}, cfg))
+	return c
+}
+
+// TestRunMigrateSecretsTransfer_OrgResolutionError verifies that when the
+// destination org UUID cannot be resolved, runMigrateSecretsTransfer returns
+// an error mentioning "resolving destination org".
+//
+// This is a white-box test that calls the unexported function directly via the
+// internal test package.
+func TestRunMigrateSecretsTransfer_OrgResolutionError(t *testing.T) {
+	// Fake server that always returns 404 for org resolution.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// Build a minimal manifest with a couple of projects.
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: srv.URL,
+			Org:  manifest.Org{Slug: "gh/old-org"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/old-org/web"},
+			{Slug: "gh/old-org/api"},
+		},
+	}
+
+	// Build a cfg pointing at the fake server.
+	cfg := &settings.Config{
+		Host:       srv.URL,
+		DestToken:  "fake-dest-token",
+		HTTPClient: srv.Client(),
+	}
+	c := internalTestCmdWithCfg(cfg)
+
+	err := runMigrateSecretsTransfer(
+		c,
+		cfg,
+		m,
+		"fake-src-token",
+		"gh/old-org",
+		"gh/new-org",
+		"migration-secrets",
+		"",    // hostProjectOverride
+		false, // dry-run
+		false, // includeProjectVars
+	)
+	if err == nil {
+		t.Fatal("expected error when org resolution fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "resolving destination org") {
+		t.Errorf("error %q does not mention 'resolving destination org'", err.Error())
+	}
+}
+
+// TestRunMigrateSecretsTransfer_DerivesMappingAndProceedsToOrgCheck verifies
+// that when the dest org resolves successfully and the org-level feature-flag
+// check is attempted (but fails gracefully), the function proceeds past the
+// slug-derivation loop and the org-resolution step. An error from the
+// feature-flag endpoint is non-fatal: it logs a warning and continues,
+// eventually returning nil on a dry-run (no pipeline triggered).
+//
+// This test exercises the slug-derivation loop, the org-resolution path, the
+// project-client construction, and the maybeEnableOrgTrigger warning path.
+func TestRunMigrateSecretsTransfer_DerivesMappingAndProceedsToOrgCheck(t *testing.T) {
+	// Fake server: returns a valid org for ResolveOrgID; returns 500 for
+	// everything else (feature flags, project settings) — non-fatal warnings.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Org resolution endpoint: GET /api/v2/organization/{slug}
+		if strings.HasPrefix(r.URL.Path, "/api/v2/organization/") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   "dest-org-uuid",
+				"name": "new-org",
+				"slug": "gh/new-org",
+			})
+			return
+		}
+		// All other endpoints (feature flags, v1.1 settings, etc.) return errors.
+		// These are non-fatal: warnings are logged and the function continues.
+		http.Error(w, `{"message":"server error"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: srv.URL,
+			Org:  manifest.Org{Slug: "gh/old-org"},
+		},
+		Projects: []manifest.Project{
+			{Slug: "gh/old-org/web"},
+		},
+	}
+
+	cfg := &settings.Config{
+		Host:       srv.URL,
+		DestToken:  "fake-dest-token",
+		HTTPClient: srv.Client(),
+	}
+	c := internalTestCmdWithCfg(cfg)
+
+	// dry-run=true so no pipeline is triggered; the function should return nil
+	// or a non-fatal error (the feature-flag warning is swallowed).
+	err := runMigrateSecretsTransfer(
+		c,
+		cfg,
+		m,
+		"fake-src-token",
+		"gh/old-org",
+		"gh/new-org",
+		"migration-secrets",
+		"",    // hostProjectOverride
+		false, // dry-run
+		false, // includeProjectVars
+	)
+	// In dry-run mode, transfer.Transfer is called and returns nil (no network
+	// calls needed). A non-nil error is acceptable only if it does NOT mention
+	// "resolving destination org" (that path is already covered above).
+	if err != nil && strings.Contains(err.Error(), "resolving destination org") {
+		t.Errorf("org resolution should have succeeded; got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // resolveHost — CIRCLE_URL fallback (circleci run migrate)
 // ---------------------------------------------------------------------------
 

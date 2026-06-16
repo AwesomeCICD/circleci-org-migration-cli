@@ -11,10 +11,12 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/transfer"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
@@ -46,6 +48,11 @@ func newMigrateCommand() *cobra.Command {
 		jsonOutput          bool
 		createProjectTokens bool
 		followAll           bool
+		// in-pipeline secrets transfer (opt-in, mutually exclusive with --secrets)
+		transferSecrets    bool
+		destTokenContext   string
+		includeProjectVars bool
+		transferHostProj   string
 	)
 
 	cmd := &cobra.Command{
@@ -77,6 +84,24 @@ bundle (produced by the in-pipeline 'secrets' step), pass it with --secrets.
 Without a bundle, all variable values are reported as needing manual entry
 (or use --missing-secrets=placeholder to write placeholder values).
 
+IN-PIPELINE SECRETS TRANSFER (opt-in):
+  Pass --transfer-secrets together with --dest-token-context to run the
+  in-pipeline transfer step after sync completes. This transfers context
+  env-var values directly from the source org to the destination org without
+  writing any bundle to disk. Mutually exclusive with --secrets.
+
+  The project slug mapping is derived automatically from --source-org and
+  --dest-org: for gh/ and bb/ dest orgs the dest slug is
+  <provider>/<dest-org-name>/<repo>; this is the same derivation used by
+  'mapping generate'. Pass --include-project-vars to also transfer project
+  env-var values.
+
+  Requires:
+    --dest-token-context <name>   source-org context that holds CIRCLECI_DEST_TOKEN
+    --transfer-secrets            opt-in flag to activate this step
+
+  See 'secrets transfer --help' for full documentation of the in-pipeline flow.
+
 By default migrate performs a DRY RUN and writes nothing to the destination.
 Review the output, then re-run with --apply to write changes. Pass --yes / -y
 to auto-confirm enabling builds for newly-created projects without a prompt.
@@ -105,7 +130,19 @@ Examples:
   # Save manifest and audit report:
   circleci-migrate migrate \
     --source-org gh/acme --dest-org gh/acme-new \
-    --apply -o manifest.json --report migration-report.md`,
+    --apply -o manifest.json --report migration-report.md
+
+  # In-pipeline secrets transfer (no bundle file):
+  circleci-migrate migrate \
+    --source-org gh/acme --dest-org gh/acme-new \
+    --transfer-secrets --dest-token-context migration-secrets \
+    --apply
+
+  # In-pipeline transfer including project env vars:
+  circleci-migrate migrate \
+    --source-org gh/acme --dest-org gh/acme-new \
+    --transfer-secrets --dest-token-context migration-secrets \
+    --include-project-vars --apply`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			cfg := configFromContext(ctx)
@@ -158,6 +195,14 @@ Examples:
 			// --follow-all requires --github-token.
 			if followAll && githubToken == "" {
 				return fmt.Errorf("--follow-all requires --github-token (or $GITHUB_TOKEN) to list GitHub repositories")
+			}
+			// --transfer-secrets and --secrets are mutually exclusive.
+			if transferSecrets && cmd.Flags().Changed("secrets") {
+				return fmt.Errorf("--transfer-secrets and --secrets are mutually exclusive: choose one secrets migration path")
+			}
+			// --transfer-secrets requires --dest-token-context.
+			if transferSecrets && destTokenContext == "" {
+				return fmt.Errorf("--transfer-secrets requires --dest-token-context (name of source-org context holding the destination API token)")
 			}
 
 			srcToken := cfg.SourceTokenOrDefault()
@@ -413,6 +458,17 @@ Examples:
 				}
 				return marshalJSON(cmd.OutOrStdout(), combined)
 			}
+
+			// ── Step 3 (opt-in): in-pipeline secrets transfer ─────────────────
+			// Only runs when --transfer-secrets is set. The project slug mapping
+			// is derived in-memory from --source-org / --dest-org so the user
+			// does not need to produce a mapping.json separately.
+			if transferSecrets {
+				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars); err != nil {
+					return err
+				}
+			}
+
 			return nil
 		},
 	}
@@ -490,6 +546,24 @@ Examples:
 			"Requires --github-token. Archived repos are skipped. "+
 			"Webhook-validation errors on brand-new repos are warned and skipped, not fatal. "+
 			"Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.")
+	// In-pipeline secrets transfer (opt-in, mutually exclusive with --secrets).
+	f.BoolVar(&transferSecrets, "transfer-secrets", false,
+		"After sync, run the in-pipeline secrets transfer to copy context env-var values directly "+
+			"from source to destination without writing a bundle file. "+
+			"Requires --dest-token-context. Mutually exclusive with --secrets.")
+	f.StringVar(&destTokenContext, "dest-token-context", "",
+		"Name of the source-org context that holds the destination API token "+
+			"(env var: CIRCLECI_DEST_TOKEN). Required when --transfer-secrets is set.")
+	f.BoolVar(&includeProjectVars, "include-project-vars", false,
+		"When --transfer-secrets is set, also transfer project-level env-var values to the "+
+			"corresponding destination projects. "+
+			"Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). "+
+			"Projects without a derivable destination slug are skipped.")
+	f.StringVar(&transferHostProj, "host-project", "",
+		"When --transfer-secrets is set, the source-org project slug whose pipeline runs the "+
+			"context transfer (e.g. gh/acme/web). Defaults to the first project. Prefer an "+
+			"ESTABLISHED (long-followed) project — a just-followed project's context "+
+			"authorization may not have propagated yet.")
 
 	return cmd
 }
@@ -778,4 +852,121 @@ func BuildMigrateMapping(mappingPath, srcOrg, dstOrg string) (*manifest.Mapping,
 	return &manifest.Mapping{
 		Org: manifest.OrgMapping{From: srcOrg, To: dstOrg},
 	}, nil
+}
+
+// runMigrateSecretsTransfer executes the in-pipeline secrets transfer step
+// inside migrate when --transfer-secrets is set.
+//
+// It derives the project slug mapping in-memory using the same logic as
+// 'mapping generate': for gh/ and bb/ dest orgs the dest slug is
+// <provider>/<dest-org-name>/<repo>. The mapping is passed to
+// transfer.Transfer as the combinedMapping so project env-var pipelines are
+// routed to the correct destination projects without requiring a mapping.json
+// file on disk.
+//
+// Parameters:
+//
+//	cmd               — parent cobra command (for stdout/stderr/context)
+//	cfg               — resolved CLI config (host, tokens)
+//	m                 — in-memory manifest produced by the export step
+//	srcToken          — source org API token
+//	sourceOrg         — source org slug (e.g. "gh/acme")
+//	destOrg           — destination org slug (e.g. "gh/acme-new")
+//	destTokenContext  — source-org context name holding CIRCLECI_DEST_TOKEN
+//	apply             — true → trigger the pipeline; false → dry run only
+//	includeProjectVars — true → also transfer project env-var values
+func runMigrateSecretsTransfer(
+	cmd *cobra.Command,
+	cfg *settings.Config,
+	m *manifest.Manifest,
+	srcToken, sourceOrg, destOrg, destTokenContext, hostProjectOverride string,
+	apply, includeProjectVars bool,
+) error {
+	stderr := cmd.ErrOrStderr()
+
+	fmt.Fprintln(stderr, "")
+	fmt.Fprintln(stderr, "── In-pipeline secrets transfer ─────────────────────────────")
+
+	// Build the combined mapping in-memory: derive dest project slugs for all
+	// source projects that can be matched by repo name to the dest org.
+	normalizedDest := normalizeVCSPrefix(destOrg)
+	combinedMapping := make(map[string]string, len(m.Projects))
+	for _, mp := range m.Projects {
+		srcSlug := normalizeVCSPrefix(mp.Slug)
+		if dst, ok := deriveDestSlug(srcSlug, normalizedDest); ok {
+			combinedMapping[srcSlug] = dst
+		}
+	}
+
+	// Resolve destination org ID from the slug.
+	dstToken := cfg.DestTokenOrDefault()
+	orgClient, err := org.NewClient(cfg, dstToken)
+	if err != nil {
+		return fmt.Errorf("creating org client for secrets transfer: %w", err)
+	}
+	destOrgID, err := orgClient.ResolveOrgID(cmd.Context(), destOrg)
+	if err != nil {
+		return fmt.Errorf("resolving destination org %q for secrets transfer: %w", destOrg, err)
+	}
+
+	projClient, err := project.NewClient(cfg, srcToken)
+	if err != nil {
+		return fmt.Errorf("creating project client for secrets transfer: %w", err)
+	}
+
+	// Enable the org-level trigger flag when needed (non-interactive: auto-enable
+	// since the user opted in with --transfer-secrets; restore after).
+	orgFlagEnabled := false
+	if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
+		orgMgr, oerr := newOrgClientForCapture(cfg, srcToken)
+		if oerr != nil {
+			fmt.Fprintf(stderr, "warning: could not create org client to check org-level trigger flag: %v\n", oerr)
+		} else {
+			enabled, restoreOrg, enErr := maybeEnableOrgTrigger(cmd, orgMgr, vcsType, orgName, true /* autoEnable */)
+			if enErr != nil {
+				return enErr
+			}
+			if restoreOrg != nil {
+				defer restoreOrg()
+			}
+			orgFlagEnabled = enabled
+		}
+	}
+
+	// Enable the project-level trigger flag for each source project that will
+	// run a pipeline (host project + per-project env-var pipelines).
+	hostSlug := ""
+	if hostProjectOverride != "" {
+		hostSlug = normalizeVCSPrefix(hostProjectOverride)
+	} else if len(m.Projects) > 0 {
+		hostSlug = normalizeVCSPrefix(m.Projects[0].Slug)
+	}
+	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars)
+	for _, slug := range slugsNeedingFlag {
+		restore, pErr := maybeEnableProjectTrigger(cmd, projClient, slug, true /* autoEnable */, orgFlagEnabled)
+		if pErr != nil {
+			return pErr
+		}
+		if restore != nil {
+			defer restore() //nolint:revive
+		}
+	}
+
+	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
+	// value); the token is injected at runtime from the source-org context.
+	opts := transfer.Options{
+		HostProjectSlug:    hostSlug,
+		Branch:             "main",
+		DestOrgID:          destOrgID,
+		DestTokenContext:   destTokenContext,
+		DestTokenEnvVar:    "CIRCLECI_DEST_TOKEN",
+		Mapping:            combinedMapping,
+		IncludeProjectVars: includeProjectVars,
+		DryRun:             !apply,
+		PollTimeout:        30 * time.Minute,
+		Stdout:             cmd.OutOrStdout(),
+		Stderr:             stderr,
+	}
+
+	return transfer.Transfer(cmd.Context(), projClient, m, opts)
 }
