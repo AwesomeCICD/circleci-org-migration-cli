@@ -48,6 +48,10 @@ type preflightClients struct {
 	dstOrg      orgGetter
 	srcFlags    featureFlagGetter
 	srcProjects projectLister
+	// srcOrgMgr, when non-nil, is used by the interactive api-trigger offer in
+	// runExportPreflight and runMigratePreflight to enable the flag.
+	// Production code wires this to the same *org.Client as srcFlags.
+	srcOrgMgr capture.OrgFlagManager
 	// followAllRunner, when non-nil, is called by the export preflight when the
 	// user opts in to the follow-all offer.  It should follow all un-onboarded
 	// GitHub repos in the source org.  If nil the offer is skipped.
@@ -143,6 +147,9 @@ func runMigratePreflight(
 		// Shouldn't reach here (hard failures returned early), but be safe.
 		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
 	}
+
+	// Interactive api-trigger offer: prompt to enable the org flag when off.
+	offerEnableOrgTrigger(ctx, out, results, clients.srcOrgMgr, srcOrg)
 
 	// Interactive follow-all offer: prompt before the warnings confirmation.
 	if followAllOffered && isInteractiveTTY() {
@@ -249,6 +256,9 @@ func runExportPreflight(
 	if fail > 0 {
 		return fmt.Errorf("preflight failed with %d blocker(s); address them before retrying", fail)
 	}
+
+	// Interactive api-trigger offer: prompt to enable the org flag when off.
+	offerEnableOrgTrigger(ctx, out, results, clients.srcOrgMgr, srcOrg)
 
 	// Interactive follow-all offer: prompt before the warnings confirmation so
 	// the user can follow repos before deciding whether to continue.
@@ -486,7 +496,9 @@ func normalizeOrgType(vcsType string) string {
 }
 
 // checkAPITriggerFlag reads the source org's allow_api_trigger_with_config flag.
-// If OFF, emits a non-blocking WARN advising the operator.
+// If OFF, emits a non-blocking WARN advising the operator. The result has
+// Fixable: true so that the doctor/preflight flow can offer to enable it
+// interactively.
 func checkAPITriggerFlag(ctx context.Context, client featureFlagGetter, srcOrg *org.Organization) preflight.Result {
 	vcsType, orgName := splitForV11(srcOrg)
 	if client == nil || vcsType == "" || orgName == "" {
@@ -518,10 +530,61 @@ func checkAPITriggerFlag(ctx context.Context, client featureFlagGetter, srcOrg *
 		Status: preflight.StatusWarn,
 		Detail: "allow_api_trigger_with_config is OFF on the source org. " +
 			"Secrets capture and transfer need it enabled. " +
-			"The CLI enables it automatically during 'secrets capture' (or pass --enable-trigger). " +
-			"You do NOT need to enable it now.",
-		Fixable: false,
+			"The CLI can enable it automatically (pass --enable-trigger to 'secrets capture' or 'secrets transfer'), " +
+			"or enable it now when running interactively.",
+		Fixable: true,
 	}
+}
+
+// offerEnableOrgTrigger is called by the doctor/export preflight flows after
+// printing the summary. When running interactively and the api-trigger flag is
+// off (and fixable), it asks the user whether to enable it now and does so on
+// yes. In non-interactive mode it does nothing (the WARN in the summary is
+// sufficient).
+//
+// mgr and srcOrg may be nil; in that case this is a no-op.
+func offerEnableOrgTrigger(ctx context.Context, out io.Writer, results []preflight.Result, mgr featureFlagUpdater, srcOrg *org.Organization) {
+	if !isInteractiveTTY() || mgr == nil || srcOrg == nil {
+		return
+	}
+
+	// Only offer when the api-trigger check returned a fixable WARN.
+	triggerOff := false
+	for _, r := range results {
+		if r.Name == "Source api-trigger flag" && r.Status == preflight.StatusWarn && r.Fixable {
+			triggerOff = true
+			break
+		}
+	}
+	if !triggerOff {
+		return
+	}
+
+	vcsType, orgName := splitForV11(srcOrg)
+	if vcsType == "" || orgName == "" {
+		return
+	}
+
+	p := NewPrompter(os.Stdin, out)
+	enable, err := p.askBool(
+		fmt.Sprintf("Enable org-level allow_api_trigger_with_config for %s/%s now?", vcsType, orgName),
+		false,
+	)
+	if err != nil || !enable {
+		return
+	}
+
+	fmt.Fprintf(out, "Enabling allow_api_trigger_with_config for %s/%s…\n", vcsType, orgName)
+	if uerr := mgr.UpdateFeatureFlags(ctx, vcsType, orgName, map[string]bool{capture.OrgAPITriggerKey: true}); uerr != nil {
+		fmt.Fprintf(out, "WARNING: could not enable flag: %v\n", uerr)
+		return
+	}
+	fmt.Fprintf(out, "allow_api_trigger_with_config enabled for %s/%s.\n", vcsType, orgName)
+}
+
+// featureFlagUpdater is the write-side of the org feature-flag interface.
+type featureFlagUpdater interface {
+	UpdateFeatureFlags(ctx context.Context, vcsType, orgName string, flags map[string]bool) error
 }
 
 // splitForV11 derives the (vcsType, orgName) pair that the v1.1 API

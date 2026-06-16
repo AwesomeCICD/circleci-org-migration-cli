@@ -999,8 +999,13 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	var projResults []projectPipelineResult
 	var projErr error
 	if len(activeProjPlans) > 0 {
-		fmt.Fprintf(opts.Stderr, "Triggering %d per-project pipeline(s) for project env-var transfer (concurrency: %d)…\n",
-			len(activeProjPlans), projectVarWorkerCount)
+		if len(activeProjPlans) > 1 {
+			fmt.Fprintf(opts.Stderr, "Triggering %d per-project pipeline(s) for project env-var transfer (concurrency: %d)…\n",
+				len(activeProjPlans), projectVarWorkerCount)
+		} else {
+			fmt.Fprintf(opts.Stderr, "Triggering project env-var transfer pipeline for %s…\n",
+				activeProjPlans[0].SourceSlug)
+		}
 		projResults, projErr = runProjectVarPipelines(ctx, deps, activeProjPlans, &opts, opts.Stderr)
 	}
 
@@ -1095,6 +1100,9 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 	fmt.Fprintf(errOut, "  Dest host: %s\n", opts.destHost())
 	fmt.Fprintln(errOut, "")
 
+	if len(plan.Contexts) > 0 {
+		fmt.Fprintln(out, "  contexts (one pipeline, one job per context — jobs run in parallel):")
+	}
 	for _, cp := range plan.Contexts {
 		action := "update"
 		// The in-pipeline job performs create-if-missing automatically; we label
@@ -1114,7 +1122,7 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 
 	if len(plan.Projects) > 0 {
 		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  project env vars (one pipeline per source project, each run under its own slug):")
+		fmt.Fprintln(out, "  project env vars (one pipeline per source project — each pipeline captures ALL of that project's env vars in a single job):")
 		for _, pp := range plan.Projects {
 			if pp.Skipped {
 				fmt.Fprintf(out, "  SKIP project %q: %s\n", pp.SourceSlug, pp.SkipReason)

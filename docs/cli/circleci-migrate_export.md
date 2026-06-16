@@ -60,7 +60,7 @@ circleci-migrate export --source-org <org-slug> [flags]
       --skip-extras               Skip checkout keys, webhooks, and schedules
       --skip-preflight            Skip the startup source-side preflight checks (token validation, source org reachability, api-trigger flag state, project discovery count). Preflight runs by default before export; use --skip-preflight in CI pipelines or when checks have been verified manually.
       --skip-projects             Skip exporting projects
-      --source-org string         Source organization slug: gh/<org> or circleci/<org-id> (required)
+      --source-org string         CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required)
       --usage-end string          End of the usage report window in RFC 3339 format (default: now). Only used when --include-usage is set.
       --usage-start string        Start of the usage report window in RFC 3339 format (default: 30 days ago). The window may not exceed 31 days. Only used when --include-usage is set.
       --usage-timeout duration    Maximum time to wait for the usage export job to complete before giving up. Only used when --include-usage is set. (default 10m0s)

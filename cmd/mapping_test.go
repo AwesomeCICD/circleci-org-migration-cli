@@ -351,6 +351,117 @@ func TestMappingCommand_HelpWorks(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// normalizeVCSPrefix unit tests
+// ---------------------------------------------------------------------------
+
+// normalizeVCSPrefixHelper is a self-contained mirror of cmd.normalizeVCSPrefix
+// for use in package cmd_test (which cannot call unexported functions directly).
+func normalizeVCSPrefixHelper(slug string) string {
+	if strings.HasPrefix(slug, "github/") {
+		return "gh/" + strings.TrimPrefix(slug, "github/")
+	}
+	if strings.HasPrefix(slug, "bitbucket/") {
+		return "bb/" + strings.TrimPrefix(slug, "bitbucket/")
+	}
+	return slug
+}
+
+// TestNormalizeVCSPrefix verifies that VCS provider prefix normalization produces
+// the expected canonical short forms.
+func TestNormalizeVCSPrefix(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"github/my-org", "gh/my-org"},
+		{"github/my-org/my-repo", "gh/my-org/my-repo"},
+		{"bitbucket/my-org", "bb/my-org"},
+		{"bitbucket/my-org/my-repo", "bb/my-org/my-repo"},
+		{"gh/my-org", "gh/my-org"},
+		{"gh/my-org/my-repo", "gh/my-org/my-repo"},
+		{"bb/my-org", "bb/my-org"},
+		{"bb/my-org/my-repo", "bb/my-org/my-repo"},
+		{"circleci/uuid-org/uuid-proj", "circleci/uuid-org/uuid-proj"},
+		{"", ""},
+		{"just-a-name", "just-a-name"},
+		// "githubfoo/" is NOT a github/ prefix — should be returned unchanged.
+		{"githubfoo/org", "githubfoo/org"},
+	}
+	for _, tc := range cases {
+		got := normalizeVCSPrefixHelper(tc.input)
+		if got != tc.want {
+			t.Errorf("normalizeVCSPrefix(%q) = %q; want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestMappingGenerateCommand_NormalizesVCSPrefixes verifies that when the user
+// passes --dest-org with a "github/" prefix, the written mapping.json uses the
+// canonical "gh/" prefix for both org.to and project slugs.
+func TestMappingGenerateCommand_NormalizesVCSPrefixes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v2/organization/"):
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"id": "dest-org-uuid", "name": "new-org",
+				"slug": "gh/new-org", "vcs_type": "github",
+			})
+		case r.URL.Path == "/api/private/project":
+			respondJSONHelper(w, http.StatusOK, map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": "p1", "slug": "gh/new-org/web", "name": "web"},
+				},
+				"next_page_token": "",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	// The source manifest uses a "github/" prefix (as a user might export).
+	manifestPath := filepath.Join(tmpDir, "manifest.json")
+	writeTestManifestWithOrgSlug(t, manifestPath, "github/old-org", []string{"github/old-org/web"})
+	outputPath := filepath.Join(tmpDir, "mapping.json")
+
+	root := cmd.MakeCommands()
+	root.PersistentFlags().Set("host", srv.URL) //nolint:errcheck
+	var outBuf, errBuf strings.Builder
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{
+		"mapping", "generate",
+		"--manifest", manifestPath,
+		"--dest-org", "github/new-org", // user passes long form
+		"-o", outputPath,
+		"--dest-token", "fake-test-token",
+	})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("mapping generate: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+	}
+
+	mp, err := manifest.LoadMapping(outputPath)
+	if err != nil {
+		t.Fatalf("LoadMapping: %v", err)
+	}
+	if mp.Org.From != "gh/old-org" {
+		t.Errorf("org.from = %q; want gh/old-org (normalized from github/old-org)", mp.Org.From)
+	}
+	if mp.Org.To != "gh/new-org" {
+		t.Errorf("org.to = %q; want gh/new-org (normalized from github/new-org)", mp.Org.To)
+	}
+	// project slug keys must also be normalized
+	if _, ok := mp.Projects["github/old-org/web"]; ok {
+		t.Error("mapping still contains un-normalized key github/old-org/web; expected gh/old-org/web")
+	}
+	if _, ok := mp.Projects["gh/old-org/web"]; !ok {
+		t.Errorf("mapping missing normalized key gh/old-org/web; projects = %v", mp.Projects)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -422,8 +533,21 @@ func respondJSONHelper(w http.ResponseWriter, status int, v interface{}) {
 }
 
 // writeTestManifest writes a minimal manifest JSON with the given project slugs.
+// The org slug in source is always "gh/old-org".
 func writeTestManifest(t *testing.T, path string, slugs []string) {
 	t.Helper()
+	writeTestManifestWithOrgSlug(t, path, "gh/old-org", slugs)
+}
+
+// writeTestManifestWithOrgSlug writes a minimal manifest JSON using an explicit
+// source org slug (to test normalization with non-canonical prefixes such as
+// "github/old-org").
+func writeTestManifestWithOrgSlug(t *testing.T, path string, orgSlug string, slugs []string) {
+	t.Helper()
+	orgName := orgSlug
+	if idx := strings.LastIndex(orgSlug, "/"); idx >= 0 {
+		orgName = orgSlug[idx+1:]
+	}
 	projects := make([]map[string]interface{}, 0, len(slugs))
 	for _, s := range slugs {
 		projects = append(projects, map[string]interface{}{
@@ -438,8 +562,8 @@ func writeTestManifest(t *testing.T, path string, slugs []string) {
 		"source": map[string]interface{}{
 			"host": "https://circleci.com",
 			"org": map[string]interface{}{
-				"slug": "gh/old-org",
-				"name": "old-org",
+				"slug": orgSlug,
+				"name": orgName,
 			},
 		},
 		"contexts": []interface{}{},

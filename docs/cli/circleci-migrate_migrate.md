@@ -70,7 +70,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --apply                          Write changes to the destination (default: dry run)
       --create-project-tokens          When set AND --apply, recreate each captured project API token on the destination project. CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token must be repointed to the new value. New plaintext values are printed to stderr once and cannot be retrieved again. Default false: emit manual steps only.
       --dest-github-org string         Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
-      --dest-org string                Destination organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)
+      --dest-org string                CircleCI organization slug for the destination org, e.g. gh/my-new-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
       --dest-runner-namespace string   Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
       --follow-all                     (GitHub OAuth orgs only) Before exporting, list all GitHub repos in the source org and follow any not yet set up as CircleCI projects, making them visible to subsequent discovery. Requires --github-token. Archived repos are skipped. Webhook-validation errors on brand-new repos are warned and skipped, not fatal. Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.
       --github-token string            GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).
@@ -91,7 +91,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-preflight                 Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
       --skip-projects                  Skip exporting and syncing projects
       --skip-runner                    Skip exporting and syncing self-hosted runner resource classes
-      --source-org string              Source organization slug: gh/<org> or circleci/<org-id> (required, or prompted interactively)
+      --source-org string              CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
   -y, --yes                            Auto-confirm enabling builds after project creation (skip the interactive prompt)
 ```
 
