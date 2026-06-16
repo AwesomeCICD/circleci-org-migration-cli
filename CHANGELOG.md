@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.13.0...v0.14.0) (2026-06-16)
+
+
+### Features
+
+* **transfer:** zero-disk transfer of additional project SSH keys (--include-ssh-keys) ([#276](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/276)) ([1aa6cd2](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1aa6cd29e84ec173e1154d0d6432afdd764c96f9))
+
 ## [0.13.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.12.0...v0.13.0) (2026-06-16)
 
 
