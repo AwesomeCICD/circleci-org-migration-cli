@@ -455,9 +455,11 @@ func TestGetPolicyBundle_HappyPath(t *testing.T) {
 		if r.URL.Path != wantPath {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
-		respondJSON(w, http.StatusOK, map[string]string{
-			"my_policy":    "package org\ndefault allow = false",
-			"other_policy": "package org\ndefault allow = true",
+		// Real shape: keyed by policy name; value is an object whose "content"
+		// holds the Rego source (plus name/created_by/created_at metadata).
+		respondJSON(w, http.StatusOK, map[string]any{
+			"my_policy":    map[string]any{"name": "my_policy", "content": "package org\ndefault allow = false"},
+			"other_policy": map[string]any{"name": "other_policy", "content": "package org\ndefault allow = true"},
 		})
 	}))
 	defer srv.Close()
@@ -470,8 +472,8 @@ func TestGetPolicyBundle_HappyPath(t *testing.T) {
 	if len(bundle) != 2 {
 		t.Fatalf("expected 2 policies, got %d", len(bundle))
 	}
-	if bundle["my_policy"] == "" {
-		t.Error("my_policy missing from bundle")
+	if bundle["my_policy"] != "package org\ndefault allow = false" {
+		t.Errorf("my_policy content not flattened: %q", bundle["my_policy"])
 	}
 }
 
