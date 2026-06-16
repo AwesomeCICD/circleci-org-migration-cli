@@ -610,6 +610,7 @@ func TestRunMigrateSecretsTransfer_OrgResolutionError(t *testing.T) {
 		"gh/old-org",
 		"gh/new-org",
 		"migration-secrets",
+		"",    // hostProjectOverride
 		false, // dry-run
 		false, // includeProjectVars
 	)
@@ -677,6 +678,7 @@ func TestRunMigrateSecretsTransfer_DerivesMappingAndProceedsToOrgCheck(t *testin
 		"gh/old-org",
 		"gh/new-org",
 		"migration-secrets",
+		"",    // hostProjectOverride
 		false, // dry-run
 		false, // includeProjectVars
 	)

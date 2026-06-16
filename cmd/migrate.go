@@ -52,6 +52,7 @@ func newMigrateCommand() *cobra.Command {
 		transferSecrets    bool
 		destTokenContext   string
 		includeProjectVars bool
+		transferHostProj   string
 	)
 
 	cmd := &cobra.Command{
@@ -463,7 +464,7 @@ Examples:
 			// is derived in-memory from --source-org / --dest-org so the user
 			// does not need to produce a mapping.json separately.
 			if transferSecrets {
-				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, apply, includeProjectVars); err != nil {
+				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars); err != nil {
 					return err
 				}
 			}
@@ -558,6 +559,11 @@ Examples:
 			"corresponding destination projects. "+
 			"Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). "+
 			"Projects without a derivable destination slug are skipped.")
+	f.StringVar(&transferHostProj, "host-project", "",
+		"When --transfer-secrets is set, the source-org project slug whose pipeline runs the "+
+			"context transfer (e.g. gh/acme/web). Defaults to the first project. Prefer an "+
+			"ESTABLISHED (long-followed) project — a just-followed project's context "+
+			"authorization may not have propagated yet.")
 
 	return cmd
 }
@@ -873,7 +879,7 @@ func runMigrateSecretsTransfer(
 	cmd *cobra.Command,
 	cfg *settings.Config,
 	m *manifest.Manifest,
-	srcToken, sourceOrg, destOrg, destTokenContext string,
+	srcToken, sourceOrg, destOrg, destTokenContext, hostProjectOverride string,
 	apply, includeProjectVars bool,
 ) error {
 	stderr := cmd.ErrOrStderr()
@@ -930,7 +936,9 @@ func runMigrateSecretsTransfer(
 	// Enable the project-level trigger flag for each source project that will
 	// run a pipeline (host project + per-project env-var pipelines).
 	hostSlug := ""
-	if len(m.Projects) > 0 {
+	if hostProjectOverride != "" {
+		hostSlug = normalizeVCSPrefix(hostProjectOverride)
+	} else if len(m.Projects) > 0 {
 		hostSlug = normalizeVCSPrefix(m.Projects[0].Slug)
 	}
 	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars)
