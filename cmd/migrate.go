@@ -737,7 +737,7 @@ const secretsMethodInPipeline = "in-pipeline transfer (RECOMMENDED)"
 const secretsMethodBundle = "captured secrets bundle (advanced)"
 
 // secretsMethodNone is the display label for the structure-only option.
-const secretsMethodNone = "none — migrate structure only; set values manually later"
+const secretsMethodNone = "none — migrate structure only; set values manually later" //nosec G101 -- UI menu label, not a credential
 
 // runMigrateWalkthrough conducts the interactive guided migration walkthrough.
 // It writes prompts to cmd.ErrOrStderr() and reads answers from os.Stdin.
