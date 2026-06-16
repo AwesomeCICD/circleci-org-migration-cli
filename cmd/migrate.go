@@ -186,13 +186,29 @@ Examples:
 
 			if wantsInteraction {
 				// Launch interactive walkthrough.
-				var err error
-				sourceOrg, destOrg, secretsPath, missing, apply, yes,
-					skipContexts, skipProjects, skipOrgSettings, skipExtras,
-					err = runMigrateWalkthrough(cmd, cfg, sourceOrg, destOrg, yes)
-				if err != nil {
-					return err
+				wt, wtErr := runMigrateWalkthrough(cmd, cfg, sourceOrg, destOrg, yes)
+				if wtErr != nil {
+					return wtErr
 				}
+				// Assign struct fields back to outer flag vars so that the
+				// validation and execution logic below is unchanged.
+				sourceOrg = wt.SourceOrg
+				destOrg = wt.DestOrg
+				secretsPath = wt.SecretsPath
+				missing = wt.Missing
+				apply = wt.Apply
+				yes = wt.Yes
+				skipContexts = wt.SkipContexts
+				skipProjects = wt.SkipProjects
+				skipOrgSettings = wt.SkipOrgSettings
+				skipExtras = wt.SkipExtras
+				// In-pipeline transfer fields.
+				transferSecrets = wt.TransferSecrets
+				destTokenContext = wt.DestTokenContext
+				includeProjectVars = wt.IncludeProjectVars
+				includeSSHKeys = wt.IncludeSSHKeys
+				removeRestrictions = wt.RemoveRestrictions
+				transferHostProj = wt.HostProject
 			}
 
 			// --- validation ---------------------------------------------------
@@ -669,6 +685,60 @@ var migrateComponents = []string{
 	"extras (checkout keys, webhooks, schedules)",
 }
 
+// MigrateWalkthroughResult holds all values returned by the interactive guided
+// walkthrough.  Using a struct instead of a long positional tuple makes the
+// call site self-documenting and lets the walkthrough return new fields without
+// breaking every caller.
+type MigrateWalkthroughResult struct {
+	SourceOrg string
+	DestOrg   string
+
+	// --- secrets (one of the three paths below is active) ---
+
+	// SecretsPath is non-empty when the user chose the captured-bundle path.
+	SecretsPath string
+	// Missing controls how variables with no captured value are handled
+	// (syncer.MissingSkip or syncer.MissingPlaceholder).  Always set, even for
+	// the in-pipeline path (where it is forced to MissingSkip).
+	Missing string
+
+	// TransferSecrets is true when the user chose the in-pipeline transfer path.
+	TransferSecrets bool
+	// DestTokenContext is the source-org context holding CIRCLECI_DEST_TOKEN.
+	// Required when TransferSecrets is true.
+	DestTokenContext string
+	// IncludeProjectVars controls whether project env-var values are also
+	// transferred in-pipeline.
+	IncludeProjectVars bool
+	// IncludeSSHKeys controls whether additional project SSH keys are
+	// transferred in-pipeline.
+	IncludeSSHKeys bool
+	// RemoveRestrictions controls whether context restrictions are temporarily
+	// lifted on the source during the transfer pipeline.
+	RemoveRestrictions bool
+	// HostProject is the optional source project slug to host the transfer
+	// pipeline.  Empty string means auto-pick.
+	HostProject string
+
+	// --- mode ---
+	Apply           bool
+	Yes             bool
+	SkipContexts    bool
+	SkipProjects    bool
+	SkipOrgSettings bool
+	SkipExtras      bool
+}
+
+// secretsMethodInPipeline is the display label for the recommended in-pipeline
+// transfer option in the Step 3a choice.
+const secretsMethodInPipeline = "in-pipeline transfer (RECOMMENDED)"
+
+// secretsMethodBundle is the display label for the captured-bundle option.
+const secretsMethodBundle = "captured secrets bundle (advanced)"
+
+// secretsMethodNone is the display label for the structure-only option.
+const secretsMethodNone = "none — migrate structure only; set values manually later"
+
 // runMigrateWalkthrough conducts the interactive guided migration walkthrough.
 // It writes prompts to cmd.ErrOrStderr() and reads answers from os.Stdin.
 //
@@ -679,11 +749,7 @@ func runMigrateWalkthrough(
 	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
-) (
-	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
-	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
-	err error,
-) {
+) (MigrateWalkthroughResult, error) {
 	return RunMigrateWalkthroughWith(
 		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
 		cmd,
@@ -703,20 +769,10 @@ func RunMigrateWalkthroughWith(
 	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
-) (
-	outSourceOrg, outDestOrg, outSecretsPath, outMissing string,
-	outApply, outYes, outSkipContexts, outSkipProjects, outSkipOrgSettings, outSkipExtras bool,
-	err error,
-) {
+) (MigrateWalkthroughResult, error) {
 	out := p.out
-
-	// Values gathered interactively. The walkthrough only runs when the
-	// corresponding flags are absent, so these start empty and are filled by
-	// the prompts below.
-	var (
-		secretsPath, missing                                           string
-		apply, skipContexts, skipProjects, skipOrgSettings, skipExtras bool
-	)
+	var result MigrateWalkthroughResult
+	result.Yes = yes
 
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "╔══════════════════════════════════════════════════╗")
@@ -730,22 +786,26 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "  Slug format: gh/<org>  or  circleci/<org-id>")
 
 	if sourceOrg == "" {
+		var err error
 		sourceOrg, err = p.askRequired("Source org slug", "e.g. gh/acme")
 		if err != nil {
-			return
+			return result, err
 		}
 	} else {
 		fmt.Fprintf(out, "  Source org:      %s  (from --source-org)\n", sourceOrg)
 	}
 
 	if destOrg == "" {
+		var err error
 		destOrg, err = p.askRequired("Destination org slug", "e.g. gh/acme-new")
 		if err != nil {
-			return
+			return result, err
 		}
 	} else {
 		fmt.Fprintf(out, "  Destination org: %s  (from --dest-org)\n", destOrg)
 	}
+	result.SourceOrg = sourceOrg
+	result.DestOrg = destOrg
 
 	// --- 2. Tokens -----------------------------------------------------------
 	printStepHeader(out, 2, 4, "API tokens")
@@ -753,9 +813,10 @@ func RunMigrateWalkthroughWith(
 
 	srcToken := cfg.SourceTokenOrDefault()
 	if srcToken == "" {
+		var err error
 		srcToken, err = p.askSecretRequired("Source API token (CIRCLECI_SOURCE_TOKEN)")
 		if err != nil {
-			return
+			return result, err
 		}
 		cfg.SourceToken = srcToken
 	} else {
@@ -764,9 +825,10 @@ func RunMigrateWalkthroughWith(
 
 	dstToken := cfg.DestTokenOrDefault()
 	if dstToken == "" {
+		var err error
 		dstToken, err = p.askSecretRequired("Destination API token (CIRCLECI_DEST_TOKEN)")
 		if err != nil {
-			return
+			return result, err
 		}
 		cfg.DestToken = dstToken
 	} else {
@@ -776,66 +838,149 @@ func RunMigrateWalkthroughWith(
 	// --- 3. What to migrate --------------------------------------------------
 	printStepHeader(out, 3, 4, "What to migrate")
 
-	var chosen []string
-	chosen, err = p.askMultiSelect(
+	chosen, err := p.askMultiSelect(
 		"Select components to migrate (default: all):",
 		migrateComponents,
 	)
 	if err != nil {
-		return
+		return result, err
 	}
 
 	// Map selection back to skip flags.  Start by skipping everything, then
 	// un-skip whatever the user chose.
-	skipContexts = true
-	skipProjects = true
-	skipOrgSettings = true
-	skipExtras = true
+	result.SkipContexts = true
+	result.SkipProjects = true
+	result.SkipOrgSettings = true
+	result.SkipExtras = true
 	for _, c := range chosen {
 		switch c {
 		case migrateComponents[0]: // contexts
-			skipContexts = false
+			result.SkipContexts = false
 		case migrateComponents[1]: // projects
-			skipProjects = false
+			result.SkipProjects = false
 		case migrateComponents[2]: // org settings
-			skipOrgSettings = false
+			result.SkipOrgSettings = false
 		case migrateComponents[3]: // extras
-			skipExtras = false
+			result.SkipExtras = false
 		}
 	}
 
-	// --- Step 3a. Secrets bundle ---------------------------------------------
-	printSubStepHeader(out, "3a", 4, "Secrets bundle")
-	fmt.Fprintln(out, "  A captured secrets bundle supplies plaintext env-var values during sync.")
-	fmt.Fprintln(out, "  Produce one with 'secrets capture' before running migrate.")
-	fmt.Fprintln(out, "  Answering 'no' proceeds with NO secret values: the walkthrough will not")
-	fmt.Fprintln(out, "  auto-load secrets.json, and variable values are handled per step 3b below.")
-	var useBundle bool
-	useBundle, err = p.askBool("Do you have a captured secrets bundle to provide?", false)
-	if err != nil {
-		return
-	}
-	if useBundle {
-		secretsPath, err = p.askWithDefault("Path to secrets bundle", "secrets.json")
-		if err != nil {
-			return
-		}
-	} else {
-		secretsPath = "" // no bundle
-	}
+	// --- Step 3a. How to move secret values ----------------------------------
+	printSubStepHeader(out, "3a", 4, "Secret values")
+	fmt.Fprintln(out, "  How do you want to move secret VALUES to the destination?")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  in-pipeline transfer (RECOMMENDED)")
+	fmt.Fprintln(out, "    Runs a pipeline in the SOURCE org that pushes context and (optionally)")
+	fmt.Fprintln(out, "    project env-var values and SSH keys directly to the destination.")
+	fmt.Fprintln(out, "    No plaintext is written to disk. Requires a destination API token")
+	fmt.Fprintln(out, "    stored in a source-org context (CIRCLECI_DEST_TOKEN).")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  captured secrets bundle (advanced)")
+	fmt.Fprintln(out, "    Supply a secrets.json produced by 'secrets capture'.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  none")
+	fmt.Fprintln(out, "    Migrate structure only; set values manually later.")
 
-	// --- Step 3b. Missing secrets handling -----------------------------------
-	printSubStepHeader(out, "3b", 4, "Missing secret values")
-	fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
-	var missingChoice string
-	missingChoice, err = p.askChoice(
-		"How should missing secret values be handled?",
-		[]string{syncer.MissingSkip, syncer.MissingPlaceholder},
+	secretsMethod, err := p.askChoice(
+		"Choose secrets migration method:",
+		[]string{secretsMethodInPipeline, secretsMethodBundle, secretsMethodNone},
 	)
 	if err != nil {
-		return
+		return result, err
 	}
-	missing = missingChoice
+
+	switch secretsMethod {
+	case secretsMethodInPipeline:
+		// In-pipeline transfer path.
+		result.TransferSecrets = true
+
+		// Required: name of the source-org context holding CIRCLECI_DEST_TOKEN.
+		result.DestTokenContext, err = p.askRequired(
+			"Source-org context name holding the destination API token (CIRCLECI_DEST_TOKEN)",
+			"e.g. migration-secrets",
+		)
+		if err != nil {
+			return result, err
+		}
+
+		// Optional: also transfer project env-var values.
+		result.IncludeProjectVars, err = p.askBool(
+			"Also transfer project environment-variable values?", true,
+		)
+		if err != nil {
+			return result, err
+		}
+
+		// Optional: also transfer additional project SSH keys.
+		result.IncludeSSHKeys, err = p.askBool(
+			"Also transfer additional project SSH keys?", true,
+		)
+		if err != nil {
+			return result, err
+		}
+
+		// Optional: temporarily lift context restrictions during transfer.
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Note: contexts with project or expression restrictions block the transfer")
+		fmt.Fprintln(out, "  pipeline unless the host project is in the allowed set.  Answering 'yes'")
+		fmt.Fprintln(out, "  temporarily removes those restrictions and restores them after transfer.")
+		result.RemoveRestrictions, err = p.askBool(
+			"Temporarily lift context restrictions on the source during transfer (restored afterward)?",
+			true,
+		)
+		if err != nil {
+			return result, err
+		}
+
+		// Optional: host project override (empty = auto-pick).
+		result.HostProject, err = p.askWithDefault(
+			"Source project slug to host the transfer pipeline (blank = auto-pick)", "",
+		)
+		if err != nil {
+			return result, err
+		}
+
+		// Values flow through the pipeline — skip the missing-secrets step.
+		result.SecretsPath = ""
+		result.Missing = syncer.MissingSkip
+
+	case secretsMethodBundle:
+		// Captured-bundle path — existing behaviour.
+		result.SecretsPath, err = p.askWithDefault("Path to secrets bundle", "secrets.json")
+		if err != nil {
+			return result, err
+		}
+
+		// --- Step 3b. Missing secrets handling (bundle / none paths only) ----
+		printSubStepHeader(out, "3b", 4, "Missing secret values")
+		fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
+		var missingChoice string
+		missingChoice, err = p.askChoice(
+			"How should missing secret values be handled?",
+			[]string{syncer.MissingSkip, syncer.MissingPlaceholder},
+		)
+		if err != nil {
+			return result, err
+		}
+		result.Missing = missingChoice
+
+	default: // secretsMethodNone
+		// Structure-only path.
+		result.SecretsPath = ""
+
+		// --- Step 3b. Missing secrets handling (bundle / none paths only) ----
+		printSubStepHeader(out, "3b", 4, "Missing secret values")
+		fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
+		var missingChoice string
+		missingChoice, err = p.askChoice(
+			"How should missing secret values be handled?",
+			[]string{syncer.MissingSkip, syncer.MissingPlaceholder},
+		)
+		if err != nil {
+			return result, err
+		}
+		result.Missing = missingChoice
+	}
 
 	// --- 4. Dry run vs apply -------------------------------------------------
 	printStepHeader(out, 4, 4, "Dry run or apply")
@@ -844,29 +989,50 @@ func RunMigrateWalkthroughWith(
 	var doApply bool
 	doApply, err = p.askBool("Perform a dry run first (recommended)?", true)
 	if err != nil {
-		return
+		return result, err
 	}
-	apply = !doApply // "yes to dry run" → apply=false
+	result.Apply = !doApply // "yes to dry run" → apply=false
 
-	if apply {
+	if result.Apply {
 		// Show a summary and require an explicit "yes" before proceeding.
 		fmt.Fprintln(out, "")
 		fmt.Fprintln(out, "  !! APPLY MODE — changes WILL be written to the destination org !!")
 		fmt.Fprintln(out, "")
 		fmt.Fprintf(out, "  Source:      %s\n", sourceOrg)
 		fmt.Fprintf(out, "  Destination: %s\n", destOrg)
-		selected := componentsLabel(skipContexts, skipProjects, skipOrgSettings, skipExtras)
+		selected := componentsLabel(result.SkipContexts, result.SkipProjects, result.SkipOrgSettings, result.SkipExtras)
 		fmt.Fprintf(out, "  Migrating:   %s\n", selected)
+		fmt.Fprintln(out, "")
+
+		// Print a secrets summary line describing the chosen path.
+		switch {
+		case result.TransferSecrets:
+			hostLabel := "auto"
+			if result.HostProject != "" {
+				hostLabel = result.HostProject
+			}
+			fmt.Fprintf(out,
+				"  Secrets:     in-pipeline transfer via context %q (project-vars: %s, ssh-keys: %s, remove-restrictions: %s, host: %s)\n",
+				result.DestTokenContext,
+				yesNo(result.IncludeProjectVars),
+				yesNo(result.IncludeSSHKeys),
+				yesNo(result.RemoveRestrictions),
+				hostLabel,
+			)
+		case result.SecretsPath != "":
+			fmt.Fprintf(out, "  Secrets:     bundle at %q\n", result.SecretsPath)
+		default:
+			fmt.Fprintln(out, "  Secrets:     none (structure only)")
+		}
 		fmt.Fprintln(out, "")
 
 		var confirmed bool
 		confirmed, err = p.askBool("Confirm — proceed with APPLY?", false)
 		if err != nil {
-			return
+			return result, err
 		}
 		if !confirmed {
-			err = fmt.Errorf("migration cancelled by user")
-			return
+			return result, fmt.Errorf("migration cancelled by user")
 		}
 	}
 
@@ -885,17 +1051,15 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "      cd ./terraform/ && terraform init && terraform plan && terraform apply")
 	fmt.Fprintln(out, "      circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply --skip-terraform-managed")
 
-	outSourceOrg = sourceOrg
-	outDestOrg = destOrg
-	outSecretsPath = secretsPath
-	outMissing = missing
-	outApply = apply
-	outYes = yes
-	outSkipContexts = skipContexts
-	outSkipProjects = skipProjects
-	outSkipOrgSettings = skipOrgSettings
-	outSkipExtras = skipExtras
-	return
+	return result, nil
+}
+
+// yesNo returns "yes" or "no" for a boolean, used in the apply summary.
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 // componentsLabel builds a short human-readable list of selected migration

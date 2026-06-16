@@ -46,15 +46,14 @@ func runWalkthrough(t *testing.T, input string) (skips skipResults, outApply boo
 	var promptBuf strings.Builder
 	p := cmd.NewPrompter(r, &promptBuf)
 
-	_, _, _, _, ap, _, skipCtx, skipProj, skipOrg, skipExt, walkErr :=
-		cmd.RunMigrateWalkthroughWith(p, migCmd, &settings.Config{}, "", "", false)
+	res, walkErr := cmd.RunMigrateWalkthroughWith(p, migCmd, &settings.Config{}, "", "", false)
 
 	return skipResults{
-		contexts:    skipCtx,
-		projects:    skipProj,
-		orgSettings: skipOrg,
-		extras:      skipExt,
-	}, ap, walkErr
+		contexts:    res.SkipContexts,
+		projects:    res.SkipProjects,
+		orgSettings: res.SkipOrgSettings,
+		extras:      res.SkipExtras,
+	}, res.Apply, walkErr
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +67,8 @@ func TestPrompt_AskRequired_RepromptOnEmpty(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// First source-org line is empty → re-prompt; second provides a valid slug.
-	input := "\ngh/acme\ngh/acme-new\nall\nn\nskip\ny\n"
+	// "3" → secrets method: none; "1" → missing-secrets: skip; "y" → dry run.
+	input := "\ngh/acme\ngh/acme-new\nall\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt: %v", err)
@@ -86,7 +86,8 @@ func TestPrompt_DryRun_DefaultYes_EmptyInput(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// Empty line on dry-run prompt → accept default (dry run, not apply).
-	input := "gh/acme\ngh/acme-new\nall\nn\nskip\n\n"
+	// "3" → secrets method: none; "1" → missing-secrets: skip; "" → dry run default.
+	input := "gh/acme\ngh/acme-new\nall\n3\n1\n\n"
 	_, outApply, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -102,8 +103,9 @@ func TestPrompt_Apply_Confirmed(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
+	// "3" → secrets method: none; "1" → missing-secrets: skip;
 	// "n" → skip dry run (wants apply); "y" → confirm apply.
-	input := "gh/acme\ngh/acme-new\nall\nn\nskip\nn\ny\n"
+	input := "gh/acme\ngh/acme-new\nall\n3\n1\nn\ny\n"
 	_, outApply, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -119,8 +121,9 @@ func TestPrompt_Apply_Cancelled(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
+	// "3" → secrets method: none; "1" → missing-secrets: skip;
 	// "n" → skip dry run (wants apply); "n" → decline apply confirmation.
-	input := "gh/acme\ngh/acme-new\nall\nn\nskip\nn\nn\n"
+	input := "gh/acme\ngh/acme-new\nall\n3\n1\nn\nn\n"
 	_, _, err := runWalkthrough(t, input)
 	if err == nil {
 		t.Fatal("expected error when user cancels apply confirmation")
@@ -140,7 +143,7 @@ func TestPrompt_MultiSelect_All(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	input := "gh/acme\ngh/acme-new\nall\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\nall\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -158,7 +161,7 @@ func TestPrompt_MultiSelect_EmptyLine(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// Empty line on multi-select prompt → "all" default.
-	input := "gh/acme\ngh/acme-new\n\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\n\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -173,7 +176,7 @@ func TestPrompt_MultiSelect_None(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	input := "gh/acme\ngh/acme-new\nnone\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\nnone\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -190,7 +193,7 @@ func TestPrompt_MultiSelect_Subset(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// Items 1,2 = contexts + projects.
-	input := "gh/acme\ngh/acme-new\n1,2\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\n1,2\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -216,7 +219,7 @@ func TestPrompt_MultiSelect_InvalidThenValid(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
 	// "99" is out of range → reprompt; "all" is accepted on the second attempt.
-	input := "gh/acme\ngh/acme-new\n99\nall\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\n99\nall\n3\n1\ny\n"
 	skips, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt: %v", err)
@@ -230,14 +233,14 @@ func TestPrompt_MultiSelect_InvalidThenValid(t *testing.T) {
 // Prompt behaviour — missing-secrets choice
 // ---------------------------------------------------------------------------
 
-// TestPrompt_MissingSecrets_Placeholder verifies that choosing item 2
-// (placeholder) is accepted without error.
+// TestPrompt_MissingSecrets_Placeholder verifies that choosing placeholder
+// (item 2 in the missing-secrets step) is accepted without error.
 func TestPrompt_MissingSecrets_Placeholder(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	// Item 2 = placeholder.
-	input := "gh/acme\ngh/acme-new\nall\nn\n2\ny\n"
+	// "3" → secrets method: none; "2" → missing-secrets: placeholder; "y" → dry run.
+	input := "gh/acme\ngh/acme-new\nall\n3\n2\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -248,14 +251,15 @@ func TestPrompt_MissingSecrets_Placeholder(t *testing.T) {
 // Prompt behaviour — secrets bundle
 // ---------------------------------------------------------------------------
 
-// TestPrompt_SecretsBundle_Provided verifies that answering "y" to the bundle
-// question prompts for a path and accepts the provided value.
+// TestPrompt_SecretsBundle_Provided verifies that choosing the bundle method
+// prompts for a path and accepts the provided value.
 func TestPrompt_SecretsBundle_Provided(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	// "y" → use bundle; "my-secrets.json" → path; then "skip" → dry run.
-	input := "gh/acme\ngh/acme-new\nall\ny\nmy-secrets.json\nskip\ny\n"
+	// "2" → secrets method: bundle; "my-secrets.json" → path;
+	// "1" → missing-secrets: skip; "y" → dry run.
+	input := "gh/acme\ngh/acme-new\nall\n2\nmy-secrets.json\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -274,7 +278,7 @@ func TestPrompt_TokensAlreadySet_SkipsTokenPrompts(t *testing.T) {
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-set-dst")
 
 	// No token lines in input — the walkthrough must not block on them.
-	input := "gh/acme\ngh/acme-new\nall\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\nall\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -295,7 +299,7 @@ func TestPrompt_TokenPrompts_WhenNotSetInEnv(t *testing.T) {
 	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Provide token values inline in the scripted input.
-	input := "gh/acme\ngh/acme-new\nmy-src-token\nmy-dst-token\nall\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\nmy-src-token\nmy-dst-token\nall\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error when providing tokens interactively: %v", err)
@@ -311,7 +315,7 @@ func TestPrompt_TokenPrompts_EmptyThenValid(t *testing.T) {
 	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Empty source token → re-prompt; second entry is valid.
-	input := "gh/acme\ngh/acme-new\n\nmy-src-token\nmy-dst-token\nall\nn\nskip\ny\n"
+	input := "gh/acme\ngh/acme-new\n\nmy-src-token\nmy-dst-token\nall\n3\n1\ny\n"
 	_, _, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error after re-prompt for token: %v", err)
@@ -380,7 +384,7 @@ func TestPromptSeparator_BlankLineBeforeMultiSelect(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
-		"n",           // no secrets bundle
+		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
 	}
@@ -408,7 +412,7 @@ func TestPromptSeparator_StepHeaderContainsStepNumber(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
-		"n",           // no secrets bundle
+		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
 	}
@@ -437,7 +441,7 @@ func TestPromptSeparator_BlankLineBeforeBoolQuestion(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all
-		"n",           // no secrets bundle
+		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
 		"y",           // dry run
 	}
@@ -470,7 +474,7 @@ func TestPromptOptionList_NumbersHaveIndentation(t *testing.T) {
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
 		"",            // components: all (multi-select list printed here)
-		"n",           // no secrets bundle
+		"3",           // secrets method: none
 		"1",           // missing-secrets: skip (choice list printed here)
 		"y",           // dry run
 	}
