@@ -14,9 +14,11 @@ import (
 // TriggerPipelineRun
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestTriggerPipelineRun_201Created(t *testing.T) {
+// Standalone / GitHub App slug ("circleci/...") → newer /pipeline/run endpoint
+// with definition_id + config.content.
+func TestTriggerPipelineRun_Standalone201Created(t *testing.T) {
 	const (
-		slug     = "gh/acme/web"
+		slug     = "circleci/org-uuid/proj-uuid"
 		defID    = "def-uuid-1"
 		branch   = "main"
 		wantID   = "pipeline-uuid-abc"
@@ -27,7 +29,7 @@ func TestTriggerPipelineRun_201Created(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		wantPath := "/api/v2/project/gh/acme/web/pipeline/run"
+		wantPath := "/api/v2/project/circleci/org-uuid/proj-uuid/pipeline/run"
 		if r.URL.EscapedPath() != wantPath {
 			t.Errorf("path: got %q want %q", r.URL.EscapedPath(), wantPath)
 		}
@@ -65,6 +67,50 @@ func TestTriggerPipelineRun_201Created(t *testing.T) {
 	}
 }
 
+// OAuth slug ("gh/...") → legacy /pipeline endpoint with a top-level "config"
+// STRING (the inline-config path that works for VCS-integrated projects).
+func TestTriggerPipelineRun_OAuthLegacy(t *testing.T) {
+	const (
+		slug     = "gh/acme/web"
+		branch   = "main"
+		wantID   = "pipeline-uuid-oauth"
+		wantYAML = "version: 2.1\nworkflows:\n  extract:\n    jobs:\n      - dump\n"
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/api/v2/project/gh/acme/web/pipeline"
+		if r.URL.EscapedPath() != wantPath {
+			t.Errorf("path: got %q want %q", r.URL.EscapedPath(), wantPath)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		// Inline config is a TOP-LEVEL string, not config.content.
+		if body["config"] != wantYAML {
+			t.Errorf("config (string): got %v want %q", body["config"], wantYAML)
+		}
+		if body["branch"] != branch {
+			t.Errorf("branch: got %v want %q", body["branch"], branch)
+		}
+		if _, ok := body["definition_id"]; ok {
+			t.Errorf("legacy endpoint must NOT send definition_id, got %v", body["definition_id"])
+		}
+		respondJSON(w, http.StatusCreated, map[string]any{"id": wantID, "number": 7, "state": "pending"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	got, err := c.TriggerPipelineRun(context.Background(), slug, "ignored-def", branch, wantYAML, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantID {
+		t.Errorf("pipelineID: got %q want %q", got, wantID)
+	}
+}
+
+// HTTP 200 "skipped" only applies to the standalone /pipeline/run endpoint.
 func TestTriggerPipelineRun_200Skipped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]string{"message": "no changes detected"})
@@ -72,7 +118,7 @@ func TestTriggerPipelineRun_200Skipped(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	id, err := c.TriggerPipelineRun(context.Background(), "gh/acme/web", "def-1", "main", "version: 2.1\n", nil)
+	id, err := c.TriggerPipelineRun(context.Background(), "circleci/org-uuid/proj-uuid", "def-1", "main", "version: 2.1\n", nil)
 	if id != "" {
 		t.Errorf("expected empty pipelineID on skip, got %q", id)
 	}

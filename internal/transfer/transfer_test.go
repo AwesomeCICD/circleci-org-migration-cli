@@ -392,6 +392,10 @@ func (f *fakeTransferDeps) GetPipelineWorkflows(context.Context, string) ([]proj
 	return wf, nil
 }
 
+func (f *fakeTransferDeps) GetPipeline(context.Context, string) (*project.Pipeline, error) {
+	return &project.Pipeline{State: "pending"}, nil
+}
+
 func happyDeps() *fakeTransferDeps {
 	return &fakeTransferDeps{
 		proj:      &project.Project{Slug: "gh/acme/web", ID: "proj-uuid"},
@@ -1099,6 +1103,10 @@ func (f *multiCallFakeTransferDeps) GetPipelineWorkflows(_ context.Context, _ st
 		wf = project.Workflow{ID: "wf-ok", Name: "transfer", Status: "success"}
 	}
 	return []project.Workflow{wf}, nil
+}
+
+func (f *multiCallFakeTransferDeps) GetPipeline(_ context.Context, _ string) (*project.Pipeline, error) {
+	return &project.Pipeline{State: "pending"}, nil
 }
 
 // happyMultiDeps returns a multiCallFakeTransferDeps configured for happy-path

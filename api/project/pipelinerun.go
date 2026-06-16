@@ -40,23 +40,52 @@ type triggerCheckout struct {
 	Branch string `json:"branch"`
 }
 
-// triggerPipelineRunResponse is the 201 body returned by the trigger endpoint.
+// triggerPipelineRunResponse is the 201 body returned by the trigger endpoints.
 type triggerPipelineRunResponse struct {
 	ID     string `json:"id"`
 	Number int    `json:"number"`
+	State  string `json:"state"`
 }
 
-// TriggerPipelineRun triggers an unversioned pipeline run for the project
-// identified by its slug. The run uses an inline config (content) rather than
-// the repo's committed config, which requires api-trigger-with-config to be
-// enabled on the project.
+// triggerPipelineLegacyRequest is the JSON body for the LEGACY (superseded)
+// endpoint POST /api/v2/project/{slug}/pipeline.
 //
-// Endpoint: POST /api/v2/project/{provider}/{org}/{project}/pipeline/run
+// Unlike the newer /pipeline/run endpoint, the inline config here is a TOP-LEVEL
+// "config" STRING (not config.content), and there is no definition_id.
+type triggerPipelineLegacyRequest struct {
+	Branch     string         `json:"branch,omitempty"`
+	Tag        string         `json:"tag,omitempty"`
+	Config     string         `json:"config,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+// TriggerPipelineRun triggers an unversioned pipeline run (inline config that
+// overrides the repo's committed config) for the project identified by slug.
+// This requires allow_api_trigger_with_config on the org (and project).
 //
-// Returns the pipeline UUID on HTTP 201. On HTTP 200 the API reports a skipped
-// run; TriggerPipelineRun returns ("", nil) with an ErrPipelineSkipped sentinel.
-// params may be nil.
+// IMPORTANT — the working endpoint differs by project/org type, because the
+// public API has no single inline-config path that covers both:
+//
+//   - GitHub App / standalone (slug "circleci/<orgID>/<projID>"): the newer
+//     POST /pipeline/run with definition_id + config.content (the "classic"
+//     server path honours content; the SOC path silently DROPS it).
+//   - GitHub OAuth / Bitbucket ("gh/...", "bb/..."): the SOC path drops
+//     config.content, so we use the superseded POST /pipeline endpoint which
+//     accepts a top-level "config" STRING and runs it inline. No special
+//     header is required.
+//
+// Returns the pipeline UUID on HTTP 201. On HTTP 200 (/pipeline/run only) the
+// run was skipped and ErrPipelineSkipped is returned. params may be nil.
 func (c *Client) TriggerPipelineRun(ctx context.Context, slug, definitionID, branch, configYAML string, params map[string]any) (string, error) {
+	if isStandaloneSlug(slug) {
+		return c.triggerPipelineRunStandalone(ctx, slug, definitionID, branch, configYAML, params)
+	}
+	return c.triggerPipelineRunLegacy(ctx, slug, branch, configYAML, params)
+}
+
+// triggerPipelineRunStandalone uses the newer /pipeline/run endpoint with
+// config.content (works on GitHub App / standalone projects — the classic path).
+func (c *Client) triggerPipelineRunStandalone(ctx context.Context, slug, definitionID, branch, configYAML string, params map[string]any) (string, error) {
 	u, err := slugSubresource(slug, "pipeline/run")
 	if err != nil {
 		return "", fmt.Errorf("TriggerPipelineRun: %w", err)
@@ -79,22 +108,46 @@ func (c *Client) TriggerPipelineRun(ctx context.Context, slug, definitionID, bra
 		return "", fmt.Errorf("TriggerPipelineRun: build request: %w", err)
 	}
 
-	// The trigger endpoint returns 201 on success and 200 when the run is
-	// skipped. DoRequest treats any status < 400 as success when resp is
-	// non-nil, so we must distinguish them by the fields present.
 	var created triggerPipelineRunResponse
 	code, err := c.v2.DoRequest(req, &created)
 	if err != nil {
 		return "", fmt.Errorf("TriggerPipelineRun %q: %w", slug, err)
 	}
-
 	if code == http.StatusOK {
-		// The run was skipped; no pipeline ID available.
 		return "", ErrPipelineSkipped
 	}
-
 	if created.ID == "" {
 		return "", fmt.Errorf("TriggerPipelineRun %q: response had no pipeline id (status %d)", slug, code)
+	}
+	return created.ID, nil
+}
+
+// triggerPipelineRunLegacy uses the superseded /pipeline endpoint with a
+// top-level "config" string (the only inline-config path that works for GitHub
+// OAuth / Bitbucket projects — the newer endpoint silently drops content there).
+func (c *Client) triggerPipelineRunLegacy(ctx context.Context, slug, branch, configYAML string, params map[string]any) (string, error) {
+	u, err := slugSubresource(slug, "pipeline")
+	if err != nil {
+		return "", fmt.Errorf("TriggerPipelineRun: %w", err)
+	}
+
+	body := triggerPipelineLegacyRequest{
+		Branch:     branch,
+		Config:     configYAML,
+		Parameters: params,
+	}
+
+	req, err := c.v2.NewRequest(ctx, "POST", u, body)
+	if err != nil {
+		return "", fmt.Errorf("TriggerPipelineRun: build request: %w", err)
+	}
+
+	var created triggerPipelineRunResponse
+	if _, err := c.v2.DoRequest(req, &created); err != nil {
+		return "", fmt.Errorf("TriggerPipelineRun %q: %w", slug, err)
+	}
+	if created.ID == "" {
+		return "", fmt.Errorf("TriggerPipelineRun %q: response had no pipeline id", slug)
 	}
 	return created.ID, nil
 }
@@ -104,6 +157,45 @@ func (c *Client) TriggerPipelineRun(ctx context.Context, slug, definitionID, bra
 // the inline config produced no differences from a cached result). Callers
 // should treat this as a non-fatal signal and decide whether to retry or abort.
 var ErrPipelineSkipped = fmt.Errorf("pipeline run skipped by server (HTTP 200)")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetPipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PipelineError is one entry in a pipeline's errors array (e.g. a config-fetch
+// failure when the repo has no config and inline config was not applied).
+type PipelineError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// Pipeline is the minimal pipeline shape from GET /api/v2/pipeline/{id}.
+// State is one of: created | errored | setup-pending | setup | pending.
+// Errors is populated when State == "errored".
+type Pipeline struct {
+	ID     string          `json:"id"`
+	State  string          `json:"state"`
+	Number int             `json:"number"`
+	Errors []PipelineError `json:"errors"`
+}
+
+// GetPipeline fetches a pipeline by UUID. Used by poll loops to detect an
+// "errored" pipeline (which produces NO workflows, so a workflow-only poll
+// would otherwise hang forever).
+//
+// Endpoint: GET /api/v2/pipeline/{pipeline-id}
+func (c *Client) GetPipeline(ctx context.Context, pipelineID string) (*Pipeline, error) {
+	u := &url.URL{Path: "pipeline/" + url.PathEscape(pipelineID)}
+	req, err := c.v2.NewRequest(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetPipeline: build request: %w", err)
+	}
+	var p Pipeline
+	if _, err := c.v2.DoRequest(req, &p); err != nil {
+		return nil, fmt.Errorf("GetPipeline %q: %w", pipelineID, err)
+	}
+	return &p, nil
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GetPipelineWorkflows
