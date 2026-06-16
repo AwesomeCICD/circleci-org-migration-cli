@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
@@ -188,6 +189,7 @@ type transferFlags struct {
 	enableTrigger      bool
 	includeProjectVars bool
 	includeSSHKeys     bool
+	removeRestrictions bool
 	pollTimeout        time.Duration
 }
 
@@ -281,6 +283,16 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		return fmt.Errorf("creating project client: %w", err)
 	}
 
+	// Build the context client for restriction management when --remove-restrictions is set.
+	var ctxClient transfer.ContextRestrictionManager
+	if tf.removeRestrictions {
+		cc, ccErr := apicontext.NewClient(cfg, srcToken)
+		if ccErr != nil {
+			return fmt.Errorf("creating context client for --remove-restrictions: %w", ccErr)
+		}
+		ctxClient = cc
+	}
+
 	// ── Org-level trigger flag ───────────────────────────────────────────────
 	// Enable allow_api_trigger_with_config on the source org when requested.
 	// Restore the prior value after the transfer (best-effort, via defer).
@@ -340,6 +352,8 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		Mapping:              combinedMapping,
 		IncludeProjectVars:   tf.includeProjectVars,
 		IncludeSSHKeys:       tf.includeSSHKeys,
+		RemoveRestrictions:   tf.removeRestrictions,
+		ContextClient:        ctxClient,
 		DryRun:               !tf.apply,
 		PollTimeout:          tf.pollTimeout,
 		Stdout:               cmd.OutOrStdout(),
@@ -569,6 +583,15 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 			"projects without a mapping entry are skipped. "+
 			"A project with SSH keys but no env vars still triggers a per-project pipeline. "+
 			"Destination project must already be onboarded/exist in the destination org.")
+	f.BoolVar(&tf.removeRestrictions, "remove-restrictions", false,
+		"Temporarily remove project/expression restrictions from source contexts before the transfer "+
+			"pipeline runs, then restore them afterwards (best-effort). "+
+			"A context with a project or expression restriction causes the transfer pipeline to come back "+
+			"'unauthorized' when the host project is not in the allowed set. "+
+			"The default 'All members' group restriction and all other group restrictions are NEVER "+
+			"removed (they are org-type specific and cannot always be recreated via API). "+
+			"Without this flag, Transfer fails fast with an actionable error when blocking restrictions "+
+			"are detected instead of triggering a pipeline that will be unauthorized.")
 	f.DurationVar(&tf.pollTimeout, "poll-timeout", 30*time.Minute,
 		"Maximum time to wait for the transfer pipeline to complete (0 = no timeout)")
 }

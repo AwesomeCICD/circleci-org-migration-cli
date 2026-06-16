@@ -239,11 +239,44 @@ The summary reports how many context and project pipelines succeeded.
 
 ## 6. Restricted contexts and SSH keys
 
-- **Restricted contexts** (contexts limited to specific projects or groups) are
-  **skipped by default** for safety. Recreate the restriction in the
-  destination org's UI after transferring, then re-run for that context.
-- **SSH / checkout keys** are *not* moved by `secrets transfer`. Use the
-  `secrets capture` flow, or re-add them in the destination project settings.
+### Restricted contexts
+
+Contexts with **project or expression restrictions** block the transfer pipeline
+by default: the host project must be in the allowed set, and if it is not, the
+workflow will come back "unauthorized."
+
+**Default behavior (no flag):** the CLI detects blocking restrictions from the
+manifest at plan time and fails fast with an actionable error listing the affected
+contexts and instructions to re-run with `--remove-restrictions`.
+
+**With `--remove-restrictions`:** the CLI temporarily removes project/expression
+restrictions from the source context, triggers the transfer pipeline, then
+restores them afterwards (best-effort). The default "All members" group
+restriction is **never** touched.
+
+```bash
+circleci-migrate secrets transfer \
+  --manifest manifest.json \
+  --dest-org-id <destination-org-uuid> \
+  --dest-token-context migration-secrets \
+  --remove-restrictions \
+  --enable-trigger \
+  --apply
+```
+
+If restore fails (e.g. due to a transient error), the CLI prints a `WARNING`
+with the exact restriction to re-add manually — no restriction is silently lost.
+
+### SSH keys
+
+`--include-ssh-keys` transfers **additional project SSH keys** via the same
+in-pipeline zero-disk path: the job uses `add_ssh_keys` to materialize each key,
+reads the private key with `jq --rawfile` (never echoed to logs), and POSTs it
+to the destination project. Requires a `--mapping` entry for each project.
+
+**Checkout / deploy keys** are *not* moved by `secrets transfer`; these are
+re-created automatically when you follow the project in the destination org.
+Re-add any manually-uploaded deploy keys in the destination project settings.
 
 ---
 

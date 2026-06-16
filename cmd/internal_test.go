@@ -614,6 +614,7 @@ func TestRunMigrateSecretsTransfer_OrgResolutionError(t *testing.T) {
 		false, // dry-run
 		false, // includeProjectVars
 		false, // includeSSHKeys
+		false, // removeRestrictions
 	)
 	if err == nil {
 		t.Fatal("expected error when org resolution fails, got nil")
@@ -683,6 +684,7 @@ func TestRunMigrateSecretsTransfer_DerivesMappingAndProceedsToOrgCheck(t *testin
 		false, // dry-run
 		false, // includeProjectVars
 		false, // includeSSHKeys
+		false, // removeRestrictions
 	)
 	// In dry-run mode, transfer.Transfer is called and returns nil (no network
 	// calls needed). A non-nil error is acceptable only if it does NOT mention

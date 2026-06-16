@@ -154,8 +154,9 @@ const artifactPathAge = "/tmp/circleci-migrate-secrets.json.age"
 // include the "v" prefix, e.g. "v0.4.0").
 func buildInstallStep(ver string) string {
 	repo := "AwesomeCICD/circleci-org-migration-cli"
-	// Normalise: strip leading "v" for the tarball filename, keep it for the
-	// tag/download URL.  Fall back to "latest" for dev/unknown builds.
+	// Normalise: strip leading "v" for the tarball filename; always add it
+	// back for the release tag in the download URL path.
+	// Fall back to "latest" for dev/unknown builds.
 	tag := ver
 	if tag == "" || tag == "dev" || tag == "unknown" {
 		tag = "latest"
@@ -177,7 +178,12 @@ func buildInstallStep(ver string) string {
 	} else {
 		sb.WriteString(fmt.Sprintf("            ver=%s\n", tag))
 	}
+	// v  = bare version (no 'v' prefix) for the tarball filename.
+	// vtag = 'v'-prefixed version for the release tag path in the download URL.
+	// This ensures the URL is correct whether or not the embedded version string
+	// already carries a leading 'v' (GoReleaser strips it; tags always have it).
 	sb.WriteString(`            v="${ver#v}"` + "\n")
+	sb.WriteString(`            vtag="v${v}"` + "\n")
 	sb.WriteString(`            os=$(uname -s | tr '[:upper:]' '[:lower:]')` + "\n")
 	sb.WriteString(`            arch=$(uname -m)` + "\n")
 	sb.WriteString(`            case "$arch" in` + "\n")
@@ -185,7 +191,7 @@ func buildInstallStep(ver string) string {
 	sb.WriteString(`              aarch64|arm64) arch="arm64" ;;` + "\n")
 	sb.WriteString(`              *) echo "ERROR: unsupported arch: $arch" >&2; exit 1 ;;` + "\n")
 	sb.WriteString(`            esac` + "\n")
-	sb.WriteString(`            url="https://github.com/${repo}/releases/download/${ver}/circleci-migrate_${v}_${os}_${arch}.tar.gz"` + "\n")
+	sb.WriteString(`            url="https://github.com/${repo}/releases/download/${vtag}/circleci-migrate_${v}_${os}_${arch}.tar.gz"` + "\n")
 	sb.WriteString(`            echo "Downloading ${url}"` + "\n")
 	sb.WriteString(`            tmp=$(mktemp -d)` + "\n")
 	sb.WriteString(`            curl -sfL "$url" | tar -xz -C "$tmp"` + "\n")

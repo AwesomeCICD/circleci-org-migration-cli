@@ -180,13 +180,51 @@ Note these for cross-checking after sync:
 
 ---
 
-## Phase 2 — Secrets capture
+## Phase 2 — Move secret values
 
-CircleCI never returns env-var **values** over its API, so capturing them
-requires running inside a CircleCI pipeline. No config is committed to your
-repository — `secrets capture` submits an inline (unversioned) pipeline config.
+CircleCI never returns env-var **values** over its API, so moving them requires
+running inside a CircleCI pipeline. No config is committed to your repository —
+both `secrets transfer` and `secrets capture` submit inline (unversioned) pipeline
+configs.
 
-### Option A — `secrets capture` (recommended: local bundle)
+### Option A — `secrets transfer` (recommended: zero-disk-write)
+
+Store the destination API token in a source-org context (e.g. `migration-secrets`)
+with env var `CIRCLECI_DEST_TOKEN`, then:
+
+```bash
+# Dry run — safe, prints plan only:
+circleci-migrate secrets transfer \
+  --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets
+
+# Execute (transfers directly; no bundle written to disk):
+circleci-migrate secrets transfer \
+  --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets \
+  --enable-trigger \
+  --apply
+
+# Also transfer project env vars and SSH keys (requires mapping.json):
+circleci-migrate secrets transfer \
+  --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets \
+  --mapping mapping.json \
+  --include-project-vars \
+  --include-ssh-keys \
+  --enable-trigger \
+  --apply
+```
+
+Destination contexts are auto-created if they do not yet exist.
+
+### Option B — `secrets capture` (alternative: local bundle)
+
+Use this path when you need a reviewable local copy of secrets, cannot use the
+in-pipeline transfer, or need to migrate SSH keys via the bundle path.
 
 **Interactive guided walkthrough (first-time use):**
 
@@ -228,56 +266,53 @@ circleci-migrate secrets capture \
   --output secrets.json
 ```
 
-### Option B — `secrets transfer` (zero-disk-write, context vars only)
+### Restricted contexts
 
-Store the destination API token in a source-org context (e.g. `migration-secrets`)
-with env var `CIRCLECI_DEST_TOKEN`, then:
+Contexts with project or expression restrictions block the in-pipeline transfer
+(and capture) because the host project must be in the allowed set.
+
+**For `secrets transfer`:** by default, the CLI fails fast with an actionable
+error when blocking restrictions are detected. Re-run with `--remove-restrictions`
+to temporarily lift them before the pipeline runs and restore them afterwards:
 
 ```bash
-# Dry run — safe, prints plan only:
-circleci-migrate secrets transfer \
-  --manifest manifest.json \
-  --dest-org-id <dest-org-uuid> \
-  --dest-token-context migration-secrets
-
-# Execute (transfers directly; no bundle written to disk):
 circleci-migrate secrets transfer \
   --manifest manifest.json \
   --dest-org-id <dest-org-uuid> \
   --dest-token-context migration-secrets \
+  --remove-restrictions \
   --enable-trigger \
   --apply
 ```
 
-Destination contexts are auto-created if they do not yet exist. SSH keys still
-require Option A (`secrets capture`).
+**For `secrets capture`:** contexts are skipped by default
+(`--skip-restricted-contexts`, on by default). Use `--remove-restrictions` to
+lift them for the capture run, or accept the gap and use
+`sync --missing-secrets placeholder` so the variable name exists in the
+destination and can be filled in manually after sync.
 
-### Restricted contexts
-
-Contexts with restrictions are skipped by default
-(`--skip-restricted-contexts`, on by default). To capture them either:
-- `--remove-restrictions` — temporarily lift restrictions and restore after run
-- Accept the gap; use `sync --missing-secrets placeholder` so the variable name
-  exists in the destination and can be filled in manually after sync
+The default "All members" group restriction is **never** modified — only project
+and expression restrictions are temporarily removed.
 
 ### Security reminders
 
-- `secrets.json` contains **plaintext** env-var values — protect it accordingly.
+- `secrets.json` (Option B) contains **plaintext** env-var values — protect it accordingly.
 - Use `--artifact-retention-days 1` to minimise the in-CircleCI exposure window.
 - **Rotate every captured value** after the destination is confirmed healthy
   (Phase 8).
-- Use a private project for the capture pipeline.
+- Use a private project for the capture/transfer pipeline.
+- Rotate the destination API token stored in `migration-secrets` after transfer.
 
 ---
 
 ### Phase 2 checklist
 
-- [ ] Decision made: Option A (bundle) or Option B (transfer)
-- [ ] If Option A: `secrets.json` written; encryption confirmed (or risk of plaintext artifact accepted)
-- [ ] If Option B: destination token stored in source-org context; dry-run plan reviewed
-- [ ] Restricted-context gap plan agreed (capture with `--remove-restrictions`, or `--missing-secrets placeholder` at sync)
-- [ ] SSH keys plan made (capture via Option A, or manual re-upload after sync)
-- [ ] `secrets.json` not committed to source control
+- [ ] Decision made: Option A (transfer) or Option B (bundle)
+- [ ] If Option A: destination token stored in source-org context; dry-run plan reviewed
+- [ ] If Option B: `secrets.json` written; encryption confirmed (or risk of plaintext artifact accepted)
+- [ ] Restricted-context gap plan agreed (`--remove-restrictions`, or `--missing-secrets placeholder` at sync)
+- [ ] SSH keys plan made (Option A `--include-ssh-keys`, Option B `secrets capture`, or manual re-upload)
+- [ ] `secrets.json` not committed to source control (Option B only)
 
 ### ✅ Secrets captured or transfer planned — continue to Phase 3
 
