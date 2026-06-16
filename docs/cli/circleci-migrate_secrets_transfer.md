@@ -182,6 +182,7 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
       --manifest string             Path to the export manifest (required)
       --mapping string              Path to mapping.json for context name overrides (optional). Entries in the 'projects' map whose keys do not contain '/' are treated as context name → destination name mappings.
       --poll-timeout duration       Maximum time to wait for the transfer pipeline to complete (0 = no timeout) (default 30m0s)
+      --remove-restrictions         Temporarily remove project/expression restrictions from source contexts before the transfer pipeline runs, then restore them afterwards (best-effort). A context with a project or expression restriction causes the transfer pipeline to come back 'unauthorized' when the host project is not in the allowed set. The default 'All members' group restriction and all other group restrictions are NEVER removed (they are org-type specific and cannot always be recreated via API). Without this flag, Transfer fails fast with an actionable error when blocking restrictions are detected instead of triggering a pipeline that will be unauthorized.
 ```
 
 ### Options inherited from parent commands

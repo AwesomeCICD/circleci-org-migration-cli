@@ -138,11 +138,21 @@ circleci-migrate secrets transfer --manifest manifest.json \
   --mapping mapping.json --include-project-vars --enable-trigger --apply
 ```
 
+If any contexts have **project or expression restrictions**, the CLI fails fast
+with an actionable error. Add `--remove-restrictions` to temporarily lift them:
+
+```bash
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> --dest-token-context migration-secrets \
+  --mapping mapping.json --include-project-vars \
+  --remove-restrictions --enable-trigger --apply
+```
+
 ### Alternative: capture to an encrypted bundle
 
-Use this if you need a reviewable local copy, are migrating SSH keys, or want to
-inspect values first. Produces an encrypted `secrets.json` you then feed to
-`sync`.
+Use this if you need a reviewable local copy, want to inspect values first, or
+cannot use the in-pipeline transfer. Produces an encrypted `secrets.json` you
+then feed to `sync`.
 
 ```bash
 circleci-migrate secrets capture \

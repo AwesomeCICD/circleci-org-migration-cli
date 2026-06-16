@@ -392,157 +392,25 @@ summary (the manifest and report files are still written). Useful in CI.
 
 ---
 
-## 5. Step 2 — Capture secret values
+## 5. Step 2 — Move secret values
 
-Env-var and context **values** are masked by the API. `secrets capture` runs a
-short-lived pipeline inside the **source** org that dumps the values to an
-artifact, downloads it, and writes a local `secrets.json`. It commits **no**
-config to your repo (it submits an inline/unversioned config).
+Env-var and context **values** are masked by the API. Two approaches are
+available:
 
-### Interactive (recommended for first-time use)
+- **`secrets transfer`** (recommended) — triggers an inline pipeline in the
+  source org that reads each value and PUTs it directly to the destination org
+  over TLS. No plaintext ever touches disk or artifacts.
+- **`secrets capture`** (alternative) — captures values into a local encrypted
+  bundle (`secrets.json`) that `sync` then reads. Use this when you need a
+  reviewable local copy, want to migrate SSH keys via the bundle path, or cannot
+  use the in-pipeline transfer.
 
-Run on a TTY with no flags to launch the guided walkthrough:
+### Recommended: `secrets transfer` (zero-disk-write)
 
-```bash
-circleci-migrate secrets capture
-```
-
-It prompts for the manifest, which contexts/projects to capture, the host
-project for context extraction, encryption, storage, and artifact retention.
-
-### Non-interactive (CI-safe)
-
-Once `--manifest` is supplied (or stdin is not a TTY), capture runs
-non-interactively. **Fail-closed guard:** if neither `--context` nor `--project`
-is set and you have not passed `--yes` (or `--no-input`), an unattended
-capture-all errors out instead of sweeping every context/project. Scope it, or
-acknowledge with `--yes`:
-
-```bash
-# Encrypted with an auto-generated key + 1-day retention (recommended)
-circleci-migrate secrets capture \
-  --manifest manifest.json \
-  --encrypt --generate-key \
-  --artifact-retention-days 1 \
-  --enable-trigger \
-  --output secrets.json
-
-# Scope to specific contexts / projects
-circleci-migrate secrets capture --manifest manifest.json \
-  --context deploy-prod --host-project gh/acme/web --enable-trigger
-```
-
-### Encryption (on by default)
-
-Encryption is **on by default** so plaintext secrets never persist in CircleCI
-artifact storage. Supply a recipient with `--generate-key` (creates a fresh age
-keypair) or `--ssh-public-key`/`--ssh-private-key` (use an existing SSH key).
-Use `--no-encrypt` to opt out (a plaintext artifact — strongly discouraged).
-
-```bash
-# Existing SSH key
-circleci-migrate secrets capture --manifest manifest.json --encrypt \
-  --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519 \
-  --artifact-retention-days 1 --enable-trigger --output secrets.json
-```
-
-### SSH keys (on by default)
-
-`secrets capture` also extracts **additional project SSH private keys** that are
-cataloged in the manifest, via a separate in-pipeline job that uses
-`add_ssh_keys` with the explicit fingerprints (the checkout/deploy key is never
-materialised). This is **on by default**; pass `--no-ssh-keys` to skip it (for
-example, an env-var-only capture).
-
-### Storage (`--storage`)
-
-- `artifact` (default) — store the bundle as a CircleCI job artifact.
-- `s3` — upload to S3 only (requires the `aws` CLI + AWS creds in the job;
-  provide `--s3-bucket` and optionally `--s3-prefix`).
-- `both` — store in both.
-
-```bash
-circleci-migrate secrets capture --manifest manifest.json --generate-key \
-  --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/
-```
-
-### Restricted contexts
-
-If a context has restrictions that block the inline pipeline:
-
-- `--skip-restricted-contexts` (default: true) — skip them and attach a warning.
-- `--remove-restrictions` — temporarily lift real restrictions and restore them
-  after the run (explicit opt-in).
-
-For uncaptured values, `sync --missing-secrets placeholder` still creates the
-variable name so it can be filled in manually later.
-
-### Orb-based alternative (committed config)
-
-For large numbers of contexts or full pipeline control, commit `manifest.json`
-to a repo in your source org and use the `awesomecicd/circleci-org-migration`
-orb. Each job must reference **exactly one context** (mixing contexts lets
-same-named variables overwrite each other):
-
-```yaml
-# .circleci/config.yml in your SOURCE org
-version: "2.1"
-orbs:
-  migrate: awesomecicd/circleci-org-migration@0.8.0
-workflows:
-  capture-secrets:
-    jobs:
-      - migrate/extract_context:
-          name: extract-deploy-prod
-          context_name: deploy-prod
-          context: [deploy-prod]
-      - migrate/merge:
-          name: merge-secrets
-          requires: [extract-deploy-prod]
-```
-
-For many contexts, use a matrix with an explicit `alias` so `merge` can depend
-on the whole matrix:
-
-```yaml
-version: "2.1"
-orbs:
-  migrate: awesomecicd/circleci-org-migration@0.8.0
-workflows:
-  capture-secrets:
-    jobs:
-      - migrate/extract_context:
-          name: extract-<< matrix.context_name >>
-          context: [<< matrix.context_name >>]
-          matrix:
-            alias: extract_contexts
-            parameters:
-              context_name: [deploy-prod, shared, build, staging]
-      - migrate/merge:
-          name: merge-secrets
-          requires: [extract_contexts]
-```
-
-Download `secrets.json` from the `merge` job's **Artifacts** tab. If the bundle
-is age-encrypted, decrypt it locally with `secrets decrypt`.
-
-### Protecting `secrets.json`
-
-`secrets.json` contains plaintext values — treat it like a password file.
-
-- Encryption is on by default; keep it on for production secrets.
-- `--artifact-retention-days 1` minimises the in-CircleCI exposure window.
-- The local file is written with `0600` permissions. Do **not** commit it.
-- Use a **private** project for the capture pipeline.
-- **Rotate every captured value** after the destination is confirmed healthy.
-
-### Alternative: `secrets transfer` (zero-disk-write)
-
-`secrets transfer` is a **third mode** beside `capture` and `extract`. Instead
-of writing values to a build artifact, it triggers a single dynamic pipeline in
-the SOURCE org with one job per context. Each job imports the context (CircleCI
-unmasks the values into the job environment) and PUTs each value directly into
-the matching context in the DESTINATION org via the CircleCI API over TLS.
+`secrets transfer` triggers a single dynamic pipeline in the SOURCE org with one
+job per context. Each job imports the context (CircleCI unmasks the values into
+the job environment) and PUTs each value directly into the matching context in the
+DESTINATION org via the CircleCI API over TLS.
 
 **No plaintext ever touches disk or artifacts** — strictly better security for
 context variables than the bundle-artifact flow.
@@ -605,9 +473,158 @@ Key flags:
   keys contain `/` are project slug overrides (source → dest project slug);
   entries whose keys have no `/` are context name → destination context name
   overrides.
+- `--remove-restrictions` — contexts with **project or expression restrictions**
+  block the transfer pipeline by default (the host project must be in the allowed
+  set). With this flag the CLI temporarily removes those restrictions before
+  triggering the pipeline and restores them afterwards (best-effort). The default
+  "All members" group restriction is never touched. Re-run with this flag when
+  the dry-run plan shows `WARN: blocking restrictions` for a context.
 
 **Scope:** context env-var values by default; add `--include-project-vars` for
 project env vars and `--include-ssh-keys` for additional project SSH keys.
+
+### Alternative: `secrets capture` bundle flow
+
+`secrets capture` runs a short-lived pipeline inside the **source** org that
+dumps the values to an artifact, downloads it, and writes a local `secrets.json`.
+It commits **no** config to your repo (it submits an inline/unversioned config).
+
+#### Interactive (recommended for first-time use)
+
+Run on a TTY with no flags to launch the guided walkthrough:
+
+```bash
+circleci-migrate secrets capture
+```
+
+It prompts for the manifest, which contexts/projects to capture, the host
+project for context extraction, encryption, storage, and artifact retention.
+
+#### Non-interactive (CI-safe)
+
+Once `--manifest` is supplied (or stdin is not a TTY), capture runs
+non-interactively. **Fail-closed guard:** if neither `--context` nor `--project`
+is set and you have not passed `--yes` (or `--no-input`), an unattended
+capture-all errors out instead of sweeping every context/project. Scope it, or
+acknowledge with `--yes`:
+
+```bash
+# Encrypted with an auto-generated key + 1-day retention (recommended)
+circleci-migrate secrets capture \
+  --manifest manifest.json \
+  --encrypt --generate-key \
+  --artifact-retention-days 1 \
+  --enable-trigger \
+  --output secrets.json
+
+# Scope to specific contexts / projects
+circleci-migrate secrets capture --manifest manifest.json \
+  --context deploy-prod --host-project gh/acme/web --enable-trigger
+```
+
+#### Encryption (on by default)
+
+Encryption is **on by default** so plaintext secrets never persist in CircleCI
+artifact storage. Supply a recipient with `--generate-key` (creates a fresh age
+keypair) or `--ssh-public-key`/`--ssh-private-key` (use an existing SSH key).
+Use `--no-encrypt` to opt out (a plaintext artifact — strongly discouraged).
+
+```bash
+# Existing SSH key
+circleci-migrate secrets capture --manifest manifest.json --encrypt \
+  --ssh-public-key ~/.ssh/id_ed25519.pub --ssh-private-key ~/.ssh/id_ed25519 \
+  --artifact-retention-days 1 --enable-trigger --output secrets.json
+```
+
+#### SSH keys (on by default)
+
+`secrets capture` also extracts **additional project SSH private keys** that are
+cataloged in the manifest, via a separate in-pipeline job that uses
+`add_ssh_keys` with the explicit fingerprints (the checkout/deploy key is never
+materialised). This is **on by default**; pass `--no-ssh-keys` to skip it (for
+example, an env-var-only capture).
+
+#### Storage (`--storage`)
+
+- `artifact` (default) — store the bundle as a CircleCI job artifact.
+- `s3` — upload to S3 only (requires the `aws` CLI + AWS creds in the job;
+  provide `--s3-bucket` and optionally `--s3-prefix`).
+- `both` — store in both.
+
+```bash
+circleci-migrate secrets capture --manifest manifest.json --generate-key \
+  --storage s3 --s3-bucket my-migration-bucket --s3-prefix migration/
+```
+
+#### Restricted contexts (capture path)
+
+If a context has restrictions that block the inline pipeline:
+
+- `--skip-restricted-contexts` (default: true) — skip them and attach a warning.
+- `--remove-restrictions` — temporarily lift real restrictions and restore them
+  after the run (explicit opt-in).
+
+For uncaptured values, `sync --missing-secrets placeholder` still creates the
+variable name so it can be filled in manually later.
+
+#### Orb-based alternative (committed config)
+
+For large numbers of contexts or full pipeline control, commit `manifest.json`
+to a repo in your source org and use the `awesomecicd/circleci-org-migration`
+orb. Each job must reference **exactly one context** (mixing contexts lets
+same-named variables overwrite each other):
+
+```yaml
+# .circleci/config.yml in your SOURCE org
+version: "2.1"
+orbs:
+  migrate: awesomecicd/circleci-org-migration@0.8.0
+workflows:
+  capture-secrets:
+    jobs:
+      - migrate/extract_context:
+          name: extract-deploy-prod
+          context_name: deploy-prod
+          context: [deploy-prod]
+      - migrate/merge:
+          name: merge-secrets
+          requires: [extract-deploy-prod]
+```
+
+For many contexts, use a matrix with an explicit `alias` so `merge` can depend
+on the whole matrix:
+
+```yaml
+version: "2.1"
+orbs:
+  migrate: awesomecicd/circleci-org-migration@0.8.0
+workflows:
+  capture-secrets:
+    jobs:
+      - migrate/extract_context:
+          name: extract-<< matrix.context_name >>
+          context: [<< matrix.context_name >>]
+          matrix:
+            alias: extract_contexts
+            parameters:
+              context_name: [deploy-prod, shared, build, staging]
+      - migrate/merge:
+          name: merge-secrets
+          requires: [extract_contexts]
+```
+
+Download `secrets.json` from the `merge` job's **Artifacts** tab. If the bundle
+is age-encrypted, decrypt it locally with `secrets decrypt`.
+
+#### Protecting `secrets.json`
+
+`secrets.json` contains plaintext values — treat it like a password file.
+
+- Encryption is on by default; keep it on for production secrets.
+- `--artifact-retention-days 1` minimises the in-CircleCI exposure window.
+- The local file is written with `0600` permissions. Do **not** commit it.
+- Use a **private** project for the capture pipeline.
+- **Rotate every captured value** after the destination is confirmed healthy.
 
 ---
 

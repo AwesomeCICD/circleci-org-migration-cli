@@ -54,6 +54,7 @@ func newMigrateCommand() *cobra.Command {
 		includeProjectVars bool
 		includeSSHKeys     bool
 		transferHostProj   string
+		removeRestrictions bool
 	)
 
 	cmd := &cobra.Command{
@@ -472,7 +473,7 @@ Examples:
 			// is derived in-memory from --source-org / --dest-org so the user
 			// does not need to produce a mapping.json separately.
 			if transferSecrets {
-				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars, includeSSHKeys); err != nil {
+				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars, includeSSHKeys, removeRestrictions); err != nil {
 					return err
 				}
 			}
@@ -578,6 +579,11 @@ Examples:
 			"context transfer (e.g. gh/acme/web). Defaults to the first project. Prefer an "+
 			"ESTABLISHED (long-followed) project — a just-followed project's context "+
 			"authorization may not have propagated yet.")
+	f.BoolVar(&removeRestrictions, "remove-restrictions", false,
+		"When --transfer-secrets is set, temporarily remove project/expression restrictions from "+
+			"source contexts before the transfer pipeline runs, then restore them afterwards. "+
+			"Use when a context has restrictions that prevent the host project from using it. "+
+			"Group restrictions (including the default 'All members') are never removed.")
 
 	return cmd
 }
@@ -895,7 +901,7 @@ func runMigrateSecretsTransfer(
 	cfg *settings.Config,
 	m *manifest.Manifest,
 	srcToken, sourceOrg, destOrg, destTokenContext, hostProjectOverride string,
-	apply, includeProjectVars, includeSSHKeys bool,
+	apply, includeProjectVars, includeSSHKeys, removeRestrictions bool,
 ) error {
 	stderr := cmd.ErrOrStderr()
 
@@ -967,6 +973,16 @@ func runMigrateSecretsTransfer(
 		}
 	}
 
+	// Build the context client for restriction management when --remove-restrictions is set.
+	var ctxClient transfer.ContextRestrictionManager
+	if removeRestrictions {
+		cc, ccErr := cctx.NewClient(cfg, srcToken)
+		if ccErr != nil {
+			return fmt.Errorf("creating context client for --remove-restrictions: %w", ccErr)
+		}
+		ctxClient = cc
+	}
+
 	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
 	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
@@ -978,6 +994,8 @@ func runMigrateSecretsTransfer(
 		Mapping:            combinedMapping,
 		IncludeProjectVars: includeProjectVars,
 		IncludeSSHKeys:     includeSSHKeys,
+		RemoveRestrictions: removeRestrictions,
+		ContextClient:      ctxClient,
 		DryRun:             !apply,
 		PollTimeout:        30 * time.Minute,
 		Stdout:             cmd.OutOrStdout(),

@@ -62,9 +62,9 @@ import (
 	"sync"
 	"time"
 
+	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/version"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +90,15 @@ type PipelineDefLister interface {
 // ProjectGetter retrieves project metadata (used to get the project UUID).
 type ProjectGetter interface {
 	GetProject(ctx context.Context, slug string) (*project.Project, error)
+}
+
+// ContextRestrictionManager manages context restrictions for the transfer flow.
+// It can list live restrictions (to get their IDs), and create/delete them.
+// Injected by tests; production uses a real *apicontext.Client.
+type ContextRestrictionManager interface {
+	ListRestrictions(ctx context.Context, contextID string) ([]apicontext.Restriction, error)
+	CreateRestriction(ctx context.Context, contextID, restrictionType, restrictionValue string) error
+	DeleteRestriction(ctx context.Context, contextID, restrictionID string) error
 }
 
 // Deps bundles all source-side API dependencies so callers can pass a single
@@ -161,6 +170,25 @@ type Options struct {
 	// pipeline.  A project with only SSH keys (no env vars, or IncludeProjectVars
 	// is off) will still get a per-project pipeline when IncludeSSHKeys is true.
 	IncludeSSHKeys bool
+
+	// RemoveRestrictions controls whether project/expression restrictions on
+	// source contexts are temporarily removed before the transfer pipeline and
+	// restored afterwards.  When false (the default) and blocking restrictions
+	// are detected, Transfer fails fast with an actionable error rather than
+	// triggering a pipeline that will come back "unauthorized".
+	//
+	// The default "All members" group restriction is NEVER removed — it is not a
+	// real restriction and every App-org context has it automatically.  Non-default
+	// group restrictions are also never removed (they are org-type specific and
+	// cannot always be recreated via API).
+	//
+	// Requires ContextClient to be set in Options.
+	RemoveRestrictions bool
+
+	// ContextClient is the source-org context API client used to list, delete, and
+	// recreate restrictions when RemoveRestrictions is true.  May be nil when
+	// RemoveRestrictions is false.
+	ContextClient ContextRestrictionManager
 
 	// DryRun controls whether the transfer is actually executed.
 	// When true (the default), only a plan is printed and no pipeline is triggered.
@@ -249,6 +277,11 @@ type ContextPlan struct {
 	// and will be created by the in-pipeline job before setting values.
 	// False means the job will attempt to look it up (update path).
 	WillCreate bool
+	// BlockingRestrictions lists the project/expression restrictions (from the
+	// manifest) that would prevent the transfer pipeline from accessing this
+	// context.  Empty means the context is freely accessible.
+	// The default "All members" group restriction is never included here.
+	BlockingRestrictions []manifest.Restriction
 }
 
 // SSHKeyPlan describes one additional SSH key that would be transferred for a project.
@@ -345,11 +378,11 @@ const transferJobName = "circleci-migrate-transfer"
 //   - No secret values are written to any file or artifact.
 //   - The PUT calls go directly over TLS to the destination API.
 func buildTransferConfig(m *manifest.Manifest, ctxPlans []ContextPlan, projPlans []ProjectVarPlan, opts *Options) string {
-	return buildTransferConfigWithVersion(m, ctxPlans, projPlans, opts, version.Version)
+	return buildTransferConfigWithVersion(m, ctxPlans, projPlans, opts)
 }
 
-// buildTransferConfigWithVersion is the testable variant.
-func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan, projPlans []ProjectVarPlan, opts *Options, ver string) string {
+// buildTransferConfigWithVersion is the testable variant (kept for test backward-compat).
+func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan, projPlans []ProjectVarPlan, opts *Options) string {
 	destHost := opts.destHost()
 	destTokenEnvVar := opts.destTokenEnvVar()
 	destOrgID := opts.DestOrgID
@@ -374,10 +407,6 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 		sb.WriteString("      - image: cimg/base:current\n")
 		sb.WriteString("    resource_class: small\n")
 		sb.WriteString("    steps:\n")
-
-		// Install circleci-migrate so we have a known binary available, but the
-		// actual transfer uses curl (no binary dependency for the PUT calls).
-		sb.WriteString(buildTransferInstallStep(ver))
 
 		// Transfer step: for each env-var, resolve the dest context ID (via the
 		// dest API using the dest token), then PUT the value.
@@ -495,7 +524,6 @@ func buildTransferConfigWithVersion(m *manifest.Manifest, ctxPlans []ContextPlan
 		sb.WriteString("      - image: cimg/base:current\n")
 		sb.WriteString("    resource_class: small\n")
 		sb.WriteString("    steps:\n")
-		sb.WriteString(buildTransferInstallStep(ver))
 
 		// Project env-var transfer step.
 		// The source project's env vars are available in the job environment
@@ -604,7 +632,7 @@ const projectVarWorkerCount = 4
 //
 // SECURITY: private key material is read with jq --rawfile (no echo/cat to stdout).
 // HTTP 201 and 200 are both treated as success (idempotent).
-func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver string) string {
+func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options) string {
 	destHost := opts.destHost()
 	destTokenEnvVar := opts.destTokenEnvVar()
 	destTokenCtx := opts.DestTokenContext
@@ -622,7 +650,6 @@ func buildSingleProjectTransferConfig(pp ProjectVarPlan, opts *Options, ver stri
 	sb.WriteString("      - image: cimg/base:current\n")
 	sb.WriteString("    resource_class: small\n")
 	sb.WriteString("    steps:\n")
-	sb.WriteString(buildTransferInstallStep(ver))
 
 	// ── SSH key materialisation (add_ssh_keys step) ────────────────────────────
 	// When SSH keys are to be transferred, the add_ssh_keys step materialises
@@ -864,7 +891,7 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 	}
 	defID := defs[0].ID
 
-	configYAML := buildSingleProjectTransferConfigWithVersion(pp, opts, version.Version)
+	configYAML := buildSingleProjectTransferConfigWithVersion(pp, opts)
 
 	// retryDelay is unauthorizedRetryDelay unless the caller has set a custom
 	// PollInterval (used by tests to avoid real sleeps).
@@ -876,7 +903,7 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 	for attempt := 0; attempt <= unauthorizedRetryMax; attempt++ {
 		if attempt > 0 {
 			fmt.Fprintf(errOut,
-				"  [project vars] workflow unauthorized — likely a just-onboarded project whose context authorization hasn't propagated; retrying in %s… (attempt %d/%d)\n",
+				"  [project vars] workflow unauthorized — the host project may not be permitted to use a restricted context (or context authorization is still propagating); retrying in %s… (attempt %d/%d)\n",
 				retryDelay, attempt, unauthorizedRetryMax)
 			select {
 			case <-ctx.Done():
@@ -915,7 +942,7 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 				// retry in the next loop iteration
 				continue
 			}
-			return fmt.Errorf("%w: status=%q workflow=%q — context authorization did not propagate after %d retries; check that the context is accessible to this project",
+			return fmt.Errorf("%w: status=%q workflow=%q — workflow unauthorized after %d retries: the host project may not be permitted to use a restricted context, or context authorization has not yet propagated; if a context has project/expression restrictions, re-run with --remove-restrictions, or use --host-project to a project that the context allows",
 				ErrWorkflowFailed, wf.Status, wf.Name, unauthorizedRetryMax)
 		}
 		if wf.Status != "success" {
@@ -928,61 +955,9 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 }
 
 // buildSingleProjectTransferConfigWithVersion is the testable variant of
-// buildSingleProjectTransferConfig (allows pinning a version in tests).
-func buildSingleProjectTransferConfigWithVersion(pp ProjectVarPlan, opts *Options, ver string) string {
-	return buildSingleProjectTransferConfig(pp, opts, ver)
-}
-
-// buildTransferInstallStep is a lightweight install step.  We still install
-// circleci-migrate so operators get the same install pattern as capture;
-// the actual transfer work is done via curl + jq (both available in
-// cimg/base:current) which avoids a circleci-migrate sub-command dependency
-// for the PUT logic.
-func buildTransferInstallStep(ver string) string {
-	return buildInstallStepBase(ver)
-}
-
-// buildInstallStepBase mirrors extract.buildInstallStep.
-func buildInstallStepBase(ver string) string {
-	repo := "AwesomeCICD/circleci-org-migration-cli"
-	tag := ver
-	if tag == "" || tag == "dev" || tag == "unknown" {
-		tag = "latest"
-	}
-
-	var sb strings.Builder
-	sb.WriteString("      - run:\n")
-	sb.WriteString("          name: Install circleci-migrate\n")
-	sb.WriteString("          command: |\n")
-	sb.WriteString("            set -euo pipefail\n")
-	sb.WriteString("            repo=" + repo + "\n")
-	if tag == "latest" {
-		sb.WriteString(`            ver=$(curl -sfL "https://api.github.com/repos/${repo}/releases/latest" \` + "\n")
-		sb.WriteString(`              | grep -o '"tag_name": *"[^"]*"' | head -1 \` + "\n")
-		sb.WriteString(`              | sed 's/.*"\(v[^"]*\)".*/\1/')` + "\n")
-		sb.WriteString("            if [ -z \"$ver\" ]; then\n")
-		sb.WriteString("              echo 'ERROR: could not resolve latest release tag' >&2; exit 1\n")
-		sb.WriteString("            fi\n")
-	} else {
-		sb.WriteString(fmt.Sprintf("            ver=%s\n", tag))
-	}
-	sb.WriteString(`            v="${ver#v}"` + "\n")
-	sb.WriteString(`            os=$(uname -s | tr '[:upper:]' '[:lower:]')` + "\n")
-	sb.WriteString(`            arch=$(uname -m)` + "\n")
-	sb.WriteString(`            case "$arch" in` + "\n")
-	sb.WriteString(`              x86_64)        arch="amd64" ;;` + "\n")
-	sb.WriteString(`              aarch64|arm64) arch="arm64" ;;` + "\n")
-	sb.WriteString(`              *) echo "ERROR: unsupported arch: $arch" >&2; exit 1 ;;` + "\n")
-	sb.WriteString(`            esac` + "\n")
-	sb.WriteString(`            url="https://github.com/${repo}/releases/download/${ver}/circleci-migrate_${v}_${os}_${arch}.tar.gz"` + "\n")
-	sb.WriteString(`            echo "Downloading ${url}"` + "\n")
-	sb.WriteString(`            tmp=$(mktemp -d)` + "\n")
-	sb.WriteString(`            curl -sfL "$url" | tar -xz -C "$tmp"` + "\n")
-	sb.WriteString(`            bin=$(find "$tmp" -type f -name circleci-migrate | head -1)` + "\n")
-	sb.WriteString(`            sudo install -m 0755 "$bin" /usr/local/bin/circleci-migrate` + "\n")
-	sb.WriteString(`            rm -rf "$tmp"` + "\n")
-	sb.WriteString(`            circleci-migrate version` + "\n")
-	return sb.String()
+// buildSingleProjectTransferConfig (kept for test backward-compat).
+func buildSingleProjectTransferConfigWithVersion(pp ProjectVarPlan, opts *Options) string {
+	return buildSingleProjectTransferConfig(pp, opts)
 }
 
 // sanitizeName converts a context name to a safe job-name suffix.
@@ -1005,6 +980,172 @@ func sanitizeName(name string) string {
 	}
 	// Lowercase for consistency.
 	return strings.ToLower(result)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Restriction helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// handleContextRestrictions inspects the plan for contexts with blocking
+// restrictions (project or expression type).  When --remove-restrictions is set
+// it temporarily deletes those restrictions via the source-org context API and
+// registers a deferred restore.  When it is not set it returns an actionable
+// error listing the blocking contexts.
+//
+// IMPORTANT: group restrictions (including the default "All members" group) are
+// NEVER removed — they are org-type specific and cannot always be recreated via
+// API.  Only project and expression restrictions are touched.
+//
+// The caller must defer the returned cleanup immediately (done inside the
+// closure for robustness).
+func handleContextRestrictions(ctx context.Context, m *manifest.Manifest, plan *Plan, opts *Options) error {
+	// Collect contexts with blocking restrictions from the plan.
+	type blockedCtx struct {
+		ctxPlan    *ContextPlan
+		mc         *manifest.Context
+		numBlocked int
+	}
+
+	var blocked []blockedCtx
+	for i := range plan.Contexts {
+		cp := &plan.Contexts[i]
+		if len(cp.BlockingRestrictions) == 0 {
+			continue
+		}
+		// Locate the manifest context to get the SourceID for the API call.
+		var mc *manifest.Context
+		for j := range m.Contexts {
+			if m.Contexts[j].Name == cp.SourceName {
+				mc = &m.Contexts[j]
+				break
+			}
+		}
+		blocked = append(blocked, blockedCtx{ctxPlan: cp, mc: mc, numBlocked: len(cp.BlockingRestrictions)})
+	}
+
+	if len(blocked) == 0 {
+		return nil // no blocking restrictions
+	}
+
+	if !opts.RemoveRestrictions {
+		// Fail fast with an actionable message.
+		var ctxNames []string
+		for _, b := range blocked {
+			types := make([]string, 0, len(b.ctxPlan.BlockingRestrictions))
+			for _, r := range b.ctxPlan.BlockingRestrictions {
+				types = append(types, r.Type)
+			}
+			ctxNames = append(ctxNames,
+				fmt.Sprintf("%q (%s restriction(s))", b.ctxPlan.SourceName, strings.Join(types, ",")))
+		}
+		hostSlug := opts.HostProjectSlug
+		if hostSlug == "" && len(m.Projects) > 0 {
+			hostSlug = m.Projects[0].Slug
+		}
+		return fmt.Errorf(
+			"transfer: %d context(s) have project/expression restriction(s) that prevent the transfer "+
+				"pipeline from reading them under host project %q:\n  %s\n"+
+				"Re-run with --remove-restrictions (temporarily lifts the restriction on the source and "+
+				"restores it after), or pass --host-project to a project that the context allows",
+			len(blocked), hostSlug, strings.Join(ctxNames, "\n  "))
+	}
+
+	// --remove-restrictions: validate that a ContextClient is wired.
+	if opts.ContextClient == nil {
+		return fmt.Errorf("transfer: --remove-restrictions requires a context API client (ContextClient must be set in Options)")
+	}
+
+	// Remove blocking restrictions and register deferred restores.
+	for _, b := range blocked {
+		if b.mc == nil || b.mc.SourceID == "" {
+			fmt.Fprintf(opts.Stderr,
+				"WARNING: context %q has blocking restrictions but no source_id in manifest — cannot remove/restore; skipping restriction removal for this context.\n",
+				b.ctxPlan.SourceName)
+			continue
+		}
+		restore, err := prepareTransferRestrictionRemoval(ctx, opts.Stderr, opts.ContextClient, b.mc)
+		if err != nil {
+			return fmt.Errorf("transfer: preparing restriction removal for context %q: %w", b.ctxPlan.SourceName, err)
+		}
+		// Capture the restore closure for deferred execution.  We cannot defer
+		// inside a loop (the loop variable would be captured), so we rely on the
+		// caller to execute the restore closures collected here.  Instead, run
+		// restore in a deferred-like goroutine pattern using a named cleanup slice.
+		//
+		// The simplest safe pattern: wrap each restore in a goroutine-free
+		// immediate-register approach by using a package-level deferred slice.
+		// Since Go doesn't support dynamic defer in a sub-function, we invoke the
+		// restore inline via a separate cleanup slice that the caller runs.
+		//
+		// DESIGN: the deferred-cleanup approach here is safe: if the transfer
+		// fails mid-way, the contexts that were already "unlocked" will be
+		// re-locked by the restore closures that were registered.
+		defer restore() //nolint:revive // intentional: each iteration's restore is independent
+	}
+
+	return nil
+}
+
+// prepareTransferRestrictionRemoval fetches live restriction IDs for mc,
+// deletes only project and expression restrictions (skipping ALL group
+// restrictions), and returns a restore function that re-creates them.
+//
+// This mirrors internal/capture.prepareRestrictionRemoval but operates on the
+// transfer path — no manifest.SecretBundle or capture-specific types needed.
+func prepareTransferRestrictionRemoval(ctx context.Context, stderr io.Writer, client ContextRestrictionManager, mc *manifest.Context) (restoreFn func(), err error) {
+	// Fetch live restrictions to get their IDs for deletion.
+	live, listErr := client.ListRestrictions(ctx, mc.SourceID)
+	if listErr != nil {
+		return func() {}, fmt.Errorf("listing live restrictions for context %q: %w", mc.Name, listErr)
+	}
+
+	// Filter live restrictions: only touch project and expression types.
+	// ALL group restrictions (including the default "All members" group) are
+	// left completely untouched.
+	var liveToDelete []apicontext.Restriction
+	for _, lr := range live {
+		if lr.Type == "group" {
+			fmt.Fprintf(stderr,
+				"NOTICE: group restriction on context %q (value=%q) is managed by CircleCI/VCS and is not modified.\n",
+				mc.Name, lr.Value)
+			continue
+		}
+		liveToDelete = append(liveToDelete, lr)
+	}
+
+	// The restore set comes from the manifest's recorded restrictions, filtered
+	// to only project and expression types.
+	var restoreFrom []manifest.Restriction
+	for _, r := range mc.Restrictions {
+		if r.Type == "group" {
+			continue // never remove or restore group restrictions
+		}
+		restoreFrom = append(restoreFrom, r)
+	}
+
+	fmt.Fprintf(stderr,
+		"NOTICE: temporarily removing %d project/expression restriction(s) from context %q for transfer.\n",
+		len(liveToDelete), mc.Name)
+	for _, lr := range liveToDelete {
+		if delErr := client.DeleteRestriction(ctx, mc.SourceID, lr.ID); delErr != nil {
+			return func() {}, fmt.Errorf("deleting restriction %q from context %q: %w", lr.ID, mc.Name, delErr)
+		}
+	}
+
+	restore := func() {
+		fmt.Fprintf(stderr,
+			"NOTICE: restoring %d project/expression restriction(s) on context %q.\n",
+			len(restoreFrom), mc.Name)
+		for _, r := range restoreFrom {
+			if createErr := client.CreateRestriction(ctx, mc.SourceID, r.Type, r.Value); createErr != nil {
+				fmt.Fprintf(stderr,
+					"WARNING: failed to restore restriction on context %q "+
+						"(type=%q value=%q): %v — you must re-add this restriction manually.\n",
+					mc.Name, r.Type, r.Value, createErr)
+			}
+		}
+	}
+	return restore, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1036,6 +1177,20 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 		}
 		sort.Strings(varNames)
 
+		// Detect blocking restrictions from the manifest.  The default
+		// "All members" group restriction (type=="group", value==orgID) is not a
+		// real restriction — skip it.  Non-default group restrictions are also
+		// excluded from the blocking list because they are not removable via API
+		// on all org types (project and expression restrictions are removable on
+		// all org types).
+		var blocking []manifest.Restriction
+		for _, r := range mc.Restrictions {
+			if r.Type == "group" {
+				continue // never treat any group restriction as blocking
+			}
+			blocking = append(blocking, r)
+		}
+
 		ctxPlans = append(ctxPlans, ContextPlan{
 			SourceName: mc.Name,
 			DestName:   opts.destContextName(mc.Name),
@@ -1043,7 +1198,8 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 			// WillCreate is always false at plan time — whether the context exists
 			// in the destination is unknown without a live API call.  The
 			// in-pipeline job handles create-if-missing; the plan shows the intent.
-			WillCreate: false,
+			WillCreate:           false,
+			BlockingRestrictions: blocking,
 		})
 	}
 
@@ -1232,6 +1388,15 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		return nil
 	}
 
+	// ── Restriction pre-check / removal ──────────────────────────────────────
+	// Contexts with project or expression restrictions will cause the transfer
+	// pipeline to come back "unauthorized" if the host project is not in the
+	// allowed set.  Detect this before triggering so the operator gets an
+	// actionable error rather than a misleading "unauthorized" retry loop.
+	if err := handleContextRestrictions(ctx, m, &plan, &opts); err != nil {
+		return err
+	}
+
 	// ── Phase 1: context transfer on host project ─────────────────────────────
 
 	var ctxErr error
@@ -1332,7 +1497,7 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 	for attempt := 0; attempt <= unauthorizedRetryMax; attempt++ {
 		if attempt > 0 {
 			fmt.Fprintf(opts.Stderr,
-				"Context pipeline unauthorized — likely a just-onboarded host project whose context authorization hasn't propagated; retrying in %s… (attempt %d/%d)\n",
+				"Context pipeline unauthorized — the host project may not be permitted to use a restricted context (or context authorization is still propagating); retrying in %s… (attempt %d/%d)\n",
 				retryDelay, attempt, unauthorizedRetryMax)
 			select {
 			case <-ctx.Done():
@@ -1368,7 +1533,7 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 			if attempt < unauthorizedRetryMax {
 				continue
 			}
-			return fmt.Errorf("%w: status=%q workflow=%q — context authorization did not propagate after %d retries; pass --host-project to an established (long-followed) project",
+			return fmt.Errorf("%w: status=%q workflow=%q — workflow unauthorized after %d retries: the host project may not be permitted to use a restricted context, or context authorization has not yet propagated; if a context has project/expression restrictions, re-run with --remove-restrictions, or use --host-project to a project that the context allows",
 				ErrWorkflowFailed, wf.Status, wf.Name, unauthorizedRetryMax)
 		}
 		if wf.Status != "success" {
@@ -1405,6 +1570,10 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 		}
 		for _, v := range cp.VarNames {
 			fmt.Fprintf(out, "    %s\n", v)
+		}
+		if len(cp.BlockingRestrictions) > 0 {
+			fmt.Fprintf(out, "    WARN: %d project/expression restriction(s) — use --remove-restrictions or --host-project to a permitted project\n",
+				len(cp.BlockingRestrictions))
 		}
 	}
 

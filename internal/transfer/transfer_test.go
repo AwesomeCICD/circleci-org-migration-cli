@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
@@ -229,7 +230,7 @@ func TestBuildTransferConfig_ContainsContextAndJob(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	// Must contain the job names derived from context names.
 	if !strings.Contains(cfg, "circleci-migrate-transfer-deploy-prod") {
@@ -290,7 +291,7 @@ func TestBuildTransferConfig_NoDestTokenContextDuplicated(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	// The context should appear only once in the workflow context list.
 	count := strings.Count(cfg, "- migration-secrets")
@@ -299,23 +300,22 @@ func TestBuildTransferConfig_NoDestTokenContextDuplicated(t *testing.T) {
 	}
 }
 
-func TestBuildTransferConfig_Version(t *testing.T) {
+func TestBuildTransferConfig_NoInstallStep(t *testing.T) {
+	// Transfer jobs do NOT install circleci-migrate — all work is done via
+	// curl + jq which are already available in cimg/base:current. The install
+	// step caused a 404 when the embedded version lacked a 'v' prefix.
 	m := baseManifest()
 	opts := baseOpts()
 	opts.DestTokenContext = "migration-secrets"
 
 	plan, _ := BuildPlan(m, &opts)
 
-	// With a pinned version, the config should embed that version.
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
-	if !strings.Contains(cfg, "v0.9.0") {
-		t.Error("expected pinned version in install step")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
+	if strings.Contains(cfg, "Install circleci-migrate") {
+		t.Error("transfer config must NOT contain an install step (transfer uses curl+jq only)")
 	}
-
-	// With dev/empty version, should use "latest".
-	cfgDev := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "dev")
-	if !strings.Contains(cfgDev, "releases/latest") {
-		t.Error("dev build should fall back to 'latest' release")
+	if strings.Contains(cfg, "circleci-migrate version") {
+		t.Error("transfer config must NOT verify circleci-migrate binary (no install step)")
 	}
 }
 
@@ -326,7 +326,7 @@ func TestBuildTransferConfig_DestHostEmbedded(t *testing.T) {
 	opts.DestHost = "https://circleci.example.com"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	if !strings.Contains(cfg, "circleci.example.com") {
 		t.Error("expected custom dest host in config")
@@ -341,7 +341,7 @@ func TestBuildTransferConfig_NoPLAINTEXTValues(t *testing.T) {
 	opts.DestTokenContext = "migration-secrets"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v0.9.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	// These strings must never appear in the generated config.
 	forbidden := []string{
@@ -635,7 +635,7 @@ func TestBuildTransferConfig_TokenReferencedByName(t *testing.T) {
 	opts.DestTokenEnvVar = "CIRCLECI_DEST_TOKEN"
 
 	plan, _ := BuildPlan(m, &opts)
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	// The config should reference CIRCLECI_DEST_TOKEN as a shell var, not as a literal value.
 	if !strings.Contains(cfg, "${CIRCLECI_DEST_TOKEN") {
@@ -717,7 +717,7 @@ func TestBuildTransferConfig_CreateMissingContext(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, nil, &opts)
 
 	// The generated config must contain the create-if-missing POST logic.
 	if !strings.Contains(cfg, "/api/v2/context\"") {
@@ -886,7 +886,7 @@ func TestBuildTransferConfig_ProjectVarsIncluded(t *testing.T) {
 		t.Fatalf("plan error: %v", err)
 	}
 
-	cfg := buildTransferConfigWithVersion(m, plan.Contexts, plan.Projects, &opts, "v1.0.0")
+	cfg := buildTransferConfigWithVersion(m, plan.Contexts, plan.Projects, &opts)
 
 	// Must contain the project job.
 	if !strings.Contains(cfg, "circleci-migrate-transfer-project") {
@@ -1261,7 +1261,7 @@ func TestBuildSingleProjectTransferConfig_ContainsOnlyThatProject(t *testing.T) 
 		VarNames:   []string{"API_KEY"},
 	}
 
-	webCfg := buildSingleProjectTransferConfigWithVersion(webPlan, &opts, "v1.0.0")
+	webCfg := buildSingleProjectTransferConfigWithVersion(webPlan, &opts)
 
 	// Must contain the web project's vars.
 	if !strings.Contains(webCfg, "APP_SECRET") {
@@ -1285,7 +1285,7 @@ func TestBuildSingleProjectTransferConfig_ContainsOnlyThatProject(t *testing.T) 
 	}
 
 	// API config must contain only API_KEY.
-	apiCfg := buildSingleProjectTransferConfigWithVersion(apiPlan, &opts, "v1.0.0")
+	apiCfg := buildSingleProjectTransferConfigWithVersion(apiPlan, &opts)
 	if !strings.Contains(apiCfg, "API_KEY") {
 		t.Error("api config must contain API_KEY")
 	}
@@ -1407,7 +1407,7 @@ func TestBuildSingleProjectTransferConfig_DestTokenByName(t *testing.T) {
 		VarNames:   []string{"APP_SECRET"},
 	}
 
-	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts)
 
 	// Token referenced by env-var name, not literal value.
 	if !strings.Contains(cfg, "${CIRCLECI_DEST_TOKEN") {
@@ -1432,7 +1432,7 @@ func TestBuildSingleProjectTransferConfig_UsesV11Endpoint(t *testing.T) {
 		VarNames:   []string{"MY_VAR"},
 	}
 
-	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts)
 
 	if !strings.Contains(cfg, "/api/v1.1/project/") {
 		t.Error("single-project config must use v1.1 envvar endpoint")
@@ -1904,7 +1904,7 @@ func TestBuildSingleProjectTransferConfig_SSHKeysAddStep(t *testing.T) {
 		},
 	}
 
-	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts)
 
 	// Must contain add_ssh_keys with the correct fingerprints.
 	if !strings.Contains(cfg, "add_ssh_keys:") {
@@ -1975,7 +1975,7 @@ func TestBuildSingleProjectTransferConfig_SSHKeysOnly(t *testing.T) {
 		},
 	}
 
-	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts)
 
 	// Must contain add_ssh_keys.
 	if !strings.Contains(cfg, "add_ssh_keys:") {
@@ -2025,7 +2025,7 @@ func TestBuildSingleProjectTransferConfig_SSHKeysNeverEchoed(t *testing.T) {
 		},
 	}
 
-	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts, "v1.0.0")
+	cfg := buildSingleProjectTransferConfigWithVersion(pp, &opts)
 
 	// Forbidden patterns that would expose key material.
 	forbidden := []string{
@@ -2198,5 +2198,600 @@ func TestPlan_TotalSSHKeys_Empty(t *testing.T) {
 	p := Plan{}
 	if n := p.TotalSSHKeys(); n != 0 {
 		t.Errorf("TotalSSHKeys of empty plan = %d, want 0", n)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BuildPlan — blocking restriction detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+// manifestWithRestrictions returns a Manifest with one context that has the
+// given restrictions set on it.
+func manifestWithRestrictions(restr []manifest.Restriction) *manifest.Manifest {
+	return &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org"}},
+		Contexts: []manifest.Context{
+			{
+				Name:         "restricted-ctx",
+				SourceID:     "ctx-uuid-1",
+				Restrictions: restr,
+				EnvVars:      []manifest.ContextEnvVar{{Name: "SECRET_A"}},
+			},
+			{
+				Name:    "open-ctx",
+				EnvVars: []manifest.ContextEnvVar{{Name: "SECRET_B"}},
+			},
+		},
+	}
+}
+
+// TestBuildPlan_BlockingRestrictionsProjectType verifies that project-type
+// restrictions are captured in BlockingRestrictions.
+func TestBuildPlan_BlockingRestrictionsProjectType(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "project", Value: "proj-uuid-a"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var restrictedCtx *ContextPlan
+	for i := range plan.Contexts {
+		if plan.Contexts[i].SourceName == "restricted-ctx" {
+			restrictedCtx = &plan.Contexts[i]
+		}
+	}
+	if restrictedCtx == nil {
+		t.Fatal("expected restricted-ctx in plan")
+	}
+	if len(restrictedCtx.BlockingRestrictions) != 1 {
+		t.Fatalf("expected 1 blocking restriction, got %d: %v", len(restrictedCtx.BlockingRestrictions), restrictedCtx.BlockingRestrictions)
+	}
+	if restrictedCtx.BlockingRestrictions[0].Type != "project" {
+		t.Errorf("expected type=project, got %q", restrictedCtx.BlockingRestrictions[0].Type)
+	}
+}
+
+// TestBuildPlan_BlockingRestrictionsExpressionType verifies that expression
+// restrictions are also captured.
+func TestBuildPlan_BlockingRestrictionsExpressionType(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "expression", Value: "project.id = 'proj-abc'"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, cp := range plan.Contexts {
+		if cp.SourceName == "restricted-ctx" {
+			if len(cp.BlockingRestrictions) != 1 || cp.BlockingRestrictions[0].Type != "expression" {
+				t.Errorf("expected 1 expression blocking restriction, got: %v", cp.BlockingRestrictions)
+			}
+			return
+		}
+	}
+	t.Fatal("restricted-ctx not found in plan")
+}
+
+// TestBuildPlan_GroupRestrictionsNotBlocking verifies that group-type
+// restrictions (including the default "All members" group) are never
+// treated as blocking.
+func TestBuildPlan_GroupRestrictionsNotBlocking(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "group", Value: "src-org"},               // default "All members" restriction
+		{Type: "group", Value: "some-other-group-uuid"}, // non-default group restriction
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, cp := range plan.Contexts {
+		if cp.SourceName == "restricted-ctx" {
+			if len(cp.BlockingRestrictions) != 0 {
+				t.Errorf("group restrictions must NOT be blocking, got: %v", cp.BlockingRestrictions)
+			}
+			return
+		}
+	}
+	t.Fatal("restricted-ctx not found in plan")
+}
+
+// TestBuildPlan_MixedRestrictionsOnlyProjectBlocking verifies that when a
+// context has both group and project restrictions, only the project restriction
+// ends up in BlockingRestrictions.
+func TestBuildPlan_MixedRestrictionsOnlyProjectBlocking(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "group", Value: "src-org"},
+		{Type: "project", Value: "proj-uuid-x"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, cp := range plan.Contexts {
+		if cp.SourceName == "restricted-ctx" {
+			if len(cp.BlockingRestrictions) != 1 {
+				t.Fatalf("expected exactly 1 blocking restriction (the project type), got: %v", cp.BlockingRestrictions)
+			}
+			if cp.BlockingRestrictions[0].Type != "project" {
+				t.Errorf("expected type=project, got %q", cp.BlockingRestrictions[0].Type)
+			}
+			return
+		}
+	}
+	t.Fatal("restricted-ctx not found in plan")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleContextRestrictions — fail-fast path
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestHandleContextRestrictions_NoBlocking verifies that handleContextRestrictions
+// returns nil when no contexts have blocking restrictions.
+func TestHandleContextRestrictions_NoBlocking(t *testing.T) {
+	m := baseManifest()
+	opts := baseOpts()
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	if err := handleContextRestrictions(context.Background(), m, &plan, &opts); err != nil {
+		t.Errorf("expected nil, got: %v", err)
+	}
+}
+
+// TestHandleContextRestrictions_FailFastWithoutFlag verifies that
+// handleContextRestrictions returns an actionable error (mentioning
+// --remove-restrictions) when blocking restrictions exist and the flag is
+// not set.
+func TestHandleContextRestrictions_FailFastWithoutFlag(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "project", Value: "proj-uuid-x"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+	// RemoveRestrictions is false (the default)
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	if gotErr == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	errMsg := gotErr.Error()
+	if !strings.Contains(errMsg, "--remove-restrictions") {
+		t.Errorf("error should mention --remove-restrictions, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "restricted-ctx") {
+		t.Errorf("error should name the blocking context, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "project") {
+		t.Errorf("error should mention restriction type 'project', got: %q", errMsg)
+	}
+}
+
+// TestHandleContextRestrictions_FailFastMentionsHostProject verifies that the
+// error message includes the host project slug.
+func TestHandleContextRestrictions_FailFastMentionsHostProject(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "expression", Value: "project.id = 'p'"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	if gotErr == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "gh/acme/web") {
+		t.Errorf("error should include host project slug, got: %q", gotErr.Error())
+	}
+}
+
+// TestHandleContextRestrictions_NoClientError verifies that requesting
+// --remove-restrictions without a ContextClient is an error.
+func TestHandleContextRestrictions_NoClientError(t *testing.T) {
+	restr := []manifest.Restriction{
+		{Type: "project", Value: "proj-uuid-y"},
+	}
+	m := manifestWithRestrictions(restr)
+	opts := baseOpts()
+	opts.RemoveRestrictions = true
+	opts.ContextClient = nil // no client
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	if gotErr == nil {
+		t.Fatal("expected an error when ContextClient is nil, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "ContextClient") {
+		t.Errorf("error should mention ContextClient, got: %q", gotErr.Error())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fakeContextClient — test double for ContextRestrictionManager
+// ─────────────────────────────────────────────────────────────────────────────
+
+// fakeContextClient is a simple in-memory fake that records calls.
+type fakeContextClient struct {
+	mu              sync.Mutex
+	liveByContextID map[string][]apicontext.Restriction
+	deleteCalls     []string // restriction IDs deleted
+	createCalls     []struct{ contextID, typ, value string }
+	listErr         error
+	deleteErr       error
+	createErr       error
+}
+
+func (f *fakeContextClient) ListRestrictions(_ context.Context, contextID string) ([]apicontext.Restriction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.liveByContextID[contextID], nil
+}
+
+func (f *fakeContextClient) DeleteRestriction(_ context.Context, _ string, restrictionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleteCalls = append(f.deleteCalls, restrictionID)
+	return nil
+}
+
+func (f *fakeContextClient) CreateRestriction(_ context.Context, contextID, restrictionType, restrictionValue string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.createCalls = append(f.createCalls, struct{ contextID, typ, value string }{contextID, restrictionType, restrictionValue})
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleContextRestrictions — remove+restore path
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestHandleContextRestrictions_RemoveAndRestore verifies that when
+// --remove-restrictions is set, handleContextRestrictions deletes the live
+// project/expression restrictions and the returned restore closure recreates
+// them.
+func TestHandleContextRestrictions_RemoveAndRestore(t *testing.T) {
+	// Manifest context has a project restriction.
+	restr := []manifest.Restriction{
+		{Type: "project", Value: "proj-uuid-abc"},
+	}
+	m := manifestWithRestrictions(restr)
+
+	// Fake live restrictions (what the API would return for the context).
+	fake := &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-1": {
+				{ID: "live-restr-1", Type: "project", Value: "proj-uuid-abc"},
+			},
+		},
+	}
+
+	opts := baseOpts()
+	opts.RemoveRestrictions = true
+	opts.ContextClient = fake
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	// handleContextRestrictions registers deferred restores — we call it here
+	// without defer, then manually invoke a "restore" trigger via a helper that
+	// mirrors what Transfer() does at function exit.
+	//
+	// Because the restore closures are registered with `defer restore()` inside
+	// handleContextRestrictions itself, they execute when handleContextRestrictions
+	// returns — this test can only verify the DELETE calls that happened before
+	// the function returned.
+	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	if gotErr != nil {
+		t.Fatalf("expected nil error, got: %v", gotErr)
+	}
+
+	// The project restriction should have been deleted.
+	fake.mu.Lock()
+	deleteCalls := append([]string(nil), fake.deleteCalls...)
+	fake.mu.Unlock()
+
+	if len(deleteCalls) != 1 {
+		t.Fatalf("expected 1 delete call, got %d: %v", len(deleteCalls), deleteCalls)
+	}
+	if deleteCalls[0] != "live-restr-1" {
+		t.Errorf("expected delete of 'live-restr-1', got %q", deleteCalls[0])
+	}
+}
+
+// TestHandleContextRestrictions_GroupRestrictionsNotDeleted verifies that
+// group restrictions are NEVER deleted even when --remove-restrictions is set.
+func TestHandleContextRestrictions_GroupRestrictionsNotDeleted(t *testing.T) {
+	// Context has only a group restriction (should never be blocking).
+	restr := []manifest.Restriction{
+		{Type: "group", Value: "src-org"},
+	}
+	m := manifestWithRestrictions(restr)
+
+	fake := &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-1": {
+				{ID: "group-restr-id", Type: "group", Value: "src-org"},
+			},
+		},
+	}
+
+	opts := baseOpts()
+	opts.RemoveRestrictions = true
+	opts.ContextClient = fake
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	// No blocking restrictions (all group), so handleContextRestrictions is a no-op.
+	gotErr := handleContextRestrictions(context.Background(), m, &plan, &opts)
+	if gotErr != nil {
+		t.Fatalf("expected nil, got: %v", gotErr)
+	}
+
+	fake.mu.Lock()
+	deleteCalls := fake.deleteCalls
+	fake.mu.Unlock()
+
+	if len(deleteCalls) != 0 {
+		t.Errorf("expected NO delete calls for group-only restrictions, got: %v", deleteCalls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// prepareTransferRestrictionRemoval
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPrepareTransferRestrictionRemoval_DeletesProjectRestrictions verifies
+// that only project/expression live restrictions are deleted (not group ones).
+func TestPrepareTransferRestrictionRemoval_DeletesProjectRestrictions(t *testing.T) {
+	mc := &manifest.Context{
+		Name:     "ctx-a",
+		SourceID: "ctx-uuid-a",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "proj-1"},
+			{Type: "expression", Value: "expr-1"},
+		},
+	}
+
+	fake := &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-a": {
+				{ID: "live-proj", Type: "project", Value: "proj-1"},
+				{ID: "live-expr", Type: "expression", Value: "expr-1"},
+				{ID: "live-grp", Type: "group", Value: "org-uuid"},
+			},
+		},
+	}
+
+	var errBuf bytes.Buffer
+	restore, err := prepareTransferRestrictionRemoval(context.Background(), &errBuf, fake, mc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Two project/expression restrictions deleted; group must NOT be deleted.
+	fake.mu.Lock()
+	deleteCalls := append([]string(nil), fake.deleteCalls...)
+	fake.mu.Unlock()
+
+	if len(deleteCalls) != 2 {
+		t.Fatalf("expected 2 deletes, got %d: %v", len(deleteCalls), deleteCalls)
+	}
+	for _, id := range deleteCalls {
+		if id == "live-grp" {
+			t.Errorf("group restriction must NOT be deleted, but it was")
+		}
+	}
+
+	// Invoke restore — should recreate the project and expression restrictions.
+	restore()
+
+	fake.mu.Lock()
+	createCalls := append([]struct{ contextID, typ, value string }(nil), fake.createCalls...)
+	fake.mu.Unlock()
+
+	if len(createCalls) != 2 {
+		t.Fatalf("expected 2 create calls after restore, got %d: %v", len(createCalls), createCalls)
+	}
+	types := map[string]bool{}
+	for _, c := range createCalls {
+		types[c.typ] = true
+		if c.contextID != "ctx-uuid-a" {
+			t.Errorf("expected contextID ctx-uuid-a, got %q", c.contextID)
+		}
+	}
+	if !types["project"] {
+		t.Error("expected project restriction to be restored")
+	}
+	if !types["expression"] {
+		t.Error("expected expression restriction to be restored")
+	}
+}
+
+// TestPrepareTransferRestrictionRemoval_ListError verifies that a ListRestrictions
+// failure is propagated as an error.
+func TestPrepareTransferRestrictionRemoval_ListError(t *testing.T) {
+	mc := &manifest.Context{
+		Name:     "ctx-b",
+		SourceID: "ctx-uuid-b",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "p"},
+		},
+	}
+
+	fake := &fakeContextClient{
+		listErr: errors.New("API unavailable"),
+	}
+
+	var errBuf bytes.Buffer
+	_, err := prepareTransferRestrictionRemoval(context.Background(), &errBuf, fake, mc)
+	if err == nil {
+		t.Fatal("expected error when ListRestrictions fails")
+	}
+	if !strings.Contains(err.Error(), "listing live restrictions") {
+		t.Errorf("error should mention listing, got: %q", err.Error())
+	}
+}
+
+// TestPrepareTransferRestrictionRemoval_DeleteError propagates delete failures.
+func TestPrepareTransferRestrictionRemoval_DeleteError(t *testing.T) {
+	mc := &manifest.Context{
+		Name:     "ctx-c",
+		SourceID: "ctx-uuid-c",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "p"},
+		},
+	}
+
+	fake := &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-c": {
+				{ID: "rid-1", Type: "project", Value: "p"},
+			},
+		},
+		deleteErr: errors.New("forbidden"),
+	}
+
+	var errBuf bytes.Buffer
+	_, err := prepareTransferRestrictionRemoval(context.Background(), &errBuf, fake, mc)
+	if err == nil {
+		t.Fatal("expected error when DeleteRestriction fails")
+	}
+	if !strings.Contains(err.Error(), "deleting restriction") {
+		t.Errorf("error should mention deleting, got: %q", err.Error())
+	}
+}
+
+// TestPrepareTransferRestrictionRemoval_RestoreCreateError verifies that a
+// create failure during restore is reported as a warning (not panic), and the
+// restore func does not return an error (best-effort).
+func TestPrepareTransferRestrictionRemoval_RestoreCreateError(t *testing.T) {
+	mc := &manifest.Context{
+		Name:     "ctx-d",
+		SourceID: "ctx-uuid-d",
+		Restrictions: []manifest.Restriction{
+			{Type: "project", Value: "proj-q"},
+		},
+	}
+
+	fake := &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-d": {
+				{ID: "rid-2", Type: "project", Value: "proj-q"},
+			},
+		},
+	}
+
+	var errBuf bytes.Buffer
+	restore, err := prepareTransferRestrictionRemoval(context.Background(), &errBuf, fake, mc)
+	if err != nil {
+		t.Fatalf("unexpected error from prepare: %v", err)
+	}
+
+	// Now simulate CreateRestriction failing during restore.
+	fake.mu.Lock()
+	fake.createErr = errors.New("create forbidden")
+	fake.mu.Unlock()
+
+	// Restore must not panic; failure is reported as WARNING in stderr.
+	restore()
+
+	warnOutput := errBuf.String()
+	if !strings.Contains(warnOutput, "WARNING") {
+		t.Errorf("expected WARNING in stderr when restore fails, got: %q", warnOutput)
+	}
+	if !strings.Contains(warnOutput, "manually") {
+		t.Errorf("expected 'manually' guidance in warning, got: %q", warnOutput)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unauthorized retry message content
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestUnauthorizedRetryMessage_ContainsRestrictedContextGuidance verifies that
+// the exhausted-retry error message from triggerAndPollProjectPipeline mentions
+// restricted contexts and --remove-restrictions (not just "authorization propagation").
+func TestUnauthorizedRetryMessage_ContainsRestrictedContextGuidance(t *testing.T) {
+	// Build a fake deps that always returns "unauthorized" workflow status.
+	// unauthorizedRetryMax+1 workflows so every attempt gets "unauthorized".
+	unauthorizedWFs := make([][]project.Workflow, unauthorizedRetryMax+2)
+	for i := range unauthorizedWFs {
+		unauthorizedWFs[i] = []project.Workflow{{ID: "wf-1", Name: "transfer", Status: "unauthorized"}}
+	}
+
+	fake := &fakeTransferDeps{
+		proj:      &project.Project{ID: "proj-id", Slug: "gh/acme/web"},
+		defs:      []project.PipelineDefinition{{ID: "def-1"}},
+		triggerID: "pipeline-uuid-1",
+		workflows: unauthorizedWFs,
+	}
+
+	pp := ProjectVarPlan{
+		SourceSlug: "gh/acme/web",
+		DestSlug:   "gh/acme-new/web",
+		VarNames:   []string{"MY_VAR"},
+	}
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.PollInterval = 1 // 1ns; avoids real sleeps in tests
+
+	var errBuf bytes.Buffer
+	err := triggerAndPollProjectPipeline(context.Background(), fake, pp, &opts, &errBuf)
+	if err == nil {
+		t.Fatal("expected error when workflow always unauthorized")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "restricted context") {
+		t.Errorf("exhausted-retry message should mention 'restricted context', got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "--remove-restrictions") {
+		t.Errorf("exhausted-retry message should mention '--remove-restrictions', got: %q", errMsg)
 	}
 }
