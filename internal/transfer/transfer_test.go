@@ -1555,6 +1555,40 @@ func TestTriggerAndPollProjectPipeline_UnauthorizedThenSuccess(t *testing.T) {
 	}
 }
 
+// TestRunContextPipeline_UnauthorizedThenSuccess verifies the context pipeline
+// path also retries on an "unauthorized" workflow (e.g. a just-followed host
+// project whose context authorization hasn't propagated) and then succeeds.
+func TestRunContextPipeline_UnauthorizedThenSuccess(t *testing.T) {
+	deps := &retryFakeTransferDeps{failCount: 1} // unauthorized once, then success
+	m := &manifest.Manifest{}
+	plan := &Plan{
+		Contexts: []ContextPlan{{SourceName: "deploy-prod", DestName: "deploy-prod", VarNames: []string{"K"}}},
+	}
+	opts := &Options{
+		HostProjectSlug:  "gh/acme/web",
+		DestOrgID:        "dest-org-uuid",
+		DestTokenContext: "migration-secrets",
+		PollInterval:     1, // short, so we don't sleep 30s
+		Stdout:           &bytes.Buffer{},
+		Stderr:           &bytes.Buffer{},
+	}
+
+	var errOut bytes.Buffer
+	opts.Stderr = &errOut
+	if err := runContextPipeline(context.Background(), deps, m, plan, opts); err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	deps.mu.Lock()
+	count := deps.triggerCount
+	deps.mu.Unlock()
+	if count != 2 {
+		t.Errorf("expected 2 TriggerPipelineRun calls (initial + 1 retry), got %d", count)
+	}
+	if !strings.Contains(errOut.String(), "unauthorized") {
+		t.Errorf("expected 'unauthorized' retry message, got: %s", errOut.String())
+	}
+}
+
 // TestTriggerAndPollProjectPipeline_UnauthorizedAllRetries verifies that when
 // all retries are exhausted the function returns a wrapped ErrWorkflowFailed
 // with an actionable message.
