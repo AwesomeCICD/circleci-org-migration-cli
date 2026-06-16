@@ -119,7 +119,7 @@ func newCaptureFakeServer(t *testing.T, secretPayload map[string]string) *fakeCa
 	})
 
 	// Trigger pipeline run.
-	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, map[string]any{"id": "pipe-uuid-1", "number": 1})
 	})
 
@@ -604,7 +604,7 @@ func TestSecretsCapture_FlagRestoredOnError(t *testing.T) {
 			"next_page_token": "",
 		})
 	})
-	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, map[string]any{"id": "pipe-uuid-1", "number": 1})
 	})
 	// Return a failed workflow to force an error in Capture.
@@ -955,7 +955,7 @@ func newCaptureFakeServerWithRestrictions(
 		})
 	})
 
-	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v2/project/gh/acme/web/pipeline", func(w http.ResponseWriter, r *http.Request) {
 		fswr.restrictionCalls = append(fswr.restrictionCalls, "PIPELINE_RUN")
 		if triggerPipelineErr {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"message": "trigger failed"})
@@ -1429,7 +1429,7 @@ func newCaptureFakeServerTwoProjects(t *testing.T, secretPayload map[string]stri
 				"next_page_token": "",
 			})
 		})
-		mux.HandleFunc("/api/v2/project/"+slug+"/pipeline/run", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/v2/project/"+slug+"/pipeline", func(w http.ResponseWriter, r *http.Request) {
 			pipelineTriggerCount++
 			writeJSON(w, http.StatusCreated, map[string]any{"id": pipeID, "number": 1})
 		})

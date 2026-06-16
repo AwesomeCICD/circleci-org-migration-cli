@@ -79,6 +79,7 @@ type PipelineRunner interface {
 // WorkflowPoller returns the current workflows for a pipeline.
 type WorkflowPoller interface {
 	GetPipelineWorkflows(ctx context.Context, pipelineID string) ([]project.Workflow, error)
+	GetPipeline(ctx context.Context, pipelineID string) (*project.Pipeline, error)
 }
 
 // PipelineDefLister lists pipeline definitions for a project.
@@ -1149,6 +1150,17 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 // it.  It returns an error if ctx is cancelled.
 func pollWorkflow(ctx context.Context, poller WorkflowPoller, pipelineID string, interval time.Duration, errOut io.Writer) (project.Workflow, error) {
 	for {
+		// Check the pipeline state FIRST. An "errored" pipeline (e.g. a
+		// config-fetch failure) produces NO workflows, so a workflow-only poll
+		// would hang until the context deadline. Fail fast with the real error.
+		if pl, err := poller.GetPipeline(ctx, pipelineID); err == nil && pl.State == "errored" {
+			msg := "pipeline errored before any workflow ran"
+			if len(pl.Errors) > 0 {
+				msg = pl.Errors[0].Message
+			}
+			return project.Workflow{}, fmt.Errorf("pipeline %q errored: %s", pipelineID, msg)
+		}
+
 		workflows, err := poller.GetPipelineWorkflows(ctx, pipelineID)
 		if err != nil {
 			return project.Workflow{}, fmt.Errorf("GetPipelineWorkflows: %w", err)

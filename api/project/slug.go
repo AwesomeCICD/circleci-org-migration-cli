@@ -17,6 +17,19 @@ func SplitSlug(slug string) (provider, org, proj string, err error) {
 	return parts[0], parts[1], parts[2], nil
 }
 
+// isStandaloneSlug reports whether a project slug belongs to a GitHub App /
+// standalone org (provider segment "circleci", e.g.
+// "circleci/<org-id>/<proj-id>") as opposed to a classic VCS-integrated org
+// ("gh/...", "github/...", "bb/...", "bitbucket/..."). The two require
+// different inline-config trigger endpoints (see TriggerPipelineRun).
+func isStandaloneSlug(slug string) bool {
+	provider, _, _, err := SplitSlug(slug)
+	if err != nil {
+		return false
+	}
+	return provider == "circleci"
+}
+
 // slugPath builds a URL for a project slug path of the form:
 //
 //	project/<provider>/<org>/<repo>
