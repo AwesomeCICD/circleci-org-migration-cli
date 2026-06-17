@@ -336,7 +336,7 @@ func compareProjects(src, dst *manifest.Manifest, mapping *manifest.Mapping) Sec
 				Status:  StatusManual,
 				Section: "Projects",
 				Name:    sp.Slug + "/followed",
-				Detail:  fmt.Sprintf("project %q exists on destination but is not followed/enabled — enable builds via the CircleCI UI", destSlug),
+				Detail:  fmt.Sprintf("project %q exists on destination but shows as not followed/enabled. If you JUST ran apply, the follow may still be propagating — re-run validate in a minute. If it persists, enable builds for the project in the CircleCI UI.", destSlug),
 			})
 		}
 

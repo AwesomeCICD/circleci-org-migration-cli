@@ -249,13 +249,13 @@ circleci-migrate secrets capture \
   --output secrets.json
 ```
 
-SSH key extraction is on by default. Pass `--no-ssh-keys` to skip it (env-var
+SSH key extraction is on by default. Pass `--ssh-keys=false` to skip it (env-var
 capture only):
 
 ```bash
 circleci-migrate secrets capture \
   --manifest manifest.json \
-  --no-ssh-keys \
+  --ssh-keys=false \
   --encrypt \
   --generate-key \
   --artifact-retention-days 1 \
