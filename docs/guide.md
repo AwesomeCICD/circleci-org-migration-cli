@@ -103,6 +103,49 @@ them — encrypted by default, never stored in plain text.
 `migrate` is the all-in-one command that runs export → sync in one step (with an
 interactive walkthrough when run with no flags).
 
+#### Interactive walkthrough — overview
+
+Running `migrate` with no flags on a TTY launches a **3-step guided walkthrough**:
+
+| Step | What it collects |
+|------|-----------------|
+| 1 | Source and destination org slugs |
+| 2 | API tokens (source + destination) |
+| 3 | Components to migrate, orb/runner namespaces, and secret-value method |
+
+After the walkthrough completes, the CLI performs a **dry-run automatically**,
+prints a concise summary (totals + any items needing manual action), and asks:
+
+> **Apply these changes to the destination now? [y/N]**
+
+Answer `y` to apply immediately without re-walking or re-exporting.  Answer `n`
+(or press Enter) to leave the destination unchanged — the dry-run output and a
+full audit document (`migration-report.md`) remain for your review.  To apply
+later, re-run with `--apply`.
+
+**Quiet / actionable output in guided mode**
+
+In guided mode, verbose per-section tables are suppressed; instead the CLI
+prints one-line summaries:
+
+```
+Exported: 12 contexts (48 vars), 8 projects (31 vars), 2 orbs, 0 runner classes, 0 warnings
+Full detail: ./migration-report.md
+```
+
+After the dry-run sync:
+
+```
+== Migration summary ==
+  Totals: 12 created · 3 exists · 1 manual
+
+  Needs attention:
+    [!] [Contexts] my-secret-ctx — manual: MASKED value; set manually
+```
+
+The full per-item report is always written to `migration-report.md` (default in
+guided mode, or `--report <path>`) so no detail is lost.
+
 #### Interactive walkthrough — what gets migrated (Step 3)
 
 When you run `migrate` with no flags on a TTY, Step 3 of the guided walkthrough
@@ -117,11 +160,12 @@ selected by default:
 - **runners** — self-hosted runner resource classes (new in v0.13.0)
 
 When you select **orbs** or **runners**, the walkthrough immediately asks for
-the source and destination namespaces, defaulting to the org's short name (e.g.
-`acme` from `gh/acme`).  For `circleci/<uuid>` (App) orgs, the default is
-empty and you type the namespace yourself.  Leaving a namespace blank skips that
-component.  There is no API to auto-resolve the namespace from an org name, so
-you must confirm or type the value.
+the source and destination namespaces.  The CLI first attempts to auto-detect
+the namespace from the org's registered orbs (best-effort, 2-second timeout);
+if that fails it defaults to the org's short name (e.g. `acme` from `gh/acme`).
+For `circleci/<uuid>` (App) orgs without registered orbs the default is empty
+and you type the namespace yourself.  Leaving a namespace blank skips that
+component.
 
 To migrate orbs/runners non-interactively, pass the explicit namespace flags:
 `--orb-namespace` / `--dest-orb-namespace` and `--runner-namespace` /
@@ -135,11 +179,21 @@ choices (in-pipeline transfer is the recommended default):
 
 1. **in-pipeline transfer (RECOMMENDED)** — runs a pipeline in the SOURCE org
    that pushes context and (optionally) project env-var values and SSH keys
-   directly to the destination.  No plaintext is written to disk.  Requires a
-   destination API token stored in a source-org context (`CIRCLECI_DEST_TOKEN`).
-   Follow-up prompts collect: the context name, whether to include project vars,
-   SSH keys, whether to temporarily lift context restrictions, and an optional
-   host-project override (blank = auto-pick).
+   directly to the destination.  No plaintext is written to disk.
+
+   You are first prompted:
+
+   > Create a context in the SOURCE org containing an API token with admin
+   > access to the DESTINATION org, stored as the variable `CIRCLECI_DEST_TOKEN`.
+   > Enter that context's name:
+
+   Then follow-up prompts collect: whether to include project vars, SSH keys,
+   whether to temporarily lift context restrictions, and an optional host-project:
+
+   > Pick a SOURCE project under which to run the secrets-extraction pipeline
+   > (it triggers a short-lived pipeline there to read context/project values).
+   > Leave blank to auto-pick an established project.
+
 2. **captured secrets bundle (advanced)** — supply a `secrets.json` produced by
    `secrets capture`.  Follow-up prompts ask for the bundle path and how to
    handle missing values (`skip` or `placeholder`).

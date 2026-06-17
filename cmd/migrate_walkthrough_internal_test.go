@@ -42,7 +42,7 @@ func withStdin(t *testing.T, input string) {
 
 // TestRunMigrateWalkthrough_Wrapper drives the unexported runMigrateWalkthrough
 // wrapper end-to-end with a scripted stdin, covering the thin delegation to
-// RunMigrateWalkthroughWith (none-method, dry-run path).
+// RunMigrateWalkthroughWith (none-method path).
 func TestRunMigrateWalkthrough_Wrapper(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
@@ -56,7 +56,7 @@ func TestRunMigrateWalkthrough_Wrapper(t *testing.T) {
 		"",  // dest runner namespace: accept default (dst)
 		"3", // secrets method: none
 		"1", // missing-secrets: skip
-		"y", // dry run
+		// Note: "dry run?" removed from walkthrough (Feature A, now in RunE).
 	}
 	withStdin(t, strings.Join(lines, "\n")+"\n")
 
@@ -72,31 +72,21 @@ func TestRunMigrateWalkthrough_Wrapper(t *testing.T) {
 	if res.SourceOrg != "gh/src" || res.DestOrg != "gh/dst" {
 		t.Errorf("orgs = (%q, %q), want (gh/src, gh/dst)", res.SourceOrg, res.DestOrg)
 	}
+	// Feature A: walkthrough always returns Apply=false; RunE handles the confirm.
 	if res.Apply {
-		t.Error("expected apply=false for dry-run choice")
+		t.Error("expected apply=false (Feature A: apply confirm moved to RunE)")
 	}
 }
 
 // TestRunMigrateWalkthrough_Wrapper_PropagatesError verifies the wrapper
-// surfaces an error from the underlying walkthrough (apply confirmation
-// declined → "cancelled" error).
+// surfaces errors from the underlying walkthrough (e.g. EOF on required field).
 func TestRunMigrateWalkthrough_Wrapper_PropagatesError(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 
-	lines := []string{
-		"",  // components: default
-		"",  // source orb namespace: accept default (src)
-		"",  // dest orb namespace: accept default (dst)
-		"",  // source runner namespace: accept default (src)
-		"",  // dest runner namespace: accept default (dst)
-		"3", // secrets method: none
-		"1", // missing-secrets: skip
-		"n", // do NOT dry run → apply=true
-		"n", // decline confirmation
-	}
-	withStdin(t, strings.Join(lines, "\n")+"\n")
+	// Provide no input at all → the multiselect prompt will get EOF and error.
+	withStdin(t, "")
 
 	root := MakeCommands()
 	var outBuf strings.Builder
@@ -105,10 +95,97 @@ func TestRunMigrateWalkthrough_Wrapper_PropagatesError(t *testing.T) {
 
 	_, err := runMigrateWalkthrough(root, &settings.Config{}, "gh/src", "gh/dst", false)
 	if err == nil {
-		t.Fatal("expected cancellation error from wrapper")
+		t.Fatal("expected error from wrapper when stdin is empty")
 	}
-	if !strings.Contains(err.Error(), "cancelled") {
-		t.Errorf("expected 'cancelled' error, got: %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// askApplyAfterDryRun — post-dry-run confirm (Feature A)
+// ---------------------------------------------------------------------------
+
+// TestAskApplyAfterDryRun_ConfirmsApply verifies that answering "y" returns
+// true and no error.
+func TestAskApplyAfterDryRun_ConfirmsApply(t *testing.T) {
+	var outBuf strings.Builder
+	p := NewPrompter(strings.NewReader("y\n"), &outBuf)
+	wt := MigrateWalkthroughResult{
+		SourceOrg: "gh/src",
+		DestOrg:   "gh/dst",
+	}
+	doApply, err := askApplyAfterDryRun(p, &outBuf, wt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !doApply {
+		t.Error("expected doApply=true when user answers 'y'")
+	}
+}
+
+// TestAskApplyAfterDryRun_DeclinesApply verifies that answering "n" (default)
+// returns false and no error.
+func TestAskApplyAfterDryRun_DeclinesApply(t *testing.T) {
+	var outBuf strings.Builder
+	p := NewPrompter(strings.NewReader("n\n"), &outBuf)
+	wt := MigrateWalkthroughResult{
+		SourceOrg: "gh/src",
+		DestOrg:   "gh/dst",
+	}
+	doApply, err := askApplyAfterDryRun(p, &outBuf, wt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doApply {
+		t.Error("expected doApply=false when user answers 'n'")
+	}
+}
+
+// TestAskApplyAfterDryRun_OrbRunnerSummary verifies that when orbs and runners
+// are selected, the apply summary includes the "Orbs:" and "Runners:" lines
+// with namespace mapping.
+func TestAskApplyAfterDryRun_OrbRunnerSummary(t *testing.T) {
+	var outBuf strings.Builder
+	p := NewPrompter(strings.NewReader("n\n"), &outBuf)
+	wt := MigrateWalkthroughResult{
+		SourceOrg:           "gh/acme",
+		DestOrg:             "gh/acme-new",
+		OrbNamespace:        "acme",
+		DestOrbNamespace:    "acme-new",
+		RunnerNamespace:     "acme",
+		DestRunnerNamespace: "acme-new",
+	}
+	_, _ = askApplyAfterDryRun(p, &outBuf, wt)
+
+	out := outBuf.String()
+	if !strings.Contains(out, "Orbs:") {
+		t.Errorf("expected 'Orbs:' line in apply summary; got:\n%s", out)
+	}
+	if !strings.Contains(out, "acme → acme-new") {
+		t.Errorf("expected 'acme → acme-new' namespace mapping; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Runners:") {
+		t.Errorf("expected 'Runners:' line in apply summary; got:\n%s", out)
+	}
+}
+
+// TestAskApplyAfterDryRun_InPipelineSummary verifies that the apply summary
+// includes the in-pipeline transfer context reference.
+func TestAskApplyAfterDryRun_InPipelineSummary(t *testing.T) {
+	var outBuf strings.Builder
+	p := NewPrompter(strings.NewReader("n\n"), &outBuf)
+	wt := MigrateWalkthroughResult{
+		SourceOrg:          "gh/acme",
+		DestOrg:            "gh/acme-new",
+		TransferSecrets:    true,
+		DestTokenContext:   "my-ctx",
+		IncludeProjectVars: true,
+		IncludeSSHKeys:     true,
+		RemoveRestrictions: true,
+	}
+	_, _ = askApplyAfterDryRun(p, &outBuf, wt)
+
+	out := outBuf.String()
+	if !strings.Contains(out, `in-pipeline transfer via context "my-ctx"`) {
+		t.Errorf("expected apply summary to mention in-pipeline transfer via context; got:\n%s", out)
 	}
 }
 
@@ -220,6 +297,8 @@ func TestMigrateCmd_Interactive_WalkthroughToValidation(t *testing.T) {
 	t.Setenv("CIRCLE_TOKEN", "")
 
 	// Scripted answers (no org flags → both prompted):
+	// Note: "dry run?" removed from walkthrough (Feature A, now in RunE).
+	// The export will fail on the network with a fake token — that's expected.
 	lines := []string{
 		"gh/acme",      // source org
 		"gh/acme-new",  // dest org
@@ -232,7 +311,6 @@ func TestMigrateCmd_Interactive_WalkthroughToValidation(t *testing.T) {
 		"",             // dest runner namespace: accept default (acme-new)
 		"3",            // secrets method: none
 		"1",            // missing-secrets: skip
-		"y",            // dry run (apply=false)
 	}
 	stdin := strings.Join(lines, "\n") + "\n"
 
