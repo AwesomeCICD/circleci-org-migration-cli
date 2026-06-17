@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.0...v0.17.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **sync:** stop spurious danger-flag 'set manually' noise + add --include-danger-flags ([#299](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/299)) ([2a712a2](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/2a712a214c2baae286b05cbf98c98a9900cff688))
+
 ## [0.17.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.16.0...v0.17.0) (2026-06-17)
 
 
