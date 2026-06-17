@@ -8,7 +8,7 @@ rendered to **CircleCI-branded PDFs**.
 | [secrets-transfer-guide.md](secrets-transfer-guide.md) | Moving **context + project env vars** between two CircleCI orgs, in-pipeline, with no secrets on disk. |
 | [oauth-to-oauth-migration-guide.md](oauth-to-oauth-migration-guide.md) | A full **GitHub OAuth → OAuth** org migration runbook with checklists and validation gates. |
 
-Both target `circleci-migrate` **v0.12.0+** and assume GitHub OAuth orgs
+Both target `circleci-migrate` **v0.17.1+** and assume GitHub OAuth orgs
 (`gh/<name>` slugs).
 
 ---

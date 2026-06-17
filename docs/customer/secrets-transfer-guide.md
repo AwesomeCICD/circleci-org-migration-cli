@@ -24,6 +24,15 @@ projects, pipelines, or org settings. (For a full migration, see the companion
 > owns it. `secrets transfer` uses this fact to move values securely, in-flight,
 > without ever writing them to a file, an artifact, or external storage.
 
+> **Prerequisite — destination projects must already exist.** To transfer
+> **project** environment variables, the matching destination projects must
+> already be **onboarded/created** in the destination org; the transfer skips
+> any project it can't map to an existing destination project. (Destination
+> **contexts** are created automatically; **projects** are not.) Run your org /
+> project / context sync first — or follow the *GitHub OAuth → OAuth Migration
+> Guide* — before transferring project env vars. Context-only transfers have no
+> such requirement.
+
 ---
 
 ## 1. How it works (the security model)
@@ -40,7 +49,6 @@ projects, pipelines, or org settings. (For a full migration, see the companion
    over TLS, then exits.
 
 **No secret value ever touches disk, a build artifact, or external storage.**
-This is strictly more secure than exporting secrets to an encrypted file.
 
 ### The destination token is never embedded
 
@@ -67,7 +75,7 @@ put that token in any file or config. Instead:
 |---|---|---|
 | **Context environment variables** | ✅ Yes | One pipeline carries all contexts. Missing destination contexts are **created automatically**. |
 | **Project environment variables** | ✅ Yes (opt-in: `--include-project-vars`) | One pipeline **per project** (see §5). Destination project must already exist. |
-| **SSH keys / checkout keys** | ❌ No | Use the `secrets capture` flow, or re-add manually. |
+| **Additional project SSH keys** | ✅ Yes (opt-in: `--include-ssh-keys`) | Same in-pipeline zero-disk path as project env vars. Requires `--mapping`. Checkout / deploy keys are re-created automatically when you follow the project. |
 | **Restricted contexts** | ⚠️ Skipped by default | See §6. |
 
 ---
@@ -87,11 +95,17 @@ Before you begin, confirm each of the following.
       config*). The CLI will detect this and offer to enable it if it is off.
 - [ ] The destination organization's **Organization ID** (a UUID). Find it in
       the destination org's **Organization Settings → Overview**.
+- [ ] **(Project env vars only)** The destination **projects are already
+      onboarded/created** in the destination org. The transfer auto-creates
+      destination *contexts* but **not** projects, and skips any project with no
+      existing destination counterpart. Run the org/project/context sync (or the
+      *GitHub OAuth → OAuth Migration Guide*) first. Context-only transfers do
+      not need this.
 - [ ] The `circleci-migrate` CLI installed:
 
 ```bash
 brew install AwesomeCICD/tap/circleci-migrate
-circleci-migrate version    # confirm v0.12.0 or later
+circleci-migrate version    # confirm v0.17.1 or later
 ```
 
 Set your tokens once for the session:
@@ -241,9 +255,15 @@ The summary reports how many context and project pipelines succeeded.
 
 ### Restricted contexts
 
-Contexts with **project or expression restrictions** block the transfer pipeline
-by default: the host project must be in the allowed set, and if it is not, the
-workflow will come back "unauthorized."
+**Project-type and expression restrictions** block the transfer pipeline by
+default when the host project is not in the allowed set — the workflow returns
+"unauthorized."
+
+> **Context restrictions and `sync`:** when you run the full migration (`sync
+> --apply`), **project-type restrictions are remapped and recreated
+> automatically** on the destination via the project mapping. **Group**
+> restrictions require manual recreation in the destination UI — group IDs
+> differ between orgs and cannot be remapped automatically.
 
 **Default behavior (no flag):** the CLI detects blocking restrictions from the
 manifest at plan time and fails fast with an actionable error listing the affected
@@ -251,8 +271,8 @@ contexts and instructions to re-run with `--remove-restrictions`.
 
 **With `--remove-restrictions`:** the CLI temporarily removes project/expression
 restrictions from the source context, triggers the transfer pipeline, then
-restores them afterwards (best-effort). The default "All members" group
-restriction is **never** touched.
+restores them afterwards (best-effort). Group restrictions (including the default
+"All members") are **never** touched.
 
 ```bash
 circleci-migrate secrets transfer \
@@ -289,7 +309,22 @@ In the **destination** org UI:
 - **Project Settings → Environment Variables** — for a sample of projects,
   variable **names** are present (values are masked, as always).
 
-A quick cross-check from the CLI:
+For a structured parity check, use the **`validate`** command — it exports both
+orgs read-only and prints a per-section report (Contexts, Projects, Org
+Settings, Runners, Orbs, CIAM) with ✓ matched / ✗ missing / ⚠ manual items,
+a NEEDS ATTENTION summary, and an exit code of 1 if anything is missing:
+
+```bash
+circleci-migrate validate \
+  --source-org gh/acme \
+  --dest-org gh/acme-new \
+  --mapping mapping.json
+```
+
+> **Note:** secret *values* are never compared — the API masks them. `validate`
+> checks presence and structure (names, counts, settings, restrictions).
+
+Alternatively, a quick manual cross-check:
 
 ```bash
 circleci-migrate export \
@@ -323,7 +358,7 @@ Compare context and project variable counts between `manifest.json` and
 |---|---|
 | `Permission denied` mid-run / pipeline skipped | "Unversioned config" is off in the source org. Re-run with `--enable-trigger`, or enable it in Org Settings → Advanced. |
 | A project shows `SKIP … dest project unknown` | No mapping entry. Run `mapping generate`, or add the entry to `mapping.json`; onboard the repo in the destination first if needed. |
-| Project variables transferred as **empty** | You are on an older CLI. Upgrade to **v0.12.0+**, which runs one pipeline per project so each project's values inject correctly. |
+| Project variables transferred as **empty** | You are on an older CLI. Upgrade to **v0.17.1+**, which runs one pipeline per project so each project's values inject correctly. |
 | `--dest-org-id` rejected | You passed a slug. This flag needs the destination **Organization ID (UUID)** from Org Settings → Overview. |
 | Destination context not created | The destination org must exist and the token must be an org admin token. |
 
@@ -335,20 +370,26 @@ Compare context and project variable counts between `manifest.json` and
 # 1. Export source (read-only)
 circleci-migrate export --source-org gh/acme --output manifest.json
 
-# 2. (project vars only) Generate the mapping
+# 2. (project vars / SSH keys only) Generate the mapping
 circleci-migrate mapping generate --manifest manifest.json --dest-org gh/acme-new -o mapping.json
 
 # 3. Dry run
 circleci-migrate secrets transfer --manifest manifest.json \
-  --dest-org-id <uuid> --dest-token-context migration-secrets [--mapping mapping.json --include-project-vars]
+  --dest-org-id <uuid> --dest-token-context migration-secrets \
+  [--mapping mapping.json] [--include-project-vars] [--include-ssh-keys]
 
 # 4. Apply
 circleci-migrate secrets transfer --manifest manifest.json \
   --dest-org-id <uuid> --dest-token-context migration-secrets \
-  [--mapping mapping.json --include-project-vars] --enable-trigger --apply
+  [--mapping mapping.json] [--include-project-vars] [--include-ssh-keys] \
+  [--remove-restrictions] [--host-project gh/acme/<repo>] \
+  --enable-trigger --apply
+
+# 5. Verify
+circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new --mapping mapping.json
 ```
 
 ---
 
 *© CircleCI. Generated for customer use. Commands assume `circleci-migrate`
-v0.12.0 or later.*
+v0.17.1 or later.*
