@@ -573,8 +573,12 @@ Examples:
 				return reps, nil
 			}
 
-			// ── Dry-run pass ─────────────────────────────────────────────────
-			repsBySection, err := runSyncSections(false /* dry-run */)
+			// ── Sync pass ────────────────────────────────────────────────────
+			// Interactive (guided) mode always dry-runs first, then asks to apply
+			// below. Non-interactive mode honors --apply directly: a regression in
+			// the guided-overhaul refactor hardcoded this to dry-run, so a scripted
+			// `migrate --apply` silently applied nothing.
+			repsBySection, err := runSyncSections(!wantsInteraction && apply)
 			if err != nil {
 				return err
 			}
