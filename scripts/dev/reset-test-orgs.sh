@@ -3,7 +3,8 @@
 # reset-test-orgs.sh — reset the OAuth→OAuth live-test orgs to a known state.
 #
 #   • WIPES the destination org (gh-oauth-cci-2): deletes every context, every
-#     project env var, and every additional project SSH key.
+#     project env var, every additional project SSH key, and resets project
+#     feature flags and the config-policy bundle to defaults.
 #   • (RE)SEEDS the source org (gh-oauth-cci-1) with a deterministic dataset:
 #       - GitHub repos (in BOTH orgs) project-1 / web-app / api-service, each
 #         with a trivial .circleci/config.yml
@@ -11,6 +12,17 @@
 #       - one additional SSH key on web-app (throwaway, generated each run)
 #       - contexts: test-1, deploy-prod, and test-2-restriction (the last with a
 #         PROJECT restriction to project-1, to exercise restricted-context flows)
+#       - org orb settings (allow-uncertified-public-orbs + allow-private-orbs)
+#         enabled on BOTH orgs so orb create/publish/sync work
+#       - config-policy bundle on source (sample Rego policy); cleared on dest
+#       - runner resource class gh-oauth-cci-1/linux-x64 on source (idempotent);
+#         all runner resource classes wiped from dest namespace gh-oauth-cci-2
+#       - orbs on source: gh-oauth-cci-1/demo-orb (public, 3 versions) and
+#         gh-oauth-cci-1/demo-private (private, 1 version) — requires circleci
+#         CLI on PATH; skipped (with warning) if absent; dest orb state is NOT
+#         reset (orb versions are immutable)
+#       - api-service project feature flags set to non-defaults on source
+#         (oss, build-fork-prs, autocancel-builds=true) and reset on dest
 #
 # Idempotent: safe to run repeatedly. Touches ONLY the two test orgs below.
 #
@@ -19,6 +31,7 @@
 #     ADMIN of both orgs.
 #   - GITHUB_TOKEN: a GitHub PAT (repo + admin:org) for both GitHub orgs.
 #   - python3, ssh-keygen, curl, jq.
+#   - circleci CLI (optional): required only for orb seeding; skipped if absent.
 #
 # Usage:
 #   CIRCLECI_CLI_TOKEN=... GITHUB_TOKEN=... scripts/dev/reset-test-orgs.sh
@@ -29,6 +42,7 @@ SRC_ORG="gh-oauth-cci-1"   # source (seeded)
 DST_ORG="gh-oauth-cci-2"   # destination (wiped)
 REPOS=(project-1 web-app api-service)
 API="https://circleci.com"
+RUNNER_API="https://runner.circleci.com"
 
 TOK="${CIRCLECI_CLI_TOKEN:-${CIRCLE_TOKEN:-}}"
 GHT="${GITHUB_TOKEN:-}"
@@ -98,6 +112,27 @@ for repo in "${REPOS[@]}"; do
   echo "    cleared $repo (env vars + ssh keys)"
 done
 
+# Wipe dest config-policy bundle (empty bundle = no policy).
+echo "    clearing dest config-policy bundle"
+cci_w -X POST -H "Content-Type: application/json" \
+  -d '{"policies":{}}' \
+  "$API/api/v2/owner/$DST_ID/context/config/policy-bundle" >/dev/null || true
+
+# Reset dest api-service project feature flags to defaults.
+echo "    resetting dest api-service project feature flags"
+cci_w -X PUT -H "Content-Type: application/json" \
+  -d '{"feature_flags":{"oss":false,"build-fork-prs":false,"autocancel-builds":false}}' \
+  "$API/api/v1.1/project/gh/$DST_ORG/api-service/settings" >/dev/null || true
+
+# Wipe dest runner resource classes (namespace may not exist; guard with || true).
+echo "    wiping dest runner resource classes (namespace $DST_ORG)"
+runner_list="$(curl -fsS -H "Circle-Token: $TOK" \
+  "$RUNNER_API/api/v3/runner/resource?namespace=$DST_ORG" 2>/dev/null || echo '{"items":[]}')"
+for rid in $(printf '%s' "$runner_list" | jqr "import json,sys;[print(i['id']) for i in json.load(sys.stdin).get('items',[])]" 2>/dev/null || true); do
+  curl -fsS -X DELETE -H "Circle-Token: $TOK" \
+    "$RUNNER_API/api/v3/runner/resource/$rid" >/dev/null || true
+done
+
 # ── (RE)SEED source ──────────────────────────────────────────────────────────
 echo "==> Seeding source org $SRC_ORG..."
 
@@ -161,8 +196,148 @@ cci_w -X POST -H "Content-Type: application/json" \
   "$API/api/v2/context/$cr/restrictions" >/dev/null
 echo "    test-2-restriction → project restriction to project-1 ($proj1_uuid)"
 
+# ── A. Org orb settings — enable on BOTH orgs ────────────────────────────────
+echo "==> Enabling org orb settings on both orgs..."
+ORB_FLAGS='{"feature_flags":{"allow-uncertified-public-orbs":true,"allow-private-orbs":true}}'
+cci_w -X PUT -H "Content-Type: application/json" \
+  -d "$ORB_FLAGS" \
+  "$API/api/v1.1/organization/github/$SRC_ORG/settings" >/dev/null || true
+cci_w -X PUT -H "Content-Type: application/json" \
+  -d "$ORB_FLAGS" \
+  "$API/api/v1.1/organization/github/$DST_ORG/settings" >/dev/null || true
+echo "    orb settings enabled (allow-uncertified-public-orbs + allow-private-orbs)"
+
+# ── B. Config policy on SRC (seed); already cleared on DST above ─────────────
+echo "==> Seeding config-policy bundle on source org..."
+SAMPLE_REGO='package org
+
+policy_name["sample_migration_policy"]
+
+enable_rule["check_version"]
+
+check_version = reason {
+  not input.version
+  reason := "version must be defined"
+}'
+# Build the JSON body using python3 to safely embed the Rego string.
+policy_body="$(python3 -c "
+import json, sys
+rego = open(sys.argv[1]).read()
+print(json.dumps({'policies': {'sample.rego': rego}}))
+" <(printf '%s' "$SAMPLE_REGO"))"
+cci_w -X POST -H "Content-Type: application/json" \
+  -d "$policy_body" \
+  "$API/api/v2/owner/$SRC_ID/context/config/policy-bundle" >/dev/null || true
+echo "    config-policy bundle seeded on $SRC_ORG (sample.rego)"
+
+# ── C. Runner resource class on SRC ──────────────────────────────────────────
+echo "==> Seeding runner resource class on source org..."
+runner_http="$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST -H "Circle-Token: $TOK" -H "Content-Type: application/json" \
+  -d "{\"resource_class\":\"$SRC_ORG/linux-x64\",\"description\":\"migration test runner class\"}" \
+  "$RUNNER_API/api/v3/runner/resource")"
+case "$runner_http" in
+  200|201) echo "    runner resource class $SRC_ORG/linux-x64 created" ;;
+  409)     echo "    runner resource class $SRC_ORG/linux-x64 already exists — ok" ;;
+  *)       echo "    WARNING: runner resource class seed got HTTP $runner_http (continuing)" ;;
+esac
+
+# ── D. Orbs on SRC — requires circleci CLI ───────────────────────────────────
+echo "==> Seeding orbs on source org (requires 'circleci' CLI)..."
+if ! command -v circleci >/dev/null 2>&1; then
+  echo "    WARNING: 'circleci' CLI not found on PATH — skipping orb seeding."
+  echo "    Install from https://circleci.com/docs/local-cli/ and re-run to seed orbs."
+else
+  # Write two orb YAML variants to temp files.
+  ORB_V1="$(mktemp /tmp/orb-v1.XXXXXX.yml)"
+  ORB_V2="$(mktemp /tmp/orb-v2.XXXXXX.yml)"
+  cat >"$ORB_V1" <<'ORBEOF'
+version: 2.1
+description: "Migration test orb (v1)"
+commands:
+  greet:
+    description: "Print a greeting"
+    parameters:
+      name:
+        type: string
+        default: "world"
+    steps:
+      - run:
+          name: Greet
+          command: echo "Hello, << parameters.name >>!"
+ORBEOF
+  cat >"$ORB_V2" <<'ORBEOF'
+version: 2.1
+description: "Migration test orb (v2)"
+commands:
+  greet:
+    description: "Print a greeting"
+    parameters:
+      name:
+        type: string
+        default: "world"
+    steps:
+      - run:
+          name: Greet
+          command: echo "Hello, << parameters.name >>!"
+  farewell:
+    description: "Print a farewell"
+    parameters:
+      name:
+        type: string
+        default: "world"
+    steps:
+      - run:
+          name: Farewell
+          command: echo "Goodbye, << parameters.name >>!"
+ORBEOF
+
+  # Public orb: demo-orb (3 versions).
+  circleci orb create "$SRC_ORG/demo-orb" --no-prompt --skip-update-check 2>&1 \
+    | grep -v "already exists" || true
+  circleci orb publish "$ORB_V1" "$SRC_ORG/demo-orb@0.1.0" --skip-update-check 2>&1 \
+    | grep -v "already exists\|orb revision already exists" || true
+  circleci orb publish "$ORB_V1" "$SRC_ORG/demo-orb@0.1.1" --skip-update-check 2>&1 \
+    | grep -v "already exists\|orb revision already exists" || true
+  circleci orb publish "$ORB_V2" "$SRC_ORG/demo-orb@1.0.0" --skip-update-check 2>&1 \
+    | grep -v "already exists\|orb revision already exists" || true
+  echo "    public orb $SRC_ORG/demo-orb seeded (versions 0.1.0, 0.1.1, 1.0.0)"
+
+  # Private orb: demo-private (1 version).
+  circleci orb create "$SRC_ORG/demo-private" --private --no-prompt --skip-update-check 2>&1 \
+    | grep -v "already exists" || true
+  circleci orb publish "$ORB_V1" "$SRC_ORG/demo-private@1.0.0" --skip-update-check 2>&1 \
+    | grep -v "already exists\|orb revision already exists" || true
+  echo "    private orb $SRC_ORG/demo-private seeded (version 1.0.0)"
+
+  rm -f "$ORB_V1" "$ORB_V2"
+
+  echo "    NOTE: orb versions are immutable — dest ($DST_ORG) orb state persists"
+  echo "    across runs and is NOT reset by this script."
+fi
+
+# ── E. "Weird" project settings on SRC api-service ───────────────────────────
+echo "==> Setting non-default project feature flags on source api-service..."
+# Use individual flags; guard with || true in case a flag is rejected (returns 400).
+cci_w -X PUT -H "Content-Type: application/json" \
+  -d '{"feature_flags":{"oss":true,"build-fork-prs":true,"autocancel-builds":true,"build-prs-only":false}}' \
+  "$API/api/v1.1/project/gh/$SRC_ORG/api-service/settings" >/dev/null || true
+echo "    api-service flags set: oss=true build-fork-prs=true autocancel-builds=true build-prs-only=false"
+echo "    (dest api-service was already reset to defaults in the wipe step above)"
+
 echo
 echo "==> Done. Source ($SRC_ORG) seeded; destination ($DST_ORG) wiped clean."
+echo "    Seeded resources:"
+echo "      - GitHub repos: ${REPOS[*]}"
+echo "      - Project env vars + web-app SSH key"
+echo "      - Contexts: test-1, deploy-prod, test-2-restriction"
+echo "      - Org orb settings (allow-uncertified-public-orbs + allow-private-orbs)"
+echo "      - Config-policy bundle (sample.rego) on source; cleared on dest"
+echo "      - Runner resource class: $SRC_ORG/linux-x64 (dest classes wiped)"
+echo "      - Orbs: $SRC_ORG/demo-orb (0.1.0/0.1.1/1.0.0) + demo-private (1.0.0)"
+echo "        (if 'circleci' CLI was present; otherwise see WARNING above)"
+echo "      - api-service non-default feature flags on source; defaults on dest"
+echo ""
 echo "    Run a migration, e.g.:"
 echo "      export CIRCLECI_SOURCE_TOKEN=\$CIRCLECI_CLI_TOKEN CIRCLECI_DEST_TOKEN=\$CIRCLECI_CLI_TOKEN"
 echo "      circleci-migrate migrate --source-org github/$SRC_ORG --dest-org github/$DST_ORG \\"
@@ -170,3 +345,7 @@ echo "        --transfer-secrets --dest-token-context migration-secrets \\"
 echo "        --include-project-vars --include-ssh-keys --remove-restrictions \\"
 echo "        --host-project gh/$SRC_ORG/project-1 --apply --yes"
 echo "    (first store a $DST_ORG admin token in a '$SRC_ORG' context named 'migration-secrets' → CIRCLECI_DEST_TOKEN)"
+echo ""
+echo "    Then validate parity:"
+echo "      circleci-migrate validate --source-org github/$SRC_ORG --dest-org github/$DST_ORG \\"
+echo "        --mapping mapping.json --dest-orb-namespace $DST_ORG --dest-runner-namespace $DST_ORG"
