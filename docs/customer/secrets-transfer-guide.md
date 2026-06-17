@@ -49,7 +49,6 @@ projects, pipelines, or org settings. (For a full migration, see the companion
    over TLS, then exits.
 
 **No secret value ever touches disk, a build artifact, or external storage.**
-This is strictly more secure than exporting secrets to an encrypted file.
 
 ### The destination token is never embedded
 
