@@ -287,6 +287,32 @@ circleci-migrate export --source-org gh/acme --skip-preflight
 circleci-migrate sync --manifest manifest.json --apply --skip-preflight
 ```
 
+#### `--skip-validate` (migrate)
+
+After a successful `--apply`, `migrate` automatically re-exports the destination
+org and runs a parity check (the same comparison `validate` does), printing a
+human-readable **post-migration validation report** to stdout. This lets you
+immediately see what transferred correctly and what still needs attention —
+without a separate `validate` step.
+
+To suppress this automatic check (e.g. in CI pipelines where you run `validate`
+as a separate step, or when you want to avoid a second destination export):
+
+```bash
+circleci-migrate migrate \
+  --source-org gh/acme --dest-org gh/acme-new \
+  --apply --skip-validate
+```
+
+**Notes:**
+- Validation is automatically skipped when `--json` is set (to keep JSON output
+  clean and machine-readable).
+- A parity gap in the post-migration report does **not** make `migrate` exit
+  non-zero — the migration itself succeeded. Gaps are listed in a prominent
+  NEEDS ATTENTION block.
+- If the destination re-export fails (e.g. transient network error), a warning
+  is printed and the command still exits 0.
+
 #### `doctor` — standalone preflight command
 
 `doctor` runs preflight checks without migrating. It is entirely **read-only**

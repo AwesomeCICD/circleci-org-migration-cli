@@ -136,6 +136,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-preflight                 Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
       --skip-projects                  Skip exporting and syncing projects
       --skip-runner                    Skip exporting and syncing self-hosted runner resource classes
+      --skip-validate                  Skip the automatic post-apply parity check that runs after a successful --apply. Validation is also skipped when --json is set (to keep JSON output clean). Use --skip-validate in CI pipelines where you run 'validate' as a separate step or when re-export of the destination org is not desirable immediately after apply.
       --source-org string              CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
       --transfer-secrets               After sync, run the in-pipeline secrets transfer to copy context env-var values directly from source to destination without writing a bundle file. Requires --dest-token-context. Mutually exclusive with --secrets.
   -y, --yes                            Auto-confirm enabling builds after project creation (skip the interactive prompt)

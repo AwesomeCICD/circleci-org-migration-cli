@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/validate"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
 
@@ -390,58 +393,10 @@ Examples:
 
 			// ── Step 2: export destination org ───────────────────────────────
 			fmt.Fprintf(errW, "Exporting destination org %s...\n", destOrg)
-			dstOrgClient, err := org.NewClient(cfg, dstToken)
+			dstManifest, err := exportDestManifest(ctx, cfg, dstToken, destOrg, destRunnerNamespace, destOrbNamespace, errW)
 			if err != nil {
-				return fmt.Errorf("creating destination org client: %w", err)
+				return err
 			}
-			dstCtxClient, err := cctx.NewClient(cfg, dstToken)
-			if err != nil {
-				return fmt.Errorf("creating destination context client: %w", err)
-			}
-			dstProjClient, err := project.NewClient(cfg, dstToken)
-			if err != nil {
-				return fmt.Errorf("creating destination project client: %w", err)
-			}
-
-			dstEx := &exporter.Exporter{
-				Org:      dstOrgClient,
-				Contexts: dstCtxClient,
-				Projects: dstProjClient,
-				Out:      errW,
-			}
-
-			if destRunnerNamespace != "" {
-				dstRunnerClient, rerr := runner.NewClient(cfg, dstToken)
-				if rerr != nil {
-					fmt.Fprintf(errW, "Warning: could not create destination runner client: %v\n", rerr)
-				} else {
-					dstEx.Runner = dstRunnerClient
-				}
-			}
-			if destOrbNamespace != "" {
-				dstOrbClient, oerr := apiOrb.NewClient(cfg, dstToken)
-				if oerr != nil {
-					fmt.Fprintf(errW, "Warning: could not create destination orb client: %v\n", oerr)
-				} else {
-					dstEx.Orb = dstOrbClient
-				}
-			}
-
-			dstManifest, err := dstEx.Export(ctx, exporter.Options{
-				Host:            cfg.Host,
-				OrgSlug:         destOrg,
-				IncludeContexts: true,
-				IncludeProjects: true,
-				IncludeExtras:   false,
-				RunnerNamespace: destRunnerNamespace,
-				OrbNamespace:    destOrbNamespace,
-			})
-			if err != nil {
-				return fmt.Errorf("exporting destination org %q: %w", destOrg, err)
-			}
-			dstManifest.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-			fmt.Fprintf(errW, "Destination export complete: %d context(s), %d project(s)\n",
-				len(dstManifest.Contexts), len(dstManifest.Projects))
 
 			// ── Step 3: load mapping ─────────────────────────────────────────
 			var mapping *manifest.Mapping
@@ -509,6 +464,74 @@ Examples:
 			"Implied when stdin is not a TTY (e.g. CI pipelines).")
 
 	return cmd
+}
+
+// exportDestManifest exports the destination org into a manifest using a
+// freshly-built set of API clients. It is a factored helper used by both
+// newValidateCommand and runPostMigrateValidation so that the two commands
+// share the same export logic without duplication.
+//
+// destRunnerNamespace / destOrbNamespace control whether runner/orb sections
+// are populated; pass "" to skip.  errW is the writer for progress messages.
+func exportDestManifest(
+	ctx context.Context,
+	cfg *settings.Config,
+	dstToken, destOrg, destRunnerNamespace, destOrbNamespace string,
+	errW io.Writer,
+) (*manifest.Manifest, error) {
+	dstOrgClient, err := org.NewClient(cfg, dstToken)
+	if err != nil {
+		return nil, fmt.Errorf("creating destination org client: %w", err)
+	}
+	dstCtxClient, err := cctx.NewClient(cfg, dstToken)
+	if err != nil {
+		return nil, fmt.Errorf("creating destination context client: %w", err)
+	}
+	dstProjClient, err := project.NewClient(cfg, dstToken)
+	if err != nil {
+		return nil, fmt.Errorf("creating destination project client: %w", err)
+	}
+
+	dstEx := &exporter.Exporter{
+		Org:      dstOrgClient,
+		Contexts: dstCtxClient,
+		Projects: dstProjClient,
+		Out:      errW,
+	}
+
+	if destRunnerNamespace != "" {
+		dstRunnerClient, rerr := runner.NewClient(cfg, dstToken)
+		if rerr != nil {
+			fmt.Fprintf(errW, "Warning: could not create destination runner client: %v\n", rerr)
+		} else {
+			dstEx.Runner = dstRunnerClient
+		}
+	}
+	if destOrbNamespace != "" {
+		dstOrbClient, oerr := apiOrb.NewClient(cfg, dstToken)
+		if oerr != nil {
+			fmt.Fprintf(errW, "Warning: could not create destination orb client: %v\n", oerr)
+		} else {
+			dstEx.Orb = dstOrbClient
+		}
+	}
+
+	dstManifest, err := dstEx.Export(ctx, exporter.Options{
+		Host:            cfg.Host,
+		OrgSlug:         destOrg,
+		IncludeContexts: true,
+		IncludeProjects: true,
+		IncludeExtras:   false,
+		RunnerNamespace: destRunnerNamespace,
+		OrbNamespace:    destOrbNamespace,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("exporting destination org %q: %w", destOrg, err)
+	}
+	dstManifest.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	fmt.Fprintf(errW, "Destination export complete: %d context(s), %d project(s)\n",
+		len(dstManifest.Contexts), len(dstManifest.Projects))
+	return dstManifest, nil
 }
 
 // validateSourceNS derives a best-effort source namespace (runner or orb) from

@@ -23,6 +23,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/transfer"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/ui"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/validate"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
@@ -64,6 +65,8 @@ func newMigrateCommand() *cobra.Command {
 		includeSSHKeys     bool
 		transferHostProj   string
 		removeRestrictions bool
+		// post-apply parity validation
+		skipValidate bool
 	)
 
 	cmd := &cobra.Command{
@@ -662,6 +665,16 @@ Examples:
 				_ = repsBySection // referenced to avoid unused-var lint
 			}
 
+			// ── Post-apply parity validation ──────────────────────────────────
+			// Runs after a real apply completes (not dry-run), human output only
+			// (skipped when --json or --skip-validate is set). Best-effort: any
+			// export/compare failure is printed as a warning; migrate never exits
+			// non-zero solely because of a parity gap.
+			if apply && !jsonOutput && !skipValidate {
+				runPostMigrateValidation(ctx, cmd, cfg, m, dstToken, destOrg,
+					destRunnerNamespace, destOrbNamespace, mapping)
+			}
+
 			return nil
 		},
 	}
@@ -777,6 +790,11 @@ Examples:
 			"source contexts before the transfer pipeline runs, then restore them afterwards. "+
 			"Use when a context has restrictions that prevent the host project from using it. "+
 			"Group restrictions (including the default 'All members') are never removed.")
+	f.BoolVar(&skipValidate, "skip-validate", false,
+		"Skip the automatic post-apply parity check that runs after a successful --apply. "+
+			"Validation is also skipped when --json is set (to keep JSON output clean). "+
+			"Use --skip-validate in CI pipelines where you run 'validate' as a separate step "+
+			"or when re-export of the destination org is not desirable immediately after apply.")
 
 	return cmd
 }
@@ -1696,4 +1714,50 @@ func runMigrateSecretsTransfer(
 	}
 
 	return transfer.Transfer(cmd.Context(), projClient, m, opts)
+}
+
+// runPostMigrateValidation exports the destination org and runs a parity check
+// against the source manifest, printing the human-readable report to cmd's
+// stdout.  It is best-effort: any error is printed as a warning and the
+// function returns nil so that migration success is never masked.
+//
+// This function is only called when:
+//   - a real apply was performed (not a dry-run)
+//   - --json is NOT set (validation output would corrupt the JSON stream)
+//   - --skip-validate is NOT set
+func runPostMigrateValidation(
+	ctx context.Context,
+	cmd *cobra.Command,
+	cfg *settings.Config,
+	srcManifest *manifest.Manifest,
+	dstToken, destOrg, destRunnerNamespace, destOrbNamespace string,
+	mapping *manifest.Mapping,
+) {
+	stderr := cmd.ErrOrStderr()
+	stdout := cmd.OutOrStdout()
+
+	fmt.Fprintln(stderr, "")
+	fmt.Fprintln(stderr, "── Post-migration validation ─────────────────────────────")
+	fmt.Fprintf(stderr, "Exporting destination org %s...\n", destOrg)
+
+	dstManifest, err := exportDestManifest(ctx, cfg, dstToken, destOrg, destRunnerNamespace, destOrbNamespace, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "post-migration validation skipped: %v\n", err)
+		return
+	}
+
+	result := validate.Compare(srcManifest, dstManifest, mapping, validate.Options{
+		DestRunnerNamespace: destRunnerNamespace,
+		DestOrbNamespace:    destOrbNamespace,
+	})
+
+	var b strings.Builder
+	printValidateReport(result, &b)
+	fmt.Fprint(stdout, b.String())
+
+	_, missing, manual := validateTotals(result)
+	total := missing + manual
+	if total > 0 {
+		fmt.Fprintf(stdout, "Post-migration validation found %d item(s) needing attention — see above.\n", total)
+	}
 }
