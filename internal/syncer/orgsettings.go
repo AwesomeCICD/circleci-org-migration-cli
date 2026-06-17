@@ -207,9 +207,14 @@ func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *mani
 	for flagKey, val := range src.FeatureFlags {
 		target := "feature_flag:" + flagKey
 
-		if dangerFlags[flagKey] {
-			report.add("org-settings", target, "manual",
-				fmt.Sprintf("flag %q skipped: writing this flag to a new org is unsafe (it can freeze or break pipelines). Set manually after validating the destination org is ready.", flagKey))
+		if dangerFlags[flagKey] && !opts.IncludeDangerFlags {
+			// Only surface a manual step when the source value is non-default
+			// (true). When it is false there is nothing to migrate — emitting a
+			// "set manually" warning for an off flag is just noise.
+			if val {
+				report.add("org-settings", target, "manual",
+					fmt.Sprintf("flag %q skipped: writing this flag to a new org is unsafe (it can freeze or break pipelines). Set it manually once the destination is validated, or re-run with --include-danger-flags.", flagKey))
+			}
 			continue
 		}
 

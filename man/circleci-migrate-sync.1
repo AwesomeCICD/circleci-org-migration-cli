@@ -119,6 +119,10 @@ Examples:
 	help for sync
 
 .PP
+\fB--include-danger-flags\fP[=false]
+	Write the 'danger' feature flags (org: drop_all_build_requests, require_context_group_restriction; project: drop_all_build_requests) to the destination. Default false: these are skipped (and surfaced as a manual step only when the source value is true) because enabling them on a freshly-migrated org/project can freeze or break pipelines. Set this for a faithful migration once the destination is validated and ready.
+
+.PP
 \fB--json\fP[=false]
 	Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports
 

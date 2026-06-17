@@ -187,6 +187,15 @@ type Options struct {
 	// and prints the plaintext values to stderr with a "save these now" notice.
 	// The plaintext values are NEVER written to stdout, JSON output, or log files.
 	CreateProjectTokens bool
+
+	// IncludeDangerFlags controls whether the "danger" feature flags
+	// (drop_all_build_requests, require_context_group_restriction at the org
+	// level; drop_all_build_requests at the project level) are written to the
+	// destination. Default false — these can freeze or break a freshly-migrated
+	// org/project, so by default they are skipped and surfaced as a manual step
+	// (only when the source value is true). Set true for a faithful migration
+	// once the destination is validated and ready.
+	IncludeDangerFlags bool
 }
 
 func (o Options) placeholder() string {

@@ -168,6 +168,10 @@ Examples:
 	When --transfer-secrets is set, the source-org project slug whose pipeline runs the context transfer (e.g. gh/acme/web). Defaults to the first project. Prefer an ESTABLISHED (long-followed) project — a just-followed project's context authorization may not have propagated yet.
 
 .PP
+\fB--include-danger-flags\fP[=false]
+	Write the 'danger' feature flags (org: drop_all_build_requests, require_context_group_restriction; project: drop_all_build_requests) to the destination. Default false: these are skipped (and surfaced as a manual step only when the source value is true) because enabling them on a freshly-migrated org/project can freeze or break pipelines. Set this for a faithful migration once the destination is validated and ready.
+
+.PP
 \fB--include-project-vars\fP[=false]
 	When --transfer-secrets is set, also transfer project-level env-var values to the corresponding destination projects. Destination project slugs are derived from --dest-org (gh/ and bb/ orgs only). Projects without a derivable destination slug are skipped.
 

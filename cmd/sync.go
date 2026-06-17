@@ -184,6 +184,7 @@ func newSyncCommand() *cobra.Command {
 		destOrbNamespace    string
 		jsonOutput          bool
 		createProjectTokens bool
+		includeDangerFlags  bool
 		onlyRaw             string
 		skipTFManaged       bool
 		skipPreflight       bool
@@ -407,6 +408,7 @@ Examples:
 				DestRunnerNamespace: destRunnerNamespace,
 				DestOrbNamespace:    destOrbNamespace,
 				CreateProjectTokens: createProjectTokens,
+				IncludeDangerFlags:  includeDangerFlags,
 			}
 
 			// Wire up the runner client when a destination namespace was provided
@@ -590,6 +592,12 @@ Examples:
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
 			"must be repointed to the new value. New plaintext values are printed to stderr once and cannot "+
 			"be retrieved again. Default false: emit manual steps only.")
+	f.BoolVar(&includeDangerFlags, "include-danger-flags", false,
+		"Write the 'danger' feature flags (org: drop_all_build_requests, "+
+			"require_context_group_restriction; project: drop_all_build_requests) to the destination. "+
+			"Default false: these are skipped (and surfaced as a manual step only when the source value is "+
+			"true) because enabling them on a freshly-migrated org/project can freeze or break pipelines. "+
+			"Set this for a faithful migration once the destination is validated and ready.")
 	f.StringVar(&onlyRaw, "only", "",
 		"Comma-separated list of sections to sync, skipping all others. "+
 			"Accepted values: org-settings, contexts, projects, runner, ciam, extras, orb. "+

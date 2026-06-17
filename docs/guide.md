@@ -828,6 +828,22 @@ token on the destination. **Caution:** each recreated token mints a **new**
 one-time secret printed once to stderr — every consumer of the old token must be
 repointed. Default is off (the report emits manual steps only).
 
+### Danger feature flags
+
+A few feature flags can **freeze or break** a freshly-migrated org/project, so
+`sync`/`migrate` skip them by default:
+
+- **org:** `drop_all_build_requests` (rejects *all* builds org-wide),
+  `require_context_group_restriction` (forces every context to carry a group
+  restriction — and group restrictions are recreated manually, so enabling this
+  before they exist blocks context-using pipelines).
+- **project:** `drop_all_build_requests`.
+
+By default these are skipped, and a "set manually" note is emitted **only when
+the source value is `true`** (an off flag is silently left alone — there is
+nothing to migrate). Pass `--include-danger-flags` for a faithful migration that
+writes them too — do this once the destination is validated and ready.
+
 ### The `--skip-*` family
 
 | Flag | Skips |
