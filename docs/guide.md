@@ -596,7 +596,7 @@ circleci-migrate secrets capture --manifest manifest.json --encrypt \
 `secrets capture` also extracts **additional project SSH private keys** that are
 cataloged in the manifest, via a separate in-pipeline job that uses
 `add_ssh_keys` with the explicit fingerprints (the checkout/deploy key is never
-materialised). This is **on by default**; pass `--no-ssh-keys` to skip it (for
+materialised). This is **on by default**; pass `--ssh-keys=false` to skip it (for
 example, an env-var-only capture).
 
 #### Storage (`--storage`)

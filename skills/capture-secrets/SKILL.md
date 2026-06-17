@@ -73,7 +73,7 @@ For `secrets capture`:
 
   Do you need SSH private key capture as well as env vars?
     YES (default) → SSH key extraction is on by default
-    NO  → --no-ssh-keys
+    NO  → --ssh-keys=false
 
   Where should the bundle be stored?
     CircleCI artifact only (default) → omit --storage

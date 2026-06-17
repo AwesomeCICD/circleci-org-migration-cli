@@ -621,5 +621,5 @@ both               — store in both artifact and S3.`)
 		"Extract additional SSH private keys for projects that have cataloged SSH keys in the manifest. "+
 			"Runs a separate in-pipeline job using add_ssh_keys with the explicit cataloged fingerprints — "+
 			"the checkout/deploy key is never materialised. "+
-			"Use --no-ssh-keys to skip SSH key extraction (e.g. when running env-var capture only).")
+			"On by default; pass --ssh-keys=false to skip SSH key extraction (e.g. when running env-var capture only).")
 }
