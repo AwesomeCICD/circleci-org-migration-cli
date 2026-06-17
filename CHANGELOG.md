@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.16.0...v0.17.0) (2026-06-17)
+
+
+### Features
+
+* **migrate:** run a post-apply parity check (validate-at-end) ([#298](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/298)) ([33f406c](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/33f406c8b7a8663631a224388bb8b375f4d53a83))
+
+
+### Bug Fixes
+
+* **migrate:** normalize VCS prefix in derived mapping + sync ALL project settings ([#296](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/296)) ([1706319](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/17063197dfc5146de0debccf24015cccdcdb2c51))
+
 ## [0.16.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.15.0...v0.16.0) (2026-06-17)
 
 
