@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.14.1...v0.15.0) (2026-06-17)
+
+
+### Features
+
+* **migrate:** guided mode leads with in-pipeline secrets transfer ([#284](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/284)) ([1bea4cc](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1bea4cc427493d6626150ec20b3ab29adc96ff5f))
+* **migrate:** guided walkthrough covers orbs + runners by default ([#289](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/289)) ([8933ee4](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/8933ee4f302f5e9f6e3864cfc2fec51e9030aa5d))
+* **orb:** orb transfer (full version history) over v3 REST API ([#283](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/283)) ([6eac332](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/6eac332c72691bff4b40f54c9530ee3542ed6348))
+* **sync:** auto-transfer project-type context restrictions (single-pass UUID remap) ([#286](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/286)) ([00bb0b8](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/00bb0b829d175188933ee4d8599efe014d453b29))
+* **ui:** readable sectioned/colored output via internal/ui (no new deps) ([#288](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/288)) ([77c1256](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/77c1256f329c86fcaff79b5cfe786c838ef3a41d))
+* **validate:** add org-vs-org parity validation command ([#287](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/287)) ([1243f1e](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1243f1e2a876523b51f1596fa8d900c3047dddd9))
+
+
+### Bug Fixes
+
+* **org:** parse config policy-bundle GET as {name:{content}} (Scale config policies) ([#281](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/281)) ([08c2d17](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/08c2d17e479162abf5e398b2373f34bb5e09fbc8))
+
 ## [0.14.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.14.0...v0.14.1) (2026-06-16)
 
 
