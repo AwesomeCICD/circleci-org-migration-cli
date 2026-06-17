@@ -263,6 +263,29 @@ func TestBuildMigrateMapping_NoFile_ConstructsFromOrgs(t *testing.T) {
 	}
 }
 
+// TestBuildMigrateMapping_NormalizesVCSPrefix verifies that long-form VCS
+// prefixes (github/, bitbucket/) are normalized to the canonical short form
+// (gh/, bb/) so the derived mapping matches the canonical project slugs in the
+// manifest. Without this, passing "--source-org github/acme" produced an
+// Org.From that failed ResolveProjectSlug's prefix check, silently breaking
+// per-project remapping (e.g. project-type context restrictions).
+func TestBuildMigrateMapping_NormalizesVCSPrefix(t *testing.T) {
+	got, err := cmd.BuildMigrateMapping("", "github/acme", "github/acme-new")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Org.From != "gh/acme" {
+		t.Errorf("Org.From = %q, want %q (github/ should normalize to gh/)", got.Org.From, "gh/acme")
+	}
+	if got.Org.To != "gh/acme-new" {
+		t.Errorf("Org.To = %q, want %q", got.Org.To, "gh/acme-new")
+	}
+	// A canonical project slug from the manifest must now resolve.
+	if dst, ok := got.ResolveProjectSlug("gh/acme/web"); !ok || dst != "gh/acme-new/web" {
+		t.Errorf("ResolveProjectSlug(gh/acme/web) = %q,%v; want gh/acme-new/web,true", dst, ok)
+	}
+}
+
 // TestBuildMigrateMapping_WithFile_LoadsFromDisk verifies that when a mapping
 // file path is supplied, buildMigrateMapping reads and returns the mapping from
 // disk.
