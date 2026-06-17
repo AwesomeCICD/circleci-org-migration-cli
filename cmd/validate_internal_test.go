@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/validate"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
+	"github.com/spf13/cobra"
 )
 
 // ---------------------------------------------------------------------------
@@ -296,5 +301,91 @@ func TestValidateSourceNS_NoSlash(t *testing.T) {
 	got := validateSourceNS("noslash", "dest-ns")
 	if got != "" {
 		t.Errorf("expected empty string when slug has no slash; got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runPostMigrateValidation — best-effort behaviour
+// ---------------------------------------------------------------------------
+
+// TestRunPostMigrateValidation_ExportFails_PrintsWarning verifies that when
+// the destination export fails (e.g. network unavailable, invalid token),
+// runPostMigrateValidation prints a warning to stderr and does NOT panic or
+// return an error. The migration success must never be masked by a parity
+// check failure.
+func TestRunPostMigrateValidation_ExportFails_PrintsWarning(t *testing.T) {
+	// Use a minimal config with a deliberately unreachable host so the
+	// API client construction succeeds but any network call would fail.
+	cfg := &settings.Config{
+		Host: "https://127.0.0.1:19999", // nothing listening here
+	}
+
+	srcManifest := &manifest.Manifest{}
+	mapping := &manifest.Mapping{
+		Org: manifest.OrgMapping{From: "gh/src", To: "gh/dst"},
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdoutBuf)
+	cmd.SetErr(&stderrBuf)
+
+	// Must not panic even when export fails.
+	runPostMigrateValidation(
+		context.Background(),
+		cmd,
+		cfg,
+		srcManifest,
+		"fake-token", // dstToken
+		"gh/dst",     // destOrg
+		"",           // destRunnerNamespace
+		"",           // destOrbNamespace
+		mapping,
+	)
+
+	stderr := stderrBuf.String()
+	// Header must appear.
+	if !strings.Contains(stderr, "Post-migration validation") {
+		t.Errorf("expected 'Post-migration validation' header in stderr; got: %q", stderr)
+	}
+	// Warning must appear when export fails.
+	if !strings.Contains(stderr, "post-migration validation skipped") &&
+		!strings.Contains(stderr, "skipped") {
+		t.Errorf("expected 'skipped' warning in stderr when export fails; got: %q", stderr)
+	}
+}
+
+// TestRunPostMigrateValidation_PrintsReport verifies that when the destination
+// manifest is available (injected via a matching source), the report is
+// printed to stdout and the summary line appears.
+func TestRunPostMigrateValidation_PrintsReport(t *testing.T) {
+	// We cannot inject the destination manifest directly into
+	// runPostMigrateValidation without a network round-trip; instead we
+	// verify the underlying printValidateReport path via a direct call.
+	r := validate.Result{
+		SourceOrg: "gh/acme",
+		DestOrg:   "gh/acme-new",
+		Sections: []validate.Section{
+			{
+				Name: "Contexts",
+				Items: []validate.Item{
+					{Status: validate.StatusMatched, Name: "ctx", Detail: "present"},
+				},
+			},
+		},
+	}
+	var b strings.Builder
+	printValidateReport(r, &b)
+	out := b.String()
+
+	for _, want := range []string{
+		"gh/acme",
+		"gh/acme-new",
+		"TOTALS",
+		"VERDICT",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q; got:\n%s", want, out)
+		}
 	}
 }

@@ -252,6 +252,10 @@ Examples:
 	Skip exporting and syncing self-hosted runner resource classes
 
 .PP
+\fB--skip-validate\fP[=false]
+	Skip the automatic post-apply parity check that runs after a successful --apply. Validation is also skipped when --json is set (to keep JSON output clean). Use --skip-validate in CI pipelines where you run 'validate' as a separate step or when re-export of the destination org is not desirable immediately after apply.
+
+.PP
 \fB--source-org\fP=""
 	CircleCI organization slug for the source org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. (required, or prompted interactively)
 

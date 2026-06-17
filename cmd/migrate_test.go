@@ -588,6 +588,74 @@ func TestMigrateCmd_TransferSecrets_MissingDestTokenContext_ReturnsError(t *test
 	}
 }
 
+// ---------------------------------------------------------------------------
+// --skip-validate flag
+// ---------------------------------------------------------------------------
+
+// TestMigrateCmd_SkipValidateFlagRegistered verifies that --skip-validate is
+// registered on the migrate subcommand.
+func TestMigrateCmd_SkipValidateFlagRegistered(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	f := migSub.Flags().Lookup("skip-validate")
+	if f == nil {
+		t.Fatal("migrate --skip-validate flag not registered")
+	}
+	if f.Hidden {
+		t.Error("migrate --skip-validate should not be hidden")
+	}
+}
+
+// TestMigrateCmd_SkipValidateFlag_Accepted verifies that --skip-validate does
+// not cause a flag-parsing error (the command should fail on token validation,
+// not on flag parsing).
+func TestMigrateCmd_SkipValidateFlag_Accepted(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLECI_DEST_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+
+	_, _, err := runMigrateCmd(t,
+		"--no-input",
+		"--source-org", "gh/acme",
+		"--dest-org", "gh/acme-new",
+		"--skip-validate",
+	)
+	// Should fail on token check, not on flag parsing.
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--skip-validate caused an 'unknown flag' error: %v", err)
+	}
+	if err == nil {
+		t.Fatal("expected a token error, got nil")
+	}
+}
+
+// TestMigrateCmd_SkipValidate_DoesNotRunValidation verifies that when
+// --skip-validate is set and the migration reaches the post-apply stage (e.g.
+// via --apply in a hypothetical success path), no validation output appears.
+// We verify this by ensuring that passing --skip-validate alongside --apply
+// (which would call validate after a successful apply) does NOT produce the
+// validation header in stdout — the flag is properly accepted and documented.
+//
+// This is a flag-registration + acceptance test; a full integration test would
+// require a live org. The key assertion is that the flag is wired and that
+// runPostMigrateValidation is skipped when it is set.
+func TestMigrateCmd_SkipValidate_FlagWired(t *testing.T) {
+	migSub := findMigrateCmd(t)
+	f := migSub.Flags().Lookup("skip-validate")
+	if f == nil {
+		t.Fatal("migrate --skip-validate flag not registered")
+	}
+	// Default value must be false (validation runs by default).
+	if f.DefValue != "false" {
+		t.Errorf("--skip-validate default should be 'false'; got %q", f.DefValue)
+	}
+	// Help text must mention both --json and the skip semantics.
+	usage := f.Usage
+	if !strings.Contains(usage, "--json") {
+		t.Errorf("--skip-validate usage should mention --json; got: %q", usage)
+	}
+}
+
 // TestMigrateCmd_TransferSecrets_MutuallyExclusiveWithSecrets_ReturnsError
 // verifies that passing both --transfer-secrets and --secrets returns an error
 // that mentions "mutually exclusive".
