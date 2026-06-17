@@ -24,6 +24,15 @@ projects, pipelines, or org settings. (For a full migration, see the companion
 > owns it. `secrets transfer` uses this fact to move values securely, in-flight,
 > without ever writing them to a file, an artifact, or external storage.
 
+> **Prerequisite — destination projects must already exist.** To transfer
+> **project** environment variables, the matching destination projects must
+> already be **onboarded/created** in the destination org; the transfer skips
+> any project it can't map to an existing destination project. (Destination
+> **contexts** are created automatically; **projects** are not.) Run your org /
+> project / context sync first — or follow the *GitHub OAuth → OAuth Migration
+> Guide* — before transferring project env vars. Context-only transfers have no
+> such requirement.
+
 ---
 
 ## 1. How it works (the security model)
@@ -87,6 +96,12 @@ Before you begin, confirm each of the following.
       config*). The CLI will detect this and offer to enable it if it is off.
 - [ ] The destination organization's **Organization ID** (a UUID). Find it in
       the destination org's **Organization Settings → Overview**.
+- [ ] **(Project env vars only)** The destination **projects are already
+      onboarded/created** in the destination org. The transfer auto-creates
+      destination *contexts* but **not** projects, and skips any project with no
+      existing destination counterpart. Run the org/project/context sync (or the
+      *GitHub OAuth → OAuth Migration Guide*) first. Context-only transfers do
+      not need this.
 - [ ] The `circleci-migrate` CLI installed:
 
 ```bash

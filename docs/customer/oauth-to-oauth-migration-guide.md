@@ -21,7 +21,7 @@ Throughout, the **source** is `gh/acme` and the **destination** is
 
 > **Safety first.** Nothing in the source org is ever modified. Destination
 > projects are created **paused** — they install no webhook and run no builds
-> until you explicitly enable them in Phase 6. You can abort any time before
+> until you explicitly enable them in Phase 7. You can abort any time before
 > then by simply stopping; the source keeps running normally.
 
 ---
@@ -64,6 +64,11 @@ After gathering input it performs a **dry run, prints a concise summary**, and
 asks **"Apply these changes now?"** — answering yes applies without re-walking.
 After a successful apply, `migrate` **automatically runs the parity check**
 (equivalent to the `validate` command described in Phase 6).
+
+`migrate` performs this exact ordering automatically — export → sync the
+structure (org settings, projects + project settings, contexts) → in-pipeline
+secrets transfer → post-apply validation — so the phase-by-phase flow below is
+simply the manual, explicit-control equivalent.
 
 The phase-by-phase scripted flow described below remains the recommended path
 for operators who want explicit control, CI scripting, or the ability to pause
@@ -139,24 +144,114 @@ Open `migration-report.md` and record your baseline counts:
 
 ---
 
-## Phase 2 — Move secrets
+## Phase 2 — Prepare the mapping
 
-CircleCI never returns secret **values** via API, so values are moved from
-*inside* a pipeline. Choose one approach:
+Create `mapping.json` now: `sync` uses it to remap project slugs to the
+destination, and the Phase 5 secrets transfer uses it to route project
+variables to the right destination project.
+
+```json
+{
+  "org": { "from": "gh/acme", "to": "gh/acme-new" }
+}
+```
+
+If repos also moved GitHub orgs, add:
+
+```json
+{
+  "org": { "from": "gh/acme", "to": "gh/acme-new" },
+  "github_org": { "from": "acme", "to": "acme-new" }
+}
+```
+
+To match source projects to destination projects **by repository name** (needed
+for project env-var routing in Phase 5), generate the mapping instead:
+
+```bash
+circleci-migrate mapping generate --manifest manifest.json --dest-org gh/acme-new -o mapping.json
+```
+
+### ✅ Gate: `mapping.json` has the correct destination org.
+
+---
+
+## Phase 3 — Dry-run sync (structure)
+
+Preview every change. Without `--apply`, nothing is written. This syncs the
+**structure** — org settings, projects + project settings, and contexts
+(context + variable **names** + restrictions) — **not** secret values.
+
+```bash
+circleci-migrate sync \
+  --manifest manifest.json \
+  --mapping mapping.json
+```
+
+> **Project-type context restrictions** are remapped automatically via
+> `mapping.json` (source project UUIDs → destination project UUIDs). **Group**
+> restrictions stay manual — group IDs differ between orgs and must be recreated
+> in the destination UI after cutover.
+
+> **Secret values:** if you are using the captured-bundle approach (the
+> Alternative in Phase 5), add `--secrets secrets.json` here so the values are
+> written *during* this structure sync. With the recommended in-pipeline
+> transfer, omit `--secrets` — values are moved separately in Phase 5.
+
+Each line shows a status:
+
+| Status | Meaning |
+|---|---|
+| `would create` | Will be created on apply |
+| `would set` | Value will be written |
+| `exists` | Already present; reused |
+| `manual` | Cannot be automated — handle in the UI |
+| `error` | Investigate before applying |
+
+### ✅ Gate: no unexpected `error` lines; every `manual` item has a plan; counts match Phase 1.
+
+---
+
+## Phase 4 — Apply sync (projects created paused)
+
+```bash
+circleci-migrate sync \
+  --manifest manifest.json \
+  --mapping mapping.json \
+  --apply
+```
+
+(If you are using the captured-bundle approach, add `--secrets secrets.json`
+here too, exactly as in your Phase 3 dry run.)
+
+When prompted **"Enable builds for N projects now?"**, answer **N** — you'll
+enable them in Phase 7 after validation.
+
+Re-run the dry-run command to confirm previously-`would create` lines now show
+`exists`.
+
+After this phase the destination **projects and contexts exist** (paused).
+
+### ✅ Gate: apply completed without errors; destination counts match; builds NOT yet enabled.
+
+---
+
+## Phase 5 — Move secrets
+
+Now that the destination projects and contexts exist (Phase 4), move the secret
+**values** into them. CircleCI never returns secret values via API, so values
+are moved from *inside* a pipeline. Choose one approach:
 
 ### Recommended: direct transfer (no file on disk)
 
 Best for most OAuth → OAuth moves. Values go straight from source to
-destination over TLS; nothing is written to disk. **See the companion
-*Transferring Secrets Between CircleCI Organizations* guide** for the full
-walkthrough. In brief:
+destination over TLS; nothing is written to disk. This is a separate
+post-sync step. **See the companion *Transferring Secrets Between CircleCI
+Organizations* guide** for the full walkthrough. In brief:
 
 ```bash
 # Store the destination token in a SOURCE-org context named "migration-secrets"
-# (variable: CIRCLECI_DEST_TOKEN), then:
-
-# Generate the project mapping (matches projects by repo name):
-circleci-migrate mapping generate --manifest manifest.json --dest-org gh/acme-new -o mapping.json
+# (variable: CIRCLECI_DEST_TOKEN). You already created mapping.json in Phase 2.
 
 # Dry-run, then apply:
 circleci-migrate secrets transfer --manifest manifest.json \
@@ -187,8 +282,7 @@ circleci-migrate secrets transfer --manifest manifest.json \
 ### Alternative: capture to an encrypted bundle
 
 Use this if you need a reviewable local copy, want to inspect values first, or
-cannot use the in-pipeline transfer. Produces an encrypted `secrets.json` you
-then feed to `sync`.
+cannot use the in-pipeline transfer. Produces an encrypted `secrets.json`.
 
 ```bash
 circleci-migrate secrets capture \
@@ -199,90 +293,23 @@ circleci-migrate secrets capture \
   --output secrets.json
 ```
 
+> **With the captured-bundle approach the values are written during the Phase
+> 3/4 structure sync**, not in this separate step. Capture the bundle right
+> after export, then pass it to your Phase 3 dry run and Phase 4 apply with
+> `--secrets secrets.json` — the bundle path folds the values into the structure
+> sync. (The in-pipeline transfer above is the only path that runs as a distinct
+> post-sync step.)
+
 > **Security:** `secrets.json` holds plaintext values — keep it `0600`, never
 > commit it, and delete it after cutover. Keep artifact retention at 1 day.
 
-### ✅ Gate: secrets transferred (direct) **or** `secrets.json` captured; restricted-context and SSH-key gaps noted.
+### ✅ Gate: secrets transferred (direct) **or** captured bundle applied via `sync --secrets`; restricted-context and SSH-key gaps noted.
 
 ---
 
-## Phase 3 — Prepare the mapping
+## Phase 6 — Validate
 
-If you used direct transfer, you already created `mapping.json` in Phase 2. If
-not, create it now so `sync` targets the right destination:
-
-```json
-{
-  "org": { "from": "gh/acme", "to": "gh/acme-new" }
-}
-```
-
-If repos also moved GitHub orgs, add:
-
-```json
-{
-  "org": { "from": "gh/acme", "to": "gh/acme-new" },
-  "github_org": { "from": "acme", "to": "acme-new" }
-}
-```
-
-### ✅ Gate: `mapping.json` has the correct destination org.
-
----
-
-## Phase 4 — Dry-run sync
-
-Preview every change. Without `--apply`, nothing is written.
-
-```bash
-circleci-migrate sync \
-  --manifest manifest.json \
-  --secrets secrets.json \
-  --mapping mapping.json
-```
-
-(Omit `--secrets secrets.json` if you used direct transfer in Phase 2 — the
-values are already in the destination.)
-
-Each line shows a status:
-
-| Status | Meaning |
-|---|---|
-| `would create` | Will be created on apply |
-| `would set` | Value will be written |
-| `exists` | Already present; reused |
-| `manual` | Cannot be automated — handle in the UI |
-| `error` | Investigate before applying |
-
-### ✅ Gate: no unexpected `error` lines; every `manual` item has a plan; counts match Phase 1.
-
----
-
-## Phase 5 — Apply (projects created paused)
-
-```bash
-circleci-migrate sync \
-  --manifest manifest.json \
-  --secrets secrets.json \
-  --mapping mapping.json \
-  --apply
-```
-
-When prompted **"Enable builds for N projects now?"**, answer **N** — you'll
-enable them in Phase 6 after validation.
-
-Re-run the dry-run command to confirm previously-`would create` lines now show
-`exists`.
-
-### ✅ Gate: apply completed without errors; destination counts match; builds NOT yet enabled.
-
----
-
-## Phase 6 — Validate, then enable builds
-
-### 6.1 Validate (before enabling anything)
-
-Run the **`validate`** command — it exports both orgs read-only and prints a
+Run the **`validate`** command (before enabling anything) — it exports both orgs read-only and prints a
 per-section parity report covering Contexts, Projects, Org Settings, Runners,
 Orbs, and CIAM. Exit code is non-zero if any item is **missing** from the
 destination.
@@ -351,12 +378,15 @@ circleci-migrate sync \
   --apply
 ```
 
-### 6.2 Enable builds (cutover)
+### ✅ Gate: `validate` passed (exit 0); every ⚠ manual item triaged with a plan.
+
+---
+
+## Phase 7 — Enable builds (cutover)
 
 ```bash
 circleci-migrate sync \
   --manifest manifest.json \
-  --secrets secrets.json \
   --mapping mapping.json \
   --apply --yes
 ```
@@ -372,9 +402,9 @@ pipeline runs green, and a job can read its context variables.
 
 ---
 
-## Phase 7 — Post-cutover
+## Phase 8 — Post-cutover
 
-- [ ] **Rotate** every secret value that was captured to a file (Phase 2,
+- [ ] **Rotate** every secret value that was captured to a file (Phase 5,
       capture path). Direct-transfer values were never on disk, but rotate the
       destination API token used for the transfer.
 - [ ] Delete any local `secrets.json` and generated key files.
@@ -411,9 +441,12 @@ circleci-migrate migrate
 circleci-migrate doctor   --source-org gh/acme --dest-org gh/acme-new
 circleci-migrate export   --source-org gh/acme --output manifest.json --report migration-report.md
 circleci-migrate mapping generate --manifest manifest.json --dest-org gh/acme-new -o mapping.json
-# secrets: see the Secrets Transfer guide
-circleci-migrate sync --manifest manifest.json --mapping mapping.json                 # dry run
+circleci-migrate sync --manifest manifest.json --mapping mapping.json                 # dry run (structure)
 circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply         # create (paused)
+# secrets: in-pipeline transfer (see the Secrets Transfer guide):
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> --dest-token-context migration-secrets \
+  --mapping mapping.json --include-project-vars --enable-trigger --apply
 circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new --mapping mapping.json
 circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --yes   # enable builds
 ```
