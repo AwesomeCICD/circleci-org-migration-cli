@@ -1547,12 +1547,19 @@ type migrateJSONOutput struct {
 //
 // When mappingPath is non-empty the mapping is loaded from disk. Otherwise a
 // simple source→destination org mapping is constructed from srcOrg and dstOrg.
+//
+// The org slugs are normalized to their canonical VCS prefix (github/→gh/,
+// bitbucket/→bb/) so the derived mapping matches the canonical project slugs in
+// the manifest (always "gh/…"/"bb/…"). Without this, passing
+// "--source-org github/acme" produced an Org.From of "github/acme" that failed
+// the prefix check in ResolveProjectSlug, silently breaking per-project slug
+// remapping (e.g. project-type context restrictions fell back to "manual").
 func BuildMigrateMapping(mappingPath, srcOrg, dstOrg string) (*manifest.Mapping, error) {
 	if mappingPath != "" {
 		return manifest.LoadMapping(mappingPath)
 	}
 	return &manifest.Mapping{
-		Org: manifest.OrgMapping{From: srcOrg, To: dstOrg},
+		Org: manifest.OrgMapping{From: normalizeVCSPrefix(srcOrg), To: normalizeVCSPrefix(dstOrg)},
 	}, nil
 }
 

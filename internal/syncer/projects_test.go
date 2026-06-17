@@ -194,6 +194,48 @@ func (f *fakeProjectWriter) SetV11ProjectFeatureFlags(_ context.Context, slug st
 	return nil
 }
 
+// TestSyncProjectV11Flags_AppliesFullCapturedSet locks in the fix that the
+// syncer applies the FULL captured v1.1 feature-flag set (autocancel_builds,
+// build_fork_prs, build_prs_only, …) — not just api_trigger_with_config /
+// drop_all_build_requests — while still skipping danger flags.
+func TestSyncProjectV11Flags_AppliesFullCapturedSet(t *testing.T) {
+	var gotFlags map[string]bool
+	fp := &fakeProjectWriter{
+		setV11ProjectFeatureFlags: func(_ string, flags map[string]bool) error {
+			gotFlags = flags
+			return nil
+		},
+	}
+	s := &Syncer{Projects: fp}
+	rep := &Report{}
+	p := manifest.Project{
+		Slug: "gh/acme/web",
+		Settings: &manifest.AdvancedSettings{
+			V11FeatureFlags: map[string]bool{
+				"autocancel-builds":       true,
+				"build-fork-prs":          true,
+				"build-prs-only":          false,
+				"set-github-status":       true,
+				"drop-all-build-requests": true, // danger → must be skipped
+			},
+		},
+	}
+
+	s.syncProjectV11Flags(context.Background(), rep, p, "gh/acme-new/web", Options{Apply: true})
+
+	if gotFlags == nil {
+		t.Fatal("SetV11ProjectFeatureFlags was not called")
+	}
+	for _, want := range []string{"autocancel_builds", "build_fork_prs", "build_prs_only", "set_github_status"} {
+		if _, ok := gotFlags[want]; !ok {
+			t.Errorf("expected flag %q to be applied; got %v", want, gotFlags)
+		}
+	}
+	if _, ok := gotFlags["drop_all_build_requests"]; ok {
+		t.Error("danger flag drop_all_build_requests must NOT be applied via the bulk set")
+	}
+}
+
 func (f *fakeProjectWriter) ListAdditionalSSHKeys(_ context.Context, slug string) ([]project.SSHKeyMeta, error) {
 	f.calls = append(f.calls, projectCall{"ListAdditionalSSHKeys", []string{slug}})
 	if f.listAdditionalSSHKeys != nil {

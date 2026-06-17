@@ -191,40 +191,56 @@ func (s *Syncer) syncProjectV11Flags(ctx context.Context, report *Report, p mani
 	}
 	settings := p.Settings
 
-	// Build the map of flags to sync (snake_case keys).
-	flags := map[string]*bool{
-		"api_trigger_with_config": settings.APITriggerWithConfig,
-		"drop_all_build_requests": settings.DropAllBuildRequests,
+	// Collect every captured project feature flag (snake_case keys). The full
+	// v1.1 feature-flag map is authoritative and covers all advanced settings
+	// (autocancel_builds, build_fork_prs, build_prs_only, set_github_status,
+	// disable_ssh, forks_receive_secret_env_vars, setup_workflows,
+	// write_settings_requires_admin, …). The two explicit struct fields are
+	// merged in for backward-compat with older manifests that predate
+	// V11FeatureFlags.
+	candidates := map[string]bool{}
+	if settings.APITriggerWithConfig != nil {
+		candidates["api_trigger_with_config"] = *settings.APITriggerWithConfig
+	}
+	if settings.DropAllBuildRequests != nil {
+		candidates["drop_all_build_requests"] = *settings.DropAllBuildRequests
+	}
+	for kebabKey, val := range settings.V11FeatureFlags {
+		candidates[strings.ReplaceAll(kebabKey, "-", "_")] = val
 	}
 
-	for flagKey, val := range flags {
-		if val == nil {
-			continue
-		}
-		target := dst + "/feature_flag:" + flagKey
-
+	// Partition into the flags we will write (toSet) and danger flags (skipped
+	// with a "manual" note only when the source value is true/non-default).
+	toSet := make(map[string]bool, len(candidates))
+	for flagKey, val := range candidates {
 		if dangerProjectFlags[flagKey] {
-			// Only warn when the source value is true (non-default). When the
-			// flag is false/absent there is nothing to migrate and no noise needed.
-			if !*val {
-				continue
+			if val {
+				report.add("project-flag", dst+"/feature_flag:"+flagKey, "manual",
+					fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set manually after validating the destination project is ready.", flagKey))
 			}
-			report.add("project-flag", target, "manual",
-				fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set manually after validating the destination project is ready.", flagKey))
 			continue
 		}
+		toSet[flagKey] = val
+	}
+	if len(toSet) == 0 {
+		return
+	}
 
-		if !opts.Apply {
-			report.add("project-flag", target, "set",
-				fmt.Sprintf("would set project feature flag %q = %v", flagKey, *val))
-			continue
+	if !opts.Apply {
+		for flagKey, val := range toSet {
+			report.add("project-flag", dst+"/feature_flag:"+flagKey, "set",
+				fmt.Sprintf("would set project feature flag %q = %v", flagKey, val))
 		}
+		return
+	}
 
-		if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, map[string]bool{flagKey: *val}); err != nil {
-			report.add("project-flag", target, "error", err.Error())
-			continue
-		}
-		report.add("project-flag", target, "set",
-			fmt.Sprintf("set project feature flag %q = %v", flagKey, *val))
+	// Apply in a single PUT (SetV11ProjectFeatureFlags converts snake→kebab).
+	if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, toSet); err != nil {
+		report.add("project-flag", dst, "error", fmt.Sprintf("setting project feature flags: %v", err))
+		return
+	}
+	for flagKey, val := range toSet {
+		report.add("project-flag", dst+"/feature_flag:"+flagKey, "set",
+			fmt.Sprintf("set project feature flag %q = %v", flagKey, val))
 	}
 }
