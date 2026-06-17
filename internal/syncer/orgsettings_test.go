@@ -456,8 +456,8 @@ func TestSyncOrgSettings_FeatureFlags_DangerFlagsSkipped(t *testing.T) {
 	m := orgSettingsManifest(&manifest.OrgSettings{
 		FeatureFlags: map[string]bool{
 			"allow_private_orbs":                true,  // safe — should be written
-			"drop_all_build_requests":           false, // DANGER — skip
-			"require_context_group_restriction": true,  // DANGER — skip
+			"drop_all_build_requests":           false, // DANGER but false — silent skip (no noise)
+			"require_context_group_restriction": true,  // DANGER and true — skip + manual warning
 		},
 	})
 
@@ -466,27 +466,64 @@ func TestSyncOrgSettings_FeatureFlags_DangerFlagsSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only the safe flag should trigger an UpdateFeatureFlags call.
-	writtenFlags := fw.flagsWritten
-	for _, flags := range writtenFlags {
+	// Danger flags must never be written.
+	for _, flags := range fw.flagsWritten {
 		if _, found := flags["drop_all_build_requests"]; found {
-			t.Error("drop_all_build_requests must never be written")
+			t.Error("drop_all_build_requests must never be written by default")
 		}
 		if _, found := flags["require_context_group_restriction"]; found {
-			t.Error("require_context_group_restriction must never be written")
+			t.Error("require_context_group_restriction must never be written by default")
 		}
 	}
 
-	// Danger flags should produce "manual" actions.
+	// Only the TRUE danger flag produces a manual action; the false one is
+	// silently skipped (writing a "set manually" note for an off flag is noise).
 	manual := actionsOfStatus(rep, "manual")
-	if len(manual) != 2 {
-		t.Errorf("expected 2 manual actions for danger flags, got %d: %v", len(manual), manual)
+	if len(manual) != 1 {
+		t.Fatalf("expected 1 manual action (only the true danger flag), got %d: %v", len(manual), manual)
+	}
+	if !strings.Contains(manual[0].Target, "require_context_group_restriction") {
+		t.Errorf("manual action should be for require_context_group_restriction, got %q", manual[0].Target)
 	}
 	for _, a := range manual {
-		if !strings.Contains(a.Target, "drop_all_build_requests") &&
-			!strings.Contains(a.Target, "require_context_group_restriction") {
-			t.Errorf("unexpected manual action target: %q", a.Target)
+		if strings.Contains(a.Target, "drop_all_build_requests") {
+			t.Error("drop_all_build_requests is false — must NOT produce a manual warning")
 		}
+	}
+}
+
+// TestSyncOrgSettings_FeatureFlags_IncludeDangerFlags verifies that with
+// IncludeDangerFlags=true the danger flags ARE written (faithful migration).
+func TestSyncOrgSettings_FeatureFlags_IncludeDangerFlags(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{
+			"drop_all_build_requests":           true,
+			"require_context_group_restriction": true,
+		},
+	})
+
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"),
+		Options{Apply: true, IncludeDangerFlags: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wrote := map[string]bool{}
+	for _, flags := range fw.flagsWritten {
+		for k := range flags {
+			wrote[k] = true
+		}
+	}
+	for _, k := range []string{"drop_all_build_requests", "require_context_group_restriction"} {
+		if !wrote[k] {
+			t.Errorf("with --include-danger-flags, %q should be written", k)
+		}
+	}
+	if n := len(actionsOfStatus(rep, "manual")); n != 0 {
+		t.Errorf("with --include-danger-flags there should be no manual danger-flag actions, got %d", n)
 	}
 }
 

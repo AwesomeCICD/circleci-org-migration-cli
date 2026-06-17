@@ -57,6 +57,7 @@ func newMigrateCommand() *cobra.Command {
 		destOrbNamespace    string
 		jsonOutput          bool
 		createProjectTokens bool
+		includeDangerFlags  bool
 		followAll           bool
 		// in-pipeline secrets transfer (opt-in, mutually exclusive with --secrets)
 		transferSecrets    bool
@@ -480,6 +481,7 @@ Examples:
 					DestRunnerNamespace: destRunnerNamespace,
 					DestOrbNamespace:    destOrbNamespace,
 					CreateProjectTokens: createProjectTokens,
+					IncludeDangerFlags:  includeDangerFlags,
 				}
 				reps := make(map[string]*syncer.Report)
 
@@ -747,6 +749,12 @@ Examples:
 			"CAUTION: each recreated token mints a NEW one-time secret — every consumer of the old token "+
 			"must be repointed to the new value. New plaintext values are printed to stderr once and cannot "+
 			"be retrieved again. Default false: emit manual steps only.")
+	f.BoolVar(&includeDangerFlags, "include-danger-flags", false,
+		"Write the 'danger' feature flags (org: drop_all_build_requests, "+
+			"require_context_group_restriction; project: drop_all_build_requests) to the destination. "+
+			"Default false: these are skipped (and surfaced as a manual step only when the source value is "+
+			"true) because enabling them on a freshly-migrated org/project can freeze or break pipelines. "+
+			"Set this for a faithful migration once the destination is validated and ready.")
 	f.BoolVar(&skipPreflight, "skip-preflight", false,
 		"Skip the startup preflight checks (token validation, org reachability, cross-type warning, "+
 			"api-trigger flag, project discovery). Preflight runs by default before export/sync; use "+

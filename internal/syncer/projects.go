@@ -213,10 +213,10 @@ func (s *Syncer) syncProjectV11Flags(ctx context.Context, report *Report, p mani
 	// with a "manual" note only when the source value is true/non-default).
 	toSet := make(map[string]bool, len(candidates))
 	for flagKey, val := range candidates {
-		if dangerProjectFlags[flagKey] {
+		if dangerProjectFlags[flagKey] && !opts.IncludeDangerFlags {
 			if val {
 				report.add("project-flag", dst+"/feature_flag:"+flagKey, "manual",
-					fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set manually after validating the destination project is ready.", flagKey))
+					fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set it manually once the destination is validated, or re-run with --include-danger-flags.", flagKey))
 			}
 			continue
 		}
