@@ -22,7 +22,7 @@
 #         CLI on PATH; skipped (with warning) if absent; dest orb state is NOT
 #         reset (orb versions are immutable)
 #       - api-service project feature flags set to non-defaults on source
-#         (oss, build-fork-prs, autocancel-builds=true) and reset on dest
+#         (build-fork-prs, autocancel-builds, build-prs-only) and reset on dest
 #
 # Idempotent: safe to run repeatedly. Touches ONLY the two test orgs below.
 #
@@ -121,7 +121,7 @@ cci_w -X POST -H "Content-Type: application/json" \
 # Reset dest api-service project feature flags to defaults.
 echo "    resetting dest api-service project feature flags"
 cci_w -X PUT -H "Content-Type: application/json" \
-  -d '{"feature_flags":{"oss":false,"build-fork-prs":false,"autocancel-builds":false}}' \
+  -d '{"feature_flags":{"build-fork-prs":false,"autocancel-builds":false,"build-prs-only":true}}' \
   "$API/api/v1.1/project/gh/$DST_ORG/api-service/settings" >/dev/null || true
 
 # Wipe dest runner resource classes (namespace may not exist; guard with || true).
@@ -258,13 +258,13 @@ commands:
   greet:
     description: "Print a greeting"
     parameters:
-      name:
+      who:
         type: string
         default: "world"
     steps:
       - run:
           name: Greet
-          command: echo "Hello, << parameters.name >>!"
+          command: echo "Hello, << parameters.who >>!"
 ORBEOF
   cat >"$ORB_V2" <<'ORBEOF'
 version: 2.1
@@ -273,23 +273,23 @@ commands:
   greet:
     description: "Print a greeting"
     parameters:
-      name:
+      who:
         type: string
         default: "world"
     steps:
       - run:
           name: Greet
-          command: echo "Hello, << parameters.name >>!"
+          command: echo "Hello, << parameters.who >>!"
   farewell:
     description: "Print a farewell"
     parameters:
-      name:
+      who:
         type: string
         default: "world"
     steps:
       - run:
           name: Farewell
-          command: echo "Goodbye, << parameters.name >>!"
+          command: echo "Goodbye, << parameters.who >>!"
 ORBEOF
 
   # Public orb: demo-orb (3 versions).
@@ -320,9 +320,9 @@ fi
 echo "==> Setting non-default project feature flags on source api-service..."
 # Use individual flags; guard with || true in case a flag is rejected (returns 400).
 cci_w -X PUT -H "Content-Type: application/json" \
-  -d '{"feature_flags":{"oss":true,"build-fork-prs":true,"autocancel-builds":true,"build-prs-only":false}}' \
+  -d '{"feature_flags":{"build-fork-prs":true,"autocancel-builds":true,"build-prs-only":false}}' \
   "$API/api/v1.1/project/gh/$SRC_ORG/api-service/settings" >/dev/null || true
-echo "    api-service flags set: oss=true build-fork-prs=true autocancel-builds=true build-prs-only=false"
+echo "    api-service flags set: build-fork-prs=true autocancel-builds=true build-prs-only=false"
 echo "    (dest api-service was already reset to defaults in the wipe step above)"
 
 echo
