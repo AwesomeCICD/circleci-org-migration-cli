@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.15.0...v0.16.0) (2026-06-17)
+
+
+### Features
+
+* **migrate:** guided UX overhaul — dry-run→apply, concise output, Ctrl+C, namespace detect ([#294](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/294)) ([0ae5c83](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/0ae5c83d1d20dad1551dfd6a8f436e88c0a0496c))
+
+
+### Bug Fixes
+
+* --ssh-keys=false docs (not --no-ssh-keys) + clearer validate 'not followed' wording ([#292](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/292)) ([473a33b](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/473a33b54ddfab5727c74dc599b33323279d748b))
+* **seed:** orb param 'name' is reserved → 'who'; drop invalid v1.1 'oss' flag ([#291](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/291)) ([7629d23](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/7629d232f972e1acbf1aa3c9fdb73bde78871f62))
+
 ## [0.15.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.14.1...v0.15.0) (2026-06-17)
 
 
