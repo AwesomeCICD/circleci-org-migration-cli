@@ -47,16 +47,46 @@ func (c *Client) GetV11ProjectFeatureFlags(ctx context.Context, slug string) (ma
 		return nil, fmt.Errorf("GetV11ProjectFeatureFlags %q: %w", slug, err)
 	}
 
-	// Capture the entire bool-valued feature-flags map so nothing is lost.
-	// The caller (exporter) also extracts the two well-known keys separately
-	// for backward-compat fields; the full map is stored alongside them.
-	result := make(map[string]bool, len(raw.FeatureFlags))
-	for k, v := range raw.FeatureFlags {
+	return boolFlags(raw.FeatureFlags), nil
+}
+
+// GetV11ProjectSettings returns BOTH the authoritative "following" state and the
+// bool-valued feature flags from a single GET of the v1.1 project settings
+// endpoint. The "following" field is the authoritative signal for whether a
+// project is followed/enabled (a webhook / deploy key is installed) — it is
+// fresher than the followed-projects discovery list, which can lag immediately
+// after a follow. Callers that need an accurate Followed flag should prefer this
+// over the discovery cross-reference.
+//
+// Endpoint: GET /api/v1.1/project/{slug}/settings
+func (c *Client) GetV11ProjectSettings(ctx context.Context, slug string) (following bool, flags map[string]bool, err error) {
+	u, err := slugSubresource(slug, "settings")
+	if err != nil {
+		return false, nil, fmt.Errorf("GetV11ProjectSettings: %w", err)
+	}
+
+	req, err := c.v11.NewRequest(ctx, "GET", u, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("GetV11ProjectSettings: build request: %w", err)
+	}
+
+	var raw v11ProjectSettingsResponse
+	if _, err := c.v11.DoRequest(req, &raw); err != nil {
+		return false, nil, fmt.Errorf("GetV11ProjectSettings %q: %w", slug, err)
+	}
+	return raw.Following, boolFlags(raw.FeatureFlags), nil
+}
+
+// boolFlags extracts the bool-valued entries from a feature_flags blob, ignoring
+// any non-bool values (some orb-related flags are arrays).
+func boolFlags(ff map[string]any) map[string]bool {
+	result := make(map[string]bool, len(ff))
+	for k, v := range ff {
 		if b, ok := v.(bool); ok {
 			result[k] = b
 		}
 	}
-	return result, nil
+	return result
 }
 
 // SetV11ProjectFeatureFlags writes the provided feature flags to the project

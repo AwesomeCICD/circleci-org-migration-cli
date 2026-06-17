@@ -234,6 +234,8 @@ type fakeProjectAPI struct {
 	followedProjectsForOrg    func(orgName string) ([]project.FollowedProject, error)
 	getProjectOIDCClaims      func(orgID, projID string) ([]string, string, error)
 	getV11ProjectFeatureFlags func(slug string) (map[string]bool, error)
+	getV11ProjectSettings     func(slug string) (bool, map[string]bool, error)
+	defaultFollowing          bool
 	listOrgProjects           func(orgID string) ([]project.OrgProject, error)
 	listPipelineDefinitions   func(projectID string) ([]project.PipelineDefinition, error)
 	listTriggers              func(projectID, defID string) ([]project.Trigger, error)
@@ -308,6 +310,23 @@ func (f *fakeProjectAPI) GetV11ProjectFeatureFlags(_ context.Context, slug strin
 		return f.getV11ProjectFeatureFlags(slug)
 	}
 	return nil, nil
+}
+
+func (f *fakeProjectAPI) GetV11ProjectSettings(_ context.Context, slug string) (bool, map[string]bool, error) {
+	if f.getV11ProjectSettings != nil {
+		return f.getV11ProjectSettings(slug)
+	}
+	// Backward-compat: delegate flags to the existing func so flag-focused tests
+	// keep working; following defaults to defaultFollowing (false unless set).
+	var flags map[string]bool
+	if f.getV11ProjectFeatureFlags != nil {
+		var err error
+		flags, err = f.getV11ProjectFeatureFlags(slug)
+		if err != nil {
+			return false, nil, err
+		}
+	}
+	return f.defaultFollowing, flags, nil
 }
 
 func (f *fakeProjectAPI) ListOrgProjects(_ context.Context, orgID string) ([]project.OrgProject, error) {
@@ -2560,7 +2579,9 @@ func TestExport_Projects_ListOrgProjects_AppOrgSlug(t *testing.T) {
 }
 
 func TestExport_Projects_FollowedFlag_SetForFollowedProject(t *testing.T) {
-	// Projects in the followed list have Followed=true; others have Followed=false.
+	// Followed comes from the authoritative v1.1 "following" field (not the
+	// discovery list), so it is accurate immediately after a follow. Here "web"
+	// is following=true and "api" is following=false.
 	ex := &exporter.Exporter{
 		Org: &fakeOrgAPI{
 			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
@@ -2573,11 +2594,9 @@ func TestExport_Projects_FollowedFlag_SetForFollowedProject(t *testing.T) {
 					{ID: "pid-api", Slug: "gh/myorg/api", Name: "api"},
 				}, nil
 			},
-			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
-				// Only "web" is followed.
-				return []project.FollowedProject{
-					{Reponame: "web", VCSType: "github", Username: "myorg"},
-				}, nil
+			getV11ProjectSettings: func(slug string) (bool, map[string]bool, error) {
+				// Only "web" reports following=true.
+				return slug == "gh/myorg/web", nil, nil
 			},
 			getProject: func(slug string) (*project.Project, error) {
 				return &project.Project{Slug: slug, ID: "pid", Name: slug}, nil
@@ -2606,6 +2625,48 @@ func TestExport_Projects_FollowedFlag_SetForFollowedProject(t *testing.T) {
 	}
 }
 
+// TestExport_Projects_FollowedFlag_AuthoritativeOverridesDiscovery locks in the
+// deeper fix: the live v1.1 "following" field is authoritative and overrides the
+// (possibly stale) discovery cross-reference. Here discovery says the project is
+// followed, but following=false wins → Followed=false. This is what prevents
+// validate from falsely reporting a project as "not followed" (and vice-versa)
+// when the discovery list lags right after a follow.
+func TestExport_Projects_FollowedFlag_AuthoritativeOverridesDiscovery(t *testing.T) {
+	ex := &exporter.Exporter{
+		Org: &fakeOrgAPI{
+			getOrganization: func(string) (*org.Organization, error) { return defaultOrg(), nil },
+		},
+		Contexts: &fakeContextAPI{},
+		Projects: &fakeProjectAPI{
+			listOrgProjects: func(orgID string) ([]project.OrgProject, error) {
+				return []project.OrgProject{{ID: "pid-web", Slug: "gh/myorg/web", Name: "web"}}, nil
+			},
+			followedProjectsForOrg: func(orgName string) ([]project.FollowedProject, error) {
+				// Stale discovery: claims "web" is followed.
+				return []project.FollowedProject{{Reponame: "web", VCSType: "github", Username: "myorg"}}, nil
+			},
+			getV11ProjectSettings: func(slug string) (bool, map[string]bool, error) {
+				// Authoritative live state: NOT following.
+				return false, nil, nil
+			},
+			getProject: func(slug string) (*project.Project, error) {
+				return &project.Project{Slug: slug, ID: "pid", Name: slug}, nil
+			},
+		},
+	}
+
+	m, err := ex.Export(context.Background(), exporter.Options{OrgSlug: "gh/myorg", IncludeProjects: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(m.Projects))
+	}
+	if got := m.Projects[0].Followed; got == nil || *got {
+		t.Errorf("Followed should be false (authoritative following wins over stale discovery), got %v", got)
+	}
+}
+
 func TestExport_Projects_FollowedFlag_NilForAppOrg(t *testing.T) {
 	// GitHub App orgs have no v1.1 slug form; Followed must be nil.
 	appOrg := &org.Organization{
@@ -2624,6 +2685,11 @@ func TestExport_Projects_FollowedFlag_NilForAppOrg(t *testing.T) {
 				return []project.OrgProject{
 					{ID: "pid-app", Slug: "circleci/app-org-uuid/proj-1", Name: "proj"},
 				}, nil
+			},
+			getV11ProjectSettings: func(slug string) (bool, map[string]bool, error) {
+				// App orgs have no v1.1 slug form — the settings call fails, so the
+				// exporter must leave Followed nil rather than defaulting it.
+				return false, nil, errors.New("v1.1 settings unavailable for App org")
 			},
 			getProject: func(slug string) (*project.Project, error) {
 				return &project.Project{Slug: slug, ID: "pid-app", Name: "proj"}, nil
