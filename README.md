@@ -20,8 +20,10 @@
 
 `circleci-migrate` moves configuration data from one CircleCI organization to
 another — contexts, project settings, environment variables, org-level settings,
-runner resource classes, and more — with a safe, auditable approach that never
-requires you to expose secrets in plain text until they are needed.
+runner resource classes, orbs (full version history), and more — with a safe,
+auditable approach that never requires you to expose secrets in plain text until
+they are needed. A built-in `validate` parity check confirms the destination
+matches the source after migration.
 
 <p align="center">
   <img src="docs/demo.gif" alt="circleci-migrate demo" width="900">
@@ -34,8 +36,12 @@ requires you to expose secrets in plain text until they are needed.
 replays that manifest into the destination — a **dry run by default**, `--apply`
 to write. Because the CircleCI API never returns secret values, a separate
 `secrets capture` step runs a short-lived pipeline in the source org to collect
-them, encrypted by default. A few things cannot be migrated by any API and are
-listed in each export's `migration-report.md` and in the
+them, encrypted by default. The recommended way to move secret values is the
+in-pipeline **`secrets transfer`** flow (org-to-org, nothing written to disk);
+the captured-bundle approach (`secrets capture` + `--secrets`) is the
+alternative when a direct pipeline connection is not available. A few things
+cannot be migrated by any API and are listed in each export's
+`migration-report.md` and in the
 [cutover runbook](docs/cutover-runbook.md#4-does-not-transfer--data-loss).
 
 ## Install
@@ -70,7 +76,9 @@ sudo install -m 0755 circleci-migrate /usr/local/bin/
 export CIRCLECI_SOURCE_TOKEN="<source-org-admin-token>"
 export CIRCLECI_DEST_TOKEN="<destination-org-admin-token>"
 
-# Interactive guided walkthrough (recommended for first-time use)
+# Interactive guided walkthrough (recommended for first-time use).
+# Covers contexts, projects, org settings, extras, orbs, and runners,
+# and leads with the in-pipeline secrets transfer flow.
 circleci-migrate migrate
 
 # …or scripted: export → capture secrets → dry-run → apply
@@ -78,6 +86,9 @@ circleci-migrate export --source-org gh/acme
 circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key --enable-trigger
 circleci-migrate sync --manifest manifest.json --secrets secrets.json --mapping mapping.json          # dry run
 circleci-migrate sync --manifest manifest.json --secrets secrets.json --mapping mapping.json --apply  # write
+
+# Parity check: confirm the destination matches the source after migrating
+circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new   # parity check after migrating
 ```
 
 > **`secrets.json` holds plaintext values** — treat it like a password file
@@ -103,7 +114,8 @@ Read in this order:
    production cutover, including the full *what does NOT transfer* list.
 5. **[Troubleshooting](docs/troubleshooting.md)** — common errors and fixes.
 6. **[CLI reference](docs/cli/README.md)** — complete, auto-generated
-   per-command flag tables. (Also available as [man pages](man/).)
+   per-command flag tables, including `validate` for post-migration parity
+   checks. (Also available as [man pages](man/).)
 
 Further reading: [architecture & data flow](docs/architecture.md),
 [API usage](docs/api-usage.md), [contributing](CONTRIBUTING.md).
