@@ -30,15 +30,44 @@ Throughout, the **source** is `gh/acme` and the **destination** is
 
 | Transfers automatically | Requires a manual step |
 |---|---|
-| Contexts + context env vars | Context restrictions (recreate in UI) |
-| Project env vars | SSH / checkout keys (re-add or use capture) |
-| Project settings | Webhook signing secrets (regenerate) |
-| Org-level webhooks | Org orbs (republish in destination) |
-| Scheduled pipelines | Per-project access grants |
+| Contexts + context env vars | **Group** context restrictions (group IDs differ between orgs — recreate in UI) |
+| **Project-type** context restrictions (remapped automatically via the project mapping) | SSH / checkout keys (re-add or use capture) |
+| Project env vars | Webhook signing secrets (regenerate) |
+| Project settings | Org orbs (republish in destination) |
+| Org-level webhooks | Per-project access grants |
+| Scheduled pipelines | |
 | Self-hosted runner resource classes | |
 
 A complete "does not transfer" list is printed in your migration report
 (Phase 1).
+
+---
+
+## The simplest path — guided `migrate`
+
+For a first-time or one-off migration, the easiest way to start is the
+**guided interactive walkthrough**:
+
+```bash
+circleci-migrate migrate
+```
+
+Run it with no flags on an interactive terminal. It will prompt you for:
+
+- Source and destination org slugs and API tokens
+- Which sections to migrate (contexts, projects, org settings, extras,
+  orbs, runners)
+- The secrets method (**in-pipeline transfer is the recommended default**,
+  or an encrypted bundle as an alternative)
+
+After gathering input it performs a **dry run, prints a concise summary**, and
+asks **"Apply these changes now?"** — answering yes applies without re-walking.
+After a successful apply, `migrate` **automatically runs the parity check**
+(equivalent to the `validate` command described in Phase 6).
+
+The phase-by-phase scripted flow described below remains the recommended path
+for operators who want explicit control, CI scripting, or the ability to pause
+and inspect between steps.
 
 ---
 
@@ -53,7 +82,7 @@ A complete "does not transfer" list is printed in your migration report
 
 ```bash
 brew install AwesomeCICD/tap/circleci-migrate
-circleci-migrate version    # v0.12.0 or later
+circleci-migrate version    # v0.17.1 or later
 ```
 
 Set tokens for the session:
@@ -138,8 +167,15 @@ circleci-migrate secrets transfer --manifest manifest.json \
   --mapping mapping.json --include-project-vars --enable-trigger --apply
 ```
 
-If any contexts have **project or expression restrictions**, the CLI fails fast
-with an actionable error. Add `--remove-restrictions` to temporarily lift them:
+**Context restrictions:** project-type and expression restrictions are
+**remapped and recreated automatically** on the destination (the tool maps
+source project UUIDs to destination project UUIDs via `mapping.json`). **Group**
+restrictions are **not** transferred automatically — group IDs differ between
+orgs and must be recreated manually in the destination UI after cutover.
+
+If any contexts have **project or expression restrictions** that block the
+transfer pipeline, the CLI fails fast with an actionable error. Add
+`--remove-restrictions` to temporarily lift them:
 
 ```bash
 circleci-migrate secrets transfer --manifest manifest.json \
@@ -246,19 +282,73 @@ Re-run the dry-run command to confirm previously-`would create` lines now show
 
 ### 6.1 Validate (before enabling anything)
 
-In the destination org UI, confirm:
-
-- **Contexts** — all present, correct variable counts, restrictions correct.
-- **Project env vars** — names present for a sample of projects.
-- **Webhooks / Triggers** — present as expected.
-- Work through every `manual` item from Phase 4 and the migration report
-  (e.g. recreate context restrictions, regenerate webhook signing secrets).
-
-Optional cross-check:
+Run the **`validate`** command — it exports both orgs read-only and prints a
+per-section parity report covering Contexts, Projects, Org Settings, Runners,
+Orbs, and CIAM. Exit code is non-zero if any item is **missing** from the
+destination.
 
 ```bash
-circleci-migrate export --source-org gh/acme-new \
-  --source-token "$CIRCLECI_DEST_TOKEN" --output manifest-dest.json
+circleci-migrate validate \
+  --source-org gh/acme \
+  --dest-org gh/acme-new \
+  --mapping mapping.json
+```
+
+If orbs or runners were migrated, add the destination namespaces so those
+sections are checked (omitting them causes the section to be skipped with a
+note):
+
+```bash
+circleci-migrate validate \
+  --source-org gh/acme \
+  --dest-org gh/acme-new \
+  --mapping mapping.json \
+  --dest-orb-namespace acme-new \
+  --dest-runner-namespace acme-new
+```
+
+The report shows:
+
+| Symbol | Meaning |
+|---|---|
+| ✓ | Matched — present and correct on the destination |
+| ✗ | Missing — needs action before enabling builds |
+| ⚠ | Manual — requires operator action; does not fail the exit code |
+
+A **NEEDS ATTENTION** block at the end lists every ✗ missing and ⚠ manual
+item.
+
+**Expected ⚠ manual items:**
+
+- **Group context restrictions** — group IDs differ between orgs; recreate in
+  the destination UI after cutover.
+- **SSO** — DNS verification and IdP setup are always manual.
+- **CIAM** — role bindings must be confirmed by email.
+- A freshly-followed project may briefly appear as "not followed" until the
+  follow propagates — re-run `validate` a minute later if you see this.
+
+> **Note:** secret *values* are never compared — the CircleCI API masks them.
+> `validate` checks presence and structure (names, counts, settings,
+> restrictions).
+
+After validate passes (exit 0), work through any ⚠ items listed (e.g. recreate
+group context restrictions, regenerate webhook signing secrets, confirm CIAM
+role bindings).
+
+#### Org feature flags — "danger" items
+
+Two org feature flags are **skipped by default** for safety:
+`drop_all_build_requests` and `require_context_group_restriction`. Enabling
+either on a fresh org can freeze or break pipelines. When the source org has
+either set to `true`, the migration report surfaces them as a manual step.
+Once the destination is validated and stable, write them explicitly:
+
+```bash
+circleci-migrate sync \
+  --manifest manifest.json \
+  --mapping mapping.json \
+  --include-danger-flags \
+  --apply
 ```
 
 ### 6.2 Enable builds (cutover)
@@ -302,7 +392,8 @@ pipeline runs green, and a job can read its context variables.
 
 | Symptom | Fix |
 |---|---|
-| `manual` on context restrictions | Source-org project UUIDs don't transfer; recreate the restriction in the destination UI. |
+| `manual` on group context restrictions | Group IDs differ between orgs; recreate group restrictions in the destination UI. |
+| `manual` on project context restrictions | Should transfer automatically if `mapping.json` has a matching entry; verify the source project slug is in the mapping. |
 | `manual` on env vars | Supply `--secrets secrets.json`, or use `--missing-secrets placeholder` to create the names for manual fill-in. |
 | Project missing from the plan | Destination can't follow it yet — check GitHub access / onboarding. |
 | Pipeline skipped during secrets transfer | Enable "unversioned config" in the source org (or pass `--enable-trigger`). |
@@ -313,16 +404,21 @@ pipeline runs green, and a job can read its context variables.
 ## Command quick reference
 
 ```bash
+# Guided interactive walkthrough (simplest):
+circleci-migrate migrate
+
+# Or, step-by-step:
 circleci-migrate doctor   --source-org gh/acme --dest-org gh/acme-new
 circleci-migrate export   --source-org gh/acme --output manifest.json --report migration-report.md
 circleci-migrate mapping generate --manifest manifest.json --dest-org gh/acme-new -o mapping.json
 # secrets: see the Secrets Transfer guide
 circleci-migrate sync --manifest manifest.json --mapping mapping.json                 # dry run
 circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply         # create (paused)
+circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new --mapping mapping.json
 circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --yes   # enable builds
 ```
 
 ---
 
 *© CircleCI. Generated for customer use. Commands assume `circleci-migrate`
-v0.12.0 or later. Nothing in this runbook modifies the source organization.*
+v0.17.1 or later. Nothing in this runbook modifies the source organization.*
