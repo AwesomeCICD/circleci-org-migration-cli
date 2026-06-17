@@ -103,6 +103,30 @@ them — encrypted by default, never stored in plain text.
 `migrate` is the all-in-one command that runs export → sync in one step (with an
 interactive walkthrough when run with no flags).
 
+#### Interactive walkthrough — what gets migrated (Step 3)
+
+When you run `migrate` with no flags on a TTY, Step 3 of the guided walkthrough
+presents a multi-select menu of components to migrate.  All components are
+selected by default:
+
+- **contexts** — org-level contexts and their environment variables
+- **projects** — followed projects, env vars, checkout keys, and pipeline definitions
+- **org settings** — feature flags, OIDC providers, URL-orb allow list, config policies
+- **extras** — checkout keys, webhooks, and schedules
+- **orbs** — published orb versions under your namespace (new in v0.13.0)
+- **runners** — self-hosted runner resource classes (new in v0.13.0)
+
+When you select **orbs** or **runners**, the walkthrough immediately asks for
+the source and destination namespaces, defaulting to the org's short name (e.g.
+`acme` from `gh/acme`).  For `circleci/<uuid>` (App) orgs, the default is
+empty and you type the namespace yourself.  Leaving a namespace blank skips that
+component.  There is no API to auto-resolve the namespace from an org name, so
+you must confirm or type the value.
+
+To migrate orbs/runners non-interactively, pass the explicit namespace flags:
+`--orb-namespace` / `--dest-orb-namespace` and `--runner-namespace` /
+`--dest-runner-namespace`.
+
 #### Interactive walkthrough — secrets step (Step 3a)
 
 When you run `migrate` with no flags on a TTY, the guided walkthrough asks how
