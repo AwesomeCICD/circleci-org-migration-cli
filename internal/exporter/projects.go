@@ -78,25 +78,33 @@ func (e *Exporter) exportProjects(ctx context.Context, m *manifest.Manifest, opt
 			}
 		}
 
-		// Per-project v1.1 feature flags (best-effort). The full map is stored in
-		// V11FeatureFlags; the two well-known keys are also copied into the
-		// existing explicit fields for backward compatibility.
-		if flags, ferr := e.Projects.GetV11ProjectFeatureFlags(ctx, slug); ferr != nil {
-			m.AddWarning("project:"+slug, "v11_feature_flags_unreadable", fmt.Sprintf("could not read project v1.1 feature flags: %v", ferr))
-		} else if len(flags) > 0 {
-			if mp.Settings == nil {
-				mp.Settings = &manifest.AdvancedSettings{}
+		// Per-project v1.1 settings (best-effort). One GET returns both the
+		// authoritative "following" state and the feature flags. We override the
+		// discovery-based Followed flag with the live "following" value because
+		// the discovery cross-reference can lag right after a project is followed
+		// (the symptom: validate reporting a freshly-migrated project as "not
+		// followed"). The full flag map is stored in V11FeatureFlags; the two
+		// well-known keys are also copied into the explicit fields.
+		if following, flags, ferr := e.Projects.GetV11ProjectSettings(ctx, slug); ferr != nil {
+			m.AddWarning("project:"+slug, "v11_feature_flags_unreadable", fmt.Sprintf("could not read project v1.1 settings: %v", ferr))
+		} else {
+			f := following
+			mp.Followed = &f
+			if len(flags) > 0 {
+				if mp.Settings == nil {
+					mp.Settings = &manifest.AdvancedSettings{}
+				}
+				if v, ok := flags["api-trigger-with-config"]; ok {
+					v := v
+					mp.Settings.APITriggerWithConfig = &v
+				}
+				if v, ok := flags["drop-all-build-requests"]; ok {
+					v := v
+					mp.Settings.DropAllBuildRequests = &v
+				}
+				// Store the full map so additional flags are not silently dropped.
+				mp.Settings.V11FeatureFlags = flags
 			}
-			if v, ok := flags["api-trigger-with-config"]; ok {
-				v := v
-				mp.Settings.APITriggerWithConfig = &v
-			}
-			if v, ok := flags["drop-all-build-requests"]; ok {
-				v := v
-				mp.Settings.DropAllBuildRequests = &v
-			}
-			// Store the full map so additional flags are not silently dropped.
-			mp.Settings.V11FeatureFlags = flags
 		}
 
 		m.Projects = append(m.Projects, mp)

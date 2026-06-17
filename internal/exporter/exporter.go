@@ -70,6 +70,10 @@ type ProjectAPI interface {
 	FollowedProjectsForOrg(ctx context.Context, orgName string) ([]project.FollowedProject, error)
 	GetProjectOIDCClaims(ctx context.Context, orgID, projID string) (audience []string, ttl string, err error)
 	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
+	// GetV11ProjectSettings returns both the authoritative "following" state and
+	// the bool feature flags from one GET. Used to set the Followed flag from the
+	// live signal rather than the (possibly stale) discovery cross-reference.
+	GetV11ProjectSettings(ctx context.Context, slug string) (following bool, flags map[string]bool, err error)
 	// ListAdditionalSSHKeys returns the public metadata for every additional
 	// SSH key configured on a project. Private key material is never returned
 	// by the API. On error the caller should record a non-fatal warning.
