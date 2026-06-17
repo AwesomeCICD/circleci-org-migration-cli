@@ -81,63 +81,28 @@ func TestPrompt_AskRequired_RepromptOnEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt behaviour — dry-run / apply (askBool)
+// Prompt behaviour — walkthrough always returns Apply=false (Feature A)
 // ---------------------------------------------------------------------------
 
-// TestPrompt_DryRun_DefaultYes_EmptyInput verifies that pressing Enter on the
-// dry-run prompt (default=yes) results in apply=false.
-func TestPrompt_DryRun_DefaultYes_EmptyInput(t *testing.T) {
+// TestPrompt_Walkthrough_AlwaysReturnsDryRun verifies that the guided
+// walkthrough always returns Apply=false regardless of user input, because
+// the dry-run → confirm → apply loop was moved to RunE (Feature A).
+// RunE runs the dry-run, prints the summary, and then asks "Apply now?"
+// outside of the walkthrough.
+func TestPrompt_Walkthrough_AlwaysReturnsDryRun(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	// Empty line on dry-run prompt → accept default (dry run, not apply).
-	// "3" → secrets method: none; "1" → missing-secrets: skip; "" → dry run default.
+	// "3" → secrets method: none; "1" → missing-secrets: skip.
 	// Four empty lines accept namespace defaults for orbs and runners.
-	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\n\n"
+	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\n"
 	_, outApply, err := runWalkthrough(t, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if outApply {
-		t.Error("expected apply=false (dry run) when user presses Enter on dry-run prompt")
-	}
-}
-
-// TestPrompt_Apply_Confirmed verifies that declining dry run and confirming
-// apply results in apply=true.
-func TestPrompt_Apply_Confirmed(t *testing.T) {
-	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
-	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
-
-	// "3" → secrets method: none; "1" → missing-secrets: skip;
-	// "n" → skip dry run (wants apply); "y" → confirm apply.
-	// Four empty lines accept namespace defaults for orbs and runners.
-	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\nn\ny\n"
-	_, outApply, err := runWalkthrough(t, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !outApply {
-		t.Error("expected apply=true after user confirms apply")
-	}
-}
-
-// TestPrompt_Apply_Cancelled verifies that declining the apply confirmation
-// returns an error.
-func TestPrompt_Apply_Cancelled(t *testing.T) {
-	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
-	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
-
-	// "3" → secrets method: none; "1" → missing-secrets: skip;
-	// "n" → skip dry run (wants apply); "n" → decline apply confirmation.
-	// Four empty lines accept namespace defaults for orbs and runners.
-	input := "gh/acme\ngh/acme-new\nall\n\n\n\n\n3\n1\nn\nn\n"
-	_, _, err := runWalkthrough(t, input)
-	if err == nil {
-		t.Fatal("expected error when user cancels apply confirmation")
-	}
-	if !strings.Contains(err.Error(), "cancelled") {
-		t.Errorf("error %q does not mention 'cancelled'", err.Error())
+		t.Error("expected apply=false: the walkthrough never sets Apply=true; " +
+			"the apply confirm happens in RunE after the dry-run summary")
 	}
 }
 
@@ -446,32 +411,41 @@ func TestPromptSeparator_StepHeaderContainsStepNumber(t *testing.T) {
 		t.Fatalf("walkthrough error: %v", err)
 	}
 
-	for _, want := range []string{"Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"} {
+	// The walkthrough now has 3 top-level steps (Step 4 was the "dry run or
+	// apply" question, which is now handled by RunE after the dry-run pass).
+	for _, want := range []string{"Step 1 of 3", "Step 2 of 3", "Step 3 of 3"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("expected %q in migrate walkthrough output; got:\n%s", want, output)
 		}
+	}
+	if strings.Contains(output, "Step 4 of") {
+		t.Errorf("walkthrough should not contain 'Step 4 of' (dry-run step moved to RunE); got:\n%s", output)
 	}
 }
 
 // TestPromptSeparator_BlankLineBeforeBoolQuestion verifies that a blank line
 // is emitted before yes/no (bool) questions, providing visual separation.
+// The in-pipeline secrets path has several bool prompts (include-project-vars,
+// include-ssh-keys, remove-restrictions) that exercise this property.
 func TestPromptSeparator_BlankLineBeforeBoolQuestion(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "pre-src")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "pre-dst")
 
-	// Drive a minimal walkthrough; the dry-run bool prompt must be preceded by
-	// a blank line in the captured output.
+	// Drive the in-pipeline path which contains bool prompts inside the walkthrough.
 	lines := []string{
-		"gh/acme",     // source org
-		"gh/acme-new", // dest org
-		"",            // components: all
-		"",            // source orb namespace: accept default
-		"",            // dest orb namespace: accept default
-		"",            // source runner namespace: accept default
-		"",            // dest runner namespace: accept default
-		"3",           // secrets method: none
-		"1",           // missing-secrets: skip
-		"y",           // dry run
+		"gh/acme",           // source org
+		"gh/acme-new",       // dest org
+		"",                  // components: all
+		"",                  // source orb namespace: accept default
+		"",                  // dest orb namespace: accept default
+		"",                  // source runner namespace: accept default
+		"",                  // dest runner namespace: accept default
+		"1",                 // secrets method: in-pipeline (has bool prompts)
+		"migration-secrets", // dest token context name
+		"y",                 // include project vars [Y/n]
+		"n",                 // include SSH keys [Y/n]
+		"y",                 // remove restrictions [Y/n]
+		"",                  // host project: auto
 	}
 
 	output, err := runWalkthroughCaptureOutput(t, lines)
@@ -479,12 +453,16 @@ func TestPromptSeparator_BlankLineBeforeBoolQuestion(t *testing.T) {
 		t.Fatalf("walkthrough error: %v", err)
 	}
 
-	// The dry-run prompt contains "[Y/n]"; it must be preceded by a blank line.
+	// The include-project-vars bool prompt contains "[Y/n]"; it must be preceded
+	// by a blank line.  The output must contain at least one blank line overall.
+	if !strings.Contains(output, "\n\n") {
+		t.Errorf("expected at least one blank separator line in output; got:\n%s", output)
+	}
+	// The in-pipeline bool prompt "[Y/n]" must appear in the output.
 	idx := strings.Index(output, "[Y/n]")
 	if idx < 0 {
-		t.Fatalf("expected '[Y/n]' in output; got:\n%s", output)
+		t.Fatalf("expected '[Y/n]' in output for in-pipeline bool prompts; got:\n%s", output)
 	}
-	// Scan backward: there must be a "\n\n" (blank line) before the prompt.
 	before := output[:idx]
 	if !strings.Contains(before, "\n\n") {
 		t.Errorf("expected blank line before [Y/n] prompt; output before:\n%s", before)

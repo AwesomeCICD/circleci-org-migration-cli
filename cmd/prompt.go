@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -85,28 +86,61 @@ var stdinIsTerminal = func() bool {
 // readLine calls each consume exactly one line without draining the
 // underlying reader.  Injecting synthetic streams in tests drives the whole
 // flow without a real TTY.
+//
+// When ctx is cancelled (e.g. via Ctrl+C), any blocking read is interrupted
+// and the ctx.Err() is returned so the calling command exits promptly.
 type Prompter struct {
 	r   *bufio.Reader
 	out io.Writer
+	ctx context.Context
 }
 
 // NewPrompter returns a Prompter that writes prompts to out and reads answers
 // from in.  Callers should pass cmd.ErrOrStderr() for out and os.Stdin for in.
+//
+// Deprecated: prefer NewPrompterCtx which accepts a context for cancellation.
 func NewPrompter(in io.Reader, out io.Writer) *Prompter {
-	return &Prompter{r: bufio.NewReader(in), out: out}
+	return NewPrompterCtx(context.Background(), in, out)
+}
+
+// NewPrompterCtx returns a context-aware Prompter.  When ctx is cancelled
+// (e.g. Ctrl+C triggers SIGINT), any blocking readLine returns ctx.Err()
+// immediately so the command exits without waiting for the user to press Enter.
+// ctx must not be nil; use context.Background() when no meaningful context is
+// available, or call NewPrompter which supplies context.Background() for you.
+func NewPrompterCtx(ctx context.Context, in io.Reader, out io.Writer) *Prompter {
+	return &Prompter{r: bufio.NewReader(in), out: out, ctx: ctx}
+}
+
+// lineResult is the value passed over the channel inside readLine.
+type lineResult struct {
+	line string
+	err  error
 }
 
 // readLine reads one line from p.r, trims whitespace, and returns it.
 // It returns ("", io.EOF) when the reader is exhausted.
+// If p.ctx is cancelled before the read completes, it returns ("", ctx.Err()).
 func (p *Prompter) readLine() (string, error) {
-	line, err := p.r.ReadString('\n')
-	line = strings.TrimRight(line, "\r\n")
-	line = strings.TrimSpace(line)
-	if err == io.EOF && line != "" {
-		// Last line with no trailing newline — still valid.
-		return line, nil
+	ch := make(chan lineResult, 1)
+	go func() {
+		line, err := p.r.ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		line = strings.TrimSpace(line)
+		if err == io.EOF && line != "" {
+			// Last line with no trailing newline — still valid.
+			ch <- lineResult{line, nil}
+			return
+		}
+		ch <- lineResult{line, err}
+	}()
+
+	select {
+	case <-p.ctx.Done():
+		return "", p.ctx.Err()
+	case res := <-ch:
+		return res.line, res.err
 	}
-	return line, err
 }
 
 // ask prints prompt to p.out and returns the trimmed line read from p.in.

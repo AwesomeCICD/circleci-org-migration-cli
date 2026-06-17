@@ -153,7 +153,7 @@ func runMigratePreflight(
 
 	// Interactive follow-all offer: prompt before the warnings confirmation.
 	if followAllOffered && isInteractiveTTY() {
-		p := NewPrompter(os.Stdin, out)
+		p := NewPrompterCtx(ctx, os.Stdin, out)
 		run, err := p.askBool(
 			"Follow all un-onboarded GitHub repos in the source org now? (requires github-token)",
 			false,
@@ -172,7 +172,7 @@ func runMigratePreflight(
 
 	// Interactive confirm on warnings.
 	if warn > 0 && isInteractiveTTY() {
-		p := NewPrompter(os.Stdin, out)
+		p := NewPrompterCtx(ctx, os.Stdin, out)
 		cont, err := p.askBool(
 			fmt.Sprintf("Preflight found %d warning(s). Continue?", warn),
 			true,
@@ -263,7 +263,7 @@ func runExportPreflight(
 	// Interactive follow-all offer: prompt before the warnings confirmation so
 	// the user can follow repos before deciding whether to continue.
 	if followAllOffered && isInteractiveTTY() {
-		p := NewPrompter(os.Stdin, out)
+		p := NewPrompterCtx(ctx, os.Stdin, out)
 		run, err := p.askBool(
 			"Follow all un-onboarded GitHub repos in the source org now? (requires github-token)",
 			false,
@@ -281,7 +281,7 @@ func runExportPreflight(
 	}
 
 	if warn > 0 && isInteractiveTTY() {
-		p := NewPrompter(os.Stdin, out)
+		p := NewPrompterCtx(ctx, os.Stdin, out)
 		cont, err := p.askBool(
 			fmt.Sprintf("Preflight found %d warning(s). Continue?", warn),
 			true,
@@ -362,7 +362,7 @@ func runSyncPreflight(
 	}
 
 	if warn > 0 && isInteractiveTTY() {
-		p := NewPrompter(os.Stdin, out)
+		p := NewPrompterCtx(ctx, os.Stdin, out)
 		cont, err := p.askBool(
 			fmt.Sprintf("Preflight found %d warning(s). Continue?", warn),
 			true,
@@ -565,7 +565,7 @@ func offerEnableOrgTrigger(ctx context.Context, out io.Writer, results []preflig
 		return
 	}
 
-	p := NewPrompter(os.Stdin, out)
+	p := NewPrompterCtx(ctx, os.Stdin, out)
 	enable, err := p.askBool(
 		fmt.Sprintf("Enable org-level allow_api_trigger_with_config for %s/%s now?", vcsType, orgName),
 		false,

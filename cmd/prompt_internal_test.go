@@ -5,6 +5,7 @@ package cmd
 // package cannot reach because the methods are unexported.
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -236,5 +237,65 @@ func TestAskMultiSelectWithDefault_PartialDefault(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "b" {
 		t.Errorf("got %v, want [b]", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Context cancellation (F: Ctrl+C must abort interactive prompts)
+// ---------------------------------------------------------------------------
+
+// TestPrompter_CtxCancelled_ReturnsCtxErr verifies that a Prompter whose
+// context is already cancelled returns ctx.Err() from readLine without
+// hanging, even when the underlying reader has no data.
+func TestPrompter_CtxCancelled_ReturnsCtxErr(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	// Use a pipe with no data written — the goroutine inside readLine will
+	// block on ReadString, but the ctx.Done() branch must win.
+	pr, pw := io.Pipe()
+	_ = pw // writer never writes
+
+	p := NewPrompterCtx(ctx, pr, io.Discard)
+	_, gotErr := p.readLine()
+	if gotErr == nil {
+		t.Fatal("expected an error from readLine with cancelled context, got nil")
+	}
+	if gotErr != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", gotErr)
+	}
+	_ = pr.Close()
+	_ = pw.Close()
+}
+
+// TestPrompter_AskRequired_CtxCancelled verifies that askRequired surfaces
+// context cancellation and does not loop forever.
+func TestPrompter_AskRequired_CtxCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	pr, pw := io.Pipe()
+	p := NewPrompterCtx(ctx, pr, io.Discard)
+	_, err := p.askRequired("Label", "")
+	if err == nil {
+		t.Fatal("expected error from askRequired with cancelled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+	_ = pr.Close()
+	_ = pw.Close()
+}
+
+// TestNewPrompterCtx_BackgroundCtx verifies that NewPrompterCtx with a
+// non-cancelled context behaves identically to NewPrompter for normal I/O.
+func TestNewPrompterCtx_BackgroundCtx(t *testing.T) {
+	p := NewPrompterCtx(context.Background(), strings.NewReader("hello\n"), io.Discard)
+	got, err := p.readLine()
+	if err != nil {
+		t.Fatalf("readLine err = %v, want nil", err)
+	}
+	if got != "hello" {
+		t.Errorf("got %q, want %q", got, "hello")
 	}
 }

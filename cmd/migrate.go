@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +22,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/transfer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/ui"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 )
@@ -188,6 +193,11 @@ Examples:
 				// Launch interactive walkthrough.
 				wt, wtErr := runMigrateWalkthrough(cmd, cfg, sourceOrg, destOrg, yes)
 				if wtErr != nil {
+					// Ctrl+C (SIGINT) cancels the context; surface a clean abort message.
+					if errors.Is(wtErr, context.Canceled) || errors.Is(wtErr, context.DeadlineExceeded) {
+						fmt.Fprintln(cmd.ErrOrStderr(), "\nAborted.")
+						return wtErr
+					}
 					return wtErr
 				}
 				// Assign struct fields back to outer flag vars so that the
@@ -196,7 +206,8 @@ Examples:
 				destOrg = wt.DestOrg
 				secretsPath = wt.SecretsPath
 				missing = wt.Missing
-				apply = wt.Apply
+				// In guided mode, apply starts as false (dry-run first; we confirm later).
+				apply = false
 				yes = wt.Yes
 				skipContexts = wt.SkipContexts
 				skipProjects = wt.SkipProjects
@@ -248,6 +259,12 @@ Examples:
 			if dstToken == "" {
 				return fmt.Errorf("no destination API token: set --dest-token, --token, CIRCLECI_DEST_TOKEN, or CIRCLECI_CLI_TOKEN")
 			}
+
+			// quietMode is true during the guided walkthrough: export and sync output
+			// is condensed to short summaries so the user sees a calm overview
+			// rather than a firehose. Full detail always goes to the report file.
+			// Feature B: quiet output for guided runs.
+			quietMode := wantsInteraction
 
 			// When --json is set, suppress all human/progress output on stdout;
 			// route any progress to stderr instead.
@@ -391,10 +408,24 @@ Examples:
 			m.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 
 			if !jsonOutput {
-				fmt.Fprint(progressOut, report.Summary(m))
+				if quietMode {
+					// Feature B: one-line export summary for guided mode.
+					cv, pv := countManifestVars(m)
+					fmt.Fprintf(progressOut, "Exported: %d contexts (%d vars), %d projects (%d vars), %d orbs, %d runner classes, %d warnings\n",
+						len(m.Contexts), cv, len(m.Projects), pv, len(m.Orbs), len(m.RunnerResourceClasses), len(m.Warnings))
+				} else {
+					fmt.Fprint(progressOut, report.Summary(m))
+				}
 			}
 
 			// --- optional manifest/report saves (best-effort) -----------------
+			// Feature B: in guided mode, always write the full report to
+			// ./migration-report.md (or --report path) so detail is never lost.
+			effectiveReportPath := reportPath
+			if quietMode && effectiveReportPath == "" {
+				effectiveReportPath = "migration-report.md"
+			}
+
 			if output != "" {
 				if saveErr := m.Save(output); saveErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing manifest: %v\n", saveErr)
@@ -402,11 +433,15 @@ Examples:
 					fmt.Fprintf(progressOut, "Wrote manifest to      %s\n", output)
 				}
 			}
-			if reportPath != "" {
-				if saveErr := report.SaveMarkdown(m, reportPath); saveErr != nil {
+			if effectiveReportPath != "" {
+				if saveErr := report.SaveMarkdown(m, effectiveReportPath); saveErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing audit report: %v\n", saveErr)
 				} else {
-					fmt.Fprintf(progressOut, "Wrote audit report to  %s\n", reportPath)
+					if quietMode {
+						fmt.Fprintf(progressOut, "Full detail: ./%s\n", effectiveReportPath)
+					} else {
+						fmt.Fprintf(progressOut, "Wrote audit report to  %s\n", effectiveReportPath)
+					}
 				}
 			}
 
@@ -421,18 +456,7 @@ Examples:
 				return err
 			}
 
-			opts := syncer.Options{
-				Apply:               apply,
-				MissingSecrets:      missing,
-				GitHubToken:         githubToken,
-				DestGitHubOrg:       destGitHubOrg,
-				DestRunnerNamespace: destRunnerNamespace,
-				DestOrbNamespace:    destOrbNamespace,
-				CreateProjectTokens: createProjectTokens,
-			}
-
-			// Wire up the runner client for the destination when needed and not
-			// skipped.
+			// Wire up the runner/orb syncer clients once (reused for dry-run + apply).
 			wireRunner := !skipRunner && (destRunnerNamespace != "" || len(m.RunnerResourceClasses) > 0)
 			wireOrb := !skipOrb && (destOrbNamespace != "" || len(m.Orbs) > 0)
 			sy, err := buildSyncer(cfg, dstToken, cmd.ErrOrStderr(), wireRunner, wireOrb)
@@ -440,110 +464,124 @@ Examples:
 				return err
 			}
 
-			// Accumulate section reports for --json output.
-			repsBySection := make(map[string]*syncer.Report)
+			// runSyncSections executes all enabled sync sections and returns the
+			// accumulated section reports. It is called once for dry-run and
+			// (in guided mode) once more for apply — reusing the same manifest
+			// and syncer so export never runs twice.
+			runSyncSections := func(applyNow bool) (map[string]*syncer.Report, error) {
+				sOpts := syncer.Options{
+					Apply:               applyNow,
+					MissingSecrets:      missing,
+					GitHubToken:         githubToken,
+					DestGitHubOrg:       destGitHubOrg,
+					DestRunnerNamespace: destRunnerNamespace,
+					DestOrbNamespace:    destOrbNamespace,
+					CreateProjectTokens: createProjectTokens,
+				}
+				reps := make(map[string]*syncer.Report)
 
-			if !skipOrgSettings {
-				rep, syncErr := sy.SyncOrgSettings(ctx, m, mapping, opts)
-				if syncErr != nil {
-					return syncErr
+				if !skipOrgSettings {
+					rep, syncErr := sy.SyncOrgSettings(ctx, m, mapping, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Org Settings"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Org Settings", rep, m)
+					}
 				}
-				repsBySection["Org Settings"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "Org Settings", rep, m)
-				}
-			}
-			if !skipContexts {
-				rep, syncErr := sy.SyncContexts(ctx, m, bundle, mapping, opts)
-				if syncErr != nil {
-					return syncErr
-				}
-				repsBySection["Contexts"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "Contexts", rep, m)
-				}
-			}
-			if !skipProjects {
-				rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, opts)
-				if syncErr != nil {
-					return syncErr
-				}
-				repsBySection["Projects"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "Projects", rep, m)
-				}
-				if enableErr := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); enableErr != nil {
-					return enableErr
-				}
-
-				// Now that destination projects exist, apply the project-type
-				// context restrictions that SyncContexts deferred. This makes a
-				// single run resolve project restrictions (contexts sync before
-				// projects, so they could not be resolved inline).
 				if !skipContexts {
-					prDestSlug := destOrg
+					rep, syncErr := sy.SyncContexts(ctx, m, bundle, mapping, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Contexts"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Contexts", rep, m)
+					}
+				}
+				if !skipProjects {
+					rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Projects"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Projects", rep, m)
+					}
+					if enableErr := handleEnableBuilds(cmd, sy, rep, applyNow, yes, jsonOutput); enableErr != nil { //nolint:contextcheck // handleEnableBuilds predates ctx propagation; ctx not needed for sync-enable path
+						return reps, enableErr
+					}
+
+					if !skipContexts {
+						prDestSlug := destOrg
+						if mapping != nil && mapping.Org.To != "" {
+							prDestSlug = mapping.Org.To
+						}
+						prRep := sy.ApplyDeferredProjectRestrictions(ctx, &syncer.Report{DestOrgSlug: prDestSlug, Applied: sOpts.Apply}, sOpts)
+						reps["Context Project Restrictions"] = prRep
+						if !jsonOutput && !quietMode {
+							printSyncReport(cmd, "Context Project Restrictions", prRep, m)
+						}
+					}
+				}
+
+				if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
+					rep, syncErr := sy.SyncRunnerResourceClasses(ctx, m, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Runner Resource Classes"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Runner Resource Classes", rep, m)
+					}
+				}
+
+				if !skipCIAM && m.CIAM != nil {
+					rep, syncErr := sy.SyncCIAM(ctx, m, mapping, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["CIAM"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "CIAM", rep, m)
+					}
+				}
+
+				if !skipOrb && (len(m.Orbs) > 0 || destOrbNamespace != "") {
+					var orbFlagMgr syncer.OrbFlagManager
+					if orgClient, oErr := org.NewClient(cfg, dstToken); oErr == nil {
+						orbFlagMgr = &orgOrbFlagAdapter{c: orgClient}
+					}
+					destVCSType, destOrgName := "", ""
+					destSlug := destOrg
 					if mapping != nil && mapping.Org.To != "" {
-						prDestSlug = mapping.Org.To
+						destSlug = mapping.Org.To
 					}
-					prRep := sy.ApplyDeferredProjectRestrictions(ctx, &syncer.Report{DestOrgSlug: prDestSlug, Applied: opts.Apply}, opts)
-					repsBySection["Context Project Restrictions"] = prRep
-					if !jsonOutput {
-						printSyncReport(cmd, "Context Project Restrictions", prRep, m)
+					if parts := strings.SplitN(destSlug, "/", 2); len(parts) == 2 {
+						destVCSType, destOrgName = parts[0], parts[1]
+					}
+					rep, syncErr := sy.SyncOrbs(ctx, m, sOpts, orbFlagMgr, destVCSType, destOrgName)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Orbs"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Orbs", rep, m)
 					}
 				}
+				return reps, nil
 			}
 
-			// Runner resource classes (skipped when --skip-runner is set).
-			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
-				rep, syncErr := sy.SyncRunnerResourceClasses(ctx, m, opts)
-				if syncErr != nil {
-					return syncErr
-				}
-				repsBySection["Runner Resource Classes"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "Runner Resource Classes", rep, m)
-				}
-			}
-
-			// CIAM roles and groups (standalone circleci-type orgs only; self-gated).
-			if !skipCIAM && m.CIAM != nil {
-				rep, syncErr := sy.SyncCIAM(ctx, m, mapping, opts)
-				if syncErr != nil {
-					return syncErr
-				}
-				repsBySection["CIAM"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "CIAM", rep, m)
-				}
-			}
-
-			// Orbs (attempted when present in manifest, unless skipped).
-			if !skipOrb && (len(m.Orbs) > 0 || destOrbNamespace != "") {
-				var orbFlagMgr syncer.OrbFlagManager
-				if orgClient, oErr := org.NewClient(cfg, dstToken); oErr == nil {
-					orbFlagMgr = &orgOrbFlagAdapter{c: orgClient}
-				}
-				// Resolve destination org info for flag toggle.
-				destVCSType, destOrgName := "", ""
-				destSlug := destOrg
-				if mapping != nil && mapping.Org.To != "" {
-					destSlug = mapping.Org.To
-				}
-				if parts := strings.SplitN(destSlug, "/", 2); len(parts) == 2 {
-					destVCSType, destOrgName = parts[0], parts[1]
-				}
-				rep, syncErr := sy.SyncOrbs(ctx, m, opts, orbFlagMgr, destVCSType, destOrgName)
-				if syncErr != nil {
-					return syncErr
-				}
-				repsBySection["Orbs"] = rep
-				if !jsonOutput {
-					printSyncReport(cmd, "Orbs", rep, m)
-				}
+			// ── Dry-run pass ─────────────────────────────────────────────────
+			repsBySection, err := runSyncSections(false /* dry-run */)
+			if err != nil {
+				return err
 			}
 
 			if jsonOutput {
-				exportSummary := buildExportSummary(m, output, reportPath)
+				// JSON output: emit a single combined result (non-interactive path only).
+				exportSummary := buildExportSummary(m, output, effectiveReportPath)
 				syncSummary := buildSyncSummary(apply, repsBySection)
 				combined := migrateJSONOutput{
 					DryRun: !apply,
@@ -553,17 +591,71 @@ Examples:
 				return marshalJSON(cmd.OutOrStdout(), combined)
 			}
 
-			// Consolidated end-of-run summary across all sections.
-			printEndSummary(progressOut, repsBySection)
+			// Feature B: in quiet mode, show the consolidated end summary +
+			// an actionable attention block in place of per-section reports.
+			if quietMode {
+				printQuietSyncSummary(progressOut, repsBySection, m)
+			} else {
+				// Non-interactive: print the consolidated end summary (sections
+				// were already printed inside runSyncSections).
+				printEndSummary(progressOut, repsBySection)
+			}
+
+			// ── Feature A: guided dry-run → confirm → apply ───────────────────
+			if wantsInteraction && !apply {
+				// Build a fresh prompter for the post-dry-run confirm.
+				postPrompt := NewPrompterCtx(ctx, os.Stdin, cmd.ErrOrStderr())
+				doApply, askErr := askApplyAfterDryRun(postPrompt, cmd.ErrOrStderr(), MigrateWalkthroughResult{
+					SourceOrg: sourceOrg, DestOrg: destOrg,
+					SkipContexts: skipContexts, SkipProjects: skipProjects,
+					SkipOrgSettings: skipOrgSettings, SkipExtras: skipExtras,
+					SkipOrb: skipOrb, SkipRunner: skipRunner,
+					OrbNamespace: orbNamespace, DestOrbNamespace: destOrbNamespace,
+					RunnerNamespace: runnerNamespace, DestRunnerNamespace: destRunnerNamespace,
+					TransferSecrets: transferSecrets, DestTokenContext: destTokenContext,
+					IncludeProjectVars: includeProjectVars, IncludeSSHKeys: includeSSHKeys,
+					RemoveRestrictions: removeRestrictions, HostProject: transferHostProj,
+					SecretsPath: secretsPath,
+				})
+				if askErr != nil {
+					if errors.Is(askErr, context.Canceled) || errors.Is(askErr, context.DeadlineExceeded) {
+						fmt.Fprintln(cmd.ErrOrStderr(), "\nAborted.")
+						return askErr
+					}
+					return askErr
+				}
+				if doApply {
+					apply = true
+					fmt.Fprintln(cmd.ErrOrStderr(), "")
+					fmt.Fprintln(cmd.ErrOrStderr(), "Applying changes to destination org...")
+					applyReps, applyErr := runSyncSections(true /* apply */)
+					if applyErr != nil {
+						return applyErr
+					}
+					if quietMode {
+						printQuietSyncSummary(progressOut, applyReps, m)
+					} else {
+						printEndSummary(progressOut, applyReps)
+					}
+					repsBySection = applyReps
+				} else {
+					fmt.Fprintln(cmd.ErrOrStderr(), "")
+					fmt.Fprintln(cmd.ErrOrStderr(), "No changes applied. To apply later, re-run with:")
+					fmt.Fprintf(cmd.ErrOrStderr(), "  circleci-migrate migrate --source-org %s --dest-org %s --apply\n", sourceOrg, destOrg)
+					return nil
+				}
+			}
 
 			// ── Step 3 (opt-in): in-pipeline secrets transfer ─────────────────
-			// Only runs when --transfer-secrets is set. The project slug mapping
-			// is derived in-memory from --source-org / --dest-org so the user
-			// does not need to produce a mapping.json separately.
-			if transferSecrets {
-				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, apply, includeProjectVars, includeSSHKeys, removeRestrictions); err != nil {
+			// Only runs when --transfer-secrets is set AND apply is true
+			// (dry-run does not trigger the transfer pipeline).
+			if transferSecrets && apply {
+				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, true, includeProjectVars, includeSSHKeys, removeRestrictions); err != nil {
 					return err
 				}
+			} else if transferSecrets && !apply {
+				// Non-interactive dry-run: skip actual transfer.
+				_ = repsBySection // referenced to avoid unused-var lint
 			}
 
 			return nil
@@ -762,15 +854,23 @@ const valueMethodNone = "none — migrate structure only; set values manually la
 // It writes prompts to cmd.ErrOrStderr() and reads answers from os.Stdin.
 //
 // The function delegates to RunMigrateWalkthroughWith so that tests can inject
-// synthetic I/O via NewPrompter without spawning a real TTY.
+// synthetic I/O via NewPrompterCtx without spawning a real TTY.
 func runMigrateWalkthrough(
 	cmd *cobra.Command,
 	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
 ) (MigrateWalkthroughResult, error) {
+	// cmd.Context() returns nil for a cobra command that has not yet been
+	// executed (e.g. in unit tests that call runMigrateWalkthrough directly
+	// without going through Execute).  Substitute context.Background() so that
+	// NewPrompterCtx always receives a non-nil context.
+	cmdCtx := cmd.Context()
+	if cmdCtx == nil {
+		cmdCtx = context.Background()
+	}
 	return RunMigrateWalkthroughWith(
-		NewPrompter(os.Stdin, cmd.ErrOrStderr()),
+		NewPrompterCtx(cmdCtx, os.Stdin, cmd.ErrOrStderr()),
 		cmd,
 		cfg,
 		sourceOrg, destOrg, yes,
@@ -782,13 +882,25 @@ func runMigrateWalkthrough(
 // p supplies the I/O streams; cmd is used for printing the apply summary; cfg
 // is the per-invocation config the walkthrough fills in (e.g. tokens prompted
 // interactively) in place of the former package-level rootOptions global.
+//
+// srcNamespaceDefault and dstNamespaceDefault are the resolved registry
+// namespaces to use as defaults for orb/runner namespace prompts (feature E).
+// Pass "" to fall back to the org short-name heuristic.
 func RunMigrateWalkthroughWith(
 	p *Prompter,
 	cmd *cobra.Command,
 	cfg *settings.Config,
 	sourceOrg, destOrg string,
 	yes bool,
+	namespaceDefaults ...string,
 ) (MigrateWalkthroughResult, error) {
+	var srcNamespaceDefault, dstNamespaceDefault string
+	if len(namespaceDefaults) >= 1 {
+		srcNamespaceDefault = namespaceDefaults[0]
+	}
+	if len(namespaceDefaults) >= 2 {
+		dstNamespaceDefault = namespaceDefaults[1]
+	}
 	out := p.out
 	var result MigrateWalkthroughResult
 	result.Yes = yes
@@ -801,7 +913,7 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "Tip: re-run with --source-org and --dest-org to skip these prompts.")
 
 	// --- 1. Org slugs --------------------------------------------------------
-	printStepHeader(out, 1, 4, "Source and destination organizations")
+	printStepHeader(out, 1, 3, "Source and destination organizations")
 	fmt.Fprintln(out, "  Slug format: gh/<org>  or  circleci/<org-id>")
 
 	if sourceOrg == "" {
@@ -827,7 +939,7 @@ func RunMigrateWalkthroughWith(
 	result.DestOrg = destOrg
 
 	// --- 2. Tokens -----------------------------------------------------------
-	printStepHeader(out, 2, 4, "API tokens")
+	printStepHeader(out, 2, 3, "API tokens")
 	fmt.Fprintln(out, "  Token input is hidden when running on an interactive terminal.")
 
 	srcToken := cfg.SourceTokenOrDefault()
@@ -854,8 +966,39 @@ func RunMigrateWalkthroughWith(
 		fmt.Fprintln(out, "  Destination token: already set via flag or environment variable")
 	}
 
+	// --- Namespace auto-detect (Feature E) -----------------------------------
+	// Best-effort: try to resolve the source and destination orb namespace from
+	// the registered orbs.  This runs after the token step so that we have a
+	// valid source token.  Failures (network, 2 s timeout, empty namespace) fall
+	// back gracefully to the orgShortName heuristic used in the namespace prompts.
+	// Only override the caller-supplied defaults when the auto-detect finds a value.
+	if srcNamespaceDefault == "" && srcToken != "" {
+		// Build a short-timeout context for the lookup so we never block the
+		// walkthrough more than 2 seconds.
+		nsCtx, nsCancel := context.WithTimeout(p.ctx, 2*time.Second)
+		srcOrgClient, nsErr := org.NewClient(cfg, srcToken)
+		if nsErr == nil {
+			srcOrgID, idErr := srcOrgClient.ResolveOrgID(nsCtx, sourceOrg)
+			if idErr == nil && srcOrgID != "" {
+				srcNamespaceDefault = resolveOrgNamespace(nsCtx, cfg, srcToken, srcOrgID)
+			}
+		}
+		nsCancel()
+	}
+	if dstNamespaceDefault == "" && dstToken != "" {
+		nsCtx, nsCancel := context.WithTimeout(p.ctx, 2*time.Second)
+		dstOrgClient, nsErr := org.NewClient(cfg, dstToken)
+		if nsErr == nil {
+			dstOrgID, idErr := dstOrgClient.ResolveOrgID(nsCtx, destOrg)
+			if idErr == nil && dstOrgID != "" {
+				dstNamespaceDefault = resolveOrgNamespace(nsCtx, cfg, dstToken, dstOrgID)
+			}
+		}
+		nsCancel()
+	}
+
 	// --- 3. What to migrate --------------------------------------------------
-	printStepHeader(out, 3, 4, "What to migrate")
+	printStepHeader(out, 3, 3, "What to migrate")
 
 	chosen, err := p.askMultiSelect(
 		"Select components to migrate (default: all):",
@@ -896,13 +1039,17 @@ func RunMigrateWalkthroughWith(
 
 	// --- Step 3 namespace prompts (orbs / runners) ---------------------------
 	// When orbs are selected, prompt for source and destination namespaces.
-	// Default to the org short-name (e.g. "acme" from "gh/acme"); for
-	// circleci/<uuid> orgs there is no short name so we default to empty.
+	// Use the resolved registry namespace (feature E) when available; fall
+	// back to the org short-name (e.g. "acme" from "gh/acme"); for
+	// circleci/<uuid> orgs the fallback is empty so the user types the value.
 	if wantsOrbs {
 		fmt.Fprintln(out, "")
 		fmt.Fprintln(out, "  Most orgs use their org name as the orb namespace.")
 		fmt.Fprintln(out, "  Leave blank to skip orbs.")
-		srcOrbDefault := orgShortName(sourceOrg)
+		srcOrbDefault := srcNamespaceDefault
+		if srcOrbDefault == "" {
+			srcOrbDefault = orgShortName(sourceOrg)
+		}
 		result.OrbNamespace, err = p.askWithDefault("Source orb namespace", srcOrbDefault)
 		if err != nil {
 			return result, err
@@ -911,7 +1058,10 @@ func RunMigrateWalkthroughWith(
 			// User cleared the value — treat as skipped.
 			result.SkipOrb = true
 		} else {
-			dstOrbDefault := orgShortName(destOrg)
+			dstOrbDefault := dstNamespaceDefault
+			if dstOrbDefault == "" {
+				dstOrbDefault = orgShortName(destOrg)
+			}
 			result.DestOrbNamespace, err = p.askWithDefault("Destination orb namespace", dstOrbDefault)
 			if err != nil {
 				return result, err
@@ -929,7 +1079,10 @@ func RunMigrateWalkthroughWith(
 		fmt.Fprintln(out, "")
 		fmt.Fprintln(out, "  Most orgs use their org name as the runner namespace.")
 		fmt.Fprintln(out, "  Leave blank to skip runners.")
-		srcRunnerDefault := orgShortName(sourceOrg)
+		srcRunnerDefault := srcNamespaceDefault
+		if srcRunnerDefault == "" {
+			srcRunnerDefault = orgShortName(sourceOrg)
+		}
 		result.RunnerNamespace, err = p.askWithDefault("Source runner namespace", srcRunnerDefault)
 		if err != nil {
 			return result, err
@@ -937,7 +1090,10 @@ func RunMigrateWalkthroughWith(
 		if result.RunnerNamespace == "" {
 			result.SkipRunner = true
 		} else {
-			dstRunnerDefault := orgShortName(destOrg)
+			dstRunnerDefault := dstNamespaceDefault
+			if dstRunnerDefault == "" {
+				dstRunnerDefault = orgShortName(destOrg)
+			}
 			result.DestRunnerNamespace, err = p.askWithDefault("Destination runner namespace", dstRunnerDefault)
 			if err != nil {
 				return result, err
@@ -950,7 +1106,7 @@ func RunMigrateWalkthroughWith(
 	}
 
 	// --- Step 3a. How to move secret values ----------------------------------
-	printSubStepHeader(out, "3a", 4, "Secret values")
+	printSubStepHeader(out, "3a", 3, "Secret values")
 	fmt.Fprintln(out, "  How do you want to move secret VALUES to the destination?")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  in-pipeline transfer (RECOMMENDED)")
@@ -979,9 +1135,14 @@ func RunMigrateWalkthroughWith(
 		result.TransferSecrets = true
 
 		// Required: name of the source-org context holding CIRCLECI_DEST_TOKEN.
+		// Feature C: explicit preamble rather than "(e.g. ...)" as a default.
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Create a context in the SOURCE org containing an API token with admin")
+		fmt.Fprintln(out, "  access to the DESTINATION org, stored as the variable CIRCLECI_DEST_TOKEN.")
+		fmt.Fprintln(out, "  Enter that context's name:")
 		result.DestTokenContext, err = p.askRequired(
-			"Source-org context name holding the destination API token (CIRCLECI_DEST_TOKEN)",
-			"e.g. migration-secrets",
+			"Name of a source-org context that holds a destination CircleCI API token",
+			"",
 		)
 		if err != nil {
 			return result, err
@@ -1017,8 +1178,13 @@ func RunMigrateWalkthroughWith(
 		}
 
 		// Optional: host project override (empty = auto-pick).
+		// Feature D: explain what the host project does instead of "(blank = auto-pick)".
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Pick a SOURCE project under which to run the secrets-extraction pipeline")
+		fmt.Fprintln(out, "  (it triggers a short-lived pipeline there to read context/project values).")
+		fmt.Fprintln(out, "  Leave blank to auto-pick an established project.")
 		result.HostProject, err = p.askWithDefault(
-			"Source project slug to host the transfer pipeline (blank = auto-pick)", "",
+			"Source project slug for the secrets pipeline (blank = auto-pick)", "",
 		)
 		if err != nil {
 			return result, err
@@ -1036,7 +1202,7 @@ func RunMigrateWalkthroughWith(
 		}
 
 		// --- Step 3b. Missing secrets handling (bundle / none paths only) ----
-		printSubStepHeader(out, "3b", 4, "Missing secret values")
+		printSubStepHeader(out, "3b", 3, "Missing secret values")
 		fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
 		var missingChoice string
 		missingChoice, err = p.askChoice(
@@ -1053,7 +1219,7 @@ func RunMigrateWalkthroughWith(
 		result.SecretsPath = ""
 
 		// --- Step 3b. Missing secrets handling (bundle / none paths only) ----
-		printSubStepHeader(out, "3b", 4, "Missing secret values")
+		printSubStepHeader(out, "3b", 3, "Missing secret values")
 		fmt.Fprintln(out, "  Variables not found in the bundle can be skipped or written as placeholders.")
 		var missingChoice string
 		missingChoice, err = p.askChoice(
@@ -1064,66 +1230,6 @@ func RunMigrateWalkthroughWith(
 			return result, err
 		}
 		result.Missing = missingChoice
-	}
-
-	// --- 4. Dry run vs apply -------------------------------------------------
-	printStepHeader(out, 4, 4, "Dry run or apply")
-	fmt.Fprintln(out, "  A dry run previews changes without writing anything to the destination.")
-
-	var doApply bool
-	doApply, err = p.askBool("Perform a dry run first (recommended)?", true)
-	if err != nil {
-		return result, err
-	}
-	result.Apply = !doApply // "yes to dry run" → apply=false
-
-	if result.Apply {
-		// Show a summary and require an explicit "yes" before proceeding.
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  !! APPLY MODE — changes WILL be written to the destination org !!")
-		fmt.Fprintln(out, "")
-		fmt.Fprintf(out, "  Source:      %s\n", sourceOrg)
-		fmt.Fprintf(out, "  Destination: %s\n", destOrg)
-		selected := componentsLabel(result.SkipContexts, result.SkipProjects, result.SkipOrgSettings, result.SkipExtras, result.SkipOrb, result.SkipRunner)
-		fmt.Fprintf(out, "  Migrating:   %s\n", selected)
-		if !result.SkipOrb {
-			fmt.Fprintf(out, "  Orbs:        %s → %s\n", result.OrbNamespace, result.DestOrbNamespace)
-		}
-		if !result.SkipRunner {
-			fmt.Fprintf(out, "  Runners:     %s → %s\n", result.RunnerNamespace, result.DestRunnerNamespace)
-		}
-		fmt.Fprintln(out, "")
-
-		// Print a secrets summary line describing the chosen path.
-		switch {
-		case result.TransferSecrets:
-			hostLabel := "auto"
-			if result.HostProject != "" {
-				hostLabel = result.HostProject
-			}
-			fmt.Fprintf(out,
-				"  Secrets:     in-pipeline transfer via context %q (project-vars: %s, ssh-keys: %s, remove-restrictions: %s, host: %s)\n",
-				result.DestTokenContext,
-				yesNo(result.IncludeProjectVars),
-				yesNo(result.IncludeSSHKeys),
-				yesNo(result.RemoveRestrictions),
-				hostLabel,
-			)
-		case result.SecretsPath != "":
-			fmt.Fprintf(out, "  Secrets:     bundle at %q\n", result.SecretsPath)
-		default:
-			fmt.Fprintln(out, "  Secrets:     none (structure only)")
-		}
-		fmt.Fprintln(out, "")
-
-		var confirmed bool
-		confirmed, err = p.askBool("Confirm — proceed with APPLY?", false)
-		if err != nil {
-			return result, err
-		}
-		if !confirmed {
-			return result, fmt.Errorf("migration cancelled by user")
-		}
 	}
 
 	// End-of-walkthrough pointer to advanced flags not covered by the prompts.
@@ -1140,7 +1246,54 @@ func RunMigrateWalkthroughWith(
 	fmt.Fprintln(out, "      cd ./terraform/ && terraform init && terraform plan && terraform apply")
 	fmt.Fprintln(out, "      circleci-migrate sync --manifest manifest.json --dest-token $CIRCLECI_DEST_TOKEN --apply --skip-terraform-managed")
 
+	// In guided mode, Apply is NOT set here — the RunE will run a dry-run first,
+	// show a summary, and then ask "Apply now?" (feature A).
+	// result.Apply stays false (zero value).
+
 	return result, nil
+}
+
+// askApplyAfterDryRun prompts the user (post dry-run) whether to apply changes.
+// It prints a concise plan summary before asking.
+// Returns true if the user confirms apply, false otherwise.
+func askApplyAfterDryRun(p *Prompter, out io.Writer, wt MigrateWalkthroughResult) (bool, error) {
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "─────────────────────────────────────────────────────────────")
+	fmt.Fprintln(out, "  Dry-run complete (see summary above).")
+	fmt.Fprintln(out, "")
+	fmt.Fprintf(out, "  Source:      %s\n", wt.SourceOrg)
+	fmt.Fprintf(out, "  Destination: %s\n", wt.DestOrg)
+	selected := componentsLabel(wt.SkipContexts, wt.SkipProjects, wt.SkipOrgSettings, wt.SkipExtras, wt.SkipOrb, wt.SkipRunner)
+	fmt.Fprintf(out, "  Migrating:   %s\n", selected)
+	if !wt.SkipOrb {
+		fmt.Fprintf(out, "  Orbs:        %s → %s\n", wt.OrbNamespace, wt.DestOrbNamespace)
+	}
+	if !wt.SkipRunner {
+		fmt.Fprintf(out, "  Runners:     %s → %s\n", wt.RunnerNamespace, wt.DestRunnerNamespace)
+	}
+	// Secrets path summary.
+	switch {
+	case wt.TransferSecrets:
+		hostLabel := "auto"
+		if wt.HostProject != "" {
+			hostLabel = wt.HostProject
+		}
+		fmt.Fprintf(out,
+			"  Secrets:     in-pipeline transfer via context %q (project-vars: %s, ssh-keys: %s, remove-restrictions: %s, host: %s)\n",
+			wt.DestTokenContext,
+			yesNo(wt.IncludeProjectVars),
+			yesNo(wt.IncludeSSHKeys),
+			yesNo(wt.RemoveRestrictions),
+			hostLabel,
+		)
+	case wt.SecretsPath != "":
+		fmt.Fprintf(out, "  Secrets:     bundle at %q\n", wt.SecretsPath)
+	default:
+		fmt.Fprintln(out, "  Secrets:     none (structure only)")
+	}
+	fmt.Fprintln(out, "─────────────────────────────────────────────────────────────")
+
+	return p.askBool("Apply these changes to the destination now?", false)
 }
 
 // yesNo returns "yes" or "no" for a boolean, used in the apply summary.
@@ -1192,6 +1345,189 @@ func orgShortName(slug string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// countManifestVars returns (contextVarCount, projectVarCount) from a manifest.
+// Used for the quiet one-line export summary (feature B).
+func countManifestVars(m *manifest.Manifest) (int, int) {
+	cv := 0
+	for _, c := range m.Contexts {
+		cv += len(c.EnvVars)
+	}
+	pv := 0
+	for _, p := range m.Projects {
+		pv += len(p.EnvVars)
+	}
+	return cv, pv
+}
+
+// printQuietSyncSummary prints the consolidated end-of-run totals and an
+// actionable attention block listing only items that need manual action.
+// This is the quiet-mode equivalent of per-section printSyncReport calls.
+// Feature B: condensed sync output for guided runs.
+func printQuietSyncSummary(out io.Writer, repsBySection map[string]*syncer.Report, m *manifest.Manifest) {
+	if len(repsBySection) == 0 {
+		return
+	}
+	ren := ui.New(out)
+	var tc ui.TotalCounts
+	var attention []struct {
+		section string
+		action  syncer.Action
+	}
+
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs"}
+	for _, section := range sectionOrder {
+		rep, ok := repsBySection[section]
+		if !ok || rep == nil {
+			continue
+		}
+		tc.Add(ui.Counts(rep.Counts()))
+		for _, a := range rep.Actions {
+			if a.Status == "manual" || a.Status == "error" {
+				attention = append(attention, struct {
+					section string
+					action  syncer.Action
+				}{section, a})
+			}
+		}
+	}
+
+	ren.EndSummary(tc)
+
+	if len(attention) > 0 {
+		items := make([]ui.AttentionItem, 0, len(attention))
+		for _, aa := range attention {
+			line := syncActionLine(aa.action, "", m)
+			if line == "" {
+				line = aa.action.Target
+			}
+			items = append(items, ui.AttentionItem{
+				Status: aa.action.Status,
+				Label:  "[" + aa.section + "] " + line,
+				Detail: aa.action.Detail,
+			})
+		}
+		ren.AttentionBlock(items)
+	}
+}
+
+// resolveOrgNamespace attempts to detect the org's registered orb namespace by:
+//  1. GET /api/private/orb?org-id=<orgID> to find the first orb UUID
+//  2. Use the orb client's ListOrbs path to find the namespace name
+//
+// This is a best-effort, time-bounded operation: if anything fails or takes
+// longer than maxWait, it returns "" so the caller falls back to orgShortName.
+// Feature E: org → namespace auto-detect.
+func resolveOrgNamespace(ctx context.Context, cfg *settings.Config, token, orgID string) string {
+	if orgID == "" {
+		return ""
+	}
+
+	type privOrbItem struct {
+		OrbID string `json:"orb_id"` //nolint:tagliatelle
+	}
+	type privOrbResp struct {
+		Orbs []privOrbItem `json:"orbs"`
+	}
+
+	// Build a short-timeout context so we never block the prompt more than ~2s.
+	tCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	// Resolve the host (default: circleci.com).
+	host := cfg.Host
+	if host == "" {
+		host = "https://circleci.com"
+	}
+
+	privURL := host + "/api/private/orb?org-id=" + orgID
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 2 * time.Second}
+	}
+
+	req, err := http.NewRequestWithContext(tCtx, http.MethodGet, privURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Circle-Token", token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	var privResp privOrbResp
+	if decErr := json.NewDecoder(resp.Body).Decode(&privResp); decErr != nil {
+		return ""
+	}
+	if len(privResp.Orbs) == 0 {
+		return ""
+	}
+	orbID := privResp.Orbs[0].OrbID
+	if orbID == "" {
+		return ""
+	}
+
+	// Resolve the namespace via the orb client: list orbs for the namespace
+	// that owns this orb. We use ListOrbs with the namespace ID, but we first
+	// need the namespace ID. Since we have an orb ID, we can call ListOrbs
+	// using the namespaceID from the orb package record.
+	// Rather than a full graph traversal, use the simpler approach:
+	// list orbs for the org's namespace by querying the orb packages endpoint
+	// with the orb ID directly via the existing orb client.
+	orbClient, oErr := apiOrb.NewClient(cfg, token)
+	if oErr != nil {
+		return ""
+	}
+
+	// We need to find the namespace from the orb ID. The orb v3 API returns
+	// namespace ID in the package item, but we need to match by orb ID.
+	// Use a lightweight approach: list orbs for namespace IDs by resolving the
+	// orb package list scoped to the known orb ID via filter[orb_id].
+	// Since ListOrbs requires a namespaceID, we instead query the private orb
+	// list endpoint to get the namespace name directly.
+	type privOrbDetail struct {
+		Namespace struct {
+			Name string `json:"name"`
+		} `json:"namespace"`
+	}
+	type privOrbDetailResp struct {
+		Orb privOrbDetail `json:"orb"`
+	}
+
+	detailURL := host + "/api/private/orb/" + orbID
+	req2, err := http.NewRequestWithContext(tCtx, http.MethodGet, detailURL, nil)
+	if err != nil {
+		return ""
+	}
+	req2.Header.Set("Circle-Token", token)
+
+	resp2, err := httpClient.Do(req2)
+	if err != nil || resp2.StatusCode != http.StatusOK {
+		if resp2 != nil {
+			resp2.Body.Close() //nolint:errcheck
+		}
+		// Fall back: use the orb client to list all orbs and find the namespace.
+		// We need the namespace UUID from the orb package. Since we cannot get it
+		// without another API call, just return "" and fall back to orgShortName.
+		_ = orbClient
+		return ""
+	}
+	defer resp2.Body.Close() //nolint:errcheck
+
+	var detailResp privOrbDetailResp
+	if decErr := json.NewDecoder(resp2.Body).Decode(&detailResp); decErr != nil {
+		return ""
+	}
+	return detailResp.Orb.Namespace.Name
 }
 
 // migrateJSONOutput is the combined machine-readable result of a migrate

@@ -55,7 +55,8 @@ func runWalkthroughWithInput(t *testing.T, inputLines []string) (cmd.MigrateWalk
 }
 
 // TestRunMigrateWalkthroughWith_DryRunAllComponents exercises the walkthrough
-// with all components selected and a dry-run choice.
+// with all components selected.  Since Feature A moved the apply confirm into
+// RunE, the walkthrough always returns Apply=false.
 func TestRunMigrateWalkthroughWith_DryRunAllComponents(t *testing.T) {
 	// Set tokens so the walkthrough doesn't prompt for them.
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
@@ -69,7 +70,6 @@ func TestRunMigrateWalkthroughWith_DryRunAllComponents(t *testing.T) {
 	// 4-7. namespace defaults for orbs and runners (accept with empty)
 	// 8. secrets method → "3" (none — structure only)
 	// 9. missing secrets choice → "1" (first option: skip)
-	// 10. dry run first? → "y"
 	lines := []string{
 		"gh/acme",     // source org
 		"gh/acme-new", // dest org
@@ -80,7 +80,6 @@ func TestRunMigrateWalkthroughWith_DryRunAllComponents(t *testing.T) {
 		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip (first choice)
-		"y",           // dry run (yes to "perform dry run")
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -93,22 +92,26 @@ func TestRunMigrateWalkthroughWith_DryRunAllComponents(t *testing.T) {
 	if res.DestOrg != "gh/acme-new" {
 		t.Errorf("destOrg = %q, want %q", res.DestOrg, "gh/acme-new")
 	}
+	// Feature A: walkthrough never sets Apply=true; the apply confirm
+	// happens in RunE after the dry-run pass.
 	if res.Apply {
-		t.Error("expected apply=false for dry-run choice")
+		t.Error("expected apply=false: walkthrough always returns Apply=false (Feature A)")
 	}
 	if res.Missing == "" {
 		t.Error("missing-secrets should not be empty")
 	}
 }
 
-// TestRunMigrateWalkthroughWith_ApplyWithConfirmation exercises the apply
-// branch (user selects apply and then confirms).
-func TestRunMigrateWalkthroughWith_ApplyWithConfirmation(t *testing.T) {
+// TestRunMigrateWalkthroughWith_WalkthroughAlwaysReturnsFalseApply verifies
+// that the guided walkthrough always returns Apply=false regardless of any
+// extra input, because the dry-run → confirm → apply loop was moved to RunE
+// (Feature A).  The apply confirm (askApplyAfterDryRun) runs in RunE after the
+// dry-run output is printed, not inside RunMigrateWalkthroughWith.
+func TestRunMigrateWalkthroughWith_WalkthroughAlwaysReturnsFalseApply(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
 	t.Setenv("CIRCLECI_CLI_TOKEN", "")
 
-	// "n" to dry-run question → apply=true; then "y" to confirm.
 	lines := []string{
 		"gh/src", // source org
 		"gh/dst", // dest org
@@ -119,47 +122,15 @@ func TestRunMigrateWalkthroughWith_ApplyWithConfirmation(t *testing.T) {
 		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
-		"n",      // do NOT do dry run → apply=true
-		"y",      // confirm apply
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
 	if err != nil {
 		t.Fatalf("walkthrough error: %v", err)
 	}
-	if !res.Apply {
-		t.Error("expected apply=true when user confirmed apply")
-	}
-}
-
-// TestRunMigrateWalkthroughWith_ApplyCancelled exercises the case where the
-// user declines the apply confirmation.
-func TestRunMigrateWalkthroughWith_ApplyCancelled(t *testing.T) {
-	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
-	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
-	t.Setenv("CIRCLECI_CLI_TOKEN", "")
-
-	// "n" to dry-run → apply=true, then "n" to decline confirmation.
-	lines := []string{
-		"gh/src", // source org
-		"gh/dst", // dest org
-		"",       // components: default
-		"",       // source orb namespace: accept default (src)
-		"",       // dest orb namespace: accept default (dst)
-		"",       // source runner namespace: accept default (src)
-		"",       // dest runner namespace: accept default (dst)
-		"3",      // secrets method: none
-		"1",      // missing-secrets: skip
-		"n",      // do NOT do dry run → apply=true
-		"n",      // decline confirmation
-	}
-
-	_, err := runWalkthroughWithInput(t, lines)
-	if err == nil {
-		t.Error("expected cancellation error when user declines apply confirmation")
-	}
-	if !strings.Contains(err.Error(), "cancelled") {
-		t.Errorf("expected 'cancelled' in error, got: %v", err)
+	// Feature A: Apply is always false from the walkthrough.
+	if res.Apply {
+		t.Error("expected apply=false: walkthrough never sets Apply=true (Feature A)")
 	}
 }
 
@@ -181,7 +152,6 @@ func TestRunMigrateWalkthroughWith_WithSecretsBundle(t *testing.T) {
 		"2",               // secrets method: bundle
 		"my-secrets.json", // path to bundle
 		"1",               // missing-secrets: skip
-		"y",               // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -212,7 +182,6 @@ func TestRunMigrateWalkthroughWith_SourceOrgPreset(t *testing.T) {
 		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
-		"y",      // dry run
 	}, "\n") + "\n"
 
 	r := strings.NewReader(input)
@@ -308,9 +277,11 @@ func runWalkthroughCaptureOutput(t *testing.T, inputLines []string) (string, err
 	return outBuf.String(), err
 }
 
-// TestMigrateWalkthrough_Step3SubStepLabels verifies that "Step 3a of 4" and
-// "Step 3b of 4" appear in the walkthrough output when a non-in-pipeline path
+// TestMigrateWalkthrough_Step3SubStepLabels verifies that "Step 3a of 3" and
+// "Step 3b of 3" appear in the walkthrough output when a non-in-pipeline path
 // is chosen, preserving the original sub-step labelling from issue #76.
+// (The total was updated from 4→3 in Feature A: Step 4 "dry run or apply"
+// was removed from the walkthrough and is now handled by RunE.)
 func TestMigrateWalkthrough_Step3SubStepLabels(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
@@ -326,18 +297,17 @@ func TestMigrateWalkthrough_Step3SubStepLabels(t *testing.T) {
 		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none (Step 3a choice)
 		"1",           // missing-secrets: skip (Step 3b)
-		"y",           // dry run
 	}
 
 	output, err := runWalkthroughCaptureOutput(t, lines)
 	if err != nil {
 		t.Fatalf("walkthrough error: %v", err)
 	}
-	if !strings.Contains(output, "Step 3a of 4") {
-		t.Errorf("expected 'Step 3a of 4' in migrate walkthrough output; got:\n%s", output)
+	if !strings.Contains(output, "Step 3a of 3") {
+		t.Errorf("expected 'Step 3a of 3' in migrate walkthrough output; got:\n%s", output)
 	}
-	if !strings.Contains(output, "Step 3b of 4") {
-		t.Errorf("expected 'Step 3b of 4' in migrate walkthrough output; got:\n%s", output)
+	if !strings.Contains(output, "Step 3b of 3") {
+		t.Errorf("expected 'Step 3b of 3' in migrate walkthrough output; got:\n%s", output)
 	}
 	if !strings.Contains(output, "Secret values") {
 		t.Errorf("expected 'Secret values' label in Step 3a; got:\n%s", output)
@@ -375,7 +345,6 @@ func TestRunMigrateWalkthroughWith_ConfigIsolation(t *testing.T) {
 			"",       // dest runner namespace: accept default (dst)
 			"3",      // secrets method: none
 			"1",      // missing-secrets: skip
-			"y",      // dry run
 		}
 		r := strings.NewReader(strings.Join(lines, "\n") + "\n")
 		var outBuf strings.Builder
@@ -436,7 +405,7 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer(t *testing.T) {
 	// 11. include SSH keys? → "n"
 	// 12. remove restrictions? → "y"
 	// 13. host project (blank = auto)
-	// 14. dry run? → "y"
+	// Note: the "dry run?" question was removed in Feature A — RunE handles it.
 	lines := []string{
 		"gh/acme",           // source org
 		"gh/acme-new",       // dest org
@@ -451,7 +420,6 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer(t *testing.T) {
 		"n",                 // do NOT include SSH keys
 		"y",                 // remove restrictions
 		"",                  // host project: auto-pick
-		"y",                 // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -480,8 +448,9 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer(t *testing.T) {
 	if res.SecretsPath != "" {
 		t.Errorf("expected SecretsPath empty for in-pipeline path, got %q", res.SecretsPath)
 	}
+	// Feature A: walkthrough never sets Apply=true; apply confirm is in RunE.
 	if res.Apply {
-		t.Error("expected apply=false (dry run chosen)")
+		t.Error("expected apply=false (walkthrough never returns Apply=true in Feature A)")
 	}
 }
 
@@ -506,7 +475,7 @@ func TestRunMigrateWalkthroughWith_InPipelineTransfer_WithHostProject(t *testing
 		"y",                 // include SSH keys
 		"n",                 // do NOT remove restrictions
 		"gh/acme/web",       // host project
-		"y",                 // dry run
+		// Note: "dry run?" removed from walkthrough (Feature A, now in RunE).
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -541,7 +510,7 @@ func TestRunMigrateWalkthroughWith_NoneMethod(t *testing.T) {
 		"",       // dest runner namespace: accept default (dst)
 		"3",      // secrets method: none
 		"1",      // missing-secrets: skip
-		"y",      // dry run
+		// Note: "dry run?" removed from walkthrough (Feature A, now in RunE).
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -561,7 +530,8 @@ func TestRunMigrateWalkthroughWith_NoneMethod(t *testing.T) {
 
 // TestMigrateWalkthrough_Step3aLeadsWithInPipeline verifies that the Step 3a
 // output text presents the in-pipeline transfer as the first / recommended
-// option, and that "Step 3a of 4" still appears in the output.
+// option, and that "Step 3a of 3" appears in the output (updated from 4→3 by
+// Feature A: the old Step 4 "dry run or apply" is now in RunE).
 func TestMigrateWalkthrough_Step3aLeadsWithInPipeline(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
@@ -578,7 +548,6 @@ func TestMigrateWalkthrough_Step3aLeadsWithInPipeline(t *testing.T) {
 		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
-		"y",           // dry run
 	}
 
 	output, err := runWalkthroughCaptureOutput(t, lines)
@@ -586,9 +555,9 @@ func TestMigrateWalkthrough_Step3aLeadsWithInPipeline(t *testing.T) {
 		t.Fatalf("walkthrough error: %v", err)
 	}
 
-	// Step 3a header must still be present.
-	if !strings.Contains(output, "Step 3a of 4") {
-		t.Errorf("expected 'Step 3a of 4' in output; got:\n%s", output)
+	// Step 3a header must still be present (total is now 3, not 4).
+	if !strings.Contains(output, "Step 3a of 3") {
+		t.Errorf("expected 'Step 3a of 3' in output; got:\n%s", output)
 	}
 
 	// The recommended in-pipeline option must appear first in the list.
@@ -609,9 +578,11 @@ func TestMigrateWalkthrough_Step3aLeadsWithInPipeline(t *testing.T) {
 	}
 }
 
-// TestMigrateWalkthrough_InPipelineApplySummary exercises the apply
-// confirmation summary for the in-pipeline transfer path, verifying that the
-// "Secrets: in-pipeline transfer via context" line appears.
+// TestMigrateWalkthrough_InPipelineApplySummary exercises the in-pipeline path
+// through the walkthrough, verifying that context name is captured correctly.
+// The apply confirmation summary (in-pipeline transfer via context "...") is
+// produced by askApplyAfterDryRun in RunE — not inside the walkthrough — so
+// that text is covered by the internal migrate_walkthrough_internal_test.go.
 func TestMigrateWalkthrough_InPipelineApplySummary(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
@@ -631,17 +602,31 @@ func TestMigrateWalkthrough_InPipelineApplySummary(t *testing.T) {
 		"y",           // include SSH keys
 		"y",           // remove restrictions
 		"",            // host project: auto
-		"n",           // do NOT dry run → apply=true
-		"y",           // confirm apply
 	}
 
-	output, err := runWalkthroughCaptureOutput(t, lines)
+	res, err := runWalkthroughWithInput(t, lines)
 	if err != nil {
 		t.Fatalf("walkthrough error: %v", err)
 	}
-
-	if !strings.Contains(output, `in-pipeline transfer via context "my-ctx"`) {
-		t.Errorf("expected apply summary to mention in-pipeline transfer via context; got:\n%s", output)
+	// Verify the context name was captured correctly.
+	if res.DestTokenContext != "my-ctx" {
+		t.Errorf("DestTokenContext = %q, want %q", res.DestTokenContext, "my-ctx")
+	}
+	if !res.TransferSecrets {
+		t.Error("expected TransferSecrets=true for in-pipeline path")
+	}
+	if !res.IncludeProjectVars {
+		t.Error("expected IncludeProjectVars=true")
+	}
+	if !res.IncludeSSHKeys {
+		t.Error("expected IncludeSSHKeys=true")
+	}
+	if !res.RemoveRestrictions {
+		t.Error("expected RemoveRestrictions=true")
+	}
+	// Feature A: apply is always false from the walkthrough.
+	if res.Apply {
+		t.Error("expected Apply=false (walkthrough never sets Apply=true)")
 	}
 }
 
@@ -669,7 +654,6 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_Selected(t *testing.T) {
 		"acme-new-run", // dest runner namespace (custom value)
 		"3",            // secrets method: none
 		"1",            // missing-secrets: skip
-		"y",            // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -729,7 +713,6 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_Deselected(t *testing.T) {
 		"1,2",         // components: contexts + projects only (no orbs/runners)
 		"3",           // secrets method: none (no namespace prompts)
 		"1",           // missing-secrets: skip
-		"y",           // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -784,7 +767,6 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_DefaultNamespace(t *testing.T)
 		"",            // dest runner namespace: accept default (acme-new)
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
-		"y",           // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -830,7 +812,6 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_CircleCIOrg(t *testing.T) {
 		// No dest runner namespace prompt because source was blank → SkipRunner=true
 		"3", // secrets method: none
 		"1", // missing-secrets: skip
-		"y", // dry run
 	}
 
 	res, err := runWalkthroughWithInput(t, lines)
@@ -854,8 +835,11 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_CircleCIOrg(t *testing.T) {
 }
 
 // TestRunMigrateWalkthroughWith_OrbsAndRunners_ApplySummary verifies that when
-// apply mode is chosen with orbs and runners selected, the apply summary
-// includes the namespace lines.
+// orbs and runners are selected, the namespace fields are captured correctly.
+// The apply confirmation summary ("Orbs:", "Runners:", namespace mapping) is
+// produced by askApplyAfterDryRun in RunE — not inside the walkthrough.
+// That function's output is covered by TestAskApplyAfterDryRun_OrbRunnerSummary
+// in migrate_walkthrough_internal_test.go.
 func TestRunMigrateWalkthroughWith_OrbsAndRunners_ApplySummary(t *testing.T) {
 	t.Setenv("CIRCLECI_SOURCE_TOKEN", "fake-src-tok")
 	t.Setenv("CIRCLECI_DEST_TOKEN", "fake-dst-tok")
@@ -871,22 +855,30 @@ func TestRunMigrateWalkthroughWith_OrbsAndRunners_ApplySummary(t *testing.T) {
 		"acme-new",    // dest runner namespace
 		"3",           // secrets method: none
 		"1",           // missing-secrets: skip
-		"n",           // do NOT dry run → apply=true
-		"y",           // confirm apply
 	}
 
-	output, err := runWalkthroughCaptureOutput(t, lines)
+	res, err := runWalkthroughWithInput(t, lines)
 	if err != nil {
 		t.Fatalf("walkthrough error: %v", err)
 	}
 
-	if !strings.Contains(output, "Orbs:") {
-		t.Errorf("expected 'Orbs:' line in apply summary; got:\n%s", output)
+	// Verify namespaces were captured correctly.
+	if res.OrbNamespace != "acme" {
+		t.Errorf("OrbNamespace = %q, want %q", res.OrbNamespace, "acme")
 	}
-	if !strings.Contains(output, "acme → acme-new") {
-		t.Errorf("expected 'acme → acme-new' namespace mapping in apply summary; got:\n%s", output)
+	if res.DestOrbNamespace != "acme-new" {
+		t.Errorf("DestOrbNamespace = %q, want %q", res.DestOrbNamespace, "acme-new")
 	}
-	if !strings.Contains(output, "Runners:") {
-		t.Errorf("expected 'Runners:' line in apply summary; got:\n%s", output)
+	if res.RunnerNamespace != "acme" {
+		t.Errorf("RunnerNamespace = %q, want %q", res.RunnerNamespace, "acme")
+	}
+	if res.DestRunnerNamespace != "acme-new" {
+		t.Errorf("DestRunnerNamespace = %q, want %q", res.DestRunnerNamespace, "acme-new")
+	}
+	if res.SkipOrb {
+		t.Error("expected SkipOrb=false (orbs selected)")
+	}
+	if res.SkipRunner {
+		t.Error("expected SkipRunner=false (runners selected)")
 	}
 }
