@@ -7,6 +7,15 @@
 
 * **secrets:** resolve the `transfer` pipeline branch per project from the manifest's `vcs.default_branch` (falling back to `main`), so orgs with mixed default branches (some `main`, some `master`) can transfer; `--branch` now defaults to empty and, when set, still forces a single branch for all projects.
 
+## [0.17.2](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.1...v0.17.2) (2026-06-18)
+
+
+### Bug Fixes
+
+* **secrets:** resolve transfer pipeline branch per project (mixed main/master) ([1ac5523](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/1ac5523a89f9707a49c5bc4a37f1091189e86a4a))
+* **secrets:** resolve transfer pipeline branch per project from manifest ([e41e6f3](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/e41e6f30324ba336143f83939d9730078a1c8581))
+* **secrets:** use per-project branch in guided migrate flow ([4483230](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/448323047b44e01985a656ecd91120a52552cbe5))
+
 ## [0.17.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.0...v0.17.1) (2026-06-17)
 
 
