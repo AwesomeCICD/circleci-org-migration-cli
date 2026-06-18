@@ -675,17 +675,30 @@ func TestOptionsDestContextName_WithMapping(t *testing.T) {
 // Options defaults
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestOptionsBranch_Default(t *testing.T) {
+func TestOptionsBranchFor_FallsBackToMain(t *testing.T) {
 	opts := Options{}
-	if got := opts.branch(); got != "main" {
-		t.Errorf("default branch = %q, want main", got)
+	// No explicit --branch and no per-project default → "main".
+	if got := opts.branchFor(""); got != "main" {
+		t.Errorf("branchFor(\"\") = %q, want main", got)
 	}
 }
 
-func TestOptionsBranch_Override(t *testing.T) {
+func TestOptionsBranchFor_UsesProjectDefault(t *testing.T) {
+	opts := Options{}
+	// No explicit --branch → the project's own default branch is used.
+	if got := opts.branchFor("master"); got != "master" {
+		t.Errorf("branchFor(\"master\") = %q, want master", got)
+	}
+}
+
+func TestOptionsBranchFor_ExplicitOverridesProjectDefault(t *testing.T) {
 	opts := Options{Branch: "release"}
-	if got := opts.branch(); got != "release" {
-		t.Errorf("branch = %q, want release", got)
+	// An explicit --branch wins over the project default for every project.
+	if got := opts.branchFor("master"); got != "release" {
+		t.Errorf("branchFor(\"master\") with explicit Branch = %q, want release", got)
+	}
+	if got := opts.branchFor(""); got != "release" {
+		t.Errorf("branchFor(\"\") with explicit Branch = %q, want release", got)
 	}
 }
 
@@ -1030,8 +1043,9 @@ func TestOptionsDestProjectSlug_MissingEntry(t *testing.T) {
 
 // triggerCall records one invocation of TriggerPipelineRun.
 type triggerCall struct {
-	slug string
-	yaml string
+	slug   string
+	branch string
+	yaml   string
 }
 
 // multiCallFakeTransferDeps is a thread-safe Deps fake that records all
@@ -1086,9 +1100,9 @@ func (f *multiCallFakeTransferDeps) ListPipelineDefinitions(_ context.Context, p
 	return f.defs, nil
 }
 
-func (f *multiCallFakeTransferDeps) TriggerPipelineRun(_ context.Context, slug, _, _, configYAML string, _ map[string]any) (string, error) {
+func (f *multiCallFakeTransferDeps) TriggerPipelineRun(_ context.Context, slug, _, branch, configYAML string, _ map[string]any) (string, error) {
 	f.mu.Lock()
-	f.triggerCalls = append(f.triggerCalls, triggerCall{slug: slug, yaml: configYAML})
+	f.triggerCalls = append(f.triggerCalls, triggerCall{slug: slug, branch: branch, yaml: configYAML})
 	f.mu.Unlock()
 
 	if f.triggerErr != nil {
@@ -2803,5 +2817,239 @@ func TestUnauthorizedRetryMessage_ContainsRestrictedContextGuidance(t *testing.T
 	}
 	if !strings.Contains(errMsg, "--remove-restrictions") {
 		t.Errorf("exhausted-retry message should mention '--remove-restrictions', got: %q", errMsg)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-project default-branch resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+// manifestWithMixedDefaultBranches returns a manifest whose two projects have
+// DIFFERENT default branches (one "main", one "master"). Both have env vars and
+// are intended to be mapped so they each trigger their own per-project pipeline.
+func manifestWithMixedDefaultBranches() *manifest.Manifest {
+	return &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Contexts: []manifest.Context{
+			{Name: "deploy-prod", EnvVars: []manifest.ContextEnvVar{{Name: "AWS_KEY"}}},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:    "gh/acme/web",
+				VCS:     manifest.ProjectVCS{DefaultBranch: "main"},
+				EnvVars: []manifest.ProjectEnvVar{{Name: "APP_SECRET"}},
+			},
+			{
+				Slug:    "gh/acme/api",
+				VCS:     manifest.ProjectVCS{DefaultBranch: "master"},
+				EnvVars: []manifest.ProjectEnvVar{{Name: "API_KEY"}},
+			},
+		},
+	}
+}
+
+// branchesBySlug folds the recorded trigger calls into slug → set-of-branches.
+func branchesBySlug(calls []triggerCall) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, c := range calls {
+		if out[c.slug] == nil {
+			out[c.slug] = map[string]bool{}
+		}
+		out[c.slug][c.branch] = true
+	}
+	return out
+}
+
+// TestBuildPlan_PopulatesDefaultBranch verifies that BuildPlan copies each
+// project's vcs.default_branch from the manifest into ProjectVarPlan.DefaultBranch.
+func TestBuildPlan_PopulatesDefaultBranch(t *testing.T) {
+	m := manifestWithMixedDefaultBranches()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, pp := range plan.Projects {
+		got[pp.SourceSlug] = pp.DefaultBranch
+	}
+	if got["gh/acme/web"] != "main" {
+		t.Errorf("gh/acme/web DefaultBranch = %q, want main", got["gh/acme/web"])
+	}
+	if got["gh/acme/api"] != "master" {
+		t.Errorf("gh/acme/api DefaultBranch = %q, want master", got["gh/acme/api"])
+	}
+}
+
+// TestTransfer_MixedDefaultBranches_PerProject verifies that with NO explicit
+// --branch, each project's per-project pipeline is triggered on THAT project's
+// own default branch (main for web, master for api).
+func TestTransfer_MixedDefaultBranches_PerProject(t *testing.T) {
+	m := manifestWithMixedDefaultBranches()
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web" // host default branch is "main"
+	opts.IncludeProjectVars = true
+	opts.Branch = "" // no explicit override → use per-project defaults
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	bySlug := branchesBySlug(calls)
+
+	// gh/acme/api must ONLY ever be triggered on master.
+	if api := bySlug["gh/acme/api"]; len(api) != 1 || !api["master"] {
+		t.Errorf("gh/acme/api triggered on branches %v, want only {master}", api)
+	}
+	// gh/acme/web (host context pipeline + its own per-project pipeline) must
+	// ONLY ever be triggered on main.
+	if web := bySlug["gh/acme/web"]; len(web) != 1 || !web["main"] {
+		t.Errorf("gh/acme/web triggered on branches %v, want only {main}", web)
+	}
+}
+
+// TestTransfer_ExplicitBranchOverridesAllProjects verifies that an explicit
+// --branch value is used for EVERY project, regardless of the manifest defaults.
+func TestTransfer_ExplicitBranchOverridesAllProjects(t *testing.T) {
+	m := manifestWithMixedDefaultBranches()
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Branch = "release" // explicit override
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+		"gh/acme/api": "gh/acme-new/api",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	if len(calls) == 0 {
+		t.Fatal("expected at least one trigger call")
+	}
+	for _, c := range calls {
+		if c.branch != "release" {
+			t.Errorf("call for slug %q used branch %q, want release (explicit override applies to all)", c.slug, c.branch)
+		}
+	}
+}
+
+// TestTransfer_EmptyDefaultBranch_FallsBackToMain verifies that a project with
+// NO recorded default branch and NO explicit --branch falls back to "main".
+func TestTransfer_EmptyDefaultBranch_FallsBackToMain(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Projects: []manifest.Project{
+			{
+				Slug: "gh/acme/web",
+				// No VCS.DefaultBranch recorded.
+				EnvVars: []manifest.ProjectEnvVar{{Name: "APP_SECRET"}},
+			},
+		},
+	}
+	deps := happyMultiDeps()
+	opts := baseOpts()
+	opts.DryRun = false
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Branch = ""
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/acme-new/web",
+	}
+
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	if len(calls) == 0 {
+		t.Fatal("expected at least one trigger call")
+	}
+	for _, c := range calls {
+		if c.branch != "main" {
+			t.Errorf("call for slug %q used branch %q, want main (fallback)", c.slug, c.branch)
+		}
+	}
+}
+
+// TestRunContextPipeline_UsesHostDefaultBranch verifies that the contexts/host
+// pipeline resolves its branch from the host project's manifest default branch
+// when --branch is unset.
+func TestRunContextPipeline_UsesHostDefaultBranch(t *testing.T) {
+	m := &manifest.Manifest{
+		Source: manifest.Source{Org: manifest.Org{ID: "src-org-uuid"}},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/host", VCS: manifest.ProjectVCS{DefaultBranch: "master"}},
+		},
+	}
+	deps := happyMultiDeps()
+	plan := &Plan{
+		Contexts: []ContextPlan{{SourceName: "deploy-prod", DestName: "deploy-prod", VarNames: []string{"K"}}},
+	}
+	opts := &Options{
+		HostProjectSlug:  "gh/acme/host",
+		DestOrgID:        "dest-org-uuid",
+		DestTokenContext: "migration-secrets",
+		PollInterval:     1,
+		Stdout:           &bytes.Buffer{},
+		Stderr:           &bytes.Buffer{},
+		// Branch is empty → resolve from the host project's default branch.
+	}
+
+	if err := runContextPipeline(context.Background(), deps, m, plan, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps.mu.Lock()
+	calls := deps.triggerCalls
+	deps.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 context trigger call, got %d", len(calls))
+	}
+	if calls[0].slug != "gh/acme/host" {
+		t.Errorf("context pipeline slug = %q, want gh/acme/host", calls[0].slug)
+	}
+	if calls[0].branch != "master" {
+		t.Errorf("context pipeline branch = %q, want master (host default branch)", calls[0].branch)
 	}
 }

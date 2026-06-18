@@ -560,8 +560,10 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 		"Source-org project slug under which the context-transfer pipeline runs. "+
 			"Any project with api-trigger-with-config enabled works. "+
 			"Auto-picked from the manifest when omitted.")
-	f.StringVar(&tf.branch, "branch", "main",
-		"Branch to check out for the transfer pipeline run")
+	f.StringVar(&tf.branch, "branch", "",
+		"Branch to check out for the transfer pipeline run. "+
+			"Default: each project's default branch from the manifest, falling back to main. "+
+			"Set this to force a single branch for all projects.")
 	f.BoolVar(&tf.apply, "apply", false,
 		"Execute the transfer pipeline (default: dry-run — prints the plan but triggers no pipeline). "+
 			"Pass --apply to actually write values to the destination org.")
