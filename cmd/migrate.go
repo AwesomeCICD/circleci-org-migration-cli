@@ -1705,8 +1705,13 @@ func runMigrateSecretsTransfer(
 	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
 	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
-		HostProjectSlug:    hostSlug,
-		Branch:             "main",
+		HostProjectSlug: hostSlug,
+		// Branch is intentionally empty so transfer.Transfer resolves the
+		// trigger branch per project (manifest vcs.default_branch, falling
+		// back to main). Forcing "main" here breaks orgs with mixed
+		// main/master default branches. Users can still force a single
+		// branch via the standalone `secrets transfer --branch` flag.
+		Branch:             "",
 		DestOrgID:          destOrgID,
 		DestTokenContext:   destTokenContext,
 		DestTokenEnvVar:    "CIRCLECI_DEST_TOKEN",

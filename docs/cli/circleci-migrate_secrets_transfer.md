@@ -167,7 +167,7 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
 
 ```
       --apply                       Execute the transfer pipeline (default: dry-run — prints the plan but triggers no pipeline). Pass --apply to actually write values to the destination org.
-      --branch string               Branch to check out for the transfer pipeline run (default "main")
+      --branch string               Branch to check out for the transfer pipeline run. Default: each project's default branch from the manifest, falling back to main. Set this to force a single branch for all projects.
       --context stringArray         Context name(s) to transfer (default: all contexts with at least one env var in the manifest)
       --dest-host string            Destination CircleCI host URL (default: https://circleci.com; override for Server installs)
       --dest-org string             CircleCI organization slug for the destination org, e.g. gh/my-org (shown in CircleCI → Organization Settings → Overview). This is the CircleCI org identifier, not a GitHub repository URL. The CLI resolves it to the org UUID automatically. Use --dest-org-id to supply the UUID directly.

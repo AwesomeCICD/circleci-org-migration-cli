@@ -210,9 +210,22 @@ type Options struct {
 	Stderr io.Writer
 }
 
-func (o *Options) branch() string {
+// branchFor resolves the branch to check out for a project's trigger pipeline.
+//
+// Precedence:
+//  1. An explicit Options.Branch (the --branch flag) wins for ALL projects —
+//     this preserves the override behaviour for the rare case where the operator
+//     wants to force one branch across every project.
+//  2. Otherwise the project's own defaultBranch (vcs.default_branch from the
+//     manifest) is used, so orgs with mixed default branches (some main, some
+//     master) each trigger on the correct branch.
+//  3. Otherwise fall back to "main".
+func (o *Options) branchFor(defaultBranch string) string {
 	if o.Branch != "" {
 		return o.Branch
+	}
+	if defaultBranch != "" {
+		return defaultBranch
 	}
 	return "main"
 }
@@ -306,6 +319,10 @@ type ProjectVarPlan struct {
 	// SSHKeys are the additional SSH keys to transfer in-pipeline for this project.
 	// Only populated when IncludeSSHKeys is set in Options.
 	SSHKeys []SSHKeyPlan
+	// DefaultBranch is the project's recorded default branch (vcs.default_branch
+	// from the manifest). Used to resolve the per-project trigger branch when the
+	// user did not pass an explicit --branch. Empty when the manifest had none.
+	DefaultBranch string
 	// Skipped is true when the destination project cannot be resolved.
 	Skipped bool
 	// SkipReason is a human-readable explanation of why Skipped is true.
@@ -915,7 +932,7 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 
 		fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s (definition %s)…\n", pp.SourceSlug, defID)
 
-		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branch(), configYAML, nil)
+		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branchFor(pp.DefaultBranch), configYAML, nil)
 		if trigErr != nil {
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
@@ -1217,11 +1234,12 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 	// We use a map keyed by source slug to accumulate both env vars and SSH keys
 	// into a single plan entry, then append to projPlans in stable manifest order.
 	type partialPlan struct {
-		destSlug string
-		varNames []string
-		sshKeys  []SSHKeyPlan
-		skipped  bool
-		skipMsg  string
+		destSlug      string
+		varNames      []string
+		sshKeys       []SSHKeyPlan
+		defaultBranch string
+		skipped       bool
+		skipMsg       string
 	}
 	partial := make(map[string]*partialPlan)
 	var projOrder []string // stable source-slug order
@@ -1241,6 +1259,7 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				continue
 			}
 			p := ensureEntry(mp.Slug)
+			p.defaultBranch = mp.VCS.DefaultBranch
 			destSlug, ok := opts.destProjectSlug(mp.Slug)
 			if !ok {
 				p.skipped = true
@@ -1264,6 +1283,7 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				continue
 			}
 			p := ensureEntry(mp.Slug)
+			p.defaultBranch = mp.VCS.DefaultBranch
 			// If already skipped due to an unresolvable dest slug, keep it skipped.
 			if p.skipped {
 				continue
@@ -1294,16 +1314,18 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 		p := partial[slug]
 		if p.skipped {
 			projPlans = append(projPlans, ProjectVarPlan{
-				SourceSlug: slug,
-				Skipped:    true,
-				SkipReason: p.skipMsg,
+				SourceSlug:    slug,
+				DefaultBranch: p.defaultBranch,
+				Skipped:       true,
+				SkipReason:    p.skipMsg,
 			})
 		} else {
 			projPlans = append(projPlans, ProjectVarPlan{
-				SourceSlug: slug,
-				DestSlug:   p.destSlug,
-				VarNames:   p.varNames,
-				SSHKeys:    p.sshKeys,
+				SourceSlug:    slug,
+				DestSlug:      p.destSlug,
+				VarNames:      p.varNames,
+				SSHKeys:       p.sshKeys,
+				DefaultBranch: p.defaultBranch,
 			})
 		}
 	}
@@ -1516,7 +1538,7 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 
 		fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
 
-		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branch(), configYAML, nil)
+		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branchFor(hostDefaultBranch(m, opts.HostProjectSlug)), configYAML, nil)
 		if trigErr != nil {
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("transfer: pipeline run was skipped — check api-trigger-with-config is enabled and the config is valid")
@@ -1550,6 +1572,20 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 		return nil
 	}
 	return fmt.Errorf("%w: exhausted retries", ErrWorkflowFailed)
+}
+
+// hostDefaultBranch returns the recorded default branch (vcs.default_branch)
+// for the host project slug from the manifest, or "" when the slug is not
+// present or has no recorded default branch. The caller passes the result to
+// Options.branchFor so an explicit --branch still overrides it and a missing
+// value falls back to "main".
+func hostDefaultBranch(m *manifest.Manifest, hostSlug string) string {
+	for i := range m.Projects {
+		if m.Projects[i].Slug == hostSlug {
+			return m.Projects[i].VCS.DefaultBranch
+		}
+	}
+	return ""
 }
 
 // printPlan writes the transfer plan to stdout/stderr so operators can review

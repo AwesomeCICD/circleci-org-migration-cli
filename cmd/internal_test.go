@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
@@ -839,6 +840,163 @@ func TestRunMigrateSecretsTransfer_DerivesMappingAndProceedsToOrgCheck(t *testin
 	// "resolving destination org" (that path is already covered above).
 	if err != nil && strings.Contains(err.Error(), "resolving destination org") {
 		t.Errorf("org resolution should have succeeded; got: %v", err)
+	}
+}
+
+// TestRunMigrateSecretsTransfer_MixedDefaultBranches_PerProject is the
+// migrate-path mirror of TestTransfer_MixedDefaultBranches_PerProject in the
+// transfer package. It drives the real runMigrateSecretsTransfer end-to-end
+// (real org/project clients against a fake CircleCI API) and asserts that, with
+// NO explicit --branch, each per-project transfer pipeline is triggered on
+// THAT project's own default branch from the manifest (main for web, master for
+// api). This guards against the guided migrate flow regressing to a hardcoded
+// "main" in its transfer.Options literal.
+func TestRunMigrateSecretsTransfer_MixedDefaultBranches_PerProject(t *testing.T) {
+	// branchesBySlug records, per source project slug, the set of branches the
+	// legacy trigger endpoint was called with. Guarded by mu because per-project
+	// pipelines are triggered concurrently.
+	var mu sync.Mutex
+	branchesBySlug := map[string]map[string]bool{}
+	record := func(slug, branch string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if branchesBySlug[slug] == nil {
+			branchesBySlug[slug] = map[string]bool{}
+		}
+		branchesBySlug[slug][branch] = true
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		// Destination org resolution: GET /api/v2/organization/{slug}.
+		case strings.HasPrefix(path, "/api/v2/organization/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   "dest-org-uuid",
+				"name": "new-org",
+				"slug": "gh/new-org",
+			})
+
+		// List pipeline definitions: GET /api/v2/projects/{id}/pipeline-definitions.
+		case strings.HasSuffix(path, "/pipeline-definitions") &&
+			strings.HasPrefix(path, "/api/v2/projects/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items":           []map[string]any{{"id": "def-1", "name": "build"}},
+				"next_page_token": "",
+			})
+
+		// Trigger pipeline (legacy gh/ path): POST /api/v2/project/{slug}/pipeline.
+		// The trigger branch is in the top-level "branch" field of the body.
+		case r.Method == http.MethodPost &&
+			strings.HasPrefix(path, "/api/v2/project/") &&
+			strings.HasSuffix(path, "/pipeline"):
+			slug := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v2/project/"), "/pipeline")
+			var body struct {
+				Branch string `json:"branch"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			record(slug, body.Branch)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":     "pipe-" + slug,
+				"number": 1,
+				"state":  "created",
+			})
+
+		// Get project: GET /api/v2/project/{slug} (no /pipeline suffix).
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v2/project/"):
+			slug := strings.TrimPrefix(path, "/api/v2/project/")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"slug": slug,
+				"id":   "projid-" + slug,
+			})
+
+		// Pipeline workflows: GET /api/v2/pipeline/{id}/workflow → terminal success.
+		case strings.HasPrefix(path, "/api/v2/pipeline/") && strings.HasSuffix(path, "/workflow"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items":           []map[string]any{{"id": "wf-1", "name": "build", "status": "success"}},
+				"next_page_token": "",
+			})
+
+		// Get pipeline: GET /api/v2/pipeline/{id} → pending (not errored).
+		case strings.HasPrefix(path, "/api/v2/pipeline/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":    strings.TrimPrefix(path, "/api/v2/pipeline/"),
+				"state": "pending",
+			})
+
+		// Everything else (org/project feature-flag reads, etc.) is non-fatal:
+		// the production code logs a warning and proceeds.
+		default:
+			http.Error(w, `{"message":"server error"}`, http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	// Mixed default branches: web→main, api→master. Both carry env vars so each
+	// gets its own per-project transfer pipeline.
+	m := &manifest.Manifest{
+		Source: manifest.Source{
+			Host: srv.URL,
+			Org:  manifest.Org{Slug: "gh/old-org"},
+		},
+		Projects: []manifest.Project{
+			{
+				Slug:    "gh/old-org/web",
+				VCS:     manifest.ProjectVCS{DefaultBranch: "main"},
+				EnvVars: []manifest.ProjectEnvVar{{Name: "WEB_VAR"}},
+			},
+			{
+				Slug:    "gh/old-org/api",
+				VCS:     manifest.ProjectVCS{DefaultBranch: "master"},
+				EnvVars: []manifest.ProjectEnvVar{{Name: "API_VAR"}},
+			},
+		},
+	}
+
+	cfg := &settings.Config{
+		Host:       srv.URL,
+		DestToken:  "fake-dest-token",
+		HTTPClient: srv.Client(),
+	}
+	c := internalTestCmdWithCfg(cfg)
+
+	// apply=true so transfer.Transfer actually triggers pipelines; no explicit
+	// host-project override and no --branch override → per-project resolution.
+	err := runMigrateSecretsTransfer(
+		c,
+		cfg,
+		m,
+		"fake-src-token",
+		"gh/old-org",
+		"gh/new-org",
+		"migration-secrets",
+		"",    // hostProjectOverride
+		true,  // apply
+		true,  // includeProjectVars
+		false, // includeSSHKeys
+		false, // removeRestrictions
+	)
+	if err != nil {
+		t.Fatalf("runMigrateSecretsTransfer returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// gh/old-org/web must ONLY ever be triggered on main.
+	if web := branchesBySlug["gh/old-org/web"]; len(web) != 1 || !web["main"] {
+		t.Errorf("gh/old-org/web triggered on branches %v, want only {main}", web)
+	}
+	// gh/old-org/api must ONLY ever be triggered on master.
+	if api := branchesBySlug["gh/old-org/api"]; len(api) != 1 || !api["master"] {
+		t.Errorf("gh/old-org/api triggered on branches %v, want only {master}", api)
 	}
 }
 
