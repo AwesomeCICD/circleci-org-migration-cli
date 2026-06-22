@@ -69,6 +69,16 @@ sensitive. Delete it after the sync is confirmed successful.
 See [Example 5 in docs/examples.md](examples.md#example-5--secrets-capture-in-detail)
 for the full orb-based alternative (committed config, matrix capture).
 
+> **This runbook uses the bundle path** (`secrets capture` → `sync --secrets`),
+> where `sync` writes every value as it creates the destination resources — so
+> capture correctly happens *before* sync. The alternative is the in-pipeline
+> `secrets transfer`, which pushes values directly to the destination. With that
+> method, **context** values can move any time, but **project** env vars and SSH
+> keys (`--include-project-vars` / `--include-ssh-keys`) must be transferred
+> *after* `sync --apply` (Step 4), because they target destination projects that
+> don't exist until sync creates them. Pick one path; don't mix bundle and
+> in-pipeline for the same resources.
+
 ### Step 3 — Dry run (review the plan)
 
 ```bash

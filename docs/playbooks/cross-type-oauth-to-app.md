@@ -286,7 +286,7 @@ circleci-migrate secrets transfer \
   --dest-org-id "$DST_UUID" \
   --dest-token-context migration-secrets
 
-# Execute:
+# Execute (context env vars only):
 circleci-migrate secrets transfer \
   --manifest manifest.json \
   --dest-org-id "$DST_UUID" \
@@ -296,6 +296,14 @@ circleci-migrate secrets transfer \
 ```
 
 SSH keys still require Option A.
+
+> **Project env vars are post-sync.** `secrets transfer --include-project-vars`
+> writes values directly to destination *projects*, which do not exist until
+> `sync --apply` (Phase 5) creates them — so run that step **after Phase 5**, not
+> here. For a GitHub App destination the mapping must contain explicit
+> per-project entries with the destination `circleci/<org-id>/<project-id>`
+> slugs (the standalone transfer routes project vars only via the mapping's
+> `projects` map, never derived from `org.from`/`org.to`).
 
 ### Restricted contexts
 

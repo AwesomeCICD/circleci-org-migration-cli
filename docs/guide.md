@@ -3,8 +3,10 @@
 This is the single end-to-end walkthrough for migrating one CircleCI
 organization to another with `circleci-migrate`. It covers the org types you
 can migrate, the prerequisites and token permissions you need, and the core
-flow: **export → secrets capture → sync**. Per-org-type variations are called
-out as sections within each step.
+flow: **export → move secret values → sync**. The secret-values step sequences
+against `sync` differently depending on the method you choose (bundle vs.
+in-pipeline transfer) — see [Step 2](#5-step-2--move-secret-values). Per-org-type
+variations are called out as sections within each step.
 
 If you just want the operator checklist for a production cutover, use the
 [cutover runbook](cutover-runbook.md). For full per-command flag tables, see the
@@ -539,6 +541,22 @@ available:
   bundle (`secrets.json`) that `sync` then reads. Use this when you need a
   reviewable local copy, want to migrate SSH keys via the bundle path, or cannot
   use the in-pipeline transfer.
+
+> **How this step orders against Step 3 (sync) depends on the method:**
+>
+> - **`secrets transfer` (in-pipeline):** **Context** values can move at any time
+>   — the job auto-creates the destination context. **Project** env vars and SSH
+>   keys (`--include-project-vars` / `--include-ssh-keys`) are written to
+>   destination *projects*, which only exist after `sync --apply` — so run those
+>   **after Step 3**. (The guided `migrate` command does exactly this: sync, then
+>   transfer.)
+> - **`secrets capture` (bundle):** capture reads the **source** now and
+>   `sync --secrets secrets.json` writes every value — context and project — into
+>   the destination **as it creates the resources** in Step 3. Nothing extra runs
+>   afterward.
+>
+> In short: capture-then-sync for the bundle flow; sync-then-transfer for project
+> data in the in-pipeline flow.
 
 ### Recommended: `secrets transfer` (zero-disk-write)
 

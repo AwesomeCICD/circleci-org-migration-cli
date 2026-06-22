@@ -275,26 +275,36 @@ circleci-migrate secrets transfer \
   --dest-org-id "$DST_UUID" \
   --dest-token-context migration-secrets
 
-# Execute the transfer:
+# Execute the transfer (context env vars only):
 circleci-migrate secrets transfer \
   --manifest manifest.json \
   --dest-org-id "$DST_UUID" \
   --dest-token-context migration-secrets \
   --enable-trigger \
   --apply
-
-# Also transfer project env vars (destination projects must already exist):
-circleci-migrate secrets transfer \
-  --manifest manifest.json \
-  --dest-org-id "$DST_UUID" \
-  --dest-token-context migration-secrets \
-  --mapping mapping.json \
-  --include-project-vars \
-  --apply
 ```
 
 No plaintext ever touches disk or build artifacts with this option. SSH keys
 still require Option A.
+
+> **Project env vars are post-sync.** `secrets transfer --include-project-vars`
+> writes values directly to destination *projects*, which do not exist until
+> `sync --apply` (Phase 5) creates them — running it here in Phase 2 would fail.
+> If you use Option B and also need project env vars transferred in-pipeline, run
+> that step **after Phase 5**, and use a mapping with explicit per-project
+> entries (generate one with `circleci-migrate mapping generate`; the standalone
+> transfer routes project vars only via the mapping's `projects` map, not the
+> org-level `from`/`to`):
+>
+> ```bash
+> circleci-migrate secrets transfer \
+>   --manifest manifest.json \
+>   --dest-org-id "$DST_UUID" \
+>   --dest-token-context migration-secrets \
+>   --mapping mapping.json \
+>   --include-project-vars \
+>   --apply
+> ```
 
 ### Restricted contexts
 
