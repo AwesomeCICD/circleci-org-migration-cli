@@ -187,44 +187,62 @@ running inside a CircleCI pipeline. No config is committed to your repository �
 both `secrets transfer` and `secrets capture` submit inline (unversioned) pipeline
 configs.
 
-### Option A — `secrets transfer` (recommended: zero-disk-write)
+> **Ordering rule (read this first).** There are two flows, and they sequence
+> against `sync` differently:
+>
+> - **Flow A — in-pipeline transfer (`secrets transfer`):** values are pushed
+>   directly to the destination. **Context** env vars can move at any time (the
+>   transfer auto-creates destination contexts). **Project** env vars and
+>   **additional SSH keys** are written to destination *projects*, which only
+>   exist after `sync --apply` — so that part runs **after Phase 5** (see
+>   **Phase 5.2**). Running `--include-project-vars` / `--include-ssh-keys`
+>   before the projects exist fails: the transfer pipeline POSTs each value to
+>   the destination project, and a project that `sync` has not yet created
+>   returns a non-2xx response, so the transfer job errors out.
+> - **Flow B — local bundle (`secrets capture` → `sync --secrets`):** you
+>   capture values from the **source** now, and `sync` writes them into the
+>   destination contexts and projects **as it creates them** in Phases 4–5.
+>   Because capture only reads the source, it correctly happens before `sync`.
+>
+> The guided `migrate` command uses Flow A and runs the transfer after the sync
+> automatically. Pick one flow and follow it consistently through Phases 4–5.
+
+### Option A — `secrets transfer` (recommended: zero-disk-write) — Flow A
 
 Store the destination API token in a source-org context (e.g. `migration-secrets`)
-with env var `CIRCLECI_DEST_TOKEN`, then:
+with env var `CIRCLECI_DEST_TOKEN`. You can preview the full plan now with a
+dry-run (safe — reads only):
 
 ```bash
-# Dry run — safe, prints plan only:
+# Dry run — safe, prints plan only (run any time):
 circleci-migrate secrets transfer \
   --manifest manifest.json \
   --dest-org-id <dest-org-uuid> \
   --dest-token-context migration-secrets
 
-# Execute (transfers directly; no bundle written to disk):
+# Transfer CONTEXT env vars now (destination contexts are auto-created):
 circleci-migrate secrets transfer \
   --manifest manifest.json \
   --dest-org-id <dest-org-uuid> \
   --dest-token-context migration-secrets \
-  --enable-trigger \
-  --apply
-
-# Also transfer project env vars and SSH keys (requires mapping.json):
-circleci-migrate secrets transfer \
-  --manifest manifest.json \
-  --dest-org-id <dest-org-uuid> \
-  --dest-token-context migration-secrets \
-  --mapping mapping.json \
-  --include-project-vars \
-  --include-ssh-keys \
   --enable-trigger \
   --apply
 ```
 
-Destination contexts are auto-created if they do not yet exist.
+> Destination **contexts** are auto-created by the transfer if they do not yet
+> exist. Destination **projects are not** — they must be created by `sync`
+> (Phase 5) first. Therefore **project env vars and additional SSH keys
+> (`--include-project-vars` / `--include-ssh-keys`) are transferred after the
+> sync apply — see [Phase 5.2](#52-transfer-project-env-vars-and-ssh-keys-flow-a).**
+> If you choose Flow A, run the Phase 4–5 `sync` commands **without**
+> `--secrets` (there is no bundle).
 
-### Option B — `secrets capture` (alternative: local bundle)
+### Option B — `secrets capture` (alternative: local bundle) — Flow B
 
 Use this path when you need a reviewable local copy of secrets, cannot use the
-in-pipeline transfer, or need to migrate SSH keys via the bundle path.
+in-pipeline transfer, or need to migrate SSH keys via the bundle path. Capture
+reads values from the **source** now; `sync --secrets secrets.json` writes them
+into the destination during Phases 4–5 (no separate post-sync step needed).
 
 **Interactive guided walkthrough (first-time use):**
 
@@ -307,12 +325,12 @@ and expression restrictions are temporarily removed.
 
 ### Phase 2 checklist
 
-- [ ] Decision made: Option A (transfer) or Option B (bundle)
-- [ ] If Option A: destination token stored in source-org context; dry-run plan reviewed
-- [ ] If Option B: `secrets.json` written; encryption confirmed (or risk of plaintext artifact accepted)
+- [ ] Flow chosen: Flow A (in-pipeline transfer) or Flow B (local bundle)
+- [ ] If Flow A: destination token stored in source-org context; dry-run plan reviewed; context env vars transferred (project vars + SSH keys deferred to Phase 5.2)
+- [ ] If Flow B: `secrets.json` written; encryption confirmed (or risk of plaintext artifact accepted)
 - [ ] Restricted-context gap plan agreed (`--remove-restrictions`, or `--missing-secrets placeholder` at sync)
-- [ ] SSH keys plan made (Option A `--include-ssh-keys`, Option B `secrets capture`, or manual re-upload)
-- [ ] `secrets.json` not committed to source control (Option B only)
+- [ ] SSH keys plan made (Flow A `--include-ssh-keys` in Phase 5.2, Flow B `secrets capture`, or manual re-upload)
+- [ ] `secrets.json` not committed to source control (Flow B only)
 
 ### ✅ Secrets captured or transfer planned — continue to Phase 3
 
@@ -403,6 +421,13 @@ anything else Terraform does not manage. Then continue to Phase 6 (skip Phase
 ## Phase 4 — Dry-run sync
 
 Review the plan before writing anything. No `--apply` means nothing is created.
+
+> `--secrets secrets.json` applies to **Flow B** (bundle) only — it injects the
+> captured values as `sync` creates resources. If you chose **Flow A**
+> (in-pipeline transfer), omit `--secrets`; `sync` writes structure only and the
+> values arrive via the Phase 2 context transfer and the Phase 5.2 project
+> transfer. (With Flow A, env-var lines showing `manual`/`needs attention` here
+> are expected and are not blockers.)
 
 ```bash
 circleci-migrate sync \
@@ -517,6 +542,50 @@ circleci-migrate sync \
 ```
 
 All previously-`would create` lines should now show `exists`.
+
+### 5.2 Transfer project env vars and SSH keys (Flow A)
+
+**Flow A only.** Now that `sync --apply` has created the destination projects
+(Phase 5), transfer the project-scoped secrets that could not move earlier. This
+writes directly to the destination projects via the in-pipeline path — they must
+exist first (they do now), which is why this step comes after the apply.
+Projects created by `sync` are **paused**; that is fine — env vars and SSH keys
+can be written to a paused project (builds are still enabled later in Phase 7).
+
+> **Mapping requirement (important).** Unlike `sync`, `secrets transfer` does
+> **not** derive destination project slugs from `org.from`/`org.to`. It routes
+> project env vars and SSH keys **only via explicit per-project entries** in the
+> mapping's `projects` map. The org-level-only `mapping.json` from Phase 0.5 is
+> enough for `sync` but **not** for this step — generate a mapping with one
+> entry per project first:
+>
+> ```bash
+> circleci-migrate mapping generate \
+>   --manifest manifest.json \
+>   --dest-org gh/acme-new \
+>   --output mapping.json
+> ```
+>
+> This writes a `projects` map (`"gh/acme/web": "gh/acme-new/web"`, …) covering
+> every project. Then run the transfer:
+
+```bash
+# Transfer project env vars and additional SSH keys (needs per-project mapping):
+circleci-migrate secrets transfer \
+  --manifest manifest.json \
+  --dest-org-id <dest-org-uuid> \
+  --dest-token-context migration-secrets \
+  --mapping mapping.json \
+  --include-project-vars \
+  --include-ssh-keys \
+  --enable-trigger \
+  --apply
+```
+
+Each source project must have a `projects` entry in the mapping; projects
+without one are skipped (and reported in the plan), not transferred. (Flow B
+users skip this step — `sync --secrets` already wrote project env vars and SSH
+keys during Phase 5.)
 
 ---
 
