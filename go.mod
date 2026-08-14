@@ -3,7 +3,7 @@ module github.com/AwesomeCICD/circleci-org-migration-cli
 go 1.26
 
 // Pin a vuln-free patch toolchain (latest stdlib security fixes; see govulncheck).
-toolchain go1.26.4
+toolchain go1.26.6
 
 require (
 	filippo.io/age v1.3.1
