@@ -36,9 +36,9 @@ OUTPUT   := bin/$(BINARY)
 
 # Pinned tool versions (kept in sync with .circleci/config.yml).
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_VERSION := v2.12.2
+GOLANGCI_VERSION := v2.13.2
 # renovate: datasource=github-releases depName=securego/gosec
-GOSEC_VERSION    := v2.27.1
+GOSEC_VERSION    := v2.29.0
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION := 8.30.1
 
