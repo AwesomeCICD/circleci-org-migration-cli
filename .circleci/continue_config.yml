@@ -53,11 +53,11 @@ parameters:
     default: "1.26"
 
 orbs:
-  go: circleci/go@4.0.0
+  go: circleci/go@4.0.2
   trivy: cci-labs/trivy@1.0.0
   # Orb authoring toolchain — used by the orb-test jobs to lint, validate, and
   # review the orb BEFORE it is published. Pinned to majors per the task.
-  orb-tools: circleci/orb-tools@12.4.0
+  orb-tools: circleci/orb-tools@12.5.0
   shellcheck: circleci/shellcheck@3.4.0
 
 # ---------------------------------------------------------------------------
