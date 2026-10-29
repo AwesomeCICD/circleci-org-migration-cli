@@ -364,6 +364,7 @@ Examples:
 				Org:      srcOrgClient,
 				Contexts: srcCtxClient,
 				Projects: srcProjClient,
+				Deploy:   srcOrgClient, // best-effort read of Deploys (envs/components/settings)
 				Out:      cmd.ErrOrStderr(),
 			}
 
@@ -438,7 +439,7 @@ Examples:
 				}
 			}
 			if effectiveReportPath != "" {
-				if saveErr := report.SaveMarkdown(m, effectiveReportPath); saveErr != nil {
+				if saveErr := report.SaveMarkdownWith(m, effectiveReportPath, report.Options{DestOrgSlug: destOrg}); saveErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing audit report: %v\n", saveErr)
 				} else {
 					if quietMode {
@@ -480,6 +481,7 @@ Examples:
 					DestGitHubOrg:       destGitHubOrg,
 					DestRunnerNamespace: destRunnerNamespace,
 					DestOrbNamespace:    destOrbNamespace,
+					DestOrgSlug:         migrateDestSlug(mapping, destOrg),
 					CreateProjectTokens: createProjectTokens,
 					IncludeDangerFlags:  includeDangerFlags,
 				}
@@ -577,6 +579,18 @@ Examples:
 					reps["Orbs"] = rep
 					if !jsonOutput && !quietMode {
 						printSyncReport(cmd, "Orbs", rep, m)
+					}
+				}
+				// Deploys (environments / components / deploy settings): read-only
+				// reconcile; the public Deploys API has no create endpoint.
+				if m.Deploys != nil {
+					rep, syncErr := sy.SyncDeploys(ctx, m, mapping, sOpts)
+					if syncErr != nil {
+						return reps, syncErr
+					}
+					reps["Deploys"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Deploys", rep, m)
 					}
 				}
 				return reps, enableFailure
@@ -1413,7 +1427,7 @@ func printQuietSyncSummary(out io.Writer, repsBySection map[string]*syncer.Repor
 		action  syncer.Action
 	}
 
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {

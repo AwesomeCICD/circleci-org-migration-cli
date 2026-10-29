@@ -76,7 +76,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -422,6 +422,7 @@ Examples:
 				DestGitHubOrg:       destGitHubOrg,
 				DestRunnerNamespace: destRunnerNamespace,
 				DestOrbNamespace:    destOrbNamespace,
+				DestOrgSlug:         destSlug,
 				CreateProjectTokens: createProjectTokens,
 				IncludeDangerFlags:  includeDangerFlags,
 			}
@@ -538,6 +539,20 @@ Examples:
 				repsBySection["Orbs"] = rep
 				if !jsonOutput {
 					printSyncReport(cmd, "Orbs", rep, m)
+				}
+			}
+
+			// Deploys (environments / components / deploy settings): a read-only
+			// reconcile that reports what must be recreated by hand — the public
+			// Deploys API has no create endpoint.
+			if m.Deploys != nil {
+				rep, err := sy.SyncDeploys(ctx, m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["Deploys"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Deploys", rep, m)
 				}
 			}
 

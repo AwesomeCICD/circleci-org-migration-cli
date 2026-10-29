@@ -183,6 +183,12 @@ type Options struct {
 	// each is flagged as needing manual action (the syncer never guesses the
 	// destination namespace).
 	DestOrbNamespace string
+	// DestOrgSlug is the destination org slug (e.g. "circleci/<id>" or
+	// "gh/acme-new"). It is used to resolve the destination org UUID so the
+	// syncer can tell who owns a same-name orb/runner namespace, and to print
+	// the exact `change-namespace-owner!` command. Optional: when empty, the
+	// ownership checks degrade to "unknown" and the command uses a placeholder.
+	DestOrgSlug string
 	// CreateProjectTokens controls whether captured project API tokens are
 	// automatically recreated on the destination project. Default false —
 	// creating a token mints a NEW one-time secret and every consumer must be

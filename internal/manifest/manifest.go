@@ -53,10 +53,56 @@ type Manifest struct {
 	// is managed by the VCS provider and not migratable here. All identities are
 	// keyed by portable values (email / group name), never by raw user/group UUIDs.
 	CIAM *CIAMData `json:"ciam,omitempty"`
+	// Deploys captures the org's Deploys (release tracker) configuration:
+	// environments, components, and per-project deploy settings. It is nil when
+	// the org has none or the (experimental) deploy API was unreadable. The
+	// public deploy API is read-only, so sync reports these as manual steps.
+	Deploys *Deploys `json:"deploys,omitempty"`
 	// Warnings records anything that could not be fully captured (for example
 	// a context secret value, which CircleCI never exposes via API). These are
 	// surfaced in the audit report so nothing is dropped silently.
 	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// Deploys holds the readable Deploys (release tracker) configuration.
+type Deploys struct {
+	Environments []DeployEnvironment `json:"environments,omitempty"`
+	Components   []DeployComponent   `json:"components,omitempty"`
+	// ProjectSettings lists projects that have deploy/rollback pipelines
+	// configured. Pipeline UUIDs are source-specific and are not captured.
+	ProjectSettings []DeployProjectSettings `json:"project_settings,omitempty"`
+}
+
+// DeployLabel is one key/value label on a deploy environment or component.
+type DeployLabel struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// DeployEnvironment is a deploy environment (name is the portable identity).
+type DeployEnvironment struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Kind        string        `json:"kind,omitempty"`
+	Labels      []DeployLabel `json:"labels,omitempty"`
+}
+
+// DeployComponent is a deploy component. ProjectSlug / ProjectName identify
+// the owning project in the SOURCE org (empty for components with no project);
+// the syncer maps them through the project mapping.
+type DeployComponent struct {
+	Name        string        `json:"name"`
+	ProjectSlug string        `json:"project_slug,omitempty"`
+	ProjectName string        `json:"project_name,omitempty"`
+	Archived    bool          `json:"archived,omitempty"`
+	Labels      []DeployLabel `json:"labels,omitempty"`
+}
+
+// DeployProjectSettings records that a project has deploy/rollback pipelines.
+type DeployProjectSettings struct {
+	ProjectSlug   string `json:"project_slug"`
+	ProjectName   string `json:"project_name,omitempty"`
+	PipelineCount int    `json:"pipeline_count"`
 }
 
 // CIAMData holds CIAM identity data captured from a standalone (circleci-type)
@@ -244,9 +290,11 @@ type OrgSettings struct {
 	BlockUnregisteredUsers *bool `json:"block_unregistered_users,omitempty"`
 
 	// Orbs captures the orbs published in the source org (read from the private
-	// orb-list API). Orbs CANNOT be auto-migrated (the destination org has a
-	// different namespace, and orb source is only available via GraphQL/republish),
-	// so sync surfaces each as a manual action. Nil/empty when not captured.
+	// orb-list API) for visibility. The orb sources are exported separately
+	// (Manifest.Orbs, via --orb-namespace) and republished by sync into a
+	// DIFFERENT namespace; a SAME-name namespace cannot be republished and is moved
+	// by support (`change-namespace-owner!`). Sync surfaces each entry as a manual
+	// action telling the operator which path applies. Nil/empty when not captured.
 	Orbs []OrgOrb `json:"orbs,omitempty"`
 
 	// OrbNamespace is the orb namespace claimed by this org (best-effort; derived
@@ -305,8 +353,9 @@ type BudgetEntry struct {
 
 // OrgOrb is one orb captured from the private orb-list API.
 // Only configuration fields are stored; runtime statistics are omitted.
-// Orbs cannot be auto-migrated (the destination org has a different namespace),
-// so they are surfaced as manual actions in sync.
+// It is a visibility record; orb sources are captured via Manifest.Orbs and sync
+// surfaces each entry as a manual action (republish into a new namespace, or a
+// support-run namespace-owner change for a same-name namespace).
 type OrgOrb struct {
 	// OrbName is the fully-qualified orb name (e.g. "acme/my-orb").
 	OrbName string `json:"orb_name"`
@@ -696,6 +745,16 @@ func (m *Manifest) AddWarning(scope, code, message string) {
 // produce identical files (clean diffs). It does not touch the warnings order
 // (kept in discovery order).
 func (m *Manifest) SortStable() {
+	if d := m.Deploys; d != nil {
+		sort.SliceStable(d.Environments, func(i, j int) bool { return d.Environments[i].Name < d.Environments[j].Name })
+		sort.SliceStable(d.Components, func(i, j int) bool {
+			if d.Components[i].Name != d.Components[j].Name {
+				return d.Components[i].Name < d.Components[j].Name
+			}
+			return d.Components[i].ProjectSlug < d.Components[j].ProjectSlug
+		})
+		sort.SliceStable(d.ProjectSettings, func(i, j int) bool { return d.ProjectSettings[i].ProjectSlug < d.ProjectSettings[j].ProjectSlug })
+	}
 	sort.SliceStable(m.Contexts, func(i, j int) bool { return m.Contexts[i].Name < m.Contexts[j].Name })
 	sort.SliceStable(m.Projects, func(i, j int) bool { return m.Projects[i].Slug < m.Projects[j].Slug })
 	for i := range m.Contexts {

@@ -328,6 +328,9 @@ func TestSyncRunner_NilRunnerClient_Manual(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, a := range rep.Actions {
+		if a.Target == "config-rewrite-notice" {
+			continue // the namespace-change notice is independent of the client
+		}
 		if !strings.Contains(a.Detail, "no runner client configured") {
 			t.Errorf("expected 'no runner client configured' in detail, got: %q", a.Detail)
 		}
