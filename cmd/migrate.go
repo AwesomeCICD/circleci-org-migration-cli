@@ -1725,9 +1725,21 @@ func runMigrateSecretsTransfer(
 		ctxClient = cc
 	}
 
+	// GitHub App destination: projects with no derivable slug are matched by
+	// name against the destination org's projects.
+	var destProjects transfer.DestProjectLister
+	if (includeProjectVars || includeSSHKeys) && isAppDestOrg(cmd.Context(), orgClient, destOrg, destOrgID, stderr) {
+		dstClient, derr := project.NewClient(cfg, destClientToken(cfg, srcToken))
+		if derr != nil {
+			return fmt.Errorf("creating destination project client for secrets transfer: %w", derr)
+		}
+		destProjects = dstClient
+	}
+
 	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
 	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
+		DestProjects:    destProjects,
 		HostProjectSlug: hostSlug,
 		// Branch is intentionally empty so transfer.Transfer resolves the
 		// trigger branch per project (manifest vcs.default_branch, falling
