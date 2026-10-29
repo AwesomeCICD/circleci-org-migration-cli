@@ -490,8 +490,12 @@ Examples:
 				SkipPipelines:          skipPipelines,
 				WebhookSecretsOut:      webhookSecretsOut,
 			}
-			// Fail before creating any webhook with a secret we could not save.
-			if apply && webhookSecretsOut != "" {
+			// Fail before creating any webhook with a secret we could not save. An
+			// existing file is never truncated (it is merged into after the run),
+			// and nothing is touched at all with --skip-projects: no webhook is
+			// created, so there is nothing to record.
+			saveWebhookSecrets := apply && webhookSecretsOut != "" && !skipProjects
+			if saveWebhookSecrets {
 				if err := syncer.PrepareWebhookSecretsFile(webhookSecretsOut); err != nil {
 					return fmt.Errorf("--webhook-secrets-out: %w", err)
 				}
@@ -534,6 +538,13 @@ Examples:
 			if !skipProjects {
 				rep, err := sy.SyncProjects(ctx, m, bundle, mapping, opts)
 				if err != nil {
+					// Webhooks created before the failure already carry their new
+					// secrets: save them rather than lose them with the error.
+					if saveWebhookSecrets {
+						if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: --webhook-secrets-out: could not save the secrets of webhooks created before the failure: %v\n", serr)
+						}
+					}
 					return err
 				}
 				repsBySection["Projects"] = rep
@@ -563,12 +574,11 @@ Examples:
 
 			// Save the generated webhook secrets right after the projects step that
 			// created them (the file is 0600; its contents are never printed).
-			if apply && webhookSecretsOut != "" {
+			if saveWebhookSecrets {
 				if err := sy.WriteWebhookSecrets(webhookSecretsOut); err != nil {
 					return fmt.Errorf("--webhook-secrets-out: writing %s (the new webhook secrets are NOT saved — rotate them): %w", webhookSecretsOut, err)
 				}
-				ob, ib := sy.RecordedWebhookSecrets()
-				fmt.Fprintf(cmd.ErrOrStderr(), "Wrote %d outbound webhook signing secret(s) and %d inbound webhook URL(s) to %s (mode 0600)\n", ob, ib, webhookSecretsOut)
+				printWebhookSecretsSaved(cmd.ErrOrStderr(), sy, webhookSecretsOut)
 			}
 
 			// Runner resource classes (attempted when present in manifest, unless skipped).
@@ -702,11 +712,7 @@ Examples:
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
 	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
-	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "",
-		"With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each "+
-			"outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. "+
-			"The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. "+
-			"Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.")
+	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "", webhookSecretsOutUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
@@ -1562,3 +1568,22 @@ func syncProjectDisplayName(p manifest.Project) string {
 	}
 	return slugLastComponent(p.Slug)
 }
+
+// printWebhookSecretsSaved reports what a --webhook-secrets-out save did. The
+// file is merged, never truncated: entries from earlier runs stay, and a run
+// that created no webhook leaves it untouched.
+func printWebhookSecretsSaved(w io.Writer, sy *syncer.Syncer, path string) {
+	ob, ib := sy.RecordedWebhookSecrets()
+	if ob+ib == 0 {
+		fmt.Fprintf(w, "No webhook was recreated in this run; %s was left unchanged\n", path)
+		return
+	}
+	fmt.Fprintf(w, "Saved %d outbound webhook signing secret(s) and %d inbound webhook URL(s) to %s (mode 0600, merged with any earlier entries)\n", ob, ib, path)
+}
+
+// webhookSecretsOutUsage is the --webhook-secrets-out help text shared by sync and migrate.
+const webhookSecretsOutUsage = "With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each " +
+	"outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. " +
+	"An existing file is merged into (earlier entries are kept, never truncated) and saved atomically; it is left untouched when nothing is recreated. " +
+	"The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. " +
+	"Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run."

@@ -74,6 +74,10 @@ func newMigrateCommand() *cobra.Command {
 		// skipPipelines syncs projects but creates no App pipeline definitions
 		// or triggers.
 		skipPipelines bool
+
+		// webhookSecretsOut is the 0600 file that receives the new secrets of
+		// webhooks recreated by the projects step (same as sync).
+		webhookSecretsOut string
 	)
 
 	cmd := &cobra.Command{
@@ -506,6 +510,16 @@ Examples:
 
 					EnableExistingTriggers: enableExistingTriggers,
 					SkipPipelines:          skipPipelines,
+					WebhookSecretsOut:      webhookSecretsOut,
+				}
+				// Fail before creating any webhook with a secret we could not
+				// save. An existing file is never truncated (it is merged into
+				// afterwards); with --skip-projects nothing is touched.
+				saveWebhookSecrets := applyNow && webhookSecretsOut != "" && !skipProjects
+				if saveWebhookSecrets {
+					if prepErr := syncer.PrepareWebhookSecretsFile(webhookSecretsOut); prepErr != nil {
+						return nil, nil, fmt.Errorf("--webhook-secrets-out: %w", prepErr)
+					}
 				}
 				reps = make(map[string]*syncer.Report)
 				// An enable-builds failure is remembered and returned after the
@@ -536,9 +550,20 @@ Examples:
 				if !skipProjects {
 					rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, sOpts)
 					if syncErr != nil {
+						if saveWebhookSecrets {
+							if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "warning: --webhook-secrets-out: could not save the secrets of webhooks created before the failure: %v\n", serr)
+							}
+						}
 						return reps, nil, syncErr
 					}
 					reps["Projects"] = rep
+					if saveWebhookSecrets {
+						if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+							return reps, nil, fmt.Errorf("--webhook-secrets-out: writing %s (the new webhook secrets are NOT saved — rotate them): %w", webhookSecretsOut, serr)
+						}
+						printWebhookSecretsSaved(cmd.ErrOrStderr(), sy, webhookSecretsOut)
+					}
 					if !jsonOutput && !quietMode {
 						printSyncReport(cmd, "Projects", rep, m)
 					}
@@ -780,6 +805,7 @@ Examples:
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
 	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
+	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "", webhookSecretsOutUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false,
 		"Skip exporting and syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false,

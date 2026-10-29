@@ -151,7 +151,7 @@ func TestWriteWebhookSecrets_Mode0600AndContent(t *testing.T) {
 	s.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{{Project: "p", Name: "n", URL: "u", SigningSecret: "s3cret"}}
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	// A pre-existing, too-open file must be tightened.
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"outbound_webhooks":[],"inbound_webhook_triggers":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.WriteWebhookSecrets(path); err != nil {
@@ -176,5 +176,130 @@ func TestPrepareWebhookSecretsFile_FailsOnUnwritablePath(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "ok.json")
 	if err := PrepareWebhookSecretsFile(p); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func newOutbound(project, name, secret string) OutboundWebhookSecret {
+	return OutboundWebhookSecret{Project: project, Name: name, URL: "https://recv.example.com/" + name, SigningSecret: secret}
+}
+
+// A re-run must not wipe what an earlier run saved: prior entries stay, new
+// ones are added, and an entry with the same project+name is replaced.
+func TestWriteWebhookSecrets_MergesWithExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+
+	first := &Syncer{}
+	first.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{newOutbound("web", "notify", "s1"), newOutbound("api", "notify", "s2")}
+	first.webhookSecrets.InboundTriggers = []InboundWebhookTrigger{{Project: "web", Definition: "deploy", Trigger: "t1", URL: "https://u/1"}}
+	if err := first.WriteWebhookSecrets(path); err != nil {
+		t.Fatal(err)
+	}
+
+	second := &Syncer{}
+	second.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{newOutbound("web", "notify", "s1-new"), newOutbound("web", "audit", "s3")}
+	second.webhookSecrets.InboundTriggers = []InboundWebhookTrigger{{Project: "web", Definition: "deploy", Trigger: "t2", URL: "https://u/2"}}
+	if err := second.WriteWebhookSecrets(path); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadWebhookSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := map[string]string{}
+	for _, o := range got.OutboundWebhook {
+		secrets[o.Project+"/"+o.Name] = o.SigningSecret
+	}
+	if len(got.OutboundWebhook) != 3 || secrets["web/notify"] != "s1-new" || secrets["api/notify"] != "s2" || secrets["web/audit"] != "s3" {
+		t.Errorf("outbound = %+v", got.OutboundWebhook)
+	}
+	if len(got.InboundTriggers) != 2 {
+		t.Errorf("inbound = %+v (the earlier trigger must be kept)", got.InboundTriggers)
+	}
+}
+
+// A run that recorded nothing never touches the file (so it can neither
+// truncate nor re-stamp saved secrets), and --skip-projects style runs that
+// never call Write leave it alone too.
+func TestWriteWebhookSecrets_NothingRecordedLeavesFileUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	orig := []byte("{\n  \"generated_at\": \"2020-01-01T00:00:00Z\",\n  \"outbound_webhooks\": [{\"project\":\"web\",\"name\":\"n\",\"url\":\"u\",\"signing_secret\":\"keep-me\"}],\n  \"inbound_webhook_triggers\": []\n}\n")
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Syncer{}).WriteWebhookSecrets(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(orig) {
+		t.Errorf("file changed:\n%s", got)
+	}
+	// Recording an identical entry again is not "something new" either.
+	s := &Syncer{}
+	s.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{{Project: "web", Name: "n", URL: "u", SigningSecret: "keep-me"}}
+	if err := s.WriteWebhookSecrets(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(orig) {
+		t.Errorf("an identical entry must not rewrite the file:\n%s", got)
+	}
+}
+
+// Prepare never truncates an existing file, creates a missing one, and refuses a
+// file that is not a secrets document.
+func TestPrepareWebhookSecretsFile_DoesNotTruncate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	orig := []byte(`{"outbound_webhooks":[{"project":"p","name":"n","url":"u","signing_secret":"keep"}],"inbound_webhook_triggers":[]}`)
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareWebhookSecretsFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(orig) {
+		t.Errorf("Prepare truncated or rewrote the file: %s", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("Prepare must leave no probe file behind: %v", entries)
+	}
+
+	garbage := filepath.Join(dir, "other.json")
+	if err := os.WriteFile(garbage, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareWebhookSecretsFile(garbage); err == nil {
+		t.Error("a file that is not a secrets document must be refused")
+	}
+	if got, _ := os.ReadFile(garbage); string(got) != "not json" {
+		t.Errorf("the refused file must be untouched: %q", got)
+	}
+	s := &Syncer{}
+	s.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{newOutbound("p", "n", "x")}
+	if err := s.WriteWebhookSecrets(garbage); err == nil {
+		t.Error("Write must not overwrite a file it cannot parse")
+	}
+	if got, _ := os.ReadFile(garbage); string(got) != "not json" {
+		t.Errorf("Write must leave the unparseable file as it was: %q", got)
+	}
+}
+
+// The save is atomic: no temp file is left and the result is 0600.
+func TestWriteWebhookSecrets_AtomicNoTempLeft(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	s := &Syncer{}
+	s.webhookSecrets.OutboundWebhook = []OutboundWebhookSecret{newOutbound("p", "n", "x")}
+	if err := s.WriteWebhookSecrets(path); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != "secrets.json" {
+		t.Errorf("directory = %v, want only secrets.json", entries)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %v", fi.Mode().Perm())
+		}
 	}
 }
