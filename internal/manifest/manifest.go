@@ -671,6 +671,8 @@ type Trigger struct {
 	CheckoutRef string             `json:"checkout_ref,omitempty"`
 	ConfigRef   string             `json:"config_ref,omitempty"`
 	EventSource TriggerEventSource `json:"event_source"`
+	// Parameters are pipeline parameters passed on each run (schedule triggers).
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 // Warning records something that could not be fully captured or migrated.

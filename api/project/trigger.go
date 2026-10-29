@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -30,9 +31,43 @@ type TriggerEventSourceWebhook struct {
 // whose provider is "schedule".
 //
 // JSON field names confirmed from live HTTP 200 response.
+//
+// AttributionActor is a plain string for the "current"/"system" literals but the
+// public API documents the response form as an object {"id": "<user uuid>"};
+// UnmarshalJSON accepts both and stores the literal or the user id.
 type TriggerEventSourceSchedule struct {
 	CronExpression   string `json:"cron_expression,omitempty"`
 	AttributionActor string `json:"attribution_actor,omitempty"`
+}
+
+// UnmarshalJSON decodes a schedule, tolerating attribution_actor being either a
+// string or an object carrying the user's id.
+func (s *TriggerEventSourceSchedule) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		CronExpression   string          `json:"cron_expression"`
+		AttributionActor json.RawMessage `json:"attribution_actor"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	s.CronExpression = raw.CronExpression
+	s.AttributionActor = ""
+	if len(raw.AttributionActor) == 0 || string(raw.AttributionActor) == "null" {
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(raw.AttributionActor, &str); err == nil {
+		s.AttributionActor = str
+		return nil
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw.AttributionActor, &obj); err != nil {
+		return fmt.Errorf("attribution_actor: %w", err)
+	}
+	s.AttributionActor = obj.ID
+	return nil
 }
 
 // TriggerEventSource is the discriminated-union event-source for a trigger.
@@ -61,6 +96,9 @@ type Trigger struct {
 	EventPreset string             `json:"event_preset,omitempty"`
 	Disabled    bool               `json:"disabled"`
 	EventSource TriggerEventSource `json:"event_source"`
+	// Parameters are the pipeline parameters passed on each run (schedule
+	// triggers only).
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 type listTriggersResponse struct {

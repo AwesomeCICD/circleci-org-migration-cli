@@ -413,3 +413,136 @@ func TestDeleteProject_SlugPathEncoding(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// ---- Full request bodies ----------------------------------------------------
+
+// captureBody runs call against a server that records the JSON body it receives.
+func captureBody(t *testing.T, call func(c *Client)) map[string]any {
+	t.Helper()
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Errorf("unmarshal body: %v", err)
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"id": "new-id"})
+	}))
+	defer srv.Close()
+	call(newTestClient(t, srv))
+	return got
+}
+
+func TestCreatePipelineDefinition_SendsDescriptionAndCustomFilePath(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		if _, err := c.CreatePipelineDefinition(context.Background(), "p", PipelineDefinitionSpec{
+			Name: "release", Description: "Runs on tags",
+			ConfigProvider: "github_app", ConfigExternalID: "1", ConfigFilePath: ".circleci/release.yml",
+			CheckoutProvider: "github_app", CheckoutExternalID: "1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got["description"] != "Runs on tags" {
+		t.Errorf("description: %v", got["description"])
+	}
+	cfg, _ := got["config_source"].(map[string]any)
+	if cfg["file_path"] != ".circleci/release.yml" {
+		t.Errorf("file_path: %v", cfg["file_path"])
+	}
+	co, _ := got["checkout_source"].(map[string]any)
+	if co["provider"] != "github_app" {
+		t.Errorf("checkout provider: %v", co["provider"])
+	}
+	if repo, _ := co["repo"].(map[string]any); repo["external_id"] != "1" {
+		t.Errorf("checkout repo: %v", co["repo"])
+	}
+}
+
+func TestCreatePipelineDefinition_CircleCIConfigSourceOmitsRepo(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		if _, err := c.CreatePipelineDefinition(context.Background(), "p", PipelineDefinitionSpec{
+			Name: "d", ConfigProvider: "circleci", ConfigFilePath: ".circleci/config.yml",
+			CheckoutProvider: "github_app", CheckoutExternalID: "1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, _ := got["config_source"].(map[string]any)
+	if _, has := cfg["repo"]; has {
+		t.Errorf("circleci config source must omit repo: %v", cfg)
+	}
+}
+
+func TestCreateTrigger_GitHubAppAllFields(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		if _, err := c.CreateTrigger(context.Background(), "p", "d", TriggerSpec{
+			Provider: "github_app", ExternalID: "7", EventPreset: "only-tags",
+			CheckoutRef: "refs/heads/main", ConfigRef: "refs/heads/dev", Disabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := map[string]any{
+		"event_source": map[string]any{"provider": "github_app", "repo": map[string]any{"external_id": "7"}},
+		"event_preset": "only-tags", "checkout_ref": "refs/heads/main", "config_ref": "refs/heads/dev", "disabled": true,
+	}
+	if g, w := mustJSON(got), mustJSON(want); g != w {
+		t.Errorf("body:\n got  %s\n want %s", g, w)
+	}
+}
+
+func TestCreateTrigger_WebhookBody(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		if _, err := c.CreateTrigger(context.Background(), "p", "d", TriggerSpec{
+			Provider: "webhook", WebhookSender: "datadog", EventName: "monitor-alert",
+			CheckoutRef: "main", ConfigRef: "main", Disabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := map[string]any{
+		"event_source": map[string]any{"provider": "webhook", "webhook": map[string]any{"sender": "datadog"}},
+		"event_name":   "monitor-alert", "checkout_ref": "main", "config_ref": "main", "disabled": true,
+	}
+	if g, w := mustJSON(got), mustJSON(want); g != w {
+		t.Errorf("body:\n got  %s\n want %s", g, w)
+	}
+}
+
+func TestCreateTrigger_ScheduleBody(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		if _, err := c.CreateTrigger(context.Background(), "p", "d", TriggerSpec{
+			Provider: "schedule", CronExpression: "0 9 * * 1-5", AttributionActor: "system",
+			EventName: "weekday", CheckoutRef: "main", ConfigRef: "main", Disabled: true,
+			Parameters: map[string]any{"deploy_env": "staging"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := map[string]any{
+		"event_source": map[string]any{"provider": "schedule", "schedule": map[string]any{"cron_expression": "0 9 * * 1-5", "attribution_actor": "system"}},
+		"event_name":   "weekday", "checkout_ref": "main", "config_ref": "main", "disabled": true,
+		"parameters": map[string]any{"deploy_env": "staging"},
+	}
+	if g, w := mustJSON(got), mustJSON(want); g != w {
+		t.Errorf("body:\n got  %s\n want %s", g, w)
+	}
+}
+
+// TestCreateTrigger_NeverSendsNameOrDescription: the API rejects unknown keys
+// (additionalProperties: false), and the create schema has no name/description.
+func TestCreateTrigger_NeverSendsNameOrDescription(t *testing.T) {
+	got := captureBody(t, func(c *Client) {
+		_, _ = c.CreateTrigger(context.Background(), "p", "d", TriggerSpec{Provider: "github_app", ExternalID: "1"})
+	})
+	for _, k := range []string{"name", "description"} {
+		if _, has := got[k]; has {
+			t.Errorf("create body must not contain %q", k)
+		}
+	}
+}
+
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v) // map keys are sorted by encoding/json
+	return string(b)
+}

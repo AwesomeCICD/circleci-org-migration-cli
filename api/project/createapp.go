@@ -72,6 +72,11 @@ func (c *Client) CreateAppProject(ctx context.Context, orgID, name string) (*Pro
 //	  }
 //	}
 //	Response 200: {"id": "<defUUID>", ...}
+//
+// Providers: the v2 create endpoint accepts github_app and github_server for
+// both sources, plus "circleci" for the config source (no repo). When
+// ConfigExternalID / CheckoutExternalID is empty the repo object is omitted,
+// which is only valid for the "circleci" config provider.
 type PipelineDefinitionSpec struct {
 	Name               string
 	Description        string
@@ -90,14 +95,23 @@ type createPipelineDefinitionRequest struct {
 }
 
 type createPipelineSourceBody struct {
-	Provider string                   `json:"provider"`
-	Repo     createPipelineSourceRepo `json:"repo"`
-	FilePath string                   `json:"file_path,omitempty"`
+	Provider string                    `json:"provider"`
+	Repo     *createPipelineSourceRepo `json:"repo,omitempty"`
+	FilePath string                    `json:"file_path,omitempty"`
 }
 
 type createCheckoutSourceBody struct {
-	Provider string                   `json:"provider"`
-	Repo     createPipelineSourceRepo `json:"repo"`
+	Provider string                    `json:"provider"`
+	Repo     *createPipelineSourceRepo `json:"repo,omitempty"`
+}
+
+// sourceRepo returns the repo body for an external ID, or nil when the ID is
+// empty (so the "repo" key is omitted, as the "circleci" config provider needs).
+func sourceRepo(externalID string) *createPipelineSourceRepo {
+	if externalID == "" {
+		return nil
+	}
+	return &createPipelineSourceRepo{ExternalID: externalID}
 }
 
 type createPipelineSourceRepo struct {
@@ -133,12 +147,12 @@ func (c *Client) CreatePipelineDefinition(ctx context.Context, projectID string,
 		Description: spec.Description,
 		ConfigSource: createPipelineSourceBody{
 			Provider: spec.ConfigProvider,
-			Repo:     createPipelineSourceRepo{ExternalID: spec.ConfigExternalID},
+			Repo:     sourceRepo(spec.ConfigExternalID),
 			FilePath: spec.ConfigFilePath,
 		},
 		CheckoutSource: createCheckoutSourceBody{
 			Provider: spec.CheckoutProvider,
-			Repo:     createPipelineSourceRepo{ExternalID: spec.CheckoutExternalID},
+			Repo:     sourceRepo(spec.CheckoutExternalID),
 		},
 	}
 
@@ -157,31 +171,76 @@ func (c *Client) CreatePipelineDefinition(ctx context.Context, projectID string,
 // TriggerSpec holds the parameters required to create a new trigger on a
 // pipeline definition.
 //
-// JSON shape confirmed from live API:
+// JSON shape per the public API v2 createTrigger schema (additionalProperties
+// is false, so any other key is rejected with a 400):
 //
 //	POST /api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers
 //	Body: {
-//	  "event_source": {"provider": "github_app", "repo": {"external_id": "<id>"}},
-//	  "event_preset": "<preset>",
-//	  "disabled": true
+//	  "event_source": {
+//	    "provider": "github_app|github_server|github_oauth|webhook|schedule",
+//	    "repo":     {"external_id": "<id>"},                       // github_*
+//	    "webhook":  {"sender": "<sender>"},                        // webhook
+//	    "schedule": {"cron_expression": "...", "attribution_actor": "current|system"}
+//	  },
+//	  "event_preset": "<preset>",   // github_*; omitted for webhook/schedule
+//	  "checkout_ref": "<ref>",      // required for webhook/schedule
+//	  "config_ref":   "<ref>",      // required for webhook/schedule
+//	  "event_name":   "<name>",     // required for webhook/schedule only
+//	  "disabled": true,
+//	  "parameters": {...}           // schedule only
 //	}
 //	Response 200: {"id": "<triggerUUID>", ...}
+//
+// The API has no create-time "name" or "description" for a trigger; the name is
+// assigned by CircleCI, so those captured fields cannot be recreated.
 type TriggerSpec struct {
 	Provider    string
 	ExternalID  string
 	EventPreset string
 	Disabled    bool
+
+	// EventName, CheckoutRef and ConfigRef are sent when non-empty. They are
+	// required for webhook and schedule triggers.
+	EventName   string
+	CheckoutRef string
+	ConfigRef   string
+
+	// WebhookSender is the optional sender label for a webhook trigger.
+	WebhookSender string
+
+	// CronExpression and AttributionActor describe a schedule trigger.
+	// AttributionActor must be "current" or "system" (or empty to omit).
+	CronExpression   string
+	AttributionActor string
+
+	// Parameters are pipeline parameters (schedule triggers only).
+	Parameters map[string]any
 }
 
 type createTriggerRequest struct {
 	EventSource createTriggerEventSource `json:"event_source"`
-	EventPreset string                   `json:"event_preset"`
+	EventPreset string                   `json:"event_preset,omitempty"`
+	CheckoutRef string                   `json:"checkout_ref,omitempty"`
+	ConfigRef   string                   `json:"config_ref,omitempty"`
+	EventName   string                   `json:"event_name,omitempty"`
 	Disabled    bool                     `json:"disabled"`
+	Parameters  map[string]any           `json:"parameters,omitempty"`
 }
 
 type createTriggerEventSource struct {
-	Provider string                   `json:"provider"`
-	Repo     createPipelineSourceRepo `json:"repo"`
+	Provider string                    `json:"provider"`
+	Repo     *createPipelineSourceRepo `json:"repo,omitempty"`
+	Webhook  *createTriggerWebhook     `json:"webhook,omitempty"`
+	Schedule *createTriggerSchedule    `json:"schedule,omitempty"`
+}
+
+type createTriggerWebhook struct {
+	Sender string `json:"sender,omitempty"`
+}
+
+type createTriggerSchedule struct {
+	CronExpression   string `json:"cron_expression,omitempty"`
+	AttributionActor string `json:"attribution_actor,omitempty"`
 }
 
 type createTriggerResponse struct {
@@ -207,13 +266,24 @@ func (c *Client) CreateTrigger(ctx context.Context, projectID, defID string, spe
 		return "", fmt.Errorf("project: CreateTrigger: build URL: %w", err)
 	}
 
+	src := createTriggerEventSource{Provider: spec.Provider, Repo: sourceRepo(spec.ExternalID)}
+	switch spec.Provider {
+	case "webhook":
+		src.Webhook = &createTriggerWebhook{Sender: spec.WebhookSender}
+	case "schedule":
+		src.Schedule = &createTriggerSchedule{
+			CronExpression:   spec.CronExpression,
+			AttributionActor: spec.AttributionActor,
+		}
+	}
 	body := createTriggerRequest{
-		EventSource: createTriggerEventSource{
-			Provider: spec.Provider,
-			Repo:     createPipelineSourceRepo{ExternalID: spec.ExternalID},
-		},
+		EventSource: src,
 		EventPreset: spec.EventPreset,
+		CheckoutRef: spec.CheckoutRef,
+		ConfigRef:   spec.ConfigRef,
+		EventName:   spec.EventName,
 		Disabled:    spec.Disabled,
+		Parameters:  spec.Parameters,
 	}
 
 	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
