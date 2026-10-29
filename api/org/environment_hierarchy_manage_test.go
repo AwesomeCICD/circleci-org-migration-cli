@@ -25,6 +25,9 @@ func TestListEnvironmentHierarchies_Paginates(t *testing.T) {
 		if r.URL.Query().Get("org-id") != envHierarchyOrgUUID {
 			t.Errorf("org-id %q", r.URL.Query().Get("org-id"))
 		}
+		if got := r.URL.Query().Get("page-size"); got != "50" {
+			t.Errorf("page-size = %q, want 50 (the server rejects larger pages)", got)
+		}
 		if r.URL.Query().Get("page-token") == "" {
 			respondJSON(w, 200, map[string]any{"items": []map[string]any{{"id": "h1", "name": "alpha"}}, "next_page_token": "tok"})
 			return

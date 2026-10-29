@@ -24,6 +24,7 @@ type hierOrgResolver struct {
 	defaultID                              string
 	defaultNm                              string
 	createEnvErr, createHierErr, assignErr error
+	resolveErr                             error // ResolveOrgEnvironmentHierarchy fails
 
 	createdEnvs   []string
 	createdEnvTyp map[string]string
@@ -63,6 +64,9 @@ func (f *hierOrgResolver) ListEnvironmentHierarchyLevels(_ context.Context, id s
 	return f.levels[id], nil
 }
 func (f *hierOrgResolver) ResolveOrgEnvironmentHierarchy(context.Context, string) (string, string, string, error) {
+	if f.resolveErr != nil {
+		return "", "", "", f.resolveErr
+	}
 	if f.scope == "" {
 		return "NONE", "", "", nil
 	}
@@ -319,5 +323,51 @@ func TestSyncEnvironmentHierarchies_ClientWithoutSupportIsManual(t *testing.T) {
 	}
 	if a := byTarget(rep)["env-hierarchy:standard"]; a.Status != "manual" {
 		t.Errorf("want manual, got %+v", a)
+	}
+}
+
+// When the destination's current org default cannot be resolved it is UNKNOWN,
+// not "none": the hierarchy is created WITHOUT is_default, no ORGANIZATION
+// assignment is made, and the item is reported manual.
+func TestSyncEnvironmentHierarchies_UnknownOrgDefaultNeverReplacesIt(t *testing.T) {
+	or := &hierOrgResolver{
+		envs:       []org.BFFEnvironment{{ID: "i1", Name: "dev"}, {ID: "i2", Name: "prod"}},
+		resolveErr: errors.New("HTTP 500"),
+	}
+	rep, err := hierSyncer(or).SyncEnvironmentHierarchies(context.Background(), hierManifest(), hierMapping(), Options{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(or.createdHiers) != 1 || or.createdHiers[0].IsDefault {
+		t.Fatalf("must create with is_default=false when the destination default is unknown: %+v", or.createdHiers)
+	}
+	for _, c := range or.assignCalls {
+		if c.entityType == "ORGANIZATION" {
+			t.Errorf("no ORGANIZATION assignment may be made: %+v", c)
+		}
+	}
+	a := byTarget(rep)["env-hierarchy:standard/default"]
+	if a.Status != "manual" || !strings.Contains(a.Detail, "couldn't confirm the destination has no org default") {
+		t.Errorf("want a manual action explaining the unconfirmed default: %+v", a)
+	}
+}
+
+// Same for an EXISTING hierarchy that the source had as the org default.
+func TestSyncEnvironmentHierarchies_UnknownOrgDefaultSkipsAssignmentOfExisting(t *testing.T) {
+	or := &hierOrgResolver{
+		envs:  []org.BFFEnvironment{{ID: "i1", Name: "dev"}, {ID: "i2", Name: "prod"}},
+		hiers: []org.EnvHierarchySummary{{ID: "h1", Name: "standard"}},
+		levels: map[string][]org.EnvHierarchyLevelRef{"h1": {
+			{Position: 1, IntegrationID: "i1", IntegrationName: "dev"}, {Position: 2, IntegrationID: "i2", IntegrationName: "prod"}}},
+		resolveErr: errors.New("timeout"),
+	}
+	rep, _ := hierSyncer(or).SyncEnvironmentHierarchies(context.Background(), hierManifest(), hierMapping(), Options{Apply: true})
+	for _, c := range or.assignCalls {
+		if c.entityType == "ORGANIZATION" {
+			t.Errorf("no ORGANIZATION assignment may be made: %+v", c)
+		}
+	}
+	if a := byTarget(rep)["env-hierarchy:standard/default"]; a.Status != "manual" || !strings.Contains(a.Detail, "skipped") {
+		t.Errorf("want a manual skip: %+v", a)
 	}
 }

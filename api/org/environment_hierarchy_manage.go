@@ -30,8 +30,9 @@ import (
 
 const bffBase = "private/release-tracker/v1/"
 
-// bffPageSize is the page size requested from the paginated BFF lists.
-const bffPageSize = 100
+// bffPageSize is the page size requested from the paginated BFF lists (the
+// server rejects larger values).
+const bffPageSize = 50
 
 // BFFEnvironment is an environment (deploy integration) as listed by the BFF.
 // ID is the integration UUID that hierarchy levels reference.

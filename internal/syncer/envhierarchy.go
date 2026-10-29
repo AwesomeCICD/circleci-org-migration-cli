@@ -94,6 +94,10 @@ type hierarchySync struct {
 	hiers map[string]string // destination hierarchy name -> id
 
 	orgScope, orgDefaultID, orgDefaultName string
+	// orgDefaultUnknown is set when the destination's current org default could
+	// not be resolved: nothing may then be made (or assigned as) the default,
+	// since that could replace an existing one.
+	orgDefaultUnknown bool
 
 	projs         map[string]string // destination project name -> id
 	projsErr      error
@@ -181,6 +185,7 @@ func (s *Syncer) SyncEnvironmentHierarchies(ctx context.Context, m *manifest.Man
 	}
 	if scope, id, name, rerr := api.ResolveOrgEnvironmentHierarchy(ctx, destOrgID); rerr != nil {
 		clog.Debugf("could not resolve destination default environment hierarchy: %v", rerr)
+		h.orgDefaultUnknown = true
 	} else {
 		h.orgScope, h.orgDefaultID, h.orgDefaultName = scope, id, name
 	}
@@ -340,7 +345,11 @@ func (h *hierarchySync) createHierarchy(ctx context.Context, d manifest.Environm
 	}
 
 	create.IsDefault = d.IsDefault
-	if d.IsDefault && h.orgScope == "ORGANIZATION" && h.orgDefaultID != "" {
+	if d.IsDefault && h.orgDefaultUnknown {
+		create.IsDefault = false
+		h.report.add(kindHierarchy, target+"/default", "manual", fmt.Sprintf(
+			"environment hierarchy %q is the org default in the source, but %s — it was created WITHOUT is_default; make it the org default in the destination (Deploys → Environment hierarchies) if the destination has none", d.Name, orgDefaultUnknownWhy))
+	} else if d.IsDefault && h.orgScope == "ORGANIZATION" && h.orgDefaultID != "" {
 		create.IsDefault = false
 		h.report.add(kindHierarchy, target+"/default", "manual", fmt.Sprintf(
 			"environment hierarchy %q is the org default in the source, but the destination's default is already %q — it was not replaced; change it in the destination if you want %q", d.Name, h.orgDefaultName, d.Name))
@@ -375,6 +384,9 @@ func (h *hierarchySync) createHierarchy(ctx context.Context, d manifest.Environm
 	return id, true
 }
 
+// orgDefaultUnknownWhy explains why the org default is left alone.
+const orgDefaultUnknownWhy = "couldn't confirm the destination has no org default (resolving it failed)"
+
 func defaultNote(isDefault bool) string {
 	if isDefault {
 		return "; org default"
@@ -391,6 +403,9 @@ func (h *hierarchySync) assignDefault(ctx context.Context, d manifest.Environmen
 	}
 	target := d.Name + "/default"
 	switch {
+	case h.orgDefaultUnknown:
+		h.report.add(kindHierarchy, target, "manual", fmt.Sprintf(
+			"environment hierarchy %q is the org default in the source, but %s — the ORGANIZATION assignment was skipped; assign it by hand if the destination has no default", d.Name, orgDefaultUnknownWhy))
 	case h.orgScope == "ORGANIZATION" && h.orgDefaultID == hierID:
 		h.report.add(kindHierarchy, target, "exists", fmt.Sprintf("environment hierarchy %q is already the destination's org default", d.Name))
 	case h.orgScope == "ORGANIZATION" && h.orgDefaultID != "":
