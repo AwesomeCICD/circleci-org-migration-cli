@@ -3,9 +3,11 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -179,12 +181,66 @@ func (s *Syncer) syncProjectOIDCClaims(ctx context.Context, report *Report, p ma
 		fmt.Sprintf("set project OIDC audience=%v ttl=%q", p.OIDCAudience, p.OIDCTTL))
 }
 
+// appProjectFlags are the v1.1 feature flags that still have an effect on a
+// GitHub App ("circleci/") project. Everything else the OAuth source carried is
+// either rejected by the monolith or a no-op there (see appDroppedFlags).
+// drop_all_build_requests is additionally honoured only with --include-danger-flags.
+var appProjectFlags = map[string]bool{
+	"api_trigger_with_config":       true,
+	"disable_ssh":                   true,
+	"write_settings_requires_admin": true,
+	"setup_workflows":               true,
+	"autocancel_builds":             true,
+}
+
+// droppedFlag describes a v1.1 flag that is never written to an App project.
+type droppedFlag struct {
+	// reason is shown to the operator when the source value differs from def.
+	reason string
+	// def is the value a freshly created project has; a source value equal to it
+	// loses nothing, so no manual line is emitted.
+	def bool
+}
+
+// appDroppedFlags: flags never sent to a "circleci/" destination.
+//
+// The monolith (project.clj save-feature-flags!) validates ALL submitted flags
+// before writing any: enabling forks-receive-secret-env-vars on a standalone
+// project is a 403 with an empty body that fails the whole PUT, and "oss" is only
+// valid for public repos. The remaining flags are accepted but inert on App
+// projects, whose PR/fork/status behavior comes from the trigger's event_preset.
+var appDroppedFlags = map[string]droppedFlag{
+	"forks_receive_secret_env_vars": {
+		reason: "CircleCI rejects it on standalone (GitHub App) projects with HTTP 403 and the rejection fails the whole flag update; secrets are never exposed to fork PRs there",
+	},
+	"oss": {
+		reason: "only valid for public repositories and not supported on GitHub App projects",
+	},
+	"build_prs_only": {
+		reason: "has no effect on GitHub App projects — PR-only behavior is set by the trigger's event_preset (check the recreated trigger)",
+	},
+	"build_fork_prs": {
+		reason: "has no effect on GitHub App projects — fork-PR behavior is set by the trigger's event_preset (check the recreated trigger)",
+	},
+	"set_github_status": {
+		reason: "has no effect on GitHub App projects — status reporting is part of the GitHub App integration",
+		def:    true,
+	},
+}
+
 // syncProjectV11Flags applies per-project v1.1 feature flags from the
 // manifest to the destination.
 //
-//   - api_trigger_with_config: synced normally (status "set").
-//   - drop_all_build_requests: DANGER flag — skipped with a "manual" warning,
-//     mirroring the org-level danger-flag handling in orgsettings.go.
+//   - drop_all_build_requests: DANGER flag — skipped with a "manual" warning
+//     unless --include-danger-flags, mirroring the org-level handling.
+//   - GitHub App ("circleci/") destinations: only appProjectFlags are sent; the
+//     rest (appDroppedFlags and anything unknown) are reported "manual" with the
+//     reason when the source value would be lost. Sending forks_receive_secret_env_vars
+//     or oss would make CircleCI reject the whole update.
+//   - A flag whose source value already equals the destination's current value
+//     is not sent (reported "exists").
+//   - If the combined PUT is rejected, each flag is retried on its own so the
+//     offending flag is named exactly.
 func (s *Syncer) syncProjectV11Flags(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
 	if p.Settings == nil {
 		return
@@ -209,38 +265,102 @@ func (s *Syncer) syncProjectV11Flags(ctx context.Context, report *Report, p mani
 		candidates[strings.ReplaceAll(kebabKey, "-", "_")] = val
 	}
 
-	// Partition into the flags we will write (toSet) and danger flags (skipped
-	// with a "manual" note only when the source value is true/non-default).
+	provider, _, _, _ := project.SplitSlug(dst)
+	isApp := strings.ToLower(provider) == "circleci"
+
+	// Partition into the flags we will write (toSet), danger flags and flags
+	// that never apply to an App project (both reported "manual").
 	toSet := make(map[string]bool, len(candidates))
-	for flagKey, val := range candidates {
+	for _, flagKey := range sortedFlagKeys(candidates) {
+		val := candidates[flagKey]
+		target := dst + "/feature_flag:" + flagKey
 		if dangerProjectFlags[flagKey] && !opts.IncludeDangerFlags {
 			if val {
-				report.add("project-flag", dst+"/feature_flag:"+flagKey, "manual",
+				report.add("project-flag", target, "manual",
 					fmt.Sprintf("flag %q skipped: source value is true but writing this flag to a new project is unsafe (it can stop all builds). Set it manually once the destination is validated, or re-run with --include-danger-flags.", flagKey))
 			}
 			continue
 		}
+		if isApp && !appProjectFlags[flagKey] && !dangerProjectFlags[flagKey] {
+			if d, known := appDroppedFlags[flagKey]; known {
+				if val != d.def {
+					report.add("project-flag", target, "manual",
+						fmt.Sprintf("flag %q (source value %v) not set on the GitHub App project: %s", flagKey, val, d.reason))
+				}
+			} else if val {
+				report.add("project-flag", target, "manual",
+					fmt.Sprintf("flag %q (source value true) not set on the GitHub App project: it is not applicable to App projects — set it manually if you still need it", flagKey))
+			}
+			continue
+		}
 		toSet[flagKey] = val
+	}
+
+	// Skip flags that already hold the wanted value on a destination project
+	// that exists (read-only GET, so this also refines the dry-run).
+	if len(toSet) > 0 && !strings.Contains(dst, "<new>") {
+		if cur, err := s.Projects.GetV11ProjectFeatureFlags(ctx, dst); err != nil {
+			clog.Debugf("could not read destination v1.1 flags for %s: %v", dst, err)
+		} else {
+			var same []string
+			for _, flagKey := range sortedFlagKeys(toSet) {
+				if have, ok := cur[strings.ReplaceAll(flagKey, "_", "-")]; ok && have == toSet[flagKey] {
+					same = append(same, flagKey)
+					delete(toSet, flagKey)
+				}
+			}
+			if len(same) > 0 {
+				report.add("project-flag", dst, "exists",
+					fmt.Sprintf("project feature flag(s) already match the source: %s", strings.Join(same, ", ")))
+			}
+		}
 	}
 	if len(toSet) == 0 {
 		return
 	}
 
 	if !opts.Apply {
-		for flagKey, val := range toSet {
+		for _, flagKey := range sortedFlagKeys(toSet) {
 			report.add("project-flag", dst+"/feature_flag:"+flagKey, "set",
-				fmt.Sprintf("would set project feature flag %q = %v", flagKey, val))
+				fmt.Sprintf("would set project feature flag %q = %v", flagKey, toSet[flagKey]))
 		}
 		return
 	}
 
 	// Apply in a single PUT (SetV11ProjectFeatureFlags converts snake→kebab).
-	if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, toSet); err != nil {
-		report.add("project-flag", dst, "error", fmt.Sprintf("setting project feature flags: %v", err))
+	if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, toSet); err == nil {
+		for _, flagKey := range sortedFlagKeys(toSet) {
+			report.add("project-flag", dst+"/feature_flag:"+flagKey, "set",
+				fmt.Sprintf("set project feature flag %q = %v", flagKey, toSet[flagKey]))
+		}
+		return
+	} else if len(toSet) == 1 {
+		flagKey := sortedFlagKeys(toSet)[0]
+		report.add("project-flag", dst+"/feature_flag:"+flagKey, "error",
+			fmt.Sprintf("setting project feature flag %q = %v: %v", flagKey, toSet[flagKey], err))
 		return
 	}
-	for flagKey, val := range toSet {
-		report.add("project-flag", dst+"/feature_flag:"+flagKey, "set",
-			fmt.Sprintf("set project feature flag %q = %v", flagKey, val))
+
+	// The monolith validates every flag before writing any, so one rejected
+	// flag fails them all. Retry one at a time to isolate the offender.
+	for _, flagKey := range sortedFlagKeys(toSet) {
+		target := dst + "/feature_flag:" + flagKey
+		if err := s.Projects.SetV11ProjectFeatureFlags(ctx, dst, map[string]bool{flagKey: toSet[flagKey]}); err != nil {
+			report.add("project-flag", target, "error",
+				fmt.Sprintf("setting project feature flag %q = %v was rejected: %v", flagKey, toSet[flagKey], err))
+			continue
+		}
+		report.add("project-flag", target, "set",
+			fmt.Sprintf("set project feature flag %q = %v (individually; the combined update was rejected)", flagKey, toSet[flagKey]))
 	}
+}
+
+// sortedFlagKeys returns the keys of m in sorted order (deterministic reports).
+func sortedFlagKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

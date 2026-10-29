@@ -295,10 +295,10 @@ func (e *HTTPError) Error() string {
 	if e.Code == 0 {
 		e.Code = http.StatusInternalServerError
 	}
-	if e.Message != "" {
+	if strings.TrimSpace(e.Message) != "" {
 		return e.Message
 	}
-	return fmt.Sprintf("response %d (%s)", e.Code, http.StatusText(e.Code))
+	return fmt.Sprintf("response %d (%s) with an empty body", e.Code, http.StatusText(e.Code))
 }
 
 // IssueURL is the canonical URL for filing a bug report for this CLI.
