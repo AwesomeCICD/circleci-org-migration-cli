@@ -22,6 +22,12 @@ type Webhook struct {
 	URL       string   `json:"url"`
 	Events    []string `json:"events"`
 	VerifyTLS *bool    `json:"verify-tls"`
+
+	// SigningSecret is the HMAC secret to create the webhook with. It is
+	// write-only: the API never returns it (it is masked on read), so it is never
+	// decoded from a response (json:"-") and is only used by CreateWebhook. Empty
+	// means "send an empty secret" (the previous behavior).
+	SigningSecret string `json:"-"`
 }
 
 type listWebhooksResponse struct {

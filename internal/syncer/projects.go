@@ -19,6 +19,25 @@ var dangerProjectFlags = map[string]bool{
 	"drop_all_build_requests": true,
 }
 
+// webhookManualDetail is the manual follow-up for an outbound webhook. The
+// source signing secret is never readable (masked by the API), so whatever
+// secret the destination webhook carries must also be configured on the receiver.
+func webhookManualDetail(name, rawURL, secretsOut string, generated bool) string {
+	switch {
+	case generated:
+		return fmt.Sprintf("webhook %q was created with a NEW signing secret saved to %s (never printed): configure that secret on the receiver at %s so it can verify deliveries",
+			name, secretsOut, rawURL)
+	case secretsOut != "":
+		return fmt.Sprintf("webhook %q already existed, so its signing secret was not changed or recorded in %s (the API cannot read or reset it): set the secret you want in the destination project's Project Settings → Webhooks and configure the same secret on the receiver at %s",
+			name, secretsOut, rawURL)
+	default:
+		return fmt.Sprintf("webhook %q has no usable signing secret: the source secret is never readable, so the destination webhook was created with an EMPTY one. "+
+			"Set a secret on it in the destination project's Project Settings → Webhooks and configure the same secret on the receiver at %s "+
+			"(or re-run sync on a fresh project with --webhook-secrets-out <file> to have strong secrets generated and saved)",
+			name, rawURL)
+	}
+}
+
 // syncProjectWebhooks creates webhooks that are present in the source manifest
 // but absent from the destination project.  It resolves the destination project
 // UUID from the already-fetched destProjectID.
@@ -27,7 +46,9 @@ var dangerProjectFlags = map[string]bool{
 // "exists" (no creation attempted).
 //
 // Safety note: the HMAC signing-secret is never readable from the source, so
-// we always emit a "manual" action reminding the operator to set it.
+// we always emit a "manual" action naming where the secret must be set. With
+// Options.WebhookSecretsOut a strong random secret is generated for each
+// webhook created in this run and recorded for the secrets file (never printed).
 func (s *Syncer) syncProjectWebhooks(ctx context.Context, report *Report, p manifest.Project, dst, destProjectID string, opts Options) {
 	if len(p.Webhooks) == 0 {
 		return
@@ -47,32 +68,46 @@ func (s *Syncer) syncProjectWebhooks(ctx context.Context, report *Report, p mani
 		// Check idempotency: skip if same name+url already present.
 		if hasWebhook(existing, wh.Name, wh.URL) {
 			report.add("project-webhook", target, "exists", fmt.Sprintf("webhook %q already present", wh.Name))
-			// Still emit the signing-secret notice even for existing webhooks.
-			report.add("project-webhook", target, "manual",
-				fmt.Sprintf("webhook %q signing-secret cannot be migrated automatically — set the HMAC secret manually on the destination webhook", wh.Name))
+			report.add("project-webhook", target, "manual", webhookManualDetail(wh.Name, wh.URL, opts.WebhookSecretsOut, false))
 			continue
 		}
 
 		if !opts.Apply {
-			report.add("project-webhook", target, "set", fmt.Sprintf("would create webhook %q", wh.Name))
-			report.add("project-webhook", target, "manual",
-				fmt.Sprintf("webhook %q signing-secret cannot be migrated automatically — set the HMAC secret manually on the destination webhook", wh.Name))
+			detail := fmt.Sprintf("would create webhook %q", wh.Name)
+			if opts.WebhookSecretsOut != "" {
+				detail += " with a generated signing secret (saved to " + opts.WebhookSecretsOut + ")"
+			}
+			report.add("project-webhook", target, "set", detail)
+			report.add("project-webhook", target, "manual", webhookManualDetail(wh.Name, wh.URL, opts.WebhookSecretsOut, opts.WebhookSecretsOut != ""))
 			continue
 		}
 
 		verifyTLS := wh.VerifyTLS
+		secret := ""
+		if opts.WebhookSecretsOut != "" {
+			var err error
+			if secret, err = newSigningSecret(); err != nil {
+				report.add("project-webhook", target, "error", err.Error())
+				continue
+			}
+		}
 		if err := s.Projects.CreateWebhook(ctx, destProjectID, project.Webhook{
-			Name:      wh.Name,
-			URL:       wh.URL,
-			Events:    wh.Events,
-			VerifyTLS: verifyTLS,
+			Name:          wh.Name,
+			URL:           wh.URL,
+			Events:        wh.Events,
+			VerifyTLS:     verifyTLS,
+			SigningSecret: secret,
 		}); err != nil {
 			report.add("project-webhook", target, "error", err.Error())
 			continue
 		}
+		if secret != "" {
+			s.webhookSecrets.OutboundWebhook = append(s.webhookSecrets.OutboundWebhook, OutboundWebhookSecret{
+				Project: dst, Name: wh.Name, URL: wh.URL, Events: wh.Events, SigningSecret: secret,
+			})
+		}
 		report.add("project-webhook", target, "set", fmt.Sprintf("created webhook %q", wh.Name))
-		report.add("project-webhook", target, "manual",
-			fmt.Sprintf("webhook %q signing-secret cannot be migrated automatically — set the HMAC secret manually on the destination webhook", wh.Name))
+		report.add("project-webhook", target, "manual", webhookManualDetail(wh.Name, wh.URL, opts.WebhookSecretsOut, secret != ""))
 	}
 }
 

@@ -219,6 +219,13 @@ type Options struct {
 	// queued, so a re-run never re-enables a trigger an operator disabled on
 	// purpose. This is how enable is retried on a re-run after answering N.
 	EnableExistingTriggers bool
+
+	// WebhookSecretsOut, when non-empty, is the file the caller will write the
+	// recorded webhook secrets to (Syncer.WriteWebhookSecrets). While set, every
+	// recreated OUTBOUND webhook is created with a freshly generated signing
+	// secret and every recreated INBOUND custom-webhook trigger's new URL is
+	// recorded. Secrets are never printed or logged.
+	WebhookSecretsOut string
 }
 
 func (o Options) placeholder() string {
@@ -254,6 +261,10 @@ type Syncer struct {
 	// must run ApplyDeferredProjectRestrictions AFTER SyncProjects so each
 	// restriction can be remapped to a destination project UUID in the same run.
 	deferredProjectRestrictions []deferredProjectRestriction
+
+	// webhookSecrets collects new outbound signing secrets and inbound webhook
+	// URLs when Options.WebhookSecretsOut is set. Secret material: never print.
+	webhookSecrets WebhookSecrets
 }
 
 // deferredProjectRestriction is one project-type context restriction whose

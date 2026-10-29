@@ -244,7 +244,24 @@ type createTriggerSchedule struct {
 }
 
 type createTriggerResponse struct {
-	ID string `json:"id"`
+	ID          string `json:"id"`
+	EventSource struct {
+		Webhook struct {
+			URL    string `json:"url"`
+			Sender string `json:"sender"`
+		} `json:"webhook"`
+	} `json:"event_source"`
+}
+
+// CreatedTrigger is the result of CreateTriggerDetailed.
+type CreatedTrigger struct {
+	ID string
+	// WebhookURL and WebhookSender are set for a provider "webhook" trigger.
+	// WebhookURL embeds the server-generated secret (?secret=...); CircleCI
+	// returns it unmasked only in the create response — later reads redact it —
+	// so it must be treated as a secret and is never logged.
+	WebhookURL    string
+	WebhookSender string
 }
 
 // CreateTrigger creates a trigger on the given pipeline definition.
@@ -254,8 +271,18 @@ type createTriggerResponse struct {
 // Request body: TriggerSpec fields mapped to the API wire shape.
 // Response 200: {"id": "<triggerUUID>", ...}
 func (c *Client) CreateTrigger(ctx context.Context, projectID, defID string, spec TriggerSpec) (string, error) {
+	t, err := c.CreateTriggerDetailed(ctx, projectID, defID, spec)
+	if err != nil {
+		return "", err
+	}
+	return t.ID, nil
+}
+
+// CreateTriggerDetailed is CreateTrigger that also returns the webhook URL and
+// sender CircleCI generates for a provider "webhook" trigger.
+func (c *Client) CreateTriggerDetailed(ctx context.Context, projectID, defID string, spec TriggerSpec) (*CreatedTrigger, error) {
 	if projectID == "" || defID == "" {
-		return "", fmt.Errorf("project: CreateTrigger requires projectID and defID")
+		return nil, fmt.Errorf("project: CreateTrigger requires projectID and defID")
 	}
 
 	path := "projects/" + url.PathEscape(projectID) +
@@ -263,7 +290,7 @@ func (c *Client) CreateTrigger(ctx context.Context, projectID, defID string, spe
 		"/triggers"
 	u, err := url.Parse(path)
 	if err != nil {
-		return "", fmt.Errorf("project: CreateTrigger: build URL: %w", err)
+		return nil, fmt.Errorf("project: CreateTrigger: build URL: %w", err)
 	}
 
 	src := createTriggerEventSource{Provider: spec.Provider, Repo: sourceRepo(spec.ExternalID)}
@@ -288,14 +315,18 @@ func (c *Client) CreateTrigger(ctx context.Context, projectID, defID string, spe
 
 	req, err := c.v2.NewRequest(ctx, "POST", u, &body)
 	if err != nil {
-		return "", fmt.Errorf("project: CreateTrigger: build request: %w", err)
+		return nil, fmt.Errorf("project: CreateTrigger: build request: %w", err)
 	}
 
 	var resp createTriggerResponse
 	if _, err := c.v2.DoRequest(req, &resp); err != nil {
-		return "", fmt.Errorf("project: CreateTrigger %s/%s: %w", projectID, defID, err)
+		return nil, fmt.Errorf("project: CreateTrigger %s/%s: %w", projectID, defID, err)
 	}
-	return resp.ID, nil
+	return &CreatedTrigger{
+		ID:            resp.ID,
+		WebhookURL:    resp.EventSource.Webhook.URL,
+		WebhookSender: resp.EventSource.Webhook.Sender,
+	}, nil
 }
 
 // enableTriggerRequest is the wire format for
