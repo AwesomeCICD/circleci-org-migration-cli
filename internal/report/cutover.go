@@ -10,13 +10,16 @@ import (
 // writeRunbook appends the customer-facing cutover runbook to b: the recommended
 // order, what sync automates, the manual steps (data-driven from the manifest),
 // what does not transfer, and the external-pin reminder.
-func writeRunbook(b *strings.Builder, m *manifest.Manifest) {
+func writeRunbook(b *strings.Builder, m *manifest.Manifest, opts Options) {
 	fmt.Fprintf(b, "\n## Cutover runbook\n\n")
 	fmt.Fprintf(b, "This report is your migration plan. Work through the steps below in order;\n")
 	fmt.Fprintf(b, "the manual steps and data-loss notes are tailored to what this export contains.\n")
 
 	writeCutoverOrder(b)
 	writeDetailedCutoverCommands(b, m)
+	if isCrossTypeToApp(m, opts) {
+		writeCrossTypeChecklist(b, m, opts)
+	}
 	writeAutomatedBySync(b)
 	writeManualSteps(b, m)
 	writeDataLoss(b, m)

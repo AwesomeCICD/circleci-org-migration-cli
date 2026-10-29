@@ -47,6 +47,7 @@ circleci-migrate export --source-org <org-slug> [flags]
 ### Options
 
 ```
+      --dest-org string           Optional destination org slug (e.g. circleci/<id>). Does not change what is exported; when the source is gh/ and the destination is circleci/ it adds the ordered cross-type checklist to the report
       --follow-all                (GitHub OAuth orgs only) List all GitHub repos in the source org and follow any that are not yet set up as CircleCI projects, so that a subsequent export discovers them. Requires --github-token. Archived repos are skipped. Webhook-validation errors on brand-new repos are warned and skipped, not fatal. Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.
       --github-token string       GitHub personal access token used by --follow-all to list org repositories. Falls back to $GITHUB_TOKEN.
   -h, --help                      help for export

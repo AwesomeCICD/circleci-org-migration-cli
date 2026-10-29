@@ -163,7 +163,10 @@ Repoint everything that references the old org (see [Section 5](#5-update-extern
   - Spend budgets
   - Block-unregistered-users flag
   - Release-tracker settings
-- Self-hosted runner **resource classes** (when `--runner-namespace` on export and `--dest-runner-namespace` on sync are supplied). Definitions only — runner instances and registration tokens do not transfer.
+  - v1.1 feature flags are also written to `circleci/` (GitHub App / standalone) destinations; a flag the server refuses on such an org is reported as `manual` rather than `error`.
+- Self-hosted runner **resource classes** (when `--runner-namespace` on export and `--dest-runner-namespace` on sync are supplied). Definitions only — runner instances and registration tokens do not transfer. When the destination namespace has the **same name** as the source's, nothing is created while the source org still owns it (a `manual` action carries the exact `change-namespace-owner!` command); classes that already exist under the source org are reported `manual`, not `exists`. When the namespace **differs**, a notice lists every `resource_class:` value to rewrite.
+- **Deploys** (environments, components, per-project deploy settings) are exported and *reconciled read-only*: the public Deploys API has no create endpoint, so `sync` lists what is missing as `manual` (see Section 3).
+- Orbs published by `--orb-namespace` into a **different** destination namespace (every stable version, with a config-rewrite notice). A **same-name** namespace is never republished — it is moved by Support.
 - Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.
 - Project **API tokens** — only when `--create-project-tokens` is set; each recreated token mints a NEW one-time secret, so every consumer must be repointed. Off by default (manual steps emitted instead).
 
@@ -204,8 +207,27 @@ the relevant ones.
   after sync.
 - **Danger flags** (`require_context_group_restriction`, `drop_all_build_requests`)
   — enable only after validation, or they can silently break or drop builds.
-- **Org orb list** — org-level orbs must be republished in the destination
-  namespace. The report lists each orb name.
+- **Org orbs / namespaces** — a namespace belongs to exactly one org. A
+  **different** destination namespace is republished by `sync --dest-orb-namespace`
+  (rewrite config references afterwards). The **same** namespace name cannot be
+  republished: ask Support to run `change-namespace-owner! "<ns>" "<dest-org-slug>"`
+  (slug accepts `gh/<name>`, `github/<name>`, `circleci/<short-id>`; never
+  `rename-namespace`) — the orbs move with it and config references need no
+  change. `sync` detects who owns the namespace and emits this as a `manual`
+  action.
+- **Runner resource classes (same-name namespace)** — class rows keep the org
+  they were created under and do not follow a namespace move, so after the move
+  delete the source copies (or ask Support) and re-run `sync` to recreate them
+  in the destination, then issue new tokens and re-register agents.
+- **Deploys** — recreate environments (Deploys → Environments, or let the first
+  `circleci run release plan --environment-name=…` create them), components
+  (created by the first `circleci run release plan --component-name=…`), and the
+  per-project deploy setup. The public Deploys API is read-only.
+- **Plan transfer (OAuth → App)** — a Support-run `transfer-plan "<from>" :github "<to-short-id>" :circleci`;
+  the destination must be on Free and not a plan-share rider. Other cross-type
+  steps (GitHub App move, OIDC `sub` claims, IP ranges, SSO default role) are in
+  the ordered checklist the report adds when you pass `--dest-org circleci/<id>`
+  to `export` (or use `migrate`).
 - **Environment hierarchy** — captured as reference data; apply manually if needed.
 - **Repository connections (App destinations)** — repos must exist and be
   connected to the destination CircleCI GitHub App before `sync --apply`, or
@@ -232,6 +254,10 @@ This is the single canonical "does not transfer / data loss" reference for
 | **Audit-log streaming, OTel exporter headers** | Point at source-owned infra / server-redacted. | Recreate against destination infra; re-add OTel headers manually. |
 | **Usage data** | Local baseline only (`--include-usage`). | Not synced — retained as a source-org record. |
 | **Runner instances & registration tokens** | Only resource-class *definitions* transfer. | Re-register runners against the destination resource classes. |
+| **Runner class attribution (same-name namespace)** | A class stores the org it was created under; it does not follow a namespace-owner change, and a duplicate name returns HTTP 409. | After the namespace move, delete the source copies (or ask Support), re-run `sync`, issue new tokens. |
+| **Orb namespace (same name)** | A namespace belongs to one org; it cannot be recreated or republished in a second org. | Support runs `change-namespace-owner! "<ns>" "<dest-org-slug>"`; orbs move with it. |
+| **Deploys environments, components, deploy settings, history** | The public Deploys API is read-only (no create endpoints); pipeline UUIDs are source-specific; deployment history stays in the source. | Recreate by name from the `sync` manual list; first `circleci run release plan` run recreates components/environments. |
+| **Plan / billing (OAuth → App)** | Moved by Support, not the API. | `transfer-plan "<from>" :github "<to-short-id>" :circleci` (destination on Free, not a plan-share rider). |
 | **Cross-type settings (OAuth → App)** | No App equivalent for fork-PR builds, the OSS flag, or `pr_only_branch_overrides`; multiple App pipeline definitions cannot collapse into one OAuth config. | Reconfigure manually where an equivalent exists. |
 | **OSS ("Free and Open Source") flag** | GitHub App projects auto-detect OSS from repo visibility (the PATCH endpoint rejects the `oss` field); OAuth private repos silently no-op. The sync makes a best-effort attempt and records a `manual` note when it cannot confirm the flag. | For GitHub App destinations: no action needed — OSS status is auto-detected from the public/private visibility of the GitHub repo. For OAuth destinations with a public repo: enable "Free and Open Source" in the destination project's **Advanced settings**. |
 

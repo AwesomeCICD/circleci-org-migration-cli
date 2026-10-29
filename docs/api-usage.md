@@ -359,6 +359,20 @@ are exported (runner registration tokens are never returned).
 |---|---|---|
 | `GET` | `https://runner.circleci.com/api/v3/runner/resource?namespace={ns}` | List all resource classes registered under a namespace. Returns `{ "items": [...] }`. `namespace` is a bare name (e.g. `acme`), not a slug. |
 
+| `GET` | `https://runner.circleci.com/api/v3/runner/resource-classes?filter[org_id]={orgUUID}` | Sync only (read): classes **attributed to an org** (`references.org.id`). Used for the same-name-namespace handoff — attribution does not follow a namespace-owner change. |
+| `GET` | `https://app.circleci.com/api/private/orb?org-id={orgUUID}` | Sync only (read): orbs whose namespace the org owns; each carries `namespace_name`, which is how the syncer detects who owns a same-name namespace. |
+
+### Deploys (read-only; export + sync)
+
+The public Deploys v3 API is experimental and has **no create endpoints**.
+
+| Method | Endpoint | Used for |
+|---|---|---|
+| `GET` | `https://app.circleci.com/api/v3/deploy/environments?filter[org_id]={orgUUID}` | List environments (paginated). |
+| `GET` | `https://app.circleci.com/api/v3/deploy/environments/{id}` | `kind` / `description` for one environment. |
+| `GET` | `https://app.circleci.com/api/v3/deploy/components?filter[org_id]={orgUUID}` | List components with their `references.project.id`. |
+| `GET` | `https://app.circleci.com/api/v3/deploy/settings?filter[project_id]={projectUUID}` | Per-project deploy/rollback pipelines. |
+
 ### Write (sync phase)
 
 | Method | Endpoint | Used for |

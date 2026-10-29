@@ -9,6 +9,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 )
@@ -70,4 +71,13 @@ func buildSyncer(cfg *settings.Config, token string, out io.Writer, wireRunner, 
 	}
 
 	return sy, nil
+}
+
+// migrateDestSlug returns the destination org slug for a migrate run: the
+// mapping's org.to when set, otherwise the --dest-org value.
+func migrateDestSlug(mapping *manifest.Mapping, destOrg string) string {
+	if mapping != nil && mapping.Org.To != "" {
+		return mapping.Org.To
+	}
+	return destOrg
 }

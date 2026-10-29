@@ -698,6 +698,85 @@ Key cross-type items to note:
 
 ---
 
+## Namespaces, runners, plan, and deploys
+
+These items sit outside the project/mapping flow above. The migration report
+(`migration-report.md`) contains the same ordered checklist when generated with
+`export --dest-org circleci/<id>` (or via `migrate`).
+
+### Order of operations
+
+1. **Export, capture secrets and dry-run first.** Uninstalling the CircleCI
+   GitHub App from a GitHub org deletes that CircleCI org's GitHub App pipelines
+   and triggers.
+2. **Move the GitHub App connection.** A GitHub org connects to only **one**
+   CircleCI org through the CircleCI GitHub App: uninstall it from the OAuth org's
+   connection, then install it from the new `circleci/<id>` org.
+3. **Transfer the plan** (Support, staff command):
+   `transfer-plan "<from>" :github "<to-short-id>" :circleci`. The destination
+   must be on **Free** and must not be a plan-share rider.
+4. **Move the namespace** (Support, staff command; see below).
+5. **Recreate runner classes** and re-register agents.
+6. **Fix OIDC trust, IP ranges, SSO roles** (checklist in the report).
+7. **Do not build in both orgs** once the destination is live (double billing).
+
+### Orb namespace
+
+A namespace belongs to exactly one org, so it is **moved**, not recreated:
+
+```text
+change-namespace-owner! "<ns>" "<dest-org-slug>"
+```
+
+The owner slug accepts `gh/<name>`, `github/<name>` or `circleci/<short-id>`.
+The orbs move with the namespace and **config references need no change**. Never
+use `rename-namespace` — it does not free the old name.
+
+`sync` decides what to do from who currently owns the namespace (it reads the
+org-scoped orb list, which carries each orb's `namespace_name`):
+
+| `--dest-orb-namespace` | Owner | Result |
+|---|---|---|
+| same as source | source org | no republish; `manual` action with the exact command |
+| same as source | destination org | orbs already moved; nothing to do |
+| same as source | unknown | no republish; `manual` action asking you to verify |
+| different | n/a | every stable version republished; `manual` notice lists each `old/orb` → `new/orb` to rewrite |
+
+### Runner resource classes
+
+Classes are named `<namespace>/<class>`, but each class stores the org it was
+**created under**; that attribution does **not** follow a namespace move. With an
+unchanged namespace name:
+
+- Source still owns the namespace: `sync` creates nothing and emits the
+  `change-namespace-owner!` command.
+- After the move, the classes still belong to the source org, and creating the
+  same name in the destination returns **409**. `sync` reports such classes as
+  `manual` ("exists but is attributed to another org"). Delete the source copies
+  (or ask Support), re-run `sync`, issue new tokens
+  (`circleci runner token create <class> "<nickname>"`) and re-register agents.
+- With a **different** namespace, classes are created under the new name and a
+  notice lists every `resource_class:` value in config that must be rewritten.
+
+### Org feature flags
+
+`sync` now writes v1.1 feature flags to `circleci/` destinations
+(`/api/v1.1/organization/circleci/<id>/settings`). Flags the server refuses for
+the org type are reported as `manual` with the flag name so you can set them in
+Organization Settings. Danger flags remain opt-in (`--include-danger-flags`).
+
+### Deploys
+
+`export` records Deploys environments, components (linked to their project) and
+which projects have deploy/rollback pipelines. The public Deploys API is
+**read-only** (and experimental), so `sync` reads the destination and lists
+anything missing as `manual`; it never writes. Environments and components are
+also created automatically the first time a job runs
+`circleci run release plan --environment-name=… --component-name=…`. Deployment
+history does not transfer.
+
+---
+
 ## See also
 
 - [Migration guide — cross-type OAuth → GitHub App scenario](../guide.md#7e-cross-type-oauth--github-app)
