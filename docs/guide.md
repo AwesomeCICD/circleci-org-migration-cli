@@ -613,15 +613,21 @@ Key flags:
 - `--context` — limit to specific context names; default is all contexts with
   values.
 - `--include-project-vars` — also transfer project env-var values (default:
-  off). Each source project must be resolvable to a destination project slug
-  via `--mapping`; projects without a mapping entry are **skipped** and clearly
-  flagged in the plan. The destination project must already be onboarded.
+  off). Each source project is resolved to a destination project slug from a
+  `--mapping` entry or — for a GitHub App destination — **by name** against the
+  destination org's projects (so `mapping generate` is optional there; a mapping
+  entry still wins). The plan prints each `source → destination` pair. A project
+  that cannot be resolved is **skipped**, flagged in the plan, and the run exits
+  non-zero naming it. The destination project must already exist — create App
+  projects first, before the GitHub App leaves the source org, with
+  `sync --apply --skip-pipelines`.
 - `--include-ssh-keys` — also transfer additional project SSH keys via the
   in-pipeline zero-disk path (default: off). The in-pipeline job uses
   `add_ssh_keys` to materialize each key, matches by SHA256 fingerprint, reads
   the private key with `jq --rawfile` (never echoed to logs), and POSTs it to
   the destination project. A project with SSH keys but no env vars still triggers
-  a per-project pipeline. Requires a `--mapping` entry for each project.
+  a per-project pipeline. Projects are resolved like `--include-project-vars`
+  (mapping entry, else name match for a GitHub App destination).
 - `--mapping` — optional path to `mapping.json`. Entries in `projects` whose
   keys contain `/` are project slug overrides (source → dest project slug);
   entries whose keys have no `/` are context name → destination context name
@@ -869,6 +875,7 @@ writes them too — do this once the destination is validated and ready.
 | `--skip-org-settings` | Org-level settings (feature flags, OIDC, URL-orb allow list, config policies, etc.) |
 | `--skip-contexts` | Contexts |
 | `--skip-projects` | Projects |
+| `--skip-pipelines` | Pipeline definitions and triggers on GitHub App destinations (projects and their settings/env vars are still created; each definition/trigger is reported `skipped: --skip-pipelines`) |
 | `--skip-extras` | Checkout keys, additional SSH keys, webhooks, schedules |
 | `--skip-runner` | Self-hosted runner resource classes |
 | `--skip-ciam` | CIAM roles and groups (standalone `circleci`-type orgs only) |
@@ -1023,10 +1030,20 @@ circleci-migrate sync --manifest manifest.json --secrets secrets.json \
 ```
 
 The `projects` entries are `circleci/<org-uuid>/<project-uuid>` and only exist
-once the projects do — generate them afterwards with `mapping generate`
-(`--dest-org circleci/<org-uuid>`) for project-type context restrictions and
-`secrets transfer --include-project-vars`. Without them, project restrictions are
-reported `manual`; sync itself does not need them.
+once the projects do. They are **optional**: project-type context restrictions
+and `secrets transfer --include-project-vars` / `--include-ssh-keys` match a
+source project to the destination project by name when the mapping has no entry
+(`mapping generate --dest-org circleci/<org-uuid>` still writes explicit entries
+if you want to review or override them). An unmatched project is reported
+`manual` (restrictions) or fails the transfer run — never skipped silently.
+
+**Create the projects before the GitHub App moves.** `sync --apply
+--skip-pipelines` creates or reuses the App projects and syncs their settings and
+env-var names but creates no pipeline definitions or triggers (`skipped:
+--skip-pipelines`), so `secrets transfer --include-project-vars` can run while the
+source's GitHub App pipeline definitions still exist (no deploy keys needed). A
+later `sync --apply` without the flag adds the definitions and triggers to the
+existing projects. See the [playbook](playbooks/cross-type-oauth-to-app.md#50-create-the-projects-first---skip-pipelines).
 
 **GitHub token.** Synthesizing a definition needs the repository's GitHub ID,
 which only the GitHub API provides, so a token (`--github-token` /
@@ -1392,7 +1409,8 @@ circleci-migrate validate \
 |---|---|
 | Contexts (env-var names, restrictions) | ✓ matched / ✗ missing |
 | Projects (env-var names, settings, SSH keys, checkout keys) | ✓ matched / ✗ missing |
-| Org Settings (feature flags, OIDC, URL-orb allow list, config policies, retention, release tracker, contacts, OTel) | ✓ matched / ⚠ manual |
+| Pipeline Definitions & Triggers (GitHub App destinations only: each definition by name with its config path/provider, trigger count and enabled state) | ✓ matched / ✗ missing / ⚠ manual |
+| Org Settings (feature flags, OIDC, URL-orb allow list, config policies, retention, release tracker, contacts, OTel) | ✓ matched / ⚠ manual / ℹ info (`allow_api_trigger_with_config`) |
 | Runner Resource Classes (`--dest-runner-namespace` required) | ✓ matched / ✗ missing / skipped |
 | Orbs (`--dest-orb-namespace` required) | ✓ matched / ✗ missing / skipped |
 | SSO | ⚠ always manual (DNS + IdP reconfiguration required) |
@@ -1410,6 +1428,8 @@ do **not** cause a non-zero exit but appear in a prominent NEEDS ATTENTION block
 | `--mapping` | Path to a `mapping.json` file (same format as `sync --mapping`). Optional. |
 | `--dest-runner-namespace` | Destination runner namespace. When omitted the Runner section is skipped. |
 | `--dest-orb-namespace` | Destination orb namespace. When omitted the Orb section is skipped. |
+| `--dest-token-context` | Name of the source context that holds the `secrets transfer` destination token. It is never recreated on the destination, so it is left out of the comparison. |
+| `--ignore-context` | Source context name to leave out of the comparison. Repeatable. |
 | `--json` | Emit machine-readable JSON instead of the human report. |
 | `--no-input` | Disable prompts; fail immediately on missing required flags. |
 

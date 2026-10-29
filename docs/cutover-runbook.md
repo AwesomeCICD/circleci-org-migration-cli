@@ -75,9 +75,12 @@ for the full orb-based alternative (committed config, matrix capture).
 > `secrets transfer`, which pushes values directly to the destination. With that
 > method, **context** values can move any time, but **project** env vars and SSH
 > keys (`--include-project-vars` / `--include-ssh-keys`) must be transferred
-> *after* `sync --apply` (Step 4), because they target destination projects that
-> don't exist until sync creates them. Pick one path; don't mix bundle and
-> in-pipeline for the same resources.
+> *after* the destination projects exist, because they target those projects.
+> For a GitHub App destination, create them early with
+> `sync --apply --skip-pipelines` (no pipeline definitions or triggers) so the
+> transfer can run while the source's GitHub App pipeline definitions still
+> exist; a later `sync --apply` adds the definitions. Pick one path; don't mix
+> bundle and in-pipeline for the same resources.
 
 ### Step 3 — Dry run (review the plan)
 

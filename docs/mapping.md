@@ -22,10 +22,12 @@ You **need** a mapping file when:
   prominent warning. `org.to` is the **only** key strictly required to retarget.
 - **The destination uses a different slug type** (e.g. OAuth `gh/acme` →
   GitHub App `circleci/<uuid>`). Set `org.to` to the destination slug. Project
-  slugs change shape (`circleci/<org-uuid>/<project-uuid>`), so any step that
-  addresses a destination project by slug needs a `projects` entry — generate
-  them with `mapping generate` once the projects exist. `sync` itself creates
-  App projects by name and does not need them.
+  slugs change shape (`circleci/<org-uuid>/<project-uuid>`). `sync` creates App
+  projects by name, and the steps that address a destination project by slug
+  (project-type context restrictions, `secrets transfer --include-project-vars`
+  / `--include-ssh-keys`) match a source project to the destination project by
+  name when there is no `projects` entry — so entries are optional (generate
+  them with `mapping generate` to review or override a match).
 - **Repos moved to a new GitHub org** and you want a single override (or a
   partial move where only some repos changed) — use `github_org` and/or
   per-project `projects` entries.
@@ -85,9 +87,11 @@ The project UUID is assigned when the project is created, so you cannot write
 these by hand up front. Create the projects with `sync --apply` (which needs only
 `org.to` for an App destination), then run
 `circleci-migrate mapping generate --manifest manifest.json --dest-org circleci/<org-uuid> -o mapping.json`
-to produce the entries. Project-type context restrictions and
-`secrets transfer --include-project-vars` read them. (`mapping generate` writes
-only `org` and `projects`; re-add `github_org` if you use it.)
+to produce the entries. They are optional: project-type context restrictions and
+`secrets transfer --include-project-vars` fall back to a by-name match against
+the destination org for any project without an entry, and an entry always wins.
+(`mapping generate` writes only `org` and `projects`; re-add `github_org` if you
+use it.)
 
 For a simple same-type move where only the org name changes, the tool derives
 destination slugs automatically and you can usually omit `projects`.

@@ -135,6 +135,7 @@ circleci-migrate migrate [--source-org <slug> --dest-org <slug>] [--apply] [flag
       --skip-extras                    Skip checkout keys, webhooks, and schedules
       --skip-orb                       Skip exporting and syncing orbs
       --skip-org-settings              Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
+      --skip-pipelines                 GitHub App destinations: create or reuse each project and sync its settings, env vars and other project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so 'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed.
       --skip-preflight                 Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
       --skip-projects                  Skip exporting and syncing projects
       --skip-runner                    Skip exporting and syncing self-hosted runner resource classes
