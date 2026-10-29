@@ -141,6 +141,52 @@ func LoadCutoverState(path string) (*CutoverState, error) {
 	return st, nil
 }
 
+// LoadCutoverStateForUndo is LoadCutoverState for --undo: a missing file is an
+// error, because "nothing to undo" would hide a mistyped --state path or a lost
+// state file while the source is still paused.
+func LoadCutoverStateForUndo(path string) (*CutoverState, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("cutover --undo: state file %s does not exist — pass the --state file of the run you want to undo (nothing was changed)", path)
+	}
+	return LoadCutoverState(path)
+}
+
+// checkOrgs refuses to continue when a non-empty state belongs to a different
+// source (or, when checkDest is set, destination) org than this run's, so a
+// state file from another migration is never applied to the wrong orgs.
+func (st *CutoverState) checkOrgs(path, sourceOrg, destOrg string, checkDest bool) error {
+	if st.Empty() {
+		return nil
+	}
+	if sourceOrg != "" && st.SourceOrg != "" && st.SourceOrg != sourceOrg {
+		return fmt.Errorf("cutover state %s was recorded for source org %q but this run is for %q — use the matching --state file or move it aside (nothing was changed)", path, st.SourceOrg, sourceOrg)
+	}
+	if checkDest && destOrg != "" && st.DestOrg != "" && st.DestOrg != destOrg {
+		return fmt.Errorf("cutover state %s was recorded for destination org %q but this run is for %q — use the matching --state file or move it aside (nothing was changed)", path, st.DestOrg, destOrg)
+	}
+	return nil
+}
+
+// HasSourceRecords reports whether undo has anything to restore in the source org.
+func (st *CutoverState) HasSourceRecords() bool {
+	return len(st.SourceFlags) > 0 || st.OrgFlag != nil || len(st.SourceTriggers) > 0
+}
+
+// HasDestRecords reports whether undo has anything to restore in the destination org.
+func (st *CutoverState) HasDestRecords() bool { return len(st.DestTriggers) > 0 }
+
+// definitelyRejected reports whether err is a 4xx response that proves the
+// change did NOT land (the server refused it). Anything else — a 5xx, a
+// timeout, a dropped connection, 408 — may have been applied before the error,
+// so its state record is kept: undo is idempotent and restores either way.
+func definitelyRejected(err error) bool {
+	var he *rest.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	return he.Code >= 400 && he.Code < 500 && he.Code != 408 && he.Code != 429
+}
+
 // Save writes the state to path with mode 0600.
 func (st *CutoverState) Save(path string) error {
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -209,7 +255,13 @@ func (c *Cutover) Run(ctx context.Context, m *manifest.Manifest, mapping *manife
 	if opts.StatePath == "" {
 		return nil, fmt.Errorf("cutover: a state file path is required")
 	}
-	st, err := LoadCutoverState(opts.StatePath)
+	var st *CutoverState
+	var err error
+	if opts.Undo {
+		st, err = LoadCutoverStateForUndo(opts.StatePath)
+	} else {
+		st, err = LoadCutoverState(opts.StatePath)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +269,18 @@ func (c *Cutover) Run(ctx context.Context, m *manifest.Manifest, mapping *manife
 	r := &cutoverRun{c: c, report: report, st: st, opts: opts}
 
 	if opts.Undo {
+		// A manifest/mapping is optional with --undo; when given they must match
+		// the state.
+		var srcOrg, dstOrg string
+		if m != nil {
+			srcOrg = m.Source.Org.Slug
+		}
+		if mapping != nil {
+			dstOrg = mapping.Org.To
+		}
+		if err := st.checkOrgs(opts.StatePath, srcOrg, dstOrg, true); err != nil {
+			return nil, err
+		}
 		return report, r.undo(ctx)
 	}
 	if m == nil {
@@ -225,9 +289,14 @@ func (c *Cutover) Run(ctx context.Context, m *manifest.Manifest, mapping *manife
 	if mapping == nil {
 		mapping = manifest.IdentityMapping(m.Source.Org.Slug)
 	}
+	if err := st.checkOrgs(opts.StatePath, m.Source.Org.Slug, mapping.Org.To, opts.EnableDest); err != nil {
+		return nil, err
+	}
 	st.SourceOrg = m.Source.Org.Slug
 	report.DestOrgSlug = mapping.Org.To
-	st.DestOrg = mapping.Org.To
+	if opts.EnableDest {
+		st.DestOrg = mapping.Org.To
+	}
 
 	if opts.PauseSource {
 		if err := r.pauseSource(ctx, m); err != nil {
@@ -240,6 +309,13 @@ func (c *Cutover) Run(ctx context.Context, m *manifest.Manifest, mapping *manife
 		}
 	}
 	if opts.EnableDest {
+		// Never turn the destination on while the source may still be running:
+		// a failed pause step means builds could run in both orgs.
+		if n := report.Counts()["error"]; (opts.PauseSource || opts.PauseOrg) && n > 0 {
+			msg := fmt.Sprintf("--enable-dest was NOT run: %d step(s) that pause the source failed (see the [error] lines above), so the source may still be building. Fix the cause and re-run (re-runs are idempotent)", n)
+			report.add(kindCutoverDestTrigger, "(all destination triggers)", "error", msg)
+			return report, fmt.Errorf("cutover: %s", msg)
+		}
 		if err := r.enableDest(ctx, m, mapping); err != nil {
 			return report, err
 		}
@@ -309,7 +385,9 @@ func (r *cutoverRun) pauseProjectFlag(ctx context.Context, slug string) error {
 		}
 	}
 	if err := r.c.Source.SetV11ProjectFeatureFlags(ctx, slug, map[string]bool{cutoverFlag: true}); err != nil {
-		if added {
+		// Keep the record unless the server definitely refused the change: a
+		// timeout or 5xx may have applied it, and undo is idempotent.
+		if added && definitelyRejected(err) {
 			r.st.SourceFlags = r.st.SourceFlags[:len(r.st.SourceFlags)-1]
 			if serr := r.save(target); serr != nil {
 				return serr
@@ -377,7 +455,7 @@ func (r *cutoverRun) disableSourceTriggers(ctx context.Context, p manifest.Proje
 				}
 			}
 			if err := r.c.Source.SetTriggerDisabled(ctx, projectID, t.ID, true); err != nil {
-				if added {
+				if added && definitelyRejected(err) {
 					r.st.SourceTriggers = removeTriggerRec(r.st.SourceTriggers, t.ID)
 					if serr := r.save(target); serr != nil {
 						return serr
@@ -429,7 +507,7 @@ func (r *cutoverRun) pauseOrg(ctx context.Context, m *manifest.Manifest) error {
 		}
 	}
 	if err := r.c.SourceOrg.UpdateFeatureFlags(ctx, vcs, name, map[string]bool{cutoverFlag: true}); err != nil {
-		if added {
+		if added && definitelyRejected(err) {
 			r.st.OrgFlag = nil
 			if serr := r.save(target); serr != nil {
 				return serr
@@ -478,6 +556,10 @@ func (r *cutoverRun) enableDest(ctx context.Context, m *manifest.Manifest, mappi
 			r.report.add(kindCutoverDestTrigger, name, "manual", fmt.Sprintf("destination project %q not found — run sync --apply first, then re-run the cutover", name))
 			continue
 		}
+		if why := sourceProjectPausedInManifest(p); why != "" {
+			r.report.add(kindCutoverDestTrigger, name, "manual", fmt.Sprintf("source project %q %s — its destination triggers were NOT enabled; enable them by hand if this project should build in the destination", p.Slug, why))
+			continue
+		}
 		defs := p.PipelineDefinitions
 		if len(defs) == 0 {
 			fullName, ok := oauthSourceFullName(p.Slug)
@@ -519,7 +601,7 @@ func (r *cutoverRun) enableDefTriggers(ctx context.Context, projectName, project
 	for i, trig := range def.Triggers {
 		providers[i], _ = translateTriggerProvider(trig.EventSource.Provider)
 	}
-	matches := matchDestTriggers(def.Triggers, providers, destTriggers)
+	matches := matchCutoverTriggers(def.Triggers, providers, destTriggers)
 
 	for i, trig := range def.Triggers {
 		target := defTarget + "/trigger:" + trig.Name
@@ -532,6 +614,10 @@ func (r *cutoverRun) enableDefTriggers(ctx context.Context, projectName, project
 			continue
 		}
 		mi := matches[i]
+		if mi == matchAmbiguous {
+			r.report.add(kindCutoverDestTrigger, target, "manual", "several destination triggers match this source trigger equally well and the source triggers that map to them differ in enabled/disabled state — NOT enabled; enable the right destination trigger by hand")
+			continue
+		}
 		if mi < 0 {
 			r.report.add(kindCutoverDestTrigger, target, "manual", "no matching trigger in the destination — run sync --apply (or create it), then re-run the cutover")
 			continue
@@ -561,7 +647,7 @@ func (r *cutoverRun) enableDefTriggers(ctx context.Context, projectName, project
 		}
 		a, eerr := r.c.Dest.EnableBuilds(ctx, et, true)
 		if eerr != nil {
-			if added {
+			if added && definitelyRejected(eerr) {
 				r.st.DestTriggers = removeTriggerRec(r.st.DestTriggers, d.ID)
 				if serr := r.save(target); serr != nil {
 					return serr
@@ -573,6 +659,100 @@ func (r *cutoverRun) enableDefTriggers(ctx context.Context, projectName, project
 		r.report.add(kindCutoverDestTrigger, target+"/"+d.ID, "set", a.Detail)
 	}
 	return nil
+}
+
+// sourceProjectPausedInManifest reports (as a short phrase) why the manifest
+// shows the source project as not running builds — a project-level
+// drop_all_build_requests pause, or a project the source token did not follow —
+// or "" when it does not. Such a project's destination triggers must not be
+// switched on by a blanket enable.
+func sourceProjectPausedInManifest(p manifest.Project) string {
+	if p.Settings != nil && p.Settings.DropAllBuildRequests != nil && *p.Settings.DropAllBuildRequests {
+		return "is paused in the manifest (drop_all_build_requests=true)"
+	}
+	if p.Followed != nil && !*p.Followed {
+		return "is not followed in the manifest (builds were not running)"
+	}
+	return ""
+}
+
+const (
+	matchNone      = -1
+	matchAmbiguous = -2
+)
+
+// matchCutoverTriggers pairs each source trigger with a destination trigger of
+// the same provider for --enable-dest. Unlike sync's matcher it must not guess:
+// enabling the wrong destination trigger starts the wrong builds. It matches
+// by name first (name and fields, then name alone), then by defining fields. A
+// source trigger with several equally good unused candidates is paired with the
+// first one only when every source trigger competing for those candidates has
+// the same enabled/disabled state; otherwise it is reported as matchAmbiguous.
+// The result holds an index into dest, matchNone or matchAmbiguous per source.
+func matchCutoverTriggers(src []manifest.Trigger, providers []string, dest []project.Trigger) []int {
+	match := make([]int, len(src))
+	for i := range match {
+		match[i] = matchNone
+	}
+	used := make([]bool, len(dest))
+
+	pass := func(eq func(s manifest.Trigger, provider string, d project.Trigger) bool) {
+		cands := func(i int) []int {
+			var out []int
+			for j, d := range dest {
+				if !used[j] && d.EventSource.Provider == providers[i] && eq(src[i], providers[i], d) {
+					out = append(out, j)
+				}
+			}
+			return out
+		}
+		for i := range src {
+			if match[i] != matchNone || providers[i] == "" {
+				continue
+			}
+			c := cands(i)
+			if len(c) == 0 {
+				continue
+			}
+			ambiguous := false
+			for k := range src {
+				if k == i || match[k] >= 0 || providers[k] == "" || src[k].Disabled == src[i].Disabled {
+					continue
+				}
+				if intersects(c, cands(k)) {
+					ambiguous = true
+					break
+				}
+			}
+			if ambiguous {
+				match[i] = matchAmbiguous
+				continue
+			}
+			match[i], used[c[0]] = c[0], true
+		}
+		// An ambiguous verdict is final: a later, looser pass skips it (it still
+		// counts as a competitor above, so its rivals are ambiguous too).
+	}
+
+	pass(func(s manifest.Trigger, provider string, d project.Trigger) bool {
+		return s.Name != "" && d.Name == s.Name && triggerFieldsMatch(s, provider, d)
+	})
+	pass(func(s manifest.Trigger, _ string, d project.Trigger) bool {
+		return s.Name != "" && d.Name == s.Name
+	})
+	pass(triggerFieldsMatch)
+	return match
+}
+
+func intersects(a, b []int) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ---- undo ------------------------------------------------------------------
