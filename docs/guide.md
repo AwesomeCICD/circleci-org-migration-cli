@@ -1062,6 +1062,36 @@ are still disabled (say, after answering N the first time). A failed enable, or 
 pipeline-definition/trigger action that ends in `error`, makes `sync` and
 `migrate` exit non-zero — after printing the full summary.
 
+**Webhook secrets.** CircleCI never returns a webhook's signing secret or a
+custom-webhook trigger's secret, so recreated webhooks need new values. With
+`--webhook-secrets-out <file>` (on `sync` and `migrate`, with `--apply`), the tool
+generates a new signing secret for every outbound webhook it creates and records
+the new URL of every recreated inbound webhook trigger. It writes them to a JSON
+file with mode 0600, merging with an existing file on re-runs and never printing
+the values. Hand each receiver and sender its new value, then delete the file.
+
+**Cutover.** `circleci-migrate cutover` moves traffic from the old org to the new
+one. It is a dry run unless you pass `--apply`, and records every change in a
+`--state` file (default `cutover-state.json`, mode 0600):
+
+- `--pause-source` pauses each source project reversibly: it sets
+  `drop-all-build-requests` and disables the source's enabled App triggers.
+  `--pause-org` also sets the org-level flag. Run it **after** `secrets transfer`,
+  which needs the source to run pipelines.
+- `--enable-dest` enables only the destination triggers whose source trigger was
+  enabled. It skips ambiguous matches and paused source projects, and never runs
+  after a failed pause in the same command.
+- `--undo` restores everything in the state file. It fails if the file is
+  missing or belongs to another org.
+
+```bash
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source --apply
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json --enable-dest --apply
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json --undo --apply
+```
+
+See the [playbook](playbooks/cross-type-oauth-to-app.md) for the full order.
+
 ### 7f. Repo-move / EMU (repos moved to a new GitHub org)
 
 When repos move between GitHub orgs, their numeric `external_id` changes. Supply
