@@ -627,9 +627,7 @@ Examples:
 					totalEnvVars += len(proj.EnvVars)
 				}
 				if totalEnvVars > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(),
-						"WARNING: no secrets bundle loaded; %d env var value(s) were not synced and require manual entry\n",
-						totalEnvVars)
+					fmt.Fprint(cmd.ErrOrStderr(), noBundleNotice(totalEnvVars))
 				}
 			}
 
@@ -753,11 +751,19 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 		printEnablePlan(cmd.ErrOrStderr(), pending, apply)
 	}
 
+	sum := summarizeEnable(pending)
+
 	if !apply {
 		// Dry-run plan message goes to stderr (not data, not JSON).
 		if !jsonOutput {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+			if sum.appOnly() {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"\n%d trigger(s) across %d project(s) would be created disabled; re-run with --apply, then confirm enabling them (or pass --yes).\n",
+					sum.triggers, sum.triggerProjects)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+			}
 		}
 		return nil
 	}
@@ -773,10 +779,7 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 	// which installs the webhook and may trigger an initial build — make that
 	// clear so the operator knows what they are consenting to.
 	confirm := func() bool {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"\nFollow (enable builds for) %d project(s) in the destination org now?\n"+
-				"  Note: following installs the webhook and may trigger an initial build.\n"+
-				"  [y/N]: ", n)
+		fmt.Fprint(cmd.ErrOrStderr(), sum.prompt())
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
@@ -787,12 +790,11 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 
 	if !decideEnable(apply, yes, isTTY, confirm) {
 		if !jsonOutput {
-			if !isTTY && !yes {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"\nSkipped following projects (no TTY and --yes not set). "+
-						"Re-run with --apply --yes to follow (enable builds for) the %d created project(s).\n", n)
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped following projects (enable builds).\n")
+			switch {
+			case !isTTY && !yes:
+				fmt.Fprint(cmd.ErrOrStderr(), sum.skippedNoTTY())
+			default:
+				fmt.Fprint(cmd.ErrOrStderr(), sum.skipped())
 			}
 			if hasTriggerTarget(pending) {
 				fmt.Fprintln(cmd.ErrOrStderr(),
@@ -803,7 +805,7 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 	}
 
 	if !jsonOutput {
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nFollowing (enabling builds for) %d project(s)...\n", n)
+		fmt.Fprint(cmd.ErrOrStderr(), sum.progress())
 	}
 	failed := 0
 	for _, t := range pending {
@@ -819,6 +821,85 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 		return fmt.Errorf("enabling builds failed for %d of %d target(s); fix the errors above and re-run sync --apply --yes", failed, n)
 	}
 	return nil
+}
+
+// enableSummary counts what the enable-builds step will do, so the prompt can
+// speak in the destination's own terms: a GitHub App destination enables
+// triggers (there is no webhook to install and no "follow"), while OAuth and
+// Bitbucket destinations follow projects.
+type enableSummary struct {
+	follows         int // OAuth "follow" targets (projects)
+	triggers        int // App trigger targets
+	triggerProjects int // distinct projects those triggers belong to
+}
+
+func summarizeEnable(pending []syncer.EnableTarget) enableSummary {
+	var s enableSummary
+	projects := map[string]bool{}
+	for _, t := range pending {
+		if t.Kind == "trigger" {
+			s.triggers++
+			key := t.ProjectID
+			if key == "" {
+				key = t.ProjectName
+			}
+			projects[key] = true
+			continue
+		}
+		s.follows++
+	}
+	s.triggerProjects = len(projects)
+	return s
+}
+
+// appOnly reports whether every target is an App trigger (the OAuth follow
+// wording would then be wrong).
+func (s enableSummary) appOnly() bool { return s.triggers > 0 && s.follows == 0 }
+
+// prompt is the interactive confirmation text. OAuth wording is kept for gh/bb
+// destinations; a GitHub App destination speaks of enabling triggers.
+func (s enableSummary) prompt() string {
+	switch {
+	case s.appOnly():
+		return fmt.Sprintf("\nEnable %d trigger(s) across %d project(s) in the destination org now?\n"+
+			"  Note: an enabled trigger starts pipelines on matching pushes and events right away.\n"+
+			"  [y/N]: ", s.triggers, s.triggerProjects)
+	case s.triggers > 0: // mixed
+		return fmt.Sprintf("\nFollow (enable builds for) %d project(s) and enable %d trigger(s) across %d project(s) in the destination org now?\n"+
+			"  Note: following installs the webhook and may trigger an initial build; enabled triggers start pipelines on matching events.\n"+
+			"  [y/N]: ", s.follows, s.triggers, s.triggerProjects)
+	default:
+		return fmt.Sprintf("\nFollow (enable builds for) %d project(s) in the destination org now?\n"+
+			"  Note: following installs the webhook and may trigger an initial build.\n"+
+			"  [y/N]: ", s.follows)
+	}
+}
+
+func (s enableSummary) skippedNoTTY() string {
+	if s.appOnly() {
+		return fmt.Sprintf("\nSkipped enabling triggers (no TTY and --yes not set). "+
+			"Re-run with --apply --yes to enable the %d trigger(s) across %d project(s).\n", s.triggers, s.triggerProjects)
+	}
+	return fmt.Sprintf("\nSkipped following projects (no TTY and --yes not set). "+
+		"Re-run with --apply --yes to follow (enable builds for) the %d created project(s).\n", s.follows+s.triggerProjects)
+}
+
+func (s enableSummary) skipped() string {
+	if s.appOnly() {
+		return "\nSkipped enabling triggers.\n"
+	}
+	return "\nSkipped following projects (enable builds).\n"
+}
+
+func (s enableSummary) progress() string {
+	switch {
+	case s.appOnly():
+		return fmt.Sprintf("\nEnabling %d trigger(s) across %d project(s)...\n", s.triggers, s.triggerProjects)
+	case s.triggers > 0:
+		return fmt.Sprintf("\nFollowing %d project(s) and enabling %d trigger(s) across %d project(s)...\n", s.follows, s.triggers, s.triggerProjects)
+	default:
+		return fmt.Sprintf("\nFollowing (enabling builds for) %d project(s)...\n", s.follows)
+	}
 }
 
 // hasTriggerTarget reports whether any pending enable target is an App trigger.
