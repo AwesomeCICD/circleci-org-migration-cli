@@ -78,19 +78,25 @@ PREREQUISITES:
      Pass that context name via --dest-token-context.
   3. (Optional) To transfer project env vars, prepare a mapping.json with
      entries for each source project slug → destination project slug.
-  4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: every project that
-     runs a transfer pipeline needs a CHECKOUT KEY (a deploy key or user key),
-     or CircleCI refuses to start the pipeline ("the project has no SSH key"),
-     even with inline config. That means the host project and each project
-     transferred with --include-project-vars / --include-ssh-keys. Add one in
-     Project Settings → SSH Keys → Checkout SSH keys. circleci/ (GitHub App)
+  4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: CircleCI refuses to
+     start a pipeline that checks out over SSH on a project with no CHECKOUT KEY
+     ("the project has no SSH key"), even with inline config. In a GitHub OAuth org
+     that also has the CircleCI GitHub App installed, each project also has GitHub
+     App pipeline definitions, which check out with the app token and need no key;
+     transfer prefers those automatically (the log says which definition ran).
+     So a project needs a key only if it has NO GitHub App pipeline definition:
+     add a deploy key under Project Settings → SSH Keys → Checkout SSH keys, or
+     give it an App definition. OAuth triggers may stay disabled. circleci/
      projects are not affected. This is checked BEFORE any context restriction is
      removed or trigger flag enabled: the auto-picked host is the first manifest
-     project with a pipeline definition and a checkout key; an explicit
-     --host-project without one is rejected; a per-project transfer without one
-     is shown as SKIP, skipped on --apply, and the command exits non-zero listing
-     it. Keys come from the manifest's checkout_keys, or are looked up live when
-     the manifest was exported with --skip-extras.
+     project with a GitHub App definition, else one with a pipeline definition and
+     a checkout key; an explicit --host-project with neither is rejected; a
+     per-project transfer with neither is shown as SKIP, skipped on --apply, and
+     the command exits non-zero listing it. Keys come from the manifest's
+     checkout_keys, or are looked up live when the manifest was exported with
+     --skip-extras. NOTE: once the GitHub App is uninstalled from the org its
+     App definitions are gone, so project-var / SSH-key transfers then need
+     checkout keys; contexts transferred before the uninstall do not.
   5. Run 'secrets transfer --apply' to execute the transfer pipeline.
 
 DRY RUN (default — safe to run without --apply):
@@ -189,7 +195,7 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
       --dest-token-env-var string   Name of the env var inside --dest-token-context that holds the destination API token (default: CIRCLECI_DEST_TOKEN) (default "CIRCLECI_DEST_TOKEN")
       --enable-trigger              Automatically enable api-trigger-with-config (both org-level and per-project) if not already on, and restore the prior values after the transfer completes. In interactive mode you are prompted for each flag; in non-interactive mode this flag is required when any trigger flag is off.
   -h, --help                        help for transfer
-      --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works, but GitHub OAuth (gh/) and Bitbucket (bb/) projects must also have a checkout key (deploy key or user key — Project Settings → SSH Keys) or CircleCI refuses to run the pipeline; a project without one is rejected before anything is changed. When omitted, the first manifest project with a pipeline definition and a checkout key is picked.
+      --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works, but a GitHub OAuth (gh/) or Bitbucket (bb/) project must have a GitHub App pipeline definition or a checkout key (deploy key or user key — Project Settings → SSH Keys), or CircleCI refuses to run the pipeline; a project with neither is rejected before anything is changed. When omitted, the first manifest project with a GitHub App pipeline definition is picked, else the first with a pipeline definition and a checkout key.
       --include-project-vars        Also transfer project env-var values to the destination projects (default: off, context-only). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped with a warning. Destination project must already be onboarded/exist in the destination org.
       --include-ssh-keys            Also transfer additional project SSH keys to the destination projects via the in-pipeline zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with jq --rawfile and POSTed to the destination — never echoed to logs). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped. A project with SSH keys but no env vars still triggers a per-project pipeline. Destination project must already be onboarded/exist in the destination org.
       --manifest string             Path to the export manifest (required)

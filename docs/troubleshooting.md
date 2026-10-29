@@ -101,28 +101,42 @@ Error: transfer: trigger pipeline: TriggerPipelineRun "gh/acme/web": We did not 
 ```
 
 For **GitHub OAuth (`gh/`) and Bitbucket (`bb/`)** source projects, CircleCI will
-not start *any* pipeline — even one with inline config — unless the project has a
-checkout key (a deploy key or user key). `secrets transfer` runs a pipeline under
-a **host project** (for contexts) and under **each source project** (for
-`--include-project-vars` / `--include-ssh-keys`), so each of those needs a key.
-`circleci/` (GitHub App) projects are not affected.
+not start a pipeline that checks out over SSH — even one with inline config —
+unless the project has a checkout key (a deploy key or user key). In a GitHub OAuth
+org that also has the CircleCI GitHub App installed, each project additionally has
+**GitHub App pipeline definitions**, which check out through the app installation
+token and need no key. Older versions took the first definition returned (the
+implicit OAuth one) and hit this error; current versions prefer a `github_app`
+definition, fall back to an OAuth/Bitbucket one, and log which definition each run
+used. Disabled OAuth triggers do not matter for API-triggered runs.
+`secrets transfer` runs a pipeline under a **host project** (for contexts) and under
+**each source project** (for `--include-project-vars` / `--include-ssh-keys`), so
+each needs *either* a GitHub App definition *or* a key. `circleci/` projects are
+not affected.
 
 Current versions check this **before** changing anything in the source org (no
 trigger flag is enabled and no context restriction removed on a doomed run):
 
-- **Auto-picked host project** — the first manifest project that has a pipeline
-  definition *and* a checkout key is used; the run prints which one and why. If
-  none qualifies, the run stops with the list and the fix.
-- **`--host-project` without a key** — fails fast with the same message.
-- **Per-project transfers** — a project without a key is shown as `SKIP` in the
-  plan; with `--apply` it is skipped, the other projects still run, and the
-  command exits non-zero listing the skipped projects.
+- **Auto-picked host project** — the first manifest project with a GitHub App
+  definition is used; failing that, the first with a pipeline definition *and* a
+  checkout key. The run prints which one and why. If none qualifies, it stops with
+  the list and the fix.
+- **`--host-project` with neither** — fails fast with the same message.
+- **Per-project transfers** — a project with no App definition and no key is shown
+  as `SKIP` in the plan; with `--apply` it is skipped, the other projects still run,
+  and the command exits non-zero listing the skipped projects.
 
 Fix: in CircleCI open **Project Settings → SSH Keys → Checkout SSH keys** and
-**Add Deploy Key** (or add a user key) for each listed project, then re-run — or
-pass `--host-project` with a project that already has one. Keys are read from the
-manifest's `checkout_keys`; a manifest exported with `--skip-extras` has none, so
-the CLI looks them up live instead.
+**Add Deploy Key** (or add a user key) for each listed project — or give the project
+a GitHub App pipeline definition ("the project has no GitHub App pipeline
+definition") — then re-run, or pass `--host-project` with a project that already
+qualifies. Keys are read from the manifest's `checkout_keys`; a manifest exported
+with `--skip-extras` has none, so the CLI looks them up live instead.
+
+**After the GitHub App is uninstalled** from an OAuth org, its App pipeline
+definitions are gone. Project-var and SSH-key transfers run after that need a
+checkout key on every `gh/`/`bb/` project; contexts transferred *before* the
+uninstall do not. Run `secrets transfer` before uninstalling the App.
 
 ## Captured values are missing for restricted contexts
 

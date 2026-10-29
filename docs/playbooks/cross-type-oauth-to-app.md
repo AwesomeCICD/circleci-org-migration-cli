@@ -346,21 +346,33 @@ circleci-migrate secrets transfer \
 
 SSH keys still require Option A.
 
-> **Each source project needs a checkout key.** CircleCI will not start a
-> pipeline on a GitHub OAuth (`gh/`) or Bitbucket (`bb/`) project that has no
-> checkout key (deploy key or user key), even with inline config. `secrets
-> transfer` runs one pipeline under a *host project* (contexts) and one under
-> each source project (`--include-project-vars` / `--include-ssh-keys`), so:
+> **Each source project needs a checkout key *or* a GitHub App pipeline
+> definition.** CircleCI will not start a pipeline that checks out over SSH on a
+> GitHub OAuth (`gh/`) or Bitbucket (`bb/`) project that has no checkout key
+> (deploy key or user key), even with inline config. In a GitHub OAuth org that
+> also has the CircleCI GitHub App installed, every project has *both* an implicit
+> OAuth definition (needs a key) and GitHub App definitions (check out with the app
+> token, **no key needed**). `secrets transfer` prefers a GitHub App definition
+> whenever one exists and logs which definition it used (OAuth triggers may stay
+> disabled — that does not matter for API-triggered runs). It runs one pipeline
+> under a *host project* (contexts) and one under each source project
+> (`--include-project-vars` / `--include-ssh-keys`), so:
 >
-> - the auto-picked host project is the first manifest project that has a
->   pipeline definition **and** a checkout key (pass `--host-project` to choose);
->   an explicit `--host-project` without a key is rejected up front;
-> - a source project without a key is shown as `SKIP` in the dry-run plan, left
->   out on `--apply`, and the command exits non-zero listing it.
+> - the auto-picked host project is the first manifest project with a GitHub App
+>   definition, else the first with a pipeline definition **and** a checkout key
+>   (pass `--host-project` to choose); an explicit `--host-project` with neither is
+>   rejected up front;
+> - a source project with neither is shown as `SKIP` in the dry-run plan, left out
+>   on `--apply`, and the command exits non-zero listing it.
 >
-> Add a deploy key under **Project Settings → SSH Keys** for each such project and
-> re-run. All of this is checked *before* any context restriction is removed or
-> trigger flag enabled. See
+> For those, add a deploy key under **Project Settings → SSH Keys**, or give the
+> project a GitHub App definition, and re-run. All of this is checked *before* any
+> context restriction is removed or trigger flag enabled.
+>
+> **Order matters if you uninstall the GitHub App.** Once the App is uninstalled
+> from an OAuth org its App definitions are gone, so project-var and SSH-key
+> transfers after that point need a checkout key on every project; contexts
+> transferred *before* the uninstall do not. Run `secrets transfer` first. See
 > [Troubleshooting](../troubleshooting.md#secrets-transfer-the-project-has-no-ssh-key).
 
 > **Project env vars are post-sync.** `secrets transfer --include-project-vars`
