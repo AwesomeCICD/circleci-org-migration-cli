@@ -155,7 +155,6 @@ func (s *Syncer) SyncOrgSettings(ctx context.Context, m *manifest.Manifest, mapp
 	s.syncBlockUnregisteredUsers(ctx, report, src, destOrgID, opts)
 	s.reportOrbs(ctx, report, src)
 	s.syncReleaseTracker(ctx, report, src, destOrgID, opts)
-	s.reportEnvironmentHierarchy(ctx, report, src)
 
 	return report, nil
 }
@@ -696,31 +695,6 @@ func (s *Syncer) syncReleaseTracker(ctx context.Context, report *Report, src *ma
 	}
 	report.add("org-settings", target, "set",
 		fmt.Sprintf("set release-tracker inconclusive_release_ttl=%q", ttl))
-}
-
-// reportEnvironmentHierarchy records the captured environment hierarchy as a
-// "manual" action. The hierarchy cannot be auto-migrated because recreating it
-// via the POST endpoint requires destination deploy-integration IDs that cannot
-// be mapped automatically from the source org. The report includes the hierarchy
-// name and level names so the operator can recreate it manually after configuring
-// the matching deploy integrations in the destination.
-func (s *Syncer) reportEnvironmentHierarchy(ctx context.Context, report *Report, src *manifest.OrgSettings) {
-	if src.EnvironmentHierarchy == nil {
-		return
-	}
-	h := src.EnvironmentHierarchy
-	levelNames := make([]string, 0, len(h.Levels))
-	for _, l := range h.Levels {
-		levelNames = append(levelNames, fmt.Sprintf("%d:%s", l.Position, l.IntegrationName))
-	}
-	report.add("org-settings", "environment_hierarchy", "manual",
-		fmt.Sprintf(
-			"environment hierarchy %q (levels: %v) — "+
-				"recreate the environment hierarchy in the destination after configuring "+
-				"the matching deploy integrations; the source integration IDs cannot be "+
-				"mapped automatically",
-			h.Name, levelNames,
-		))
 }
 
 // flagOrgCoords returns the (vcs, name) pair used to address the v1.1 org

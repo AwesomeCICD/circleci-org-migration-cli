@@ -1693,72 +1693,27 @@ func TestSyncOrgSettings_ReleaseTracker_WriteError_IsErrorAction(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Environment hierarchy — report as manual
+// Environment hierarchy — handled by SyncEnvironmentHierarchies
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestSyncOrgSettings_EnvironmentHierarchy_ReportedAsManual(t *testing.T) {
+// The hierarchy is no longer a manual line in the org-settings pass: it is
+// recreated by SyncEnvironmentHierarchies (see envhierarchy_test.go).
+func TestSyncOrgSettings_EnvironmentHierarchy_NotReportedHere(t *testing.T) {
 	fw := &fakeOrgSettingsWriter{}
 	sy := newOrgSettingsSyncer(fw)
 
 	m := orgSettingsManifest(&manifest.OrgSettings{
-		EnvironmentHierarchy: &manifest.EnvironmentHierarchy{
-			Name:        "prod-hierarchy",
-			Description: "desc",
-			Levels: []manifest.EnvHierarchyLevel{
-				{Position: 1, IntegrationName: "orbs-dev"},
-				{Position: 2, IntegrationName: "prod-integration"},
-			},
-		},
+		EnvironmentHierarchy: &manifest.EnvironmentHierarchy{Name: "prod-hierarchy"},
 	})
-
 	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	manualActions := actionsOfStatus(rep, "manual")
-	var found bool
-	for _, a := range manualActions {
-		if a.Target == "environment_hierarchy" {
-			found = true
-			if !strings.Contains(a.Detail, "prod-hierarchy") {
-				t.Errorf("detail should mention hierarchy name, got: %q", a.Detail)
-			}
-			if !strings.Contains(a.Detail, "orbs-dev") {
-				t.Errorf("detail should mention level integration names, got: %q", a.Detail)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected manual action for environment_hierarchy, got actions: %+v", rep.Actions)
-	}
-}
-
-func TestSyncOrgSettings_EnvironmentHierarchy_DetailMentionsRecreate(t *testing.T) {
-	fw := &fakeOrgSettingsWriter{}
-	sy := newOrgSettingsSyncer(fw)
-
-	m := orgSettingsManifest(&manifest.OrgSettings{
-		EnvironmentHierarchy: &manifest.EnvironmentHierarchy{
-			Name: "my-hierarchy",
-		},
-	})
-
-	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("gh/dest"), Options{Apply: false})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
 	for _, a := range rep.Actions {
 		if a.Target == "environment_hierarchy" {
-			if !strings.Contains(a.Detail, "recreate") {
-				t.Errorf("env-hierarchy detail should mention recreate, got: %q", a.Detail)
-			}
-			return
+			t.Errorf("org-settings pass must not report the hierarchy any more: %+v", a)
 		}
 	}
-	t.Error("environment_hierarchy action not found")
 }
 
 func TestSyncOrgSettings_EnvironmentHierarchy_Nil_NoActions(t *testing.T) {

@@ -78,7 +78,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Deploys"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Environment Hierarchies", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -564,6 +564,19 @@ Examples:
 				repsBySection["Orbs"] = rep
 				if !jsonOutput {
 					printSyncReport(cmd, "Orbs", rep, m)
+				}
+			}
+
+			// Environment hierarchies (after projects: PROJECT assignments match
+			// destination projects by name; before Deploys: it creates environments).
+			if !skipOrgSettings && syncer.HasEnvironmentHierarchies(m) {
+				rep, err := sy.SyncEnvironmentHierarchies(ctx, m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["Environment Hierarchies"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Environment Hierarchies", rep, m)
 				}
 			}
 

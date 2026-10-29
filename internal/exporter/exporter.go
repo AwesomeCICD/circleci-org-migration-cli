@@ -190,6 +190,7 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*manifest.Manifest
 	e.exportRunnerResourceClasses(ctx, m, opts)
 	e.exportOrbs(ctx, m, opts)
 	e.exportDeploys(ctx, m, o)
+	e.exportEnvironmentHierarchies(ctx, m, o)
 	e.exportCIAM(ctx, m, o)
 
 	m.SortStable()
