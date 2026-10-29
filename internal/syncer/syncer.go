@@ -145,6 +145,10 @@ type EnableTarget struct {
 	// App trigger fields (Kind == "trigger").
 	ProjectID string // project UUID
 	TriggerID string // trigger UUID
+	// ProjectName and DefName label the trigger in the enable-builds output
+	// (informational; they are not needed to enable it).
+	ProjectName string
+	DefName     string
 }
 
 // Options configures a sync run.
@@ -208,6 +212,13 @@ type Options struct {
 	// (only when the source value is true). Set true for a faithful migration
 	// once the destination is validated and ready.
 	IncludeDangerFlags bool
+
+	// EnableExistingTriggers additionally queues, for the enable-builds step,
+	// destination triggers that ALREADY exist and are disabled while their source
+	// trigger was enabled. Default false: only triggers created in this run are
+	// queued, so a re-run never re-enables a trigger an operator disabled on
+	// purpose. This is how enable is retried on a re-run after answering N.
+	EnableExistingTriggers bool
 }
 
 func (o Options) placeholder() string {

@@ -3,6 +3,8 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
@@ -145,6 +147,18 @@ func (s *Syncer) syncAppPipelineDefinition(
 	resolve := s.newExtIDResolver(ctx, report, mapping, opts)
 
 	if dest != nil {
+		// The definition is matched by name only, so verify it really is the
+		// definition the manifest describes before treating it as "exists" and
+		// reconciling its triggers.
+		if spec, ok := s.buildDefinitionSpec(ctx, report, defTarget, def, resolve, mapping, opts, true); ok {
+			if diffs := diffDestDefinition(*dest, spec); len(diffs) > 0 {
+				report.add("project-pipeline-def", defTarget, "manual", fmt.Sprintf(
+					"pipeline definition %q already exists in the destination but differs from the manifest (%s); it was NOT modified "+
+						"and its triggers were NOT reconciled — align it manually (or delete it) and re-run sync",
+					def.Name, strings.Join(diffs, "; ")))
+				return
+			}
+		}
 		report.add("project-pipeline-def", defTarget, "exists", "pipeline definition already exists")
 		var destTriggers []project.Trigger
 		if len(def.Triggers) > 0 && projectID != "" {
@@ -159,53 +173,11 @@ func (s *Syncer) syncAppPipelineDefinition(
 		return
 	}
 
-	// Translate providers for the destination. The config source may also be the
-	// repo-less "circleci" provider (config stored in CircleCI).
-	configProvider := def.ConfigSource.Provider
-	if configProvider != "circleci" {
-		var ok bool
-		if configProvider, ok = translateSourceProvider(def.ConfigSource.Provider); !ok {
-			report.add("project-pipeline-def", defTarget, "manual",
-				fmt.Sprintf("config source provider %q cannot be recreated on a GitHub App destination — create the pipeline definition manually", def.ConfigSource.Provider))
-			return
-		}
-	}
-	checkoutProvider, ok := translateSourceProvider(def.CheckoutSource.Provider)
-	if !ok {
-		report.add("project-pipeline-def", defTarget, "manual",
-			fmt.Sprintf("checkout source provider %q cannot be recreated on a GitHub App destination — create the pipeline definition manually", def.CheckoutSource.Provider))
-		return
-	}
-
-	// Resolve the external_id for config and checkout sources.
-	var configExtID string
-	if configProvider != "circleci" {
-		if configExtID, ok = resolve(defTarget+"/config",
-			def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID); !ok {
-			return
-		}
-	}
-	checkoutExtID, ok := resolve(defTarget+"/checkout",
-		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID)
+	spec, ok := s.buildDefinitionSpec(ctx, report, defTarget, def, resolve, mapping, opts, false)
 	if !ok {
 		return
 	}
-
-	// Preserve a custom config file_path; only default when none was captured.
-	filePath := def.ConfigSource.FilePath
-	if filePath == "" {
-		filePath = synthConfigPath
-	}
-
-	spec := project.PipelineDefinitionSpec{
-		Name:               def.Name,
-		Description:        def.Description,
-		ConfigProvider:     configProvider,
-		ConfigExternalID:   configExtID,
-		ConfigFilePath:     filePath,
-		CheckoutProvider:   checkoutProvider,
-		CheckoutExternalID: checkoutExtID,
-	}
+	configExtID, checkoutExtID, filePath := spec.ConfigExternalID, spec.CheckoutExternalID, spec.ConfigFilePath
 
 	// Dry-run or no real project yet (preflight resolve pass): record intent only.
 	if !opts.Apply || projectID == "" {
@@ -251,8 +223,134 @@ func (s *Syncer) syncAppPipelineDefinition(
 	s.syncAppTriggers(ctx, report, projectName, projectID, def, defID, nil, resolve, opts, synth)
 }
 
+// buildDefinitionSpec translates a captured definition into the create request:
+// providers are translated for the GitHub App destination and the config and
+// checkout repo external ids are resolved.
+//
+// soft is the compare-only mode used for a definition that already exists in the
+// destination: nothing is recorded for an untranslatable provider (the caller
+// just skips the comparison), and an external id that cannot be obtained without
+// a GitHub token is left empty (unknown) instead of recording a "manual" action —
+// a re-run for existing projects must not demand a token it does not need. In the
+// strict (create) mode a failure records the action and returns ok=false.
+func (s *Syncer) buildDefinitionSpec(
+	ctx context.Context,
+	report *Report,
+	defTarget string,
+	def manifest.PipelineDefinition,
+	resolve extIDResolver,
+	mapping *manifest.Mapping,
+	opts Options,
+	soft bool,
+) (project.PipelineDefinitionSpec, bool) {
+	// Translate providers for the destination. The config source may also be the
+	// repo-less "circleci" provider (config stored in CircleCI).
+	configProvider := def.ConfigSource.Provider
+	if configProvider != "circleci" {
+		var ok bool
+		if configProvider, ok = translateSourceProvider(def.ConfigSource.Provider); !ok {
+			if !soft {
+				report.add("project-pipeline-def", defTarget, "manual",
+					fmt.Sprintf("config source provider %q cannot be recreated on a GitHub App destination — create the pipeline definition manually", def.ConfigSource.Provider))
+			}
+			return project.PipelineDefinitionSpec{}, false
+		}
+	}
+	checkoutProvider, ok := translateSourceProvider(def.CheckoutSource.Provider)
+	if !ok {
+		if !soft {
+			report.add("project-pipeline-def", defTarget, "manual",
+				fmt.Sprintf("checkout source provider %q cannot be recreated on a GitHub App destination — create the pipeline definition manually", def.CheckoutSource.Provider))
+		}
+		return project.PipelineDefinitionSpec{}, false
+	}
+
+	// Resolve the external_id for config and checkout sources.
+	resolveID := func(sub string, src manifest.PipelineSource) (string, bool) {
+		if !soft {
+			return resolve(defTarget+sub, src.RepoFullName, src.RepoExternalID)
+		}
+		// Compare-only: reuse a captured id when the GitHub org is unchanged;
+		// otherwise ask GitHub only when a token is available.
+		if src.RepoExternalID != "" && s.mapRepoFullName(ctx, src.RepoFullName, mapping, opts) == src.RepoFullName {
+			return src.RepoExternalID, true
+		}
+		if opts.GitHubToken == "" {
+			return "", true // unknown: skip the comparison
+		}
+		id, ok := resolve(defTarget+sub, src.RepoFullName, src.RepoExternalID)
+		if !ok {
+			return "", true
+		}
+		return id, true
+	}
+
+	var configExtID string
+	if configProvider != "circleci" {
+		if configExtID, ok = resolveID("/config", def.ConfigSource); !ok {
+			return project.PipelineDefinitionSpec{}, false
+		}
+	}
+	checkoutExtID, ok := resolveID("/checkout", def.CheckoutSource)
+	if !ok {
+		return project.PipelineDefinitionSpec{}, false
+	}
+
+	// Preserve a custom config file_path; only default when none was captured.
+	filePath := def.ConfigSource.FilePath
+	if filePath == "" {
+		filePath = synthConfigPath
+	}
+
+	return project.PipelineDefinitionSpec{
+		Name:               def.Name,
+		Description:        def.Description,
+		ConfigProvider:     configProvider,
+		ConfigExternalID:   configExtID,
+		ConfigFilePath:     filePath,
+		CheckoutProvider:   checkoutProvider,
+		CheckoutExternalID: checkoutExtID,
+	}, true
+}
+
+// diffDestDefinition lists how an existing destination definition differs from
+// the definition the manifest would create (want): provider, repo external id
+// and config file_path of the config and checkout sources. An external id that
+// is unknown on either side is not compared. Empty result: they match.
+func diffDestDefinition(dest project.PipelineDefinition, want project.PipelineDefinitionSpec) []string {
+	var diffs []string
+	add := func(what, got, exp string) {
+		diffs = append(diffs, fmt.Sprintf("%s: destination %q, expected %q", what, got, exp))
+	}
+	if dest.ConfigSource.Provider != want.ConfigProvider {
+		add("config source provider", dest.ConfigSource.Provider, want.ConfigProvider)
+	}
+	if want.ConfigProvider != "circleci" {
+		if want.ConfigExternalID != "" && dest.ConfigSource.Repo.ExternalID != "" &&
+			dest.ConfigSource.Repo.ExternalID != want.ConfigExternalID {
+			add("config source repo external_id", dest.ConfigSource.Repo.ExternalID, want.ConfigExternalID)
+		}
+		if dest.ConfigSource.FilePath != want.ConfigFilePath {
+			add("config file_path", dest.ConfigSource.FilePath, want.ConfigFilePath)
+		}
+	}
+	if dest.CheckoutSource.Provider != want.CheckoutProvider {
+		add("checkout source provider", dest.CheckoutSource.Provider, want.CheckoutProvider)
+	}
+	if want.CheckoutExternalID != "" && dest.CheckoutSource.Repo.ExternalID != "" &&
+		dest.CheckoutSource.Repo.ExternalID != want.CheckoutExternalID {
+		add("checkout source repo external_id", dest.CheckoutSource.Repo.ExternalID, want.CheckoutExternalID)
+	}
+	return diffs
+}
+
 // syncAppTriggers reconciles every captured trigger of a definition against the
 // destination's existing triggers (destTriggers; empty for a new definition).
+//
+// By default only triggers CREATED in this run (and enabled in the source) are
+// queued for the enable-builds step. An existing destination trigger is queued
+// only with Options.EnableExistingTriggers, so a re-run never re-enables a
+// trigger an operator deliberately disabled.
 func (s *Syncer) syncAppTriggers(
 	ctx context.Context,
 	report *Report,
@@ -264,20 +362,24 @@ func (s *Syncer) syncAppTriggers(
 	opts Options,
 	synth bool,
 ) {
-	used := make([]bool, len(destTriggers))
-	for _, trig := range def.Triggers {
+	providers := make([]string, len(def.Triggers))
+	for i, trig := range def.Triggers {
+		providers[i], _ = translateTriggerProvider(trig.EventSource.Provider)
+	}
+	matches := matchDestTriggers(def.Triggers, providers, destTriggers)
+
+	for i, trig := range def.Triggers {
 		target := projectName + "/def:" + def.Name + "/trigger:" + trig.Name
 
-		provider, ok := translateTriggerProvider(trig.EventSource.Provider)
-		if !ok {
+		provider := providers[i]
+		if provider == "" {
 			report.add("project-trigger", target, "manual",
 				fmt.Sprintf("trigger %q has unsupported provider %q — recreate manually", trig.Name, trig.EventSource.Provider))
 			continue
 		}
 
-		if i := matchDestTrigger(trig, provider, destTriggers, used); i >= 0 {
-			used[i] = true
-			s.reconcileExistingTrigger(report, projectID, target, trig, destTriggers[i], opts)
+		if m := matches[i]; m >= 0 {
+			s.reconcileExistingTrigger(report, projectID, projectName, def.Name, target, trig, destTriggers[m], opts)
 			continue
 		}
 
@@ -289,6 +391,7 @@ func (s *Syncer) syncAppTriggers(
 		// Dry-run or no real definition yet (preflight resolve pass): record intent only.
 		if !opts.Apply || defID == "" {
 			report.add("project-trigger", target, "created", wouldCreateTriggerDetail(synth, trig, spec))
+			noteScheduleParams(report, target, trig)
 			continue
 		}
 
@@ -303,38 +406,73 @@ func (s *Syncer) syncAppTriggers(
 				fmt.Sprintf("webhook trigger %q was recreated with a NEW URL and secret — fetch it from the destination "+
 					"project's trigger and redistribute it to the sender%s", trig.Name, senderSuffix(trig)))
 		}
+		unverified := noteScheduleParams(report, target, trig)
 
 		// Only triggers that were enabled in the source are enabled at the
-		// enable-builds step; a trigger disabled in the source stays disabled.
-		if !trig.Disabled {
+		// enable-builds step; a trigger disabled in the source stays disabled. A
+		// schedule trigger whose parameters were not captured is never
+		// auto-enabled: it could run with the wrong pipeline parameters.
+		if !trig.Disabled && !unverified {
 			report.PendingEnable = append(report.PendingEnable, EnableTarget{
-				Kind:      "trigger",
-				ProjectID: projectID,
-				TriggerID: trigID,
+				Kind:        "trigger",
+				ProjectID:   projectID,
+				ProjectName: projectName,
+				DefName:     def.Name,
+				TriggerID:   trigID,
 			})
 		}
 	}
 }
 
-// reconcileExistingTrigger records an already-present trigger and, when the
-// source trigger was enabled but the destination's is still disabled (created
-// disabled by an earlier run that never reached the enable step), queues it for
-// the enable-builds step.
-func (s *Syncer) reconcileExistingTrigger(report *Report, projectID, target string, trig manifest.Trigger, dest project.Trigger, opts Options) {
+// noteScheduleParams records a "manual" note for a schedule trigger whose
+// pipeline parameters are absent from the manifest (an older export, or a
+// schedule that really has none — the manifest cannot tell them apart) and
+// reports whether it did. Such a trigger is created, but never auto-enabled.
+func noteScheduleParams(report *Report, target string, trig manifest.Trigger) bool {
+	if trig.EventSource.Provider != "schedule" || len(trig.Parameters) > 0 {
+		return false
+	}
+	report.add("project-trigger", target+"/parameters", "manual", fmt.Sprintf(
+		"schedule trigger %q has no pipeline parameters in the manifest (an older export may not have captured them) — "+
+			"verify the destination trigger's parameters against the source schedule, then enable it by hand; "+
+			"it is not enabled automatically", trig.Name))
+	return true
+}
+
+// reconcileExistingTrigger records an already-present trigger. When the source
+// trigger was enabled but the destination's is disabled, it is queued for the
+// enable-builds step ONLY when Options.EnableExistingTriggers is set — otherwise
+// the destination's state is left alone (an operator may have disabled it on
+// purpose) and the report says how to enable it.
+func (s *Syncer) reconcileExistingTrigger(report *Report, projectID, projectName, defName, target string, trig manifest.Trigger, dest project.Trigger, opts Options) {
 	if !dest.Disabled || trig.Disabled {
 		report.add("project-trigger", target, "exists", "trigger already exists")
 		return
 	}
-	if !opts.Apply {
+	which := fmt.Sprintf("trigger %s (definition %q)", dest.ID, defName)
+	if !opts.EnableExistingTriggers {
 		report.add("project-trigger", target, "exists",
-			"trigger exists but is disabled — would be queued for enable-builds on --apply")
+			which+" exists but is disabled in the destination — left disabled; pass --enable-existing-triggers to enable it")
 		return
 	}
-	report.add("project-trigger", target, "exists", "trigger exists but is disabled — queuing for enable-builds")
+	if noteScheduleParams(report, target, trig) {
+		report.add("project-trigger", target, "exists",
+			which+" exists but is disabled — not queued for enable (schedule parameters unverified)")
+		return
+	}
+	if !opts.Apply {
+		report.add("project-trigger", target, "exists",
+			which+" exists but is disabled — would be queued for enable-builds on --apply (--enable-existing-triggers)")
+		return
+	}
+	report.add("project-trigger", target, "exists",
+		which+" exists but is disabled — queuing for enable-builds (--enable-existing-triggers)")
 	report.PendingEnable = append(report.PendingEnable, EnableTarget{
-		Kind:      "trigger",
-		ProjectID: projectID,
-		TriggerID: dest.ID,
+		Kind:        "trigger",
+		ProjectID:   projectID,
+		ProjectName: projectName,
+		DefName:     defName,
+		TriggerID:   dest.ID,
 	})
 }
 
@@ -350,39 +488,83 @@ func translateTriggerProvider(provider string) (string, bool) {
 	return "", false
 }
 
-// matchDestTrigger finds the unused destination trigger corresponding to src.
-// A trigger's name is assigned by CircleCI (the create API takes none), so it is
-// tried first only among triggers of the same provider; otherwise the trigger's
-// defining fields are compared (preset/refs for repo triggers, event name +
-// sender for webhooks, event name + cron for schedules). Returns -1 when none.
-func matchDestTrigger(src manifest.Trigger, provider string, dest []project.Trigger, used []bool) int {
-	if src.Name != "" {
-		for i, d := range dest {
-			if !used[i] && d.EventSource.Provider == provider && d.Name == src.Name {
-				return i
+// matchDestTriggers pairs each captured trigger with the destination trigger it
+// corresponds to (an index into dest, or -1 when none). A trigger's name is
+// assigned by CircleCI (the create API takes none), so matching is by content,
+// in two passes so a re-run never swaps look-alike triggers or duplicates one:
+//
+//  1. EXACT: provider, preset, event name, checkout_ref, config_ref, cron,
+//     schedule parameters, webhook sender and disabled state all agree;
+//  2. LOOSE, for the leftovers only: same name (and the same provider and
+//     preset), else the same defining fields ignoring disabled state and
+//     parameters (an operator may have toggled it).
+//
+// An empty source checkout_ref / config_ref / parameters is a wildcard: the API
+// may echo defaults the manifest did not capture. providers[i] is the translated
+// provider of src[i], or "" when unsupported (never matched).
+func matchDestTriggers(src []manifest.Trigger, providers []string, dest []project.Trigger) []int {
+	match := make([]int, len(src))
+	for i := range match {
+		match[i] = -1
+	}
+	used := make([]bool, len(dest))
+
+	pass := func(equal func(s manifest.Trigger, provider string, d project.Trigger) bool) {
+		for i, s := range src {
+			if match[i] >= 0 || providers[i] == "" {
+				continue
+			}
+			for j, d := range dest {
+				if used[j] || d.EventSource.Provider != providers[i] || !equal(s, providers[i], d) {
+					continue
+				}
+				match[i], used[j] = j, true
+				break
 			}
 		}
 	}
-	for i, d := range dest {
-		if used[i] || d.EventSource.Provider != provider {
-			continue
-		}
-		switch provider {
-		case "webhook":
-			if d.EventName == src.EventName && d.EventSource.Webhook.Sender == src.EventSource.WebhookSender {
-				return i
-			}
-		case "schedule":
-			if d.EventName == src.EventName && d.EventSource.Schedule.CronExpression == src.EventSource.ScheduleCron {
-				return i
-			}
-		default:
-			if d.EventPreset == src.EventPreset && d.CheckoutRef == src.CheckoutRef && d.ConfigRef == src.ConfigRef {
-				return i
-			}
-		}
+
+	pass(func(s manifest.Trigger, provider string, d project.Trigger) bool {
+		return triggerFieldsMatch(s, provider, d) && s.Disabled == d.Disabled &&
+			(len(s.Parameters) == 0 || parametersEqual(s.Parameters, d.Parameters))
+	})
+	pass(func(s manifest.Trigger, _ string, d project.Trigger) bool {
+		return s.Name != "" && d.Name == s.Name && d.EventPreset == s.EventPreset
+	})
+	pass(triggerFieldsMatch)
+	return match
+}
+
+// triggerFieldsMatch compares a captured trigger's defining fields with a
+// destination trigger of the same provider: preset and refs for repo triggers,
+// event name, sender and refs for webhooks, event name, cron and refs for
+// schedules. Empty source refs are wildcards.
+func triggerFieldsMatch(s manifest.Trigger, provider string, d project.Trigger) bool {
+	if !refMatches(s.CheckoutRef, d.CheckoutRef) || !refMatches(s.ConfigRef, d.ConfigRef) {
+		return false
 	}
-	return -1
+	switch provider {
+	case "webhook":
+		return d.EventName == s.EventName && d.EventSource.Webhook.Sender == s.EventSource.WebhookSender
+	case "schedule":
+		return d.EventName == s.EventName && d.EventSource.Schedule.CronExpression == s.EventSource.ScheduleCron
+	default:
+		return d.EventPreset == s.EventPreset
+	}
+}
+
+// refMatches reports whether a destination ref satisfies a source ref; an empty
+// source ref matches anything (the server may fill in a default).
+func refMatches(src, dest string) bool {
+	return src == "" || src == dest
+}
+
+// parametersEqual compares pipeline-parameter maps, treating nil and empty alike.
+func parametersEqual(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // buildTriggerSpec builds the create request for a captured trigger, carrying

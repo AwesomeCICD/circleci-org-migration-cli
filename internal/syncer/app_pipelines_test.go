@@ -48,7 +48,17 @@ func (d *destPipelines) writer() *fakeProjectWriter {
 			d.n++
 			id := fmt.Sprintf("def-%d", d.n)
 			d.defSpecs = append(d.defSpecs, spec)
-			d.defs = append(d.defs, project.PipelineDefinition{ID: id, Name: spec.Name})
+			d.defs = append(d.defs, project.PipelineDefinition{
+				ID: id, Name: spec.Name,
+				ConfigSource: project.PipelineSource{
+					Provider: spec.ConfigProvider, FilePath: spec.ConfigFilePath,
+					Repo: project.PipelineSourceRepo{ExternalID: spec.ConfigExternalID},
+				},
+				CheckoutSource: project.PipelineSource{
+					Provider: spec.CheckoutProvider,
+					Repo:     project.PipelineSourceRepo{ExternalID: spec.CheckoutExternalID},
+				},
+			})
 			return id, nil
 		},
 		createTrigger: func(_, defID string, spec project.TriggerSpec) (string, error) {
@@ -63,6 +73,7 @@ func (d *destPipelines) writer() *fakeProjectWriter {
 			}
 			t.EventSource.Webhook.Sender = spec.WebhookSender
 			t.EventSource.Schedule.CronExpression = spec.CronExpression
+			t.Parameters = spec.Parameters
 			d.triggers[defID] = append(d.triggers[defID], t)
 			return id, nil
 		},
@@ -75,6 +86,22 @@ func (d *destPipelines) writer() *fakeProjectWriter {
 				}
 			}
 			return nil
+		},
+	}
+}
+
+// existingDef is a destination definition that matches appManifestProject's
+// "default" definition (github_app, repo id 12345, .circleci/config.yml).
+func existingDef(id string) project.PipelineDefinition {
+	return project.PipelineDefinition{
+		ID: id, Name: "default",
+		ConfigSource: project.PipelineSource{
+			Provider: "github_app", FilePath: ".circleci/config.yml",
+			Repo: project.PipelineSourceRepo{ExternalID: "12345"},
+		},
+		CheckoutSource: project.PipelineSource{
+			Provider: "github_app",
+			Repo:     project.PipelineSourceRepo{ExternalID: "12345"},
 		},
 	}
 }
@@ -182,10 +209,10 @@ func TestReconcile_SecondRun_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestReconcile_RerunEnablesExistingDisabledTrigger: a previous run created the
-// trigger disabled but never reached the enable step; a re-run queues it so
-// `sync --apply --yes` enables builds.
-func TestReconcile_RerunEnablesExistingDisabledTrigger(t *testing.T) {
+// TestReconcile_RerunDoesNotReEnableExistingDisabledTrigger: by default a re-run
+// leaves an existing disabled destination trigger alone (an operator may have
+// disabled it on purpose) and says how to enable it.
+func TestReconcile_RerunDoesNotReEnableExistingDisabledTrigger(t *testing.T) {
 	failOnGitHub(t)
 	d := &destPipelines{}
 	fp := d.writer()
@@ -195,19 +222,88 @@ func TestReconcile_RerunEnablesExistingDisabledTrigger(t *testing.T) {
 	runApply(t, sy, m, Options{Apply: true}) // creates disabled; enable step skipped
 
 	rep2 := runApply(t, sy, m, Options{Apply: true})
-	if len(rep2.PendingEnable) != 1 || rep2.PendingEnable[0].TriggerID != "trig-2" {
-		t.Fatalf("re-run must queue the existing disabled trigger, got %+v", rep2.PendingEnable)
+	if len(rep2.PendingEnable) != 0 {
+		t.Fatalf("re-run must NOT queue an existing disabled trigger by default, got %+v", rep2.PendingEnable)
+	}
+	var hinted bool
+	for _, a := range actionsOfKind(rep2, "project-trigger") {
+		if a.Status == "exists" && strings.Contains(a.Detail, "--enable-existing-triggers") &&
+			strings.Contains(a.Detail, "trig-2") && strings.Contains(a.Detail, `"default"`) {
+			hinted = true
+		}
+	}
+	if !hinted {
+		t.Errorf("the exists action must name the trigger id, definition and the opt-in flag: %+v", rep2.Actions)
 	}
 	if len(d.trigSpecs) != 1 {
 		t.Errorf("re-run must not create a duplicate trigger, got %d", len(d.trigSpecs))
 	}
-	enableAll(t, sy, rep2)
+}
+
+// TestReconcile_EnableExistingTriggers_QueuesDisabledExisting: with the opt-in
+// option, a re-run queues the existing disabled trigger (with its id and
+// definition name) so the enable-builds step turns it on.
+func TestReconcile_EnableExistingTriggers_QueuesDisabledExisting(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	fp := d.writer()
+	sy := newSyncerAppProjects(fp)
+	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
+
+	runApply(t, sy, m, Options{Apply: true}) // creates disabled; enable step skipped
+
+	rep2 := runApply(t, sy, m, Options{Apply: true, EnableExistingTriggers: true})
+	if len(rep2.PendingEnable) != 1 || rep2.PendingEnable[0].TriggerID != "trig-2" ||
+		rep2.PendingEnable[0].DefName != "default" || rep2.PendingEnable[0].ProjectName != "web" {
+		t.Fatalf("re-run with --enable-existing-triggers must queue the existing disabled trigger, got %+v", rep2.PendingEnable)
+	}
+	if len(d.trigSpecs) != 1 {
+		t.Errorf("re-run must not create a duplicate trigger, got %d", len(d.trigSpecs))
+	}
+	act, err := sy.EnableBuilds(context.Background(), rep2.PendingEnable[0], true)
+	if err != nil {
+		t.Fatalf("EnableBuilds: %v", err)
+	}
+	if !strings.Contains(act.Detail, "trig-2") || !strings.Contains(act.Detail, `"default"`) {
+		t.Errorf("enable output must name the trigger id and definition: %+v", act)
+	}
 	if d.triggers["def-1"][0].Disabled {
 		t.Error("trigger should be enabled after the re-run's enable step")
 	}
 	// ...and a third run is again a no-op.
-	if rep3 := runApply(t, sy, m, Options{Apply: true}); len(rep3.PendingEnable) != 0 {
+	if rep3 := runApply(t, sy, m, Options{Apply: true, EnableExistingTriggers: true}); len(rep3.PendingEnable) != 0 {
 		t.Errorf("third run must queue nothing, got %+v", rep3.PendingEnable)
+	}
+}
+
+// TestReconcile_EnableExistingTriggers_DryRunDoesNotQueue: a dry run only
+// reports what would be queued.
+func TestReconcile_EnableExistingTriggers_DryRunDoesNotQueue(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	fp := d.writer()
+	sy := newSyncerAppProjects(fp)
+	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
+	runApply(t, sy, m, Options{Apply: true})
+
+	rep := runApply(t, sy, m, Options{Apply: false, EnableExistingTriggers: true})
+	if len(rep.PendingEnable) != 0 {
+		t.Errorf("dry run must not queue enables, got %+v", rep.PendingEnable)
+	}
+}
+
+// TestReconcile_NewTriggerOnExistingDef_StillQueuedByDefault: a trigger created
+// in THIS run is queued without the opt-in flag.
+func TestReconcile_NewTriggerOnExistingDef_StillQueuedByDefault(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
+	sy := newSyncerAppProjects(d.writer())
+	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
+
+	rep := runApply(t, sy, m, Options{Apply: true})
+	if len(rep.PendingEnable) != 1 || rep.PendingEnable[0].DefName != "default" {
+		t.Errorf("a trigger created in this run must be queued, got %+v", rep.PendingEnable)
 	}
 }
 
@@ -242,7 +338,7 @@ func TestReconcile_HalfCreatedProject_Repaired(t *testing.T) {
 func TestReconcile_DefExistsTriggerMissing(t *testing.T) {
 	failOnGitHub(t)
 	d := &destPipelines{}
-	d.defs = []project.PipelineDefinition{{ID: "def-x", Name: "default"}}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
 	fp := d.writer()
 	sy := newSyncerAppProjects(fp)
 	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
@@ -266,7 +362,7 @@ func TestReconcile_DefExistsTriggerMissing(t *testing.T) {
 func TestReconcile_TriggerMatchedByFieldsWhenNameDiffers(t *testing.T) {
 	failOnGitHub(t)
 	d := &destPipelines{}
-	d.defs = []project.PipelineDefinition{{ID: "def-x", Name: "default"}}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
 	fp := d.writer()
 	d.triggers["def-x"] = []project.Trigger{{
 		ID: "t-1", Name: "something-else", Disabled: false, EventPreset: "all-pushes",
@@ -290,7 +386,7 @@ func TestReconcile_TriggerMatchedByFieldsWhenNameDiffers(t *testing.T) {
 func TestReconcile_DryRun_ReportsWouldCreateAndExists(t *testing.T) {
 	failOnGitHub(t)
 	d := &destPipelines{}
-	d.defs = []project.PipelineDefinition{{ID: "def-x", Name: "default"}}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
 	fp := d.writer()
 	sy := newSyncerAppProjects(fp)
 
@@ -688,5 +784,171 @@ func TestCountSynthesizedProjects(t *testing.T) {
 	)
 	if got := CountSynthesizedProjects(m); got != 2 {
 		t.Errorf("CountSynthesizedProjects = %d, want 2", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C. Trigger matching, schedule parameters, definition comparison
+// ---------------------------------------------------------------------------
+
+func scheduleTrig(name, cron string, disabled bool, params map[string]any) manifest.Trigger {
+	return manifest.Trigger{
+		Name: name, EventName: "nightly", CheckoutRef: "main", ConfigRef: "main",
+		Disabled: disabled, Parameters: params,
+		EventSource: manifest.TriggerEventSource{Provider: "schedule", ScheduleCron: cron},
+	}
+}
+
+func destSchedule(id string, disabled bool, cron string, params map[string]any) project.Trigger {
+	return project.Trigger{
+		ID: id, Name: "srv-" + id, EventName: "nightly", CheckoutRef: "main", ConfigRef: "main",
+		Disabled: disabled, Parameters: params,
+		EventSource: project.TriggerEventSource{
+			Provider: "schedule", Schedule: project.TriggerEventSourceSchedule{CronExpression: cron},
+		},
+	}
+}
+
+// TestMatchDestTriggers_SameCronEnabledAndDisabled_DoNotSwap: two schedule
+// triggers with the same cron — one enabled, one disabled — are matched to the
+// destination triggers in the same state regardless of order.
+func TestMatchDestTriggers_SameCronEnabledAndDisabled_DoNotSwap(t *testing.T) {
+	params := map[string]any{"env": "x"}
+	src := []manifest.Trigger{
+		scheduleTrig("b", "0 3 * * *", true, params),  // disabled
+		scheduleTrig("a", "0 3 * * *", false, params), // enabled
+	}
+	dest := []project.Trigger{
+		destSchedule("t-enabled", false, "0 3 * * *", params),
+		destSchedule("t-disabled", true, "0 3 * * *", params),
+	}
+	got := matchDestTriggers(src, []string{"schedule", "schedule"}, dest)
+	if got[0] != 1 || got[1] != 0 {
+		t.Errorf("disabled src must match the disabled dest and enabled the enabled: got %v", got)
+	}
+}
+
+// TestReconcile_SameCronSchedules_NoSwapNoEnableOfDisabled: end to end — the
+// operator-disabled schedule is not queued for enable, even with the opt-in.
+func TestReconcile_SameCronSchedules_NoSwapNoEnableOfDisabled(t *testing.T) {
+	failOnGitHub(t)
+	params := map[string]any{"env": "x"}
+	d := &destPipelines{}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
+	fp := d.writer()
+	d.triggers["def-x"] = []project.Trigger{
+		destSchedule("t-enabled", false, "0 3 * * *", params),
+		destSchedule("t-disabled", true, "0 3 * * *", params),
+	}
+	sy := newSyncerAppProjects(fp)
+	p := appManifestProject("web", "circleci/o/p", "12345", "all-pushes")
+	p.PipelineDefinitions[0].Triggers = []manifest.Trigger{
+		scheduleTrig("b", "0 3 * * *", true, params),
+		scheduleTrig("a", "0 3 * * *", false, params),
+	}
+	rep := runApply(t, sy, projectManifest("circleci/o", p), Options{Apply: true, EnableExistingTriggers: true})
+
+	if fp.hasCalled("CreateTrigger") {
+		t.Error("both schedules already exist; nothing may be created")
+	}
+	if len(rep.PendingEnable) != 0 {
+		t.Errorf("the enabled one is already enabled and the disabled one is disabled in the source: got %+v", rep.PendingEnable)
+	}
+}
+
+// TestReconcile_ServerEchoedDefaultRefs_NoDuplicate: the manifest has no
+// checkout_ref/config_ref (wildcards) but the server echoes defaults — a re-run
+// must match, not create a duplicate.
+func TestReconcile_ServerEchoedDefaultRefs_NoDuplicate(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	d.defs = []project.PipelineDefinition{existingDef("def-x")}
+	fp := d.writer()
+	d.triggers["def-x"] = []project.Trigger{{
+		ID: "t-1", Name: "srv", EventPreset: "all-pushes", CheckoutRef: "refs/heads/main", ConfigRef: "refs/heads/main",
+		EventSource: project.TriggerEventSource{Provider: "github_app"},
+	}}
+	sy := newSyncerAppProjects(fp)
+	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
+
+	rep := runApply(t, sy, m, Options{Apply: true})
+	if fp.hasCalled("CreateTrigger") {
+		t.Error("server-echoed default refs must match (empty source refs are wildcards); no duplicate")
+	}
+	if statusCount(rep, "project-trigger", "exists") != 1 {
+		t.Errorf("want the trigger reported as exists: %+v", rep.Actions)
+	}
+}
+
+// TestMatchDestTriggers_NameMatchRequiresProviderAndPreset: a destination
+// trigger that merely shares the name is not matched.
+func TestMatchDestTriggers_NameMatchRequiresProviderAndPreset(t *testing.T) {
+	src := []manifest.Trigger{{Name: "push", EventPreset: "all-pushes", EventSource: manifest.TriggerEventSource{Provider: "github_app"}}}
+	dest := []project.Trigger{
+		{ID: "w", Name: "push", EventName: "x", EventSource: project.TriggerEventSource{Provider: "webhook"}},
+		{ID: "p", Name: "push", EventPreset: "only-build-prs", EventSource: project.TriggerEventSource{Provider: "github_app"}},
+	}
+	if got := matchDestTriggers(src, []string{"github_app"}, dest); got[0] != -1 {
+		t.Errorf("same name but different provider/preset must not match, got %v", got)
+	}
+}
+
+// TestRecreate_ScheduleNoParameters_ManualNoteAndNotEnabled: a schedule trigger
+// with no captured parameters is created, noted for verification, and not
+// queued for enable.
+func TestRecreate_ScheduleNoParameters_ManualNoteAndNotEnabled(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	sy := newSyncerAppProjects(d.writer())
+	p := appManifestProject("web", "circleci/o/p", "42", "all-pushes")
+	p.PipelineDefinitions[0].Triggers = []manifest.Trigger{
+		scheduleTrig("nightly", "0 9 * * 1-5", false, nil),
+		scheduleTrig("with-params", "0 10 * * 1-5", false, map[string]any{"k": "v"}),
+	}
+	rep := runApply(t, sy, projectManifest("circleci/o", p), Options{Apply: true})
+
+	if len(d.trigSpecs) != 2 {
+		t.Fatalf("both schedules must be created, got %d", len(d.trigSpecs))
+	}
+	var note bool
+	for _, a := range actionsOfKind(rep, "project-trigger") {
+		if a.Status == "manual" && strings.Contains(a.Target, "nightly/parameters") && strings.Contains(a.Detail, "parameters") {
+			note = true
+		}
+		if a.Status == "manual" && strings.Contains(a.Target, "with-params") {
+			t.Errorf("a schedule with parameters needs no note: %+v", a)
+		}
+	}
+	if !note {
+		t.Errorf("expected a manual parameters note: %+v", rep.Actions)
+	}
+	if len(rep.PendingEnable) != 1 {
+		t.Fatalf("only the schedule with parameters may be queued, got %+v", rep.PendingEnable)
+	}
+}
+
+// TestReconcile_ExistingDefDiffers_ManualNotExists: a definition matched by name
+// whose file_path / repo / provider differ is reported manual (not exists), is
+// not modified and its triggers are not reconciled.
+func TestReconcile_ExistingDefDiffers_ManualNotExists(t *testing.T) {
+	failOnGitHub(t)
+	d := &destPipelines{}
+	other := existingDef("def-x")
+	other.ConfigSource.FilePath = ".circleci/other.yml"
+	other.CheckoutSource.Repo.ExternalID = "99999"
+	d.defs = []project.PipelineDefinition{other}
+	fp := d.writer()
+	sy := newSyncerAppProjects(fp)
+	m := projectManifest("gh/acme", appManifestProject("web", "gh/acme/web", "12345", "all-pushes"))
+
+	rep := runApply(t, sy, m, Options{Apply: true, EnableExistingTriggers: true})
+
+	defs := actionsOfKind(rep, "project-pipeline-def")
+	if len(defs) != 1 || defs[0].Status != "manual" ||
+		!strings.Contains(defs[0].Detail, ".circleci/other.yml") || !strings.Contains(defs[0].Detail, "99999") {
+		t.Fatalf("want one manual action listing the differences, got %+v", defs)
+	}
+	if fp.hasCalled("CreateTrigger") || fp.hasCalled("CreatePipelineDefinition") || fp.hasCalled("ListTriggers") {
+		t.Error("a mismatched definition must not be modified or have its triggers reconciled")
 	}
 }

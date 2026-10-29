@@ -432,12 +432,16 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 	switch t.Kind {
 	case "trigger":
 		target := t.ProjectID + "/trigger/" + t.TriggerID
+		if t.ProjectName != "" {
+			target = t.ProjectName + "/trigger/" + t.TriggerID
+		}
+		label := triggerEnableLabel(t)
 		if !apply {
 			return Action{
 				Kind:   "project",
 				Target: target,
 				Status: "manual",
-				Detail: "would enable trigger (set disabled=false)",
+				Detail: "would enable " + label + " (set disabled=false)",
 			}, nil
 		}
 		if err := s.Projects.EnableTrigger(ctx, t.ProjectID, t.TriggerID); err != nil {
@@ -445,14 +449,14 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 				Kind:   "project",
 				Target: target,
 				Status: "error",
-				Detail: fmt.Sprintf("enable trigger: %v", err),
+				Detail: fmt.Sprintf("enable %s: %v", label, err),
 			}, err
 		}
 		return Action{
 			Kind:   "project",
 			Target: target,
 			Status: "set",
-			Detail: "enabled trigger (disabled=false)",
+			Detail: "enabled " + label + " (disabled=false)",
 		}, nil
 	default: // "follow" or legacy empty Kind
 		if !apply {
@@ -479,6 +483,15 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 			Detail: "enabled builds (followed)",
 		}, nil
 	}
+}
+
+// triggerEnableLabel names a trigger enable target for output: its id and, when
+// known, its pipeline definition.
+func triggerEnableLabel(t EnableTarget) string {
+	if t.DefName != "" {
+		return fmt.Sprintf("trigger %s (definition %q)", t.TriggerID, t.DefName)
+	}
+	return "trigger " + t.TriggerID
 }
 
 func (s *Syncer) syncProjectSettings(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {
