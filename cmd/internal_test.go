@@ -153,6 +153,63 @@ func TestHandleEnableBuilds_DryRunWithPending_JSONSuppressed(t *testing.T) {
 	}
 }
 
+// fakeEnabler records EnableBuilds calls and fails the targets named in fail.
+type fakeEnabler struct {
+	fail  map[string]bool // TriggerID → fail
+	calls []string
+}
+
+func (f *fakeEnabler) EnableBuilds(_ context.Context, t syncer.EnableTarget, _ bool) (syncer.Action, error) {
+	f.calls = append(f.calls, t.TriggerID)
+	if f.fail[t.TriggerID] {
+		return syncer.Action{Kind: "project", Target: t.TriggerID, Status: "error", Detail: "enable trigger: boom"}, errors.New("boom")
+	}
+	return syncer.Action{Kind: "project", Target: t.TriggerID, Status: "set", Detail: "enabled trigger (disabled=false)"}, nil
+}
+
+// TestHandleEnableBuilds_FailureReturnsError: a failed enable makes the command
+// exit non-zero — but only after every target was attempted and printed.
+func TestHandleEnableBuilds_FailureReturnsError(t *testing.T) {
+	c := internalTestCmd()
+	var errBuf bytes.Buffer
+	c.SetErr(&errBuf)
+	rep := &syncer.Report{PendingEnable: []syncer.EnableTarget{
+		{Kind: "trigger", ProjectID: "p", TriggerID: "t1"},
+		{Kind: "trigger", ProjectID: "p", TriggerID: "t2"},
+		{Kind: "trigger", ProjectID: "p", TriggerID: "t3"},
+	}}
+	fe := &fakeEnabler{fail: map[string]bool{"t2": true}}
+
+	err := handleEnableBuilds(c, fe, rep, true /*apply*/, true /*yes*/, false)
+	if err == nil {
+		t.Fatal("expected a non-nil error when an enable fails")
+	}
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Errorf("error should count failures, got: %v", err)
+	}
+	if len(fe.calls) != 3 {
+		t.Errorf("all targets must be attempted, got calls %v", fe.calls)
+	}
+	out := errBuf.String()
+	for _, want := range []string{"[set] t1", "[error] t2", "[set] t3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("per-target result %q missing from output: %q", want, out)
+		}
+	}
+}
+
+func TestHandleEnableBuilds_AllSucceed_NoError(t *testing.T) {
+	c := internalTestCmd()
+	rep := &syncer.Report{PendingEnable: []syncer.EnableTarget{{Kind: "trigger", ProjectID: "p", TriggerID: "t1"}}}
+	fe := &fakeEnabler{}
+	if err := handleEnableBuilds(c, fe, rep, true, true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fe.calls) != 1 {
+		t.Errorf("want 1 enable call, got %v", fe.calls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // printSyncReport
 // ---------------------------------------------------------------------------
@@ -2162,5 +2219,54 @@ func TestSyncActionLine_FriendlyNameOnly(t *testing.T) {
 	// The format should NOT contain "→" when there is no URL.
 	if !strings.Contains(line, "(api-service)") {
 		t.Errorf("expected '(api-service)' format when no URL, got: %q", line)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// appPipelineFailure / enable plan
+// ---------------------------------------------------------------------------
+
+func TestAppPipelineFailure(t *testing.T) {
+	mk := func(actions ...syncer.Action) map[string]*syncer.Report {
+		return map[string]*syncer.Report{"Projects": {Actions: actions}, "Contexts": nil}
+	}
+	if err := appPipelineFailure(mk(syncer.Action{Kind: "project-trigger", Target: "web/t", Status: "created"})); err != nil {
+		t.Errorf("no error actions: want nil, got %v", err)
+	}
+	// Other kinds keep their exit semantics.
+	if err := appPipelineFailure(mk(syncer.Action{Kind: "project-settings", Target: "x", Status: "error"})); err != nil {
+		t.Errorf("only pipeline-def/trigger errors fail the run, got %v", err)
+	}
+	for _, kind := range []string{"project-pipeline-def", "project-trigger"} {
+		err := appPipelineFailure(mk(syncer.Action{Kind: kind, Target: "web/def:default", Status: "error", Detail: "list destination pipeline definitions: boom"}))
+		if err == nil || !strings.Contains(err.Error(), "web/def:default") {
+			t.Errorf("%s error must fail the run naming the target, got %v", kind, err)
+		}
+	}
+	many := mk(
+		syncer.Action{Kind: "project-trigger", Target: "a", Status: "error"}, syncer.Action{Kind: "project-trigger", Target: "b", Status: "error"},
+		syncer.Action{Kind: "project-trigger", Target: "c", Status: "error"}, syncer.Action{Kind: "project-trigger", Target: "d", Status: "error"})
+	if err := appPipelineFailure(many); err == nil || !strings.Contains(err.Error(), "4 pipeline") || !strings.Contains(err.Error(), "+1 more") {
+		t.Errorf("want a count and truncation, got %v", err)
+	}
+}
+
+// TestHandleEnableBuilds_PrintsTriggerIDAndDefinition: every enable is listed
+// with its trigger id and definition name, in a dry run and when applying.
+func TestHandleEnableBuilds_PrintsTriggerIDAndDefinition(t *testing.T) {
+	rep := &syncer.Report{PendingEnable: []syncer.EnableTarget{
+		{Kind: "trigger", ProjectID: "p", ProjectName: "web", DefName: "release", TriggerID: "trig-77"},
+	}}
+	for _, apply := range []bool{false, true} {
+		c := internalTestCmd()
+		var errBuf bytes.Buffer
+		c.SetErr(&errBuf)
+		if err := handleEnableBuilds(c, &fakeEnabler{}, rep, apply, true, false); err != nil {
+			t.Fatalf("apply=%v: %v", apply, err)
+		}
+		out := errBuf.String()
+		if !strings.Contains(out, "trig-77") || !strings.Contains(out, `"release"`) || !strings.Contains(out, "web") {
+			t.Errorf("apply=%v: want trigger id, definition and project listed, got %q", apply, out)
+		}
 	}
 }

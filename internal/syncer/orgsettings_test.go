@@ -3,9 +3,11 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -600,8 +602,10 @@ func TestSyncOrgSettings_FeatureFlags_WriteError_IsErrorAction(t *testing.T) {
 	}
 }
 
-func TestSyncOrgSettings_FeatureFlags_CircleCIDestSlug_Manual(t *testing.T) {
-	// Destination is a circleci/-type org — feature flags cannot be written via v1.1.
+// TestSyncOrgSettings_FeatureFlags_CircleCIDest_Written verifies that feature
+// flags are now written to circleci/-type (GitHub App) destinations using the
+// ("circleci", "<id>") form of the v1.1 settings endpoint.
+func TestSyncOrgSettings_FeatureFlags_CircleCIDest_Written(t *testing.T) {
 	fw := &fakeOrgSettingsWriter{}
 	sy := newOrgSettingsSyncer(fw)
 
@@ -613,13 +617,100 @@ func TestSyncOrgSettings_FeatureFlags_CircleCIDestSlug_Manual(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	var got *orgSettingsCall
+	for i := range fw.calls {
+		if fw.calls[i].method == "UpdateFeatureFlags" {
+			got = &fw.calls[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("UpdateFeatureFlags must be called for a circleci/-type dest slug")
+	}
+	if len(got.args) != 2 || got.args[0] != "circleci" || got.args[1] != "dest-uuid" {
+		t.Errorf("UpdateFeatureFlags args = %v, want [circleci dest-uuid]", got.args)
+	}
+	if n := len(actionsOfStatus(rep, "manual")); n != 0 {
+		t.Errorf("expected no manual actions, got %d", n)
+	}
+}
 
+// TestSyncOrgSettings_FeatureFlags_CircleCIDest_DryRun verifies a dry run only
+// plans the write.
+func TestSyncOrgSettings_FeatureFlags_CircleCIDest_DryRun(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{}
+	sy := newOrgSettingsSyncer(fw)
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{"allow_private_orbs": true},
+	})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("circleci/dest-uuid"), Options{Apply: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if fw.hasCalled("UpdateFeatureFlags") {
-		t.Error("UpdateFeatureFlags must NOT be called for circleci/-type dest slug")
+		t.Error("UpdateFeatureFlags must not be called in a dry run")
+	}
+	if n := len(actionsOfStatus(rep, "set")); n != 1 {
+		t.Errorf("expected 1 planned 'set' action, got %d", n)
+	}
+}
+
+// TestSyncOrgSettings_FeatureFlags_CircleCIDest_RefusedIsManual verifies a flag
+// the server refuses on a circleci/ org is reported as manual (not error).
+func TestSyncOrgSettings_FeatureFlags_CircleCIDest_RefusedIsManual(t *testing.T) {
+	fw := &fakeOrgSettingsWriter{
+		updateFeatureFlags: func(_, _ string, _ map[string]bool) error {
+			return &rest.HTTPError{Code: 422, Message: "Feature flag is not settable for this organization"}
+		},
+	}
+	sy := newOrgSettingsSyncer(fw)
+	m := orgSettingsManifest(&manifest.OrgSettings{
+		FeatureFlags: map[string]bool{"allow_private_orbs": true},
+	})
+	rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("circleci/dest-uuid"), Options{Apply: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	manual := actionsOfStatus(rep, "manual")
-	if len(manual) != 1 {
-		t.Errorf("expected 1 manual action for circleci/ slug, got %d: %v", len(manual), manual)
+	if len(manual) != 1 || !strings.Contains(manual[0].Detail, "allow_private_orbs") {
+		t.Fatalf("expected 1 manual action naming the flag, got %+v", manual)
+	}
+	if n := len(actionsOfStatus(rep, "error")); n != 0 {
+		t.Errorf("a refused flag on a circleci/ org must not be an error, got %d", n)
+	}
+}
+
+// TestSyncOrgSettings_FeatureFlags_CircleCIDest_OnlyNotSettableIsManual: only a
+// response meaning "not settable here" is downgraded; auth, 5xx and network
+// failures stay errors.
+func TestSyncOrgSettings_FeatureFlags_CircleCIDest_OnlyNotSettableIsManual(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus string
+	}{
+		{"400", &rest.HTTPError{Code: 400, Message: "bad flag"}, "manual"},
+		{"404", &rest.HTTPError{Code: 404, Message: "no such flag"}, "manual"},
+		{"422", &rest.HTTPError{Code: 422, Message: "unsupported"}, "manual"},
+		{"403 flag not allowed", &rest.HTTPError{Code: 403, Message: "flag not allowed for this org"}, "manual"},
+		{"403 permission", &rest.HTTPError{Code: 403, Message: "forbidden"}, "error"},
+		{"401", &rest.HTTPError{Code: 401, Message: "unauthorized"}, "error"},
+		{"500", &rest.HTTPError{Code: 500, Message: "server error"}, "error"},
+		{"network", errors.New("dial tcp: connection refused"), "error"},
+		{"wrapped 422", fmt.Errorf("UpdateFeatureFlags: %w", &rest.HTTPError{Code: 422, Message: "x"}), "manual"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fw := &fakeOrgSettingsWriter{updateFeatureFlags: func(_, _ string, _ map[string]bool) error { return tc.err }}
+			sy := newOrgSettingsSyncer(fw)
+			m := orgSettingsManifest(&manifest.OrgSettings{FeatureFlags: map[string]bool{"allow_private_orbs": true}})
+			rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("circleci/dest-uuid"), Options{Apply: true})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if n := len(actionsOfStatus(rep, tc.wantStatus)); n != 1 {
+				t.Errorf("want 1 %q action, got %+v", tc.wantStatus, rep.Actions)
+			}
+		})
 	}
 }
 

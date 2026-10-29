@@ -154,3 +154,77 @@ func (c *Client) DeleteResourceClass(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// OrgResourceClass is a resource class as returned by the v3 org-scoped list.
+// Unlike ResourceClass it carries OrgID: the org the class row is attributed to.
+// That attribution is stored per class at creation time and does NOT follow a
+// namespace-owner transfer, which is what the same-namespace handoff relies on.
+type OrgResourceClass struct {
+	ID            string
+	ResourceClass string
+	Description   string
+	OrgID         string
+}
+
+// orgResourceClassList is the JSON envelope of
+// GET /api/v3/runner/resource-classes?filter[org_id]=<uuid>.
+type orgResourceClassList struct {
+	Data []struct {
+		ID         string `json:"id"`
+		Attributes struct {
+			ResourceClass string `json:"resource_class"`
+			Description   string `json:"description"`
+		} `json:"attributes"`
+		References struct {
+			Org struct {
+				ID string `json:"id"`
+			} `json:"org"`
+		} `json:"references"`
+	} `json:"data"`
+	Page struct {
+		Next string `json:"next"`
+	} `json:"page"`
+}
+
+// ListResourceClassesByOrg lists every resource class attributed to the org
+// identified by orgID (a UUID), following cursor pagination.
+//
+// GET https://runner.circleci.com/api/v3/runner/resource-classes?filter[org_id]=<uuid>
+func (c *Client) ListResourceClassesByOrg(ctx context.Context, orgID string) ([]OrgResourceClass, error) {
+	var out []OrgResourceClass
+	cursor := ""
+	for {
+		u, err := url.Parse("runner/resource-classes")
+		if err != nil {
+			return nil, fmt.Errorf("runner: building URL: %w", err)
+		}
+		q := u.Query()
+		q.Set("filter[org_id]", orgID)
+		if cursor != "" {
+			q.Set("page[cursor]", cursor)
+		}
+		u.RawQuery = q.Encode()
+
+		req, err := c.rest.NewRequest(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, fmt.Errorf("runner: ListResourceClassesByOrg: building request: %w", err)
+		}
+		var resp orgResourceClassList
+		if _, err := c.rest.DoRequest(req, &resp); err != nil {
+			return nil, fmt.Errorf("runner: ListResourceClassesByOrg: %w", err)
+		}
+		for _, d := range resp.Data {
+			out = append(out, OrgResourceClass{
+				ID:            d.ID,
+				ResourceClass: d.Attributes.ResourceClass,
+				Description:   d.Attributes.Description,
+				OrgID:         d.References.Org.ID,
+			})
+		}
+		if resp.Page.Next == "" || len(resp.Data) == 0 {
+			break
+		}
+		cursor = resp.Page.Next
+	}
+	return out, nil
+}

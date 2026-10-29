@@ -57,8 +57,15 @@ const (
 //     CircleCI support for a namespace transfer.
 //   - When DestOrbNamespace is set: resolve dest namespace → for each orb
 //     CreateOrb (idempotent) → for each version check existence → publish if absent.
+//   - Same-name namespace (DestOrbNamespace == the source namespace): the
+//     namespace cannot be republished — it belongs to exactly one org. The
+//     owner is detected; if the source org still owns it the orbs are NOT
+//     republished and a manual `change-namespace-owner!` action is emitted; if
+//     the destination already owns it the orbs moved with it and nothing is done.
+//     See namespace.go.
 //   - Dry-run aware: when opts.Apply is false, planned actions are reported
-//     without making any API calls.
+//     without making any API calls (same-name ownership detection makes
+//     read-only GETs only).
 //   - After publishing, a config-reference rewrite notice is printed listing
 //     every <src-ns>/<orb> → <dest-ns>/<orb> mapping the operator must update.
 //
@@ -89,6 +96,12 @@ func (s *Syncer) SyncOrbs(ctx context.Context, m *manifest.Manifest, opts Option
 					"or submit a support ticket to CircleCI to transfer the namespace %q directly",
 					o.Name, m.OrbNamespace))
 		}
+		return report, nil
+	}
+
+	// Same-name namespace: hand off instead of republishing.
+	if m.OrbNamespace != "" && m.OrbNamespace == opts.DestOrbNamespace {
+		s.syncOrbNamespaceHandoff(ctx, report, m, opts)
 		return report, nil
 	}
 
@@ -265,4 +278,44 @@ func orbShortName(fullName string) string {
 		return fullName[idx+1:]
 	}
 	return fullName
+}
+
+// syncOrbNamespaceHandoff handles the case where the destination orb namespace
+// has the same name as the source's. Orbs are never republished here: a
+// namespace belongs to one org, so a same-name namespace can only be MOVED by
+// support (`change-namespace-owner!`), and its orbs move with it.
+func (s *Syncer) syncOrbNamespaceHandoff(ctx context.Context, report *Report, m *manifest.Manifest, opts Options) {
+	ns := m.OrbNamespace
+	owner := s.detectNamespaceOwner(ctx, ns, m.Source.Org.ID, s.destOrgIDFor(ctx, opts))
+
+	switch owner {
+	case nsOwnerDest:
+		s.logf("Orb namespace %q is already owned by the destination org; orbs moved with it — nothing to republish", ns)
+		for _, o := range m.Orbs {
+			report.add("orb", o.Name, "skipped",
+				fmt.Sprintf("orb %q not republished: namespace %q is already owned by the destination org (orbs move with the namespace); config references need no change", o.Name, ns))
+		}
+	case nsOwnerSource:
+		s.logf("Orb namespace %q is still owned by the source org; NOT republishing (manual handoff required)", ns)
+		report.add("orb-namespace", ns, "manual", namespaceHandoffDetail("orb", ns, opts))
+		for _, o := range m.Orbs {
+			report.add("orb", o.Name, "skipped",
+				fmt.Sprintf("orb %q not republished: it moves with namespace %q once support runs `%s`", o.Name, ns, handoffCommand(ns, opts)))
+		}
+	default:
+		why := "the current owner could not be determined"
+		if owner == nsOwnerAmbiguous {
+			why = "the namespace appeared in BOTH the source and destination orgs' orb lists, so the owner is ambiguous"
+		}
+		s.logf("Cannot determine who owns orb namespace %q; NOT republishing (manual verification required)", ns)
+		report.add("orb-namespace", ns, "manual", fmt.Sprintf(
+			"the destination orb namespace %q has the same name as the source's, so orbs cannot be republished (a namespace belongs to one org) and %s. "+
+				"If the SOURCE org still owns it, ask CircleCI support to run `%s` (the orbs move with it; config references need no change). "+
+				"If the destination org already owns it, nothing is needed.",
+			ns, why, handoffCommand(ns, opts)))
+		for _, o := range m.Orbs {
+			report.add("orb", o.Name, "skipped",
+				fmt.Sprintf("orb %q not republished (same-name namespace %q; see the namespace action)", o.Name, ns))
+		}
+	}
 }

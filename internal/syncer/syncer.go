@@ -115,6 +115,11 @@ type ProjectWriter interface {
 
 	// App-org (circleci/ vcs_type) project management.
 	CreateAppProject(ctx context.Context, orgID, name string) (*project.Project, error)
+	// ListPipelineDefinitions / ListTriggers read the destination's existing
+	// pipeline definitions and triggers so a re-run can reconcile instead of
+	// skipping an existing project.
+	ListPipelineDefinitions(ctx context.Context, projectID string) ([]project.PipelineDefinition, error)
+	ListTriggers(ctx context.Context, projectID, defID string) ([]project.Trigger, error)
 	CreatePipelineDefinition(ctx context.Context, projectID string, spec project.PipelineDefinitionSpec) (string, error)
 	CreateTrigger(ctx context.Context, projectID, defID string, spec project.TriggerSpec) (string, error)
 	EnableTrigger(ctx context.Context, projectID, triggerID string) error
@@ -140,6 +145,10 @@ type EnableTarget struct {
 	// App trigger fields (Kind == "trigger").
 	ProjectID string // project UUID
 	TriggerID string // trigger UUID
+	// ProjectName and DefName label the trigger in the enable-builds output
+	// (informational; they are not needed to enable it).
+	ProjectName string
+	DefName     string
 }
 
 // Options configures a sync run.
@@ -152,11 +161,12 @@ type Options struct {
 	Placeholder string
 	// GitHubToken is an optional GitHub personal access token used to resolve
 	// repository external IDs when creating pipeline definitions in a GitHub App
-	// destination org. When empty and the GitHub org has not changed, the
-	// captured RepoExternalID from the source manifest is reused directly (valid
-	// for same-org migrations). When the GitHub org has changed (repos moved),
-	// a token is required to look up the new external_id; without one the
-	// project is skipped with a "manual" action.
+	// destination org. Whenever the GitHub org is unchanged and the manifest
+	// captured a repo external_id, that id is reused directly (token or not).
+	// The GitHub API is called only when the GitHub org changed (repos moved) or
+	// no id was captured (an OAuth-source project whose pipeline definition must
+	// be synthesized). In those cases a missing token leaves the project with a
+	// "manual" action.
 	GitHubToken string
 	// DestGitHubOrg is a convenience shorthand for the destination GitHub
 	// organization owner when all repos have moved to the same new GH org. It
@@ -177,6 +187,12 @@ type Options struct {
 	// each is flagged as needing manual action (the syncer never guesses the
 	// destination namespace).
 	DestOrbNamespace string
+	// DestOrgSlug is the destination org slug (e.g. "circleci/<id>" or
+	// "gh/acme-new"). It is used to resolve the destination org UUID so the
+	// syncer can tell who owns a same-name orb/runner namespace, and to print
+	// the exact `change-namespace-owner!` command. Optional: when empty, the
+	// ownership checks degrade to "unknown" and the command uses a placeholder.
+	DestOrgSlug string
 	// CreateProjectTokens controls whether captured project API tokens are
 	// automatically recreated on the destination project. Default false —
 	// creating a token mints a NEW one-time secret and every consumer must be
@@ -196,6 +212,13 @@ type Options struct {
 	// (only when the source value is true). Set true for a faithful migration
 	// once the destination is validated and ready.
 	IncludeDangerFlags bool
+
+	// EnableExistingTriggers additionally queues, for the enable-builds step,
+	// destination triggers that ALREADY exist and are disabled while their source
+	// trigger was enabled. Default false: only triggers created in this run are
+	// queued, so a re-run never re-enables a trigger an operator disabled on
+	// purpose. This is how enable is retried on a re-run after answering N.
+	EnableExistingTriggers bool
 }
 
 func (o Options) placeholder() string {

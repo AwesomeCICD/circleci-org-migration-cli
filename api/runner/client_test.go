@@ -165,3 +165,48 @@ func TestNewClient_InvalidHost(t *testing.T) {
 		t.Fatal("expected error for invalid host, got nil")
 	}
 }
+
+func TestListResourceClassesByOrg_OrgAttributionAndPagination(t *testing.T) {
+	const orgID = "9b55d3de-16b2-445a-882f-a4ca5c8bbafc"
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/runner/resource-classes") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("filter[org_id]"); got != orgID {
+			t.Errorf("filter[org_id] = %q", got)
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page[cursor]") == "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"id":         "c1",
+					"attributes": map[string]any{"resource_class": "acme/fast", "description": "d"},
+					"references": map[string]any{"org": map[string]any{"id": orgID}},
+				}},
+				"page": map[string]any{"next": "cur2"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":         "c2",
+				"attributes": map[string]any{"resource_class": "acme/slow"},
+				"references": map[string]any{"org": map[string]any{"id": orgID}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).ListResourceClassesByOrg(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 || len(got) != 2 {
+		t.Fatalf("calls=%d got=%+v", calls, got)
+	}
+	if got[0].ResourceClass != "acme/fast" || got[0].OrgID != orgID || got[1].ResourceClass != "acme/slow" {
+		t.Errorf("unexpected classes: %+v", got)
+	}
+}

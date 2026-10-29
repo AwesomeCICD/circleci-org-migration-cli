@@ -21,8 +21,11 @@ You **need** a mapping file when:
   case. Without `org.to`, `sync` targets your own source org and prints a
   prominent warning. `org.to` is the **only** key strictly required to retarget.
 - **The destination uses a different slug type** (e.g. OAuth `gh/acme` →
-  GitHub App `circleci/<uuid>`). Project slugs change shape, so you must map
-  them with the `projects` key.
+  GitHub App `circleci/<uuid>`). Set `org.to` to the destination slug. Project
+  slugs change shape (`circleci/<org-uuid>/<project-uuid>`), so any step that
+  addresses a destination project by slug needs a `projects` entry — generate
+  them with `mapping generate` once the projects exist. `sync` itself creates
+  App projects by name and does not need them.
 - **Repos moved to a new GitHub org** and you want a single override (or a
   partial move where only some repos changed) — use `github_org` and/or
   per-project `projects` entries.
@@ -69,14 +72,22 @@ For a cross-type move the `to` slug changes shape:
 Remaps individual **project slugs** from source to destination. Required when a
 project's slug cannot be derived from the org slug alone — most importantly for
 **GitHub App destinations**, whose project slug is
-`circleci/<org-id>/<project-id>` rather than `gh/<org>/<repo>`.
+`circleci/<org-id>/<project-id>` (both UUIDs) rather than `gh/<org>/<repo>`.
 
 ```json
 "projects": {
-  "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/web",
-  "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/api"
+  "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/3f1c0b52-7d0e-4a57-9a53-0a6d4f1e9b10",
+  "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/9b8a6c14-2e7f-4d3b-8c61-5e2a7d0f4c33"
 }
 ```
+
+The project UUID is assigned when the project is created, so you cannot write
+these by hand up front. Create the projects with `sync --apply` (which needs only
+`org.to` for an App destination), then run
+`circleci-migrate mapping generate --manifest manifest.json --dest-org circleci/<org-uuid> -o mapping.json`
+to produce the entries. Project-type context restrictions and
+`secrets transfer --include-project-vars` read them. (`mapping generate` writes
+only `org` and `projects`; re-add `github_org` if you use it.)
 
 For a simple same-type move where only the org name changes, the tool derives
 destination slugs automatically and you can usually omit `projects`.
@@ -107,12 +118,15 @@ org. Use it (with `--github-token`) instead of, or alongside, the
     "to": "circleci/22222222-2222-2222-2222-222222222222"
   },
   "projects": {
-    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/web",
-    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/api"
+    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/3f1c0b52-7d0e-4a57-9a53-0a6d4f1e9b10",
+    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/9b8a6c14-2e7f-4d3b-8c61-5e2a7d0f4c33"
   },
   "github_org": { "from": "acme", "to": "acme-new" }
 }
 ```
+
+The `projects` block above is the form `mapping generate` produces after the
+first `sync --apply`; the very first run needs only `org` and `github_org`.
 
 ```bash
 export GITHUB_TOKEN="<github-pat-with-repo-read>"

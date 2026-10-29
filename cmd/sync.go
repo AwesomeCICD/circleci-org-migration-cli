@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/cciurl"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/syncer"
@@ -76,7 +78,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -188,6 +190,10 @@ func newSyncCommand() *cobra.Command {
 		onlyRaw             string
 		skipTFManaged       bool
 		skipPreflight       bool
+
+		// enableExistingTriggers also enables destination triggers that already
+		// exist and are disabled (default: only triggers created this run).
+		enableExistingTriggers bool
 	)
 
 	cmd := &cobra.Command{
@@ -226,8 +232,15 @@ Resources synced (in order):
     policies, OTel exporter, contacts, storage retention, budgets, release
     tracker, and block-unregistered-users.
   • Contexts — with environment variable values from the secret bundle.
-  • Projects — OAuth projects are recreated in a paused state; App projects
-    are created with a pipeline definition and trigger.
+  • Projects — OAuth projects are recreated in a paused state. App projects
+    are created with their captured pipeline definitions and triggers
+    (github_oauth sources are translated to github_app); an OAuth project with
+    no captured definition gets one synthesized "build-and-test" definition,
+    which needs --github-token (preflight fails without it). Triggers are
+    created disabled. Re-running reconciles existing App projects: missing
+    definitions/triggers are created, everything present reports "exists", and
+    triggers still disabled are queued so --apply --yes enables them. A failed
+    enable makes sync exit non-zero.
   • Self-hosted runner resource classes — only when --dest-runner-namespace
     is provided or the manifest contains runner classes.
 
@@ -384,11 +397,36 @@ Examples:
 					pfDstOrgClient = c
 				}
 				pfDeps := preflightDeps{
-					cfg:           cfg,
-					dstToken:      token,
-					destOrg:       destSlug,
-					githubToken:   githubToken,
-					destGitHubOrg: destGitHubOrg,
+					cfg:             cfg,
+					dstToken:        token,
+					destOrg:         destSlug,
+					githubToken:     githubToken,
+					destGitHubOrg:   destGitHubOrg,
+					githubOrgMapped: mapping != nil && mapping.GitHubOrg != nil,
+				}
+				// OAuth projects with no captured pipeline definition need a
+				// synthesized one on a GitHub App destination; that needs a
+				// GitHub token (see checkSynthesisToken). Only relevant when
+				// projects are actually being synced.
+				if !skipProjects {
+					pfDeps.synthProjects = syncer.CountSynthesizedProjects(m)
+					// A project that already exists in the destination is
+					// reconciled without a GitHub lookup, so only the ones that
+					// do NOT exist yet require a token. A failed lookup warns.
+					if pfDeps.synthProjects > 0 && githubToken == "" {
+						var pl projectLister
+						if pc, pcErr := project.NewClient(cfg, token); pcErr == nil {
+							pl = pc
+						}
+						n, lookupErr := synthProjectsNeedingCreate(ctx, syncer.SynthesizedProjectNames(m), destSlug, pfDstOrgClient, pl)
+						if lookupErr != nil {
+							pfDeps.synthUnverified = true
+							fmt.Fprintf(cmd.ErrOrStderr(),
+								"warning: could not check which projects already exist in the destination (%v); treating a missing GitHub token as a warning\n", lookupErr)
+						} else {
+							pfDeps.synthProjects = n
+						}
+					}
 				}
 				pfClients := preflightClients{
 					dstOrg: pfDstOrgClient,
@@ -407,8 +445,11 @@ Examples:
 				DestGitHubOrg:       destGitHubOrg,
 				DestRunnerNamespace: destRunnerNamespace,
 				DestOrbNamespace:    destOrbNamespace,
+				DestOrgSlug:         destSlug,
 				CreateProjectTokens: createProjectTokens,
 				IncludeDangerFlags:  includeDangerFlags,
+
+				EnableExistingTriggers: enableExistingTriggers,
 			}
 
 			// Wire up the runner client when a destination namespace was provided
@@ -423,6 +464,7 @@ Examples:
 
 			// Accumulate section reports for --json output.
 			repsBySection := make(map[string]*syncer.Report)
+			var enableErr error // deferred enable-builds failure (non-zero exit)
 
 			if !skipOrgSettings {
 				rep, err := sy.SyncOrgSettings(ctx, m, mapping, opts)
@@ -454,9 +496,11 @@ Examples:
 					printSyncReport(cmd, "Projects", rep, m)
 				}
 
-				// Handle the enable-builds (follow) step for paused projects.
+				// Handle the enable-builds (follow) step for paused projects. A
+				// failure is remembered and returned at the end (after the rest of
+				// the sync and the summary) so one bad enable does not abort the run.
 				if err := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); err != nil {
-					return err
+					enableErr = err
 				}
 
 				// Now that destination projects exist, apply the project-type
@@ -523,6 +567,20 @@ Examples:
 				}
 			}
 
+			// Deploys (environments / components / deploy settings): a read-only
+			// reconcile that reports what must be recreated by hand — the public
+			// Deploys API has no create endpoint.
+			if m.Deploys != nil {
+				rep, err := sy.SyncDeploys(ctx, m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["Deploys"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Deploys", rep, m)
+				}
+			}
+
 			// Emit a warning when no bundle was loaded but the manifest contains
 			// context or project env vars that needed values.
 			if bundle == nil {
@@ -540,15 +598,22 @@ Examples:
 				}
 			}
 
+			// Non-zero exit (after the summary) when an enable failed or a pipeline
+			// definition / trigger action ended in "error".
+			finalErr := errors.Join(enableErr, appPipelineFailure(repsBySection))
+
 			if jsonOutput {
 				summary := buildSyncSummary(apply, repsBySection)
-				return marshalJSON(cmd.OutOrStdout(), summary)
+				if err := marshalJSON(cmd.OutOrStdout(), summary); err != nil {
+					return err
+				}
+				return finalErr
 			}
 
 			// Consolidated end-of-run summary across all sections.
 			printEndSummary(cmd.OutOrStdout(), repsBySection)
 
-			return nil
+			return finalErr
 		},
 	}
 
@@ -566,6 +631,10 @@ Examples:
 			"'placeholder' creates the variable with a placeholder value. Use 'placeholder' for "+
 			"restricted contexts whose values cannot be captured, so the variable name exists and "+
 			"can be filled in manually later.")
+	f.BoolVar(&enableExistingTriggers, "enable-existing-triggers", false,
+		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
+			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
+			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
@@ -575,7 +644,11 @@ Examples:
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
+		"GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. "+
+			"Required when repos have moved to a new GitHub org (--dest-github-org or mapping github_org), and for every OAuth project that has no captured GitHub App pipeline definition "+
+			"(a definition is synthesized for it and its repo ID is only available from GitHub) — preflight fails without it in that case, "+
+			"unless every such project already exists in the destination (or --skip-projects is set). "+
+			"Not needed when the GitHub org is unchanged and the manifest captured the repo IDs: those are reused.")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
 	f.StringVar(&destRunnerNamespace, "dest-runner-namespace", "",
@@ -616,17 +689,33 @@ Examples:
 	return cmd
 }
 
+// enableBuilder is the slice of *syncer.Syncer handleEnableBuilds needs (an
+// interface so tests can inject failures).
+type enableBuilder interface {
+	EnableBuilds(ctx context.Context, t syncer.EnableTarget, apply bool) (syncer.Action, error)
+}
+
 // handleEnableBuilds decides whether to follow (enable builds for) the
 // paused projects collected in rep.PendingEnable, then executes that decision.
 // Progress and result lines go to stderr so they never pollute the JSON stream.
 // When jsonOutput is true all writes to stdout are suppressed; progress lines
 // are also suppressed (the caller folds results into the JSON summary).
-func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Report, apply, yes, jsonOutput bool) error {
+//
+// Every target is attempted and its result printed; when any enable fails the
+// returned error is non-nil (non-zero exit) so a half-enabled run is never
+// reported as success.
+func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report, apply, yes, jsonOutput bool) error {
 	pending := rep.PendingEnable
 	if len(pending) == 0 {
 		return nil
 	}
 	n := len(pending)
+
+	// List every trigger that will be enabled (id + definition) so the operator
+	// sees exactly what the prompt / --yes switches on.
+	if !jsonOutput {
+		printEnablePlan(cmd.ErrOrStderr(), pending, apply)
+	}
 
 	if !apply {
 		// Dry-run plan message goes to stderr (not data, not JSON).
@@ -669,6 +758,10 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 			} else {
 				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped following projects (enable builds).\n")
 			}
+			if hasTriggerTarget(pending) {
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"The triggers above stay disabled. They now exist, so to enable them on a later run use: sync --apply --yes --enable-existing-triggers")
+			}
 		}
 		return nil
 	}
@@ -676,13 +769,87 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 	if !jsonOutput {
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nFollowing (enabling builds for) %d project(s)...\n", n)
 	}
+	failed := 0
 	for _, t := range pending {
-		action, _ := sy.EnableBuilds(cmd.Context(), t, true)
+		action, err := sy.EnableBuilds(cmd.Context(), t, true)
+		if err != nil {
+			failed++
+		}
 		if !jsonOutput {
 			fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
 		}
 	}
+	if failed > 0 {
+		return fmt.Errorf("enabling builds failed for %d of %d target(s); fix the errors above and re-run sync --apply --yes", failed, n)
+	}
 	return nil
+}
+
+// hasTriggerTarget reports whether any pending enable target is an App trigger.
+func hasTriggerTarget(pending []syncer.EnableTarget) bool {
+	for _, t := range pending {
+		if t.Kind == "trigger" {
+			return true
+		}
+	}
+	return false
+}
+
+// printEnablePlan lists the App triggers queued for enable-builds: project,
+// trigger id and pipeline-definition name. OAuth "follow" targets are listed by
+// slug.
+func printEnablePlan(w io.Writer, pending []syncer.EnableTarget, apply bool) {
+	verb := "would be enabled"
+	if apply {
+		verb = "queued for enable"
+	}
+	fmt.Fprintf(w, "\nBuilds %s for:\n", verb)
+	for _, t := range pending {
+		if t.Kind == "trigger" {
+			proj := t.ProjectName
+			if proj == "" {
+				proj = t.ProjectID
+			}
+			def := t.DefName
+			if def == "" {
+				def = "?"
+			}
+			fmt.Fprintf(w, "  trigger %s  (definition %q, project %s)\n", t.TriggerID, def, proj)
+			continue
+		}
+		fmt.Fprintf(w, "  follow %s\n", t.Slug)
+	}
+}
+
+// appPipelineFailure returns an error when any pipeline-definition or trigger
+// action across the section reports ended in "error" — including a failed read
+// of the destination's definitions or triggers. Those per-item errors are
+// recorded in the report rather than aborting the run, so without this the
+// command would exit 0 after printing "[error]" lines. Other sections keep their
+// existing exit semantics.
+func appPipelineFailure(reps map[string]*syncer.Report) error {
+	var targets []string
+	for _, rep := range reps {
+		if rep == nil {
+			continue
+		}
+		for _, a := range rep.Actions {
+			if a.Status == "error" && (a.Kind == "project-pipeline-def" || a.Kind == "project-trigger") {
+				targets = append(targets, a.Target)
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	sort.Strings(targets)
+	shown := targets
+	more := ""
+	if len(shown) > 3 {
+		shown, more = shown[:3], fmt.Sprintf(" (+%d more)", len(targets)-3)
+	}
+	return fmt.Errorf("%d pipeline definition/trigger action(s) failed: %s%s — see the [error] lines above, fix the cause and re-run sync --apply",
+		len(targets), strings.Join(shown, ", "), more)
 }
 
 // decideEnable returns true when builds should be enabled right now.
