@@ -135,7 +135,9 @@ func (s *Syncer) SyncOrgSettings(ctx context.Context, m *manifest.Manifest, mapp
 	}
 
 	// Resolve the vcs/name pair from the destination slug for v1.1 flag writes.
-	vcs, orgName := splitDestSlug(destSlug)
+	// App / standalone orgs use vcs "circleci" with the org id as the name — the
+	// same form the exporter already READS flags with.
+	vcs, orgName := flagOrgCoords(destSlug)
 
 	s.syncFeatureFlags(ctx, report, src, vcs, orgName, opts)
 	s.syncOIDCClaims(ctx, report, src, destOrgID, opts)
@@ -194,13 +196,20 @@ func (s *Syncer) reportAuditLogConfigs(ctx context.Context, report *Report, src 
 
 // syncFeatureFlags writes each feature flag to the destination. Danger flags
 // are skipped with a "manual" action regardless of Apply.
+//
+// For circleci/ (GitHub App / standalone) destinations the v1.1 settings
+// endpoint is addressed as /organization/circleci/<id>/settings. The read form
+// is proven by the exporter; the write is the same route, but the server only
+// accepts flags that are "settable" for the org type, so a refused flag on a
+// circleci/ destination is reported as "manual" (set it in the UI) rather than
+// "error".
 func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *manifest.OrgSettings, vcs, orgName string, opts Options) {
 	if len(src.FeatureFlags) == 0 {
 		return
 	}
 	if vcs == "" || orgName == "" {
 		report.add("org-settings", "feature_flags", "manual",
-			"cannot write feature flags to a circleci/-type org (no vcs/name form available)")
+			"cannot write feature flags: the destination org slug has no vcs/name form")
 		return
 	}
 
@@ -225,6 +234,11 @@ func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *mani
 		}
 
 		if err := s.OrgSettings.UpdateFeatureFlags(ctx, vcs, orgName, map[string]bool{flagKey: val}); err != nil {
+			if vcs == "circleci" {
+				report.add("org-settings", target, "manual",
+					fmt.Sprintf("feature flag %q = %v could not be written to this circleci/ org via the API (%v); set it manually in Organization Settings", flagKey, val, err))
+				continue
+			}
 			report.add("org-settings", target, "error", err.Error())
 			continue
 		}
@@ -614,20 +628,23 @@ func (s *Syncer) syncBlockUnregisteredUsers(ctx context.Context, report *Report,
 		fmt.Sprintf("set block_unregistered_users enabled=%v", enabled))
 }
 
-// reportOrbs records each captured orb as a "manual" action. Orbs cannot be
-// auto-migrated: the destination org has a different namespace and orb source
-// code is only accessible via GraphQL / the republish workflow. Each entry
-// carries enough metadata (name, version, is_private, hidden) for the operator
-// to republish the orb in the destination namespace.
+// reportOrbs records each org-owned orb (from the org-scoped orb list) as a
+// "manual" visibility action. The orb sources themselves ARE exportable and
+// republishable (`export --orb-namespace <ns>` then `sync --dest-orb-namespace
+// <ns>` — see SyncOrbs), so this entry only tells the operator which path
+// applies: a DIFFERENT destination namespace is republished by the CLI (and every
+// config reference rewritten); the SAME namespace name cannot be republished —
+// a namespace belongs to one org — and must be moved by CircleCI support with
+// `change-namespace-owner!`, after which the orbs move with it.
 func (s *Syncer) reportOrbs(ctx context.Context, report *Report, src *manifest.OrgSettings) {
 	for _, orb := range src.Orbs {
 		target := "orb:" + orb.OrbName
 		report.add("org-settings", target, "manual",
 			fmt.Sprintf(
 				"orb %q (version %s, private=%v, hidden=%v) — "+
-					"republish this orb in the destination namespace; "+
-					"orbs cannot be auto-migrated (the destination org has a different namespace "+
-					"and orb source is only available via GraphQL/republish)",
+					"republish it into a different destination namespace with `export --orb-namespace` + `sync --dest-orb-namespace` (then rewrite config references); "+
+					"if the destination keeps the SAME namespace name it cannot be republished (a namespace belongs to one org): "+
+					"ask CircleCI support to run `change-namespace-owner! \"<namespace>\" \"<dest-org-slug>\"` and the orb moves with it",
 				orb.OrbName, orb.LatestVersionNumber, orb.IsPrivate, orb.Hidden,
 			))
 	}
@@ -680,6 +697,18 @@ func (s *Syncer) reportEnvironmentHierarchy(ctx context.Context, report *Report,
 				"mapped automatically",
 			h.Name, levelNames,
 		))
+}
+
+// flagOrgCoords returns the (vcs, name) pair used to address the v1.1 org
+// settings endpoint for a destination slug. Unlike splitDestSlug it maps
+// "circleci/<id>" to ("circleci", "<id>") so feature flags can be written to
+// GitHub App / standalone orgs.
+func flagOrgCoords(slug string) (vcs, orgName string) {
+	parts := strings.SplitN(slug, "/", 2)
+	if len(parts) == 2 && parts[0] == "circleci" && parts[1] != "" {
+		return "circleci", parts[1]
+	}
+	return splitDestSlug(slug)
 }
 
 // splitDestSlug extracts the (vcs, orgName) pair from a destination slug
