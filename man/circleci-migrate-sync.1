@@ -212,7 +212,7 @@ Examples:
 
 .PP
 \fB--webhook-secrets-out\fP=""
-	With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.
+	With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. An existing file is merged into (earlier entries are kept, never truncated) and saved atomically; it is left untouched when nothing is recreated. The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.
 
 .PP
 \fB-y\fP, \fB--yes\fP[=false]

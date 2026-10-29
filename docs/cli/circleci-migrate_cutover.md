@@ -19,23 +19,39 @@ be reversed. It is a DRY RUN unless --apply is given.
                    (the org-level flag overrides every project). Use with
                    --pause-source.
   --enable-dest    Enable the destination triggers whose source counterpart was
-                   enabled (triggers are matched exactly as sync matches them).
-                   A trigger that was disabled in the source stays disabled.
-                   Run sync --apply first so the destination triggers exist.
+                   enabled. A destination trigger is matched to its source
+                   trigger by name first, then by its defining fields; when
+                   several destination triggers match equally well and the
+                   source triggers differ in enabled/disabled state, the item is
+                   reported "manual" and nothing is enabled. A trigger that was
+                   disabled in the source stays disabled, and a project the
+                   manifest shows as paused (drop_all_build_requests=true) or
+                   not followed is skipped ("manual"). Run sync --apply first so
+                   the destination triggers exist. With --pause-source or
+                   --pause-org in the same run, a failed pause step stops the
+                   run before anything is enabled (non-zero exit).
   --undo           Restore everything recorded in the state file: source flags
                    back to their prior values, the source triggers it disabled
                    re-enabled, and the destination triggers it enabled
-                   disabled again. Needs only --state (and --apply to act).
+                   disabled again. Needs only --state (and --apply to act); it
+                   fails if the state file does not exist. A client (and token)
+                   is needed only for the side(s) that have records. Pass
+                   --manifest (and --mapping) as well to have the state's
+                   source/destination org checked against them.
 
 Every change is written to the state file (--state, default cutover-state.json, mode 0600)
 BEFORE it is made, so --undo works even after a partial failure. Re-running is
 idempotent: items already in the wanted state report "exists". Each item is
 printed with its outcome and the command exits non-zero if any item failed.
 
-Order for a clean cutover: sync --apply (destination created paused), validate,
-cutover --pause-source --apply, cutover --enable-dest --apply (the two can be
-given together: the source is paused first). If something is wrong, cutover
---undo --apply returns the source to its previous state.
+Order for a clean cutover (the cross-type playbook has the full sequence):
+freeze merges; sync --skip-pipelines --apply; secrets transfer ... --apply (it
+must run BEFORE the source is paused); cutover --pause-source --apply;
+uninstall the GitHub App from the source and install it on the destination;
+sync --apply --webhook-secrets-out <file>; cutover --enable-dest --apply;
+validate. If something is wrong, cutover --undo --apply returns the source to
+its previous state. Keep the state file (it lets --undo work) and the webhook
+secrets file (it holds secrets) safe until the cutover is confirmed.
 
 CAUTION: once the GitHub App is UNINSTALLED from the source GitHub org, the
 source's GitHub App triggers no longer exist, so they can neither be disabled

@@ -808,7 +808,92 @@ Work through `manual` items from Phase 4 and `migration-report.md`:
 
 ## Phase 7 — Enable builds / cutover
 
-When satisfied the destination is correct, enable builds.
+When satisfied the destination is correct, switch builds from the source to the
+destination. **The order matters** — several steps cannot be done after a later
+one (the secrets transfer needs a source that can still run a pipeline; the
+source's App triggers disappear when the App is uninstalled).
+
+### 7.0 Cutover order
+
+1. **Freeze merges** in the source repos (branch protection, a merge freeze, or
+   an announcement) so nothing lands between the capture and the switch.
+2. **Create the destination projects** (no definitions or triggers yet; if you
+   already ran Phase 5.0 this is a no-op re-check):
+
+   ```bash
+   circleci-migrate sync --manifest manifest.json --mapping mapping.json \
+     --skip-pipelines --apply
+   ```
+
+3. **Transfer the secrets while the source can still build.** The transfer runs
+   a pipeline in each source project, and a project paused with
+   `drop-all-build-requests` drops it. `secrets transfer` fails fast naming any
+   paused project: run it **before** `cutover --pause-source` (or restore the
+   source first with `cutover --undo --apply`).
+
+   ```bash
+   circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json \
+     --dest-org-id "$DST_UUID" --dest-token-context migration-secrets \
+     --include-project-vars --include-ssh-keys --remove-restrictions \
+     --enable-trigger --apply
+   ```
+
+4. **Pause the source** (reversible, recorded in `cutover-state.json`):
+
+   ```bash
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --pause-source          # preview
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --pause-source --apply
+   ```
+
+5. **Move the GitHub App connection:** uninstall the CircleCI GitHub App from the
+   source GitHub org, then install it from the destination `circleci/<id>` org
+   (Phase 0.4). Only after step 4 — uninstalling removes the source's App
+   triggers.
+6. **Add the pipeline definitions and triggers** (created disabled), saving the
+   new webhook secrets:
+
+   ```bash
+   circleci-migrate sync --manifest manifest.json --mapping mapping.json \
+     --apply --webhook-secrets-out webhook-secrets.json
+   ```
+
+7. **Enable the destination:**
+
+   ```bash
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --enable-dest          # preview
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --enable-dest --apply
+   ```
+
+8. **Validate:**
+
+   ```bash
+   circleci-migrate validate --source-org gh/acme \
+     --dest-org circleci/$DST_UUID --mapping mapping.json \
+     --dest-token-context migration-secrets
+   ```
+
+**If something is wrong**, `circleci-migrate cutover --undo --apply` restores the
+source flags and triggers and disables the destination triggers it enabled. Keep
+**both** files safe until the cutover is confirmed: `cutover-state.json` (without
+it `--undo` has nothing to restore from; it fails if the file is missing, and
+refuses a state recorded for a different org) and `webhook-secrets.json` (it
+holds the new webhook signing secrets and URLs — mode 0600, never printed, merged
+into rather than overwritten when you re-run, so earlier entries survive). Store
+the secrets file like any credential and delete it once the senders and
+receivers have the new values.
+
+> **Do not run `sync --apply --yes` instead of step 7 while the source is still
+> building.** It enables destination triggers without pausing the source, so both
+> orgs build. `--yes` is for the simple case with no live source (below).
+
+### 7.0.1 Simple case: no live source builds
+
+If nothing is still building in the source, enable the destination triggers
+directly:
 
 ```bash
 circleci-migrate sync \
@@ -830,33 +915,22 @@ not need to re-create anything to cut over. If any enable fails, every result is
 still printed and `sync` exits **non-zero**; fix the cause and run the command
 again.
 
-### 7.0 Controlled cutover with `cutover` (when the source is still building)
+### `cutover` reference
 
-If the source org is still running builds, avoid a window where both orgs build
-(or neither does) by switching with `circleci-migrate cutover`. It is a dry run
-unless `--apply` is given and records every change in `cutover-state.json`
-(mode 0600) so it can be undone:
-
-```bash
-# Preview, then apply: pause the source and enable the destination.
-circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
-  --pause-source --enable-dest
-circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
-  --pause-source --enable-dest --apply
-
-# Roll back (source flags and triggers restored, destination triggers disabled again):
-circleci-migrate cutover --undo --apply
-```
+`cutover` is a dry run unless `--apply` is given, and records every change in
+`cutover-state.json` (mode 0600, written atomically) so it can be undone:
 
 | Flag | Does |
 |---|---|
 | `--pause-source` | Sets the v1.1 flag `drop-all-build-requests=true` on each source OAuth project (prior value recorded) and disables the source triggers that are enabled and are not `github_oauth` triggers (ids recorded). Never unfollows a project. |
 | `--pause-org` | Also sets `drop-all-build-requests` on the whole source org (overrides every project). Use with `--pause-source`. |
-| `--enable-dest` | Enables destination triggers whose source counterpart was enabled; a trigger disabled in the source stays disabled. Run `sync --apply` first. |
-| `--undo` | Restores everything in the state file. |
+| `--enable-dest` | Enables destination triggers whose source counterpart was enabled; a trigger disabled in the source stays disabled. Triggers are matched by name first, then by their defining fields; an ambiguous match (equally good candidates, source triggers that differ in enabled state) and a project the manifest shows as paused (`drop_all_build_requests`) or not followed are reported `manual` and **not** enabled. With `--pause-source` in the same run, a failed pause step stops the run before anything is enabled. Run `sync --apply` first. |
+| `--undo` | Restores everything in the state file. Fails if the file does not exist; a client is built only for the side(s) that have records. |
 
-Each item is printed with its outcome, the command exits non-zero if any item
-fails, and re-running is idempotent.
+A state record is kept when a change fails in a way that may have applied it (a
+timeout or 5xx) and dropped only on a definite 4xx rejection; `--undo` is
+idempotent either way. Each item is printed with its outcome, the command exits
+non-zero if any item fails, and re-running is idempotent.
 
 > **Pause the source before uninstalling the GitHub App from the source GitHub
 > org.** Uninstalling removes the source's GitHub App triggers, so they can no
@@ -864,9 +938,6 @@ fails, and re-running is idempotent.
 > `drop-all-build-requests` alone, and `--undo` can only restore that flag.
 > `github_oauth` triggers cannot be disabled through the API at all, which is why
 > OAuth projects are paused with the flag.
-
-`cutover --enable-dest` replaces the `sync --apply --yes` step below when you use
-it; use one or the other.
 
 ### 7.1 Verify triggers are active
 
@@ -885,7 +956,8 @@ Push a commit or trigger a pipeline manually:
 
 ### Phase 7 checklist
 
-- [ ] `sync --apply --yes` run, or `cutover --pause-source --enable-dest --apply` (or triggers enabled via UI)
+- [ ] The 7.0 order followed: `secrets transfer` before `cutover --pause-source`, App moved, then `sync --apply --webhook-secrets-out`, `cutover --enable-dest --apply`, `validate` (or `sync --apply --yes` when the source is not building)
+- [ ] `cutover-state.json` and `webhook-secrets.json` kept safe until the cutover is confirmed
 - [ ] Pipeline triggers show as active in destination
 - [ ] At least one pipeline ran successfully in the destination
 - [ ] Context env vars accessible within a job
@@ -991,6 +1063,10 @@ These items sit outside the project/mapping flow above. The migration report
 5. **Recreate runner classes** and re-register agents.
 6. **Fix OIDC trust, IP ranges, SSO roles** (checklist in the report).
 7. **Do not build in both orgs** once the destination is live (double billing).
+
+The exact command sequence for steps 1–2 and 7 (freeze, transfer secrets, pause
+the source, move the App, add definitions, enable, validate) is in
+[Phase 7.0](#70-cutover-order).
 
 ### Orb namespace
 
