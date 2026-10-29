@@ -238,9 +238,9 @@ configuration issues and print a ✅/⚠️/❌ summary:
 
 | Command | Checks run | Hard fail conditions |
 |---|---|---|
-| `migrate` | All of the below | Missing token; dest org unreachable |
+| `migrate` | All of the below | Missing token; dest org unreachable; OAuth source → App destination with no GitHub token |
 | `export` | Source token, source org reachable, api-trigger flag, project discovery | Missing source token |
-| `sync` | Dest token, dest org reachable, cross-type warning, GitHub token | Missing dest token; dest org unreachable |
+| `sync` | Dest token, dest org reachable, cross-type warning, GitHub token | Missing dest token; dest org unreachable; OAuth projects needing a synthesized App definition with no GitHub token |
 | `doctor` | Source- and/or dest-side checks (see below) | Same as respective command |
 
 Full check table for `migrate` (and `doctor --source-org … --dest-org …`):
@@ -253,7 +253,7 @@ Full check table for `migrate` (and `doctor --source-org … --dest-org …`):
 | Cross-type migration (e.g. OAuth → standalone) | No (warn; see [playbooks](playbooks/cross-type-oauth-to-app.md)) |
 | `allow_api_trigger_with_config` on source org | No (warn; enabled automatically during secrets capture) |
 | Project discovery count + path | No (warn if private API unavailable) |
-| GitHub token for repo resolution | No (warn if cross-type and `--github-token` absent) |
+| GitHub token for repo resolution | **Yes** when an OAuth source is migrated to a GitHub App destination (`sync` checks the manifest for projects needing a synthesized definition); otherwise a warning when the GitHub org changes and `--github-token` is absent |
 
 On an interactive TTY, warnings prompt "Continue? [Y/n]" before proceeding. On a
 non-TTY (CI), warnings are printed and the command proceeds automatically.
@@ -999,20 +999,20 @@ caveats** (recorded as `manual` in the report):
 
 - `build_fork_prs` — the GitHub App never builds fork PRs; cannot be replicated.
 - The OSS flag and `pr_only_branch_overrides` have no App equivalent.
-- Multiple App pipeline definitions can't be collapsed from one OAuth config —
-  the tool creates one pipeline definition per project using the default config
-  path (`.circleci/config.yml`).
+- A plain OAuth project has one implicit pipeline, so the tool synthesizes one
+  `build-and-test` definition (`.circleci/config.yml`, one push trigger). If the
+  OAuth org already has GitHub App pipelines, the export captured them and every
+  definition and trigger is recreated as captured (`github_oauth` → `github_app`,
+  custom `file_path`, preset, refs, schedule and webhook triggers). CircleCI
+  assigns trigger names, so trigger names/descriptions are not copied, and a
+  recreated webhook trigger gets a new URL/secret.
 
-Because the slug type changes, you must supply a [mapping](mapping.md) that maps
-project slugs:
+Because the slug type changes, supply a [mapping](mapping.md) that retargets the
+org (`org.to` is all `sync` needs; it finds-or-creates App projects by name):
 
 ```json
 {
-  "org": { "from": "gh/acme", "to": "circleci/22222222-2222-2222-2222-222222222222" },
-  "projects": {
-    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/web",
-    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/api"
-  }
+  "org": { "from": "gh/acme", "to": "circleci/22222222-2222-2222-2222-222222222222" }
 }
 ```
 
@@ -1020,6 +1020,25 @@ project slugs:
 circleci-migrate sync --manifest manifest.json --secrets secrets.json \
   --mapping mapping.json --apply --yes
 ```
+
+The `projects` entries are `circleci/<org-uuid>/<project-uuid>` and only exist
+once the projects do — generate them afterwards with `mapping generate`
+(`--dest-org circleci/<org-uuid>`) for project-type context restrictions and
+`secrets transfer --include-project-vars`. Without them, project restrictions are
+reported `manual`; sync itself does not need them.
+
+**GitHub token.** Synthesizing a definition needs the repository's GitHub ID,
+which only the GitHub API provides, so a token (`--github-token` /
+`$GITHUB_TOKEN`) is **required** for every OAuth project without captured App
+pipelines — `doctor`, `sync` and `migrate` preflight fail without it. It is not
+needed when the GitHub org is unchanged and the IDs were captured (they are
+reused).
+
+**Re-runs.** `sync` reconciles existing App projects: it creates any missing
+definition or trigger (repairing a project whose repo was not yet connected to the
+GitHub App), reports present ones as `exists`, and re-queues still-disabled
+triggers, so a re-run of `sync --apply --yes` enables builds. A failed enable
+makes `sync` exit non-zero.
 
 ### 7f. Repo-move / EMU (repos moved to a new GitHub org)
 

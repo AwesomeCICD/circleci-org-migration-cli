@@ -48,8 +48,15 @@ Resources synced (in order):
     policies, OTel exporter, contacts, storage retention, budgets, release
     tracker, and block-unregistered-users.
   • Contexts — with environment variable values from the secret bundle.
-  • Projects — OAuth projects are recreated in a paused state; App projects
-    are created with a pipeline definition and trigger.
+  • Projects — OAuth projects are recreated in a paused state. App projects
+    are created with their captured pipeline definitions and triggers
+    (github_oauth sources are translated to github_app); an OAuth project with
+    no captured definition gets one synthesized "build-and-test" definition,
+    which needs --github-token (preflight fails without it). Triggers are
+    created disabled. Re-running reconciles existing App projects: missing
+    definitions/triggers are created, everything present reports "exists", and
+    triggers still disabled are queued so --apply --yes enables them. A failed
+    enable makes sync exit non-zero.
   • Self-hosted runner resource classes — only when --dest-runner-namespace
     is provided or the manifest contains runner classes.
 
@@ -112,7 +119,7 @@ Examples:
 
 .PP
 \fB--github-token\fP=""
-	GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
+	GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have moved to a new GitHub org (--dest-github-org or mapping github_org), and for every OAuth project that has no captured GitHub App pipeline definition (a definition is synthesized for it and its repo ID is only available from GitHub) — preflight fails without it in that case. Not needed when the GitHub org is unchanged and the manifest captured the repo IDs: those are reused.
 
 .PP
 \fB-h\fP, \fB--help\fP[=false]

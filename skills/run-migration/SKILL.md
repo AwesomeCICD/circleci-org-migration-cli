@@ -28,7 +28,7 @@ to the task-scoped skills for secrets capture, orb inlining, and cutover.
 - [ ] Confirmation of org type: GitHub OAuth (`gh/`), GitHub App (`circleci/<uuid>`), or mixed
 
 Optional (ask if unsure):
-- GitHub PAT (`GITHUB_TOKEN`) — only if repos are moving to a different GitHub org
+- GitHub PAT (`GITHUB_TOKEN`) — required for an OAuth → GitHub App migration (OAuth projects without captured App pipelines get a synthesized definition whose repo ID comes from GitHub) and if repos are moving to a different GitHub org
 - Runner namespace — only if self-hosted runners are in scope
 - Mapping file — only if org name changes or projects are being renamed
 

@@ -638,10 +638,11 @@ func TestRunMigratePreflight_TTY_WarningsDeclined(t *testing.T) {
 	withStdin(t, "n\n") // continue despite warnings? no
 
 	deps := preflightDeps{
-		srcToken:  "tok-src",
-		dstToken:  "tok-dst",
-		sourceOrg: "gh/acme",
-		destOrg:   "circleci/dst-uuid",
+		srcToken:    "tok-src",
+		dstToken:    "tok-dst",
+		sourceOrg:   "gh/acme",
+		destOrg:     "circleci/dst-uuid",
+		githubToken: "ghp_fake", // OAuth→App needs a token (hard check); only the cross-type warning should remain
 	}
 	srcOrg := &org.Organization{ID: "src-uuid", Name: "acme", VCSType: "github", Slug: "gh/acme"}
 	// Different type → cross-type warning.
@@ -792,5 +793,94 @@ func TestMigrateCmd_SkipPreflightFlagRegistered(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "unknown flag") {
 		t.Fatalf("--skip-preflight caused unknown flag error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkSynthesisToken — synthesized pipeline definitions need a GitHub token
+// ---------------------------------------------------------------------------
+
+func TestCheckSynthesisToken(t *testing.T) {
+	appOrg := &org.Organization{VCSType: "circleci"}
+	oauthOrg := &org.Organization{VCSType: "github"}
+	cases := []struct {
+		name      string
+		token     string
+		dest      *org.Organization
+		synth     int
+		wantFails bool
+	}{
+		{"no token, projects need synthesis, App dest", "", appOrg, 3, true},
+		{"unknown count (migrate), App dest", "", appOrg, -1, true},
+		{"token present", "ghp_x", appOrg, 3, false},
+		{"nothing to synthesize", "", appOrg, 0, false},
+		{"OAuth dest never synthesizes", "", oauthOrg, 3, false},
+		{"dest unknown", "", nil, 3, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := checkSynthesisToken(tc.token, tc.dest, tc.synth)
+			if (r != nil) != tc.wantFails {
+				t.Fatalf("got %v, wantFails=%v", r, tc.wantFails)
+			}
+			if r != nil {
+				if r.Status != preflight.StatusFail {
+					t.Errorf("status = %s, want Fail", r.Status)
+				}
+				if !strings.Contains(r.Detail, "--github-token") || !strings.Contains(r.Detail, "GITHUB_TOKEN") {
+					t.Errorf("detail must say how to fix it: %q", r.Detail)
+				}
+			}
+		})
+	}
+}
+
+// TestRunSyncPreflight_SynthesisWithoutToken_Fails: sync preflight returns a
+// blocker when OAuth projects need synthesized definitions and there is no token.
+func TestRunSyncPreflight_SynthesisWithoutToken_Fails(t *testing.T) {
+	overrideNonTTY(t)
+	clients := preflightClients{dstOrg: &fakeOrgGetter{org: &org.Organization{Name: "new", VCSType: "circleci"}}}
+
+	deps := preflightDeps{dstToken: "tok-dst", destOrg: "circleci/new", synthProjects: 2}
+	var buf strings.Builder
+	err := runSyncPreflight(context.Background(), deps, clients, "github", &buf)
+	if err == nil || !strings.Contains(err.Error(), "blocker") {
+		t.Fatalf("want a preflight blocker, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "synthesize") {
+		t.Errorf("output should explain the synthesized-definition requirement: %q", buf.String())
+	}
+
+	// With a token it passes; with no synthesis needed it also passes without one.
+	deps.githubToken = "ghp_x"
+	if err := runSyncPreflight(context.Background(), deps, clients, "github", &strings.Builder{}); err != nil {
+		t.Errorf("token present: unexpected error %v", err)
+	}
+	deps.githubToken, deps.synthProjects = "", 0
+	if err := runSyncPreflight(context.Background(), deps, clients, "github", &strings.Builder{}); err != nil {
+		t.Errorf("no synthesis needed: unexpected error %v", err)
+	}
+}
+
+// TestRunMigratePreflight_OAuthToApp_NoToken_Fails: migrate/doctor (no manifest
+// yet) fail for an OAuth source onto an App destination without a token.
+func TestRunMigratePreflight_OAuthToApp_NoToken_Fails(t *testing.T) {
+	overrideNonTTY(t)
+	deps := preflightDeps{srcToken: "s", dstToken: "d", sourceOrg: "gh/acme", destOrg: "circleci/dst"}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: &org.Organization{Name: "acme", VCSType: "github"}},
+		dstOrg:      &fakeOrgGetter{org: &org.Organization{Name: "new", VCSType: "circleci"}},
+		srcFlags:    &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{{Name: "web", Slug: "gh/acme/web"}}},
+	}
+	var buf strings.Builder
+	err := runMigratePreflight(context.Background(), deps, clients, &buf)
+	if err == nil || !strings.Contains(err.Error(), "blocker") {
+		t.Fatalf("want a preflight blocker, got %v", err)
+	}
+
+	deps.githubToken = "ghp_x"
+	if err := runMigratePreflight(context.Background(), deps, clients, &strings.Builder{}); err != nil {
+		t.Errorf("with token: unexpected error %v", err)
 	}
 }

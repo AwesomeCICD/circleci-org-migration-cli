@@ -24,7 +24,21 @@ sync runs against your own source org and prints a warning. See
 
 Repos must be connected to the destination CircleCI GitHub App **before**
 `sync --apply`. Check the GitHub App installation in the destination org's
-settings, then re-run.
+settings, then re-run — the project is already created, and the re-run creates
+the missing pipeline definition and trigger (existing ones report `exists`).
+
+## Preflight fails: GitHub token required (OAuth → App)
+
+OAuth projects with no captured GitHub App pipeline definition get a synthesized
+`build-and-test` definition, and its repo ID is only available from the GitHub
+API. Set `--github-token` (or `$GITHUB_TOKEN`, repo read) and re-run. Without it
+each such project would end `manual: no external_id available`.
+
+## `sync --apply --yes` exits non-zero after "enabling builds"
+
+At least one trigger/project failed to enable; every result is printed above the
+error (`[error] …`). Fix the cause and re-run `sync --apply --yes` — still-disabled
+triggers are re-queued, enabled ones report `exists`.
 
 ## Pipeline definitions show the wrong `external_id`
 

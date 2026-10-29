@@ -159,7 +159,7 @@ source-org project UUIDs do not transfer to the destination.
 | `GET` | `/api/v2/webhook?scope-id={project-id}&scope-type=project` | List outbound webhooks scoped to a project. Requires the project UUID, not the slug. Paginated. |
 | `GET` | `/api/v2/project/{project-slug}/schedule` | List pipeline schedules. Paginated. |
 | `GET` | `/api/v2/projects/{projectID}/pipeline-definitions` | List App-pipeline definitions for a project. Each definition includes its config source, checkout source, and file path. Paginated. |
-| `GET` | `/api/v2/projects/{projectID}/pipeline-definitions/{defID}/triggers` | List the triggers attached to a pipeline definition. Returns `event_source`, `event_preset`, and `disabled` fields. Paginated. |
+| `GET` | `/api/v2/projects/{projectID}/pipeline-definitions/{defID}/triggers` | List the triggers attached to a pipeline definition. Returns `event_source`, `event_preset`, and `disabled` fields. Paginated. Also read from the **destination** on a `sync` re-run (together with the pipeline-definitions list) to reconcile what already exists. |
 | `GET` | `/api/v2/org/{orgID}/project/{projectID}/oidc-custom-claims` | Read per-project OIDC audience and TTL. |
 
 ### Project discovery
@@ -232,16 +232,16 @@ Token *values* are never returned by the list API and are returned by `create`
 |---|---|---|
 | `POST` | `/api/v2/organization/{orgID}/project` | Create a GitHub App project by org UUID and name. Body: `{"name": "<name>"}`. The `orgID` is the bare UUID (not a slug) for App-type orgs. Returns the new project's UUID. |
 | `POST` | `/api/v2/projects/{projUUID}/pipeline-definitions` | Create a pipeline definition on an App project. Body includes `name`, `description`, `config_source` (provider, repo external_id, file_path), and `checkout_source`. |
-| `POST` | `/api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers` | Create a trigger on a pipeline definition. Created with `disabled: true` so no builds fire until explicitly enabled. Body includes `event_source` (provider, repo external_id) and `event_preset`. |
+| `POST` | `/api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers` | Create a trigger on a pipeline definition. Created with `disabled: true` so no builds fire until explicitly enabled. Body includes `event_source` (provider plus `repo.external_id`, `webhook.sender` or `schedule.{cron_expression,attribution_actor}`), `event_preset`, `checkout_ref`, `config_ref`, `event_name` (webhook/schedule) and `parameters` (schedule). The API accepts no trigger `name` or `description` on create. |
 | `PATCH` | `/api/v2/projects/{projUUID}/triggers/{triggerUUID}` | Enable a trigger by setting `disabled: false`. This is the "enable builds" action for App projects — after this call, the trigger may fire on matching events. |
 | `DELETE` | `/api/v2/project/{slug}` | Delete a project. Used for rollback and test cleanup only. |
 
 **GitHub repository external_id:** App pipeline definitions and triggers
-require a numeric GitHub repository ID (`external_id`). By default the ID
-captured from the source manifest is reused directly, which is correct for
-same-GitHub-org migrations. When `--github-token` is provided, the tool calls
-the GitHub API to resolve the ID for the destination repository (useful when
-the destination org is connected to a different GitHub organization).
+require a numeric GitHub repository ID (`external_id`). When the GitHub org is
+unchanged and the ID was captured in the manifest, it is reused directly (no
+GitHub call, no token). The tool calls the GitHub API (needs `--github-token`)
+only when the GitHub org changed, or when no ID was captured — an OAuth project
+whose App pipeline definition is synthesized.
 
 ---
 
@@ -249,11 +249,12 @@ the destination org is connected to a different GitHub organization).
 
 | Method | Endpoint | Used for |
 |---|---|---|
-| `GET` | `https://api.github.com/repos/{owner}/{repo}` | Resolve a GitHub repository's numeric ID (`id` field). Used when `--github-token` is set and a pipeline definition needs a fresh `external_id` for the destination repo. |
+| `GET` | `https://api.github.com/repos/{owner}/{repo}` | Resolve a GitHub repository's numeric ID (`id` field). Used when `--github-token` is set and a pipeline definition needs an `external_id` that was not captured, or a fresh one because the GitHub org changed. |
 
 The request carries an `Authorization: Bearer {token}` header when a token is
-supplied. A 404 response is treated as an error; the tool falls back to the
-captured `external_id` if resolution fails.
+supplied. A 404 response means the repo is not in the destination GitHub org: the project is
+reported `manual` and its pipeline definition is skipped (no fallback to a stale
+captured id).
 
 ---
 

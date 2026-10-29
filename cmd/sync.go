@@ -226,8 +226,15 @@ Resources synced (in order):
     policies, OTel exporter, contacts, storage retention, budgets, release
     tracker, and block-unregistered-users.
   • Contexts — with environment variable values from the secret bundle.
-  • Projects — OAuth projects are recreated in a paused state; App projects
-    are created with a pipeline definition and trigger.
+  • Projects — OAuth projects are recreated in a paused state. App projects
+    are created with their captured pipeline definitions and triggers
+    (github_oauth sources are translated to github_app); an OAuth project with
+    no captured definition gets one synthesized "build-and-test" definition,
+    which needs --github-token (preflight fails without it). Triggers are
+    created disabled. Re-running reconciles existing App projects: missing
+    definitions/triggers are created, everything present reports "exists", and
+    triggers still disabled are queued so --apply --yes enables them. A failed
+    enable makes sync exit non-zero.
   • Self-hosted runner resource classes — only when --dest-runner-namespace
     is provided or the manifest contains runner classes.
 
@@ -384,11 +391,19 @@ Examples:
 					pfDstOrgClient = c
 				}
 				pfDeps := preflightDeps{
-					cfg:           cfg,
-					dstToken:      token,
-					destOrg:       destSlug,
-					githubToken:   githubToken,
-					destGitHubOrg: destGitHubOrg,
+					cfg:             cfg,
+					dstToken:        token,
+					destOrg:         destSlug,
+					githubToken:     githubToken,
+					destGitHubOrg:   destGitHubOrg,
+					githubOrgMapped: mapping != nil && mapping.GitHubOrg != nil,
+				}
+				// OAuth projects with no captured pipeline definition need a
+				// synthesized one on a GitHub App destination; that needs a
+				// GitHub token (see checkSynthesisToken). Only relevant when
+				// projects are actually being synced.
+				if !skipProjects {
+					pfDeps.synthProjects = syncer.CountSynthesizedProjects(m)
 				}
 				pfClients := preflightClients{
 					dstOrg: pfDstOrgClient,
@@ -423,6 +438,7 @@ Examples:
 
 			// Accumulate section reports for --json output.
 			repsBySection := make(map[string]*syncer.Report)
+			var enableErr error // deferred enable-builds failure (non-zero exit)
 
 			if !skipOrgSettings {
 				rep, err := sy.SyncOrgSettings(ctx, m, mapping, opts)
@@ -454,9 +470,11 @@ Examples:
 					printSyncReport(cmd, "Projects", rep, m)
 				}
 
-				// Handle the enable-builds (follow) step for paused projects.
+				// Handle the enable-builds (follow) step for paused projects. A
+				// failure is remembered and returned at the end (after the rest of
+				// the sync and the summary) so one bad enable does not abort the run.
 				if err := handleEnableBuilds(cmd, sy, rep, apply, yes, jsonOutput); err != nil {
-					return err
+					enableErr = err
 				}
 
 				// Now that destination projects exist, apply the project-type
@@ -542,13 +560,16 @@ Examples:
 
 			if jsonOutput {
 				summary := buildSyncSummary(apply, repsBySection)
-				return marshalJSON(cmd.OutOrStdout(), summary)
+				if err := marshalJSON(cmd.OutOrStdout(), summary); err != nil {
+					return err
+				}
+				return enableErr
 			}
 
 			// Consolidated end-of-run summary across all sections.
 			printEndSummary(cmd.OutOrStdout(), repsBySection)
 
-			return nil
+			return enableErr
 		},
 	}
 
@@ -575,7 +596,10 @@ Examples:
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports")
 	f.StringVar(&githubToken, "github-token", "",
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).")
+		"GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. "+
+			"Required when repos have moved to a new GitHub org (--dest-github-org or mapping github_org), and for every OAuth project that has no captured GitHub App pipeline definition "+
+			"(a definition is synthesized for it and its repo ID is only available from GitHub) — preflight fails without it in that case. "+
+			"Not needed when the GitHub org is unchanged and the manifest captured the repo IDs: those are reused.")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.")
 	f.StringVar(&destRunnerNamespace, "dest-runner-namespace", "",
@@ -616,12 +640,22 @@ Examples:
 	return cmd
 }
 
+// enableBuilder is the slice of *syncer.Syncer handleEnableBuilds needs (an
+// interface so tests can inject failures).
+type enableBuilder interface {
+	EnableBuilds(ctx context.Context, t syncer.EnableTarget, apply bool) (syncer.Action, error)
+}
+
 // handleEnableBuilds decides whether to follow (enable builds for) the
 // paused projects collected in rep.PendingEnable, then executes that decision.
 // Progress and result lines go to stderr so they never pollute the JSON stream.
 // When jsonOutput is true all writes to stdout are suppressed; progress lines
 // are also suppressed (the caller folds results into the JSON summary).
-func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Report, apply, yes, jsonOutput bool) error {
+//
+// Every target is attempted and its result printed; when any enable fails the
+// returned error is non-nil (non-zero exit) so a half-enabled run is never
+// reported as success.
+func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report, apply, yes, jsonOutput bool) error {
 	pending := rep.PendingEnable
 	if len(pending) == 0 {
 		return nil
@@ -676,11 +710,18 @@ func handleEnableBuilds(cmd *cobra.Command, sy *syncer.Syncer, rep *syncer.Repor
 	if !jsonOutput {
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nFollowing (enabling builds for) %d project(s)...\n", n)
 	}
+	failed := 0
 	for _, t := range pending {
-		action, _ := sy.EnableBuilds(cmd.Context(), t, true)
+		action, err := sy.EnableBuilds(cmd.Context(), t, true)
+		if err != nil {
+			failed++
+		}
 		if !jsonOutput {
 			fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s — %s\n", action.Status, action.Target, action.Detail)
 		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("enabling builds failed for %d of %d target(s); fix the errors above and re-run sync --apply --yes", failed, n)
 	}
 	return nil
 }

@@ -37,8 +37,15 @@ Resources synced (in order):
     policies, OTel exporter, contacts, storage retention, budgets, release
     tracker, and block-unregistered-users.
   • Contexts — with environment variable values from the secret bundle.
-  • Projects — OAuth projects are recreated in a paused state; App projects
-    are created with a pipeline definition and trigger.
+  • Projects — OAuth projects are recreated in a paused state. App projects
+    are created with their captured pipeline definitions and triggers
+    (github_oauth sources are translated to github_app); an OAuth project with
+    no captured definition gets one synthesized "build-and-test" definition,
+    which needs --github-token (preflight fails without it). Triggers are
+    created disabled. Re-running reconciles existing App projects: missing
+    definitions/triggers are created, everything present reports "exists", and
+    triggers still disabled are queued so --apply --yes enables them. A failed
+    enable makes sync exit non-zero.
   • Self-hosted runner resource classes — only when --dest-runner-namespace
     is provided or the manifest contains runner classes.
 
@@ -86,7 +93,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --dest-github-org string                   Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden by an explicit github_org entry in the mapping file. Requires --github-token.
       --dest-orb-namespace string                Destination orb namespace to republish captured orb versions into (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains orbs, each is flagged for manual recreation.
       --dest-runner-namespace string             Destination runner namespace for recreating self-hosted runner resource classes (e.g. 'acme-new'). Must be supplied explicitly — the syncer never guesses the destination namespace. When omitted and the manifest contains runner classes, each is flagged for manual recreation.
-      --github-token string                      GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org). When omitted, the captured external_id is reused (correct for same-org migrations).
+      --github-token string                      GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have moved to a new GitHub org (--dest-github-org or mapping github_org), and for every OAuth project that has no captured GitHub App pipeline definition (a definition is synthesized for it and its repo ID is only available from GitHub) — preflight fails without it in that case. Not needed when the GitHub org is unchanged and the manifest captured the repo IDs: those are reused.
   -h, --help                                     help for sync
       --include-danger-flags                     Write the 'danger' feature flags (org: drop_all_build_requests, require_context_group_restriction; project: drop_all_build_requests) to the destination. Default false: these are skipped (and surfaced as a manual step only when the source value is true) because enabling them on a freshly-migrated org/project can freeze or break pipelines. Set this for a faithful migration once the destination is validated and ready.
       --json                                     Print a machine-readable JSON summary to stdout instead of the human-readable per-section reports

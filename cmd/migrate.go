@@ -484,6 +484,10 @@ Examples:
 					IncludeDangerFlags:  includeDangerFlags,
 				}
 				reps := make(map[string]*syncer.Report)
+				// An enable-builds failure is remembered and returned after the
+				// remaining sections have run, so the run exits non-zero without
+				// abandoning runner/CIAM/orb sync.
+				var enableFailure error
 
 				if !skipOrgSettings {
 					rep, syncErr := sy.SyncOrgSettings(ctx, m, mapping, sOpts)
@@ -515,7 +519,7 @@ Examples:
 						printSyncReport(cmd, "Projects", rep, m)
 					}
 					if enableErr := handleEnableBuilds(cmd, sy, rep, applyNow, yes, jsonOutput); enableErr != nil { //nolint:contextcheck // handleEnableBuilds predates ctx propagation; ctx not needed for sync-enable path
-						return reps, enableErr
+						enableFailure = enableErr
 					}
 
 					if !skipContexts {
@@ -575,7 +579,7 @@ Examples:
 						printSyncReport(cmd, "Orbs", rep, m)
 					}
 				}
-				return reps, nil
+				return reps, enableFailure
 			}
 
 			// ── Sync pass ────────────────────────────────────────────────────
@@ -703,9 +707,12 @@ Examples:
 	f.StringVar(&missing, "missing-secrets", syncer.MissingSkip,
 		"How to handle variables with no captured value: skip|placeholder")
 	f.StringVar(&githubToken, "github-token", "",
-		"GitHub personal access token used to resolve repository IDs when creating pipeline definitions "+
-			"in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been "+
-			"moved to a new GitHub org (--dest-github-org or mapping github_org).")
+		"GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions "+
+			"in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required (preflight fails without it) when "+
+			"an OAuth source org is migrated to a GitHub App destination — OAuth projects without a GitHub App pipeline "+
+			"definition get a synthesized one whose repo ID only GitHub can supply — and when repos have moved to a new "+
+			"GitHub org (--dest-github-org or mapping github_org). Not needed when the GitHub org is unchanged and the "+
+			"export captured the repo IDs: those are reused.")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new "+
 			"GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden "+
