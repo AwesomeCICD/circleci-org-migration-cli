@@ -97,7 +97,10 @@ PREREQUISITES:
      --skip-extras. NOTE: once the GitHub App is uninstalled from the org its
      App definitions are gone, so project-var / SSH-key transfers then need
      checkout keys; contexts transferred before the uninstall do not.
-  5. Run 'secrets transfer --apply' to execute the transfer pipeline.
+  5. Contexts already transferred? Pass --skip-contexts with --include-project-vars
+     and/or --include-ssh-keys to run only the per-project pipelines (no host
+     project, no restriction removal, no context pipeline).
+  6. Run 'secrets transfer --apply' to execute the transfer pipeline.
 
 DRY RUN (default — safe to run without --apply):
   Without --apply, transfer prints a plan: which contexts and variables would
@@ -151,6 +154,14 @@ Examples:
     --include-project-vars \
     --apply
 
+  # Contexts already transferred — project vars and SSH keys only:
+  circleci-migrate secrets transfer --manifest manifest.json \
+    --dest-org gh/dest-org \
+    --dest-token-context migration-secrets \
+    --mapping mapping.json \
+    --skip-contexts --include-project-vars --include-ssh-keys \
+    --apply
+
   # Transfer specific contexts only:
   circleci-migrate secrets transfer --manifest manifest.json \
     --dest-org gh/dest-org \
@@ -202,6 +213,7 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
       --mapping string              Path to mapping.json for context name overrides (optional). Entries in the 'projects' map whose keys do not contain '/' are treated as context name → destination name mappings.
       --poll-timeout duration       Maximum time to wait for the transfer pipeline to complete (0 = no timeout) (default 30m0s)
       --remove-restrictions         Temporarily remove project/expression restrictions from source contexts before the transfer pipeline runs, then restore them afterwards (best-effort). A context with a project or expression restriction causes the transfer pipeline to come back 'unauthorized' when the host project is not in the allowed set. The default 'All members' group restriction and all other group restrictions are NEVER removed (they are org-type specific and cannot always be recreated via API). Without this flag, Transfer fails fast with an actionable error when blocking restrictions are detected instead of triggering a pipeline that will be unauthorized.
+      --skip-contexts               Drop every context from the plan so only the per-project pipelines run — for when contexts were already transferred. Requires --include-project-vars and/or --include-ssh-keys; cannot be combined with --context. No host project is resolved and no context restriction is touched.
 ```
 
 ### Options inherited from parent commands

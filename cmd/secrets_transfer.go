@@ -112,7 +112,10 @@ PREREQUISITES:
      --skip-extras. NOTE: once the GitHub App is uninstalled from the org its
      App definitions are gone, so project-var / SSH-key transfers then need
      checkout keys; contexts transferred before the uninstall do not.
-  5. Run 'secrets transfer --apply' to execute the transfer pipeline.
+  5. Contexts already transferred? Pass --skip-contexts with --include-project-vars
+     and/or --include-ssh-keys to run only the per-project pipelines (no host
+     project, no restriction removal, no context pipeline).
+  6. Run 'secrets transfer --apply' to execute the transfer pipeline.
 
 DRY RUN (default — safe to run without --apply):
   Without --apply, transfer prints a plan: which contexts and variables would
@@ -166,6 +169,14 @@ Examples:
     --include-project-vars \
     --apply
 
+  # Contexts already transferred — project vars and SSH keys only:
+  circleci-migrate secrets transfer --manifest manifest.json \
+    --dest-org gh/dest-org \
+    --dest-token-context migration-secrets \
+    --mapping mapping.json \
+    --skip-contexts --include-project-vars --include-ssh-keys \
+    --apply
+
   # Transfer specific contexts only:
   circleci-migrate secrets transfer --manifest manifest.json \
     --dest-org gh/dest-org \
@@ -209,6 +220,7 @@ type transferFlags struct {
 	enableTrigger      bool
 	includeProjectVars bool
 	includeSSHKeys     bool
+	skipContexts       bool
 	removeRestrictions bool
 	pollTimeout        time.Duration
 }
@@ -242,6 +254,15 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 	}
 	if tf.destTokenContext == "" {
 		return errors.New("--dest-token-context is required (name of the source-org context that holds the destination API token)")
+	}
+
+	if tf.skipContexts {
+		if len(tf.contextNames) > 0 {
+			return errors.New("--skip-contexts cannot be combined with --context (it drops every context)")
+		}
+		if !tf.includeProjectVars && !tf.includeSSHKeys {
+			return errors.New("--skip-contexts leaves nothing to transfer: also pass --include-project-vars and/or --include-ssh-keys")
+		}
 	}
 
 	m, err := manifest.Load(tf.manifestPath)
@@ -305,7 +326,7 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 
 	// Build the context client for restriction management when --remove-restrictions is set.
 	var ctxClient transfer.ContextRestrictionManager
-	if tf.removeRestrictions {
+	if tf.removeRestrictions && !tf.skipContexts { // no contexts → no restrictions to lift
 		cc, ccErr := apicontext.NewClient(cfg, srcToken)
 		if ccErr != nil {
 			return fmt.Errorf("creating context client for --remove-restrictions: %w", ccErr)
@@ -324,6 +345,7 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		Mapping:              combinedMapping,
 		IncludeProjectVars:   tf.includeProjectVars,
 		IncludeSSHKeys:       tf.includeSSHKeys,
+		SkipContexts:         tf.skipContexts,
 		RemoveRestrictions:   tf.removeRestrictions,
 		ContextClient:        ctxClient,
 		BeforeMutate:         newTriggerFlagHook(cmd, cfg, srcToken, m.Source.Org.Slug, projClient, tf.enableTrigger),
@@ -588,6 +610,10 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 			"projects without a mapping entry are skipped. "+
 			"A project with SSH keys but no env vars still triggers a per-project pipeline. "+
 			"Destination project must already be onboarded/exist in the destination org.")
+	f.BoolVar(&tf.skipContexts, "skip-contexts", false,
+		"Drop every context from the plan so only the per-project pipelines run — for when contexts "+
+			"were already transferred. Requires --include-project-vars and/or --include-ssh-keys; cannot be "+
+			"combined with --context. No host project is resolved and no context restriction is touched.")
 	f.BoolVar(&tf.removeRestrictions, "remove-restrictions", false,
 		"Temporarily remove project/expression restrictions from source contexts before the transfer "+
 			"pipeline runs, then restore them afterwards (best-effort). "+

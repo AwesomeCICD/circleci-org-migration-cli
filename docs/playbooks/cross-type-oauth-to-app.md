@@ -375,6 +375,14 @@ SSH keys still require Option A.
 > transferred *before* the uninstall do not. Run `secrets transfer` first. See
 > [Troubleshooting](../troubleshooting.md#secrets-transfer-the-project-has-no-ssh-key).
 
+> **Contexts already transferred?** Re-run with `--skip-contexts
+> --include-project-vars --include-ssh-keys` to run only the per-project
+> pipelines: every context is dropped from the plan, so no host project is
+> resolved (or checked for a key), no restriction is removed, and no context
+> pipeline runs. `--skip-contexts` needs `--include-project-vars` and/or
+> `--include-ssh-keys` ("nothing to transfer" otherwise) and cannot be combined
+> with `--context`.
+
 > **Project env vars are post-sync.** `secrets transfer --include-project-vars`
 > writes values directly to destination *projects*, which do not exist until
 > `sync --apply` (Phase 5) creates them — so run that step **after Phase 5**, not

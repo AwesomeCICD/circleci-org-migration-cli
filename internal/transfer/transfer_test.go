@@ -3728,3 +3728,99 @@ func TestTransfer_ExplicitHost_AppDefinitionNeedsNoKey(t *testing.T) {
 		t.Fatalf("expected a fail-fast error naming both fixes, got: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// --skip-contexts
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SkipContexts drops every context: no host resolution (so no host key check or
+// definition lookup), no restriction removal, no context pipeline; only the
+// per-project pipeline runs.
+func TestTransfer_SkipContexts_RunsOnlyPerProjectPipelines(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = []manifest.Context{{
+		Name:         "restricted-ctx",
+		EnvVars:      []manifest.ContextEnvVar{{Name: "X"}},
+		Restrictions: []manifest.Restriction{{Type: "project", Value: "proj-uuid-a"}},
+	}}
+	m.Projects[1].CheckoutKeys = testCheckoutKey
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/web": true} // keyless: only its per-project run is skipped
+	opts, out, errOut := perProjectKeyOpts()
+	opts.HostProjectSlug = ""
+	opts.SkipContexts = true
+	probe := newMutationProbe()
+	probe.wire(&opts) // --remove-restrictions with a live context client
+
+	// web is keyless → skipped, so the run ends non-zero listing only web;
+	// contexts (and the host project) play no part.
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil || !strings.Contains(err.Error(), "gh/acme/web") ||
+		strings.Contains(err.Error(), "restricted-ctx") || strings.Contains(err.Error(), "host") {
+		t.Fatalf("expected an error listing only the keyless project, got: %v", err)
+	}
+	for _, c := range deps.triggerCalls {
+		if strings.Contains(c.yaml, "restricted-ctx") {
+			t.Errorf("no context transfer job may be generated, got config:\n%s", c.yaml)
+		}
+	}
+	if len(probe.ctxClient.deleteCalls) != 0 || len(probe.ctxClient.createCalls) != 0 {
+		t.Errorf("restrictions must not be touched: deleted=%v created=%v", probe.ctxClient.deleteCalls, probe.ctxClient.createCalls)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/api" {
+		t.Errorf("only the per-project pipeline for gh/acme/api should run, got %v", got)
+	}
+	if strings.Contains(out.String(), "Context transfer pipeline") || strings.Contains(errOut.String(), "host project") {
+		t.Errorf("no context pipeline / host resolution expected:\nout:%s\nerr:%s", out.String(), errOut.String())
+	}
+}
+
+// With every project healthy and no host key at all, SkipContexts still works
+// because no host project is resolved.
+func TestTransfer_SkipContexts_NoHostResolution(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Projects[0].CheckoutKeys = testCheckoutKey
+	m.Projects[1].CheckoutKeys = testCheckoutKey
+	deps := happyMultiDeps()
+	opts, out, errOut := perProjectKeyOpts()
+	opts.HostProjectSlug = ""
+	opts.SkipContexts = true
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 2 {
+		t.Errorf("expected two per-project pipelines, got %v", got)
+	}
+	if strings.Contains(errOut.String(), "Auto-picked host project") || strings.Contains(out.String(), "Context transfer pipeline") {
+		t.Errorf("no host project / context pipeline expected:\n%s\n%s", out.String(), errOut.String())
+	}
+}
+
+func TestBuildPlan_SkipContexts(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	opts := baseOpts()
+	opts.SkipContexts = true
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{"gh/acme/web": "gh/new/web", "gh/acme/api": "gh/new/api"}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.Contexts) != 0 || len(plan.Projects) == 0 {
+		t.Errorf("expected projects only, got %d contexts / %d projects", len(plan.Contexts), len(plan.Projects))
+	}
+
+	nothing := baseOpts()
+	nothing.SkipContexts = true
+	if _, err := BuildPlan(m, &nothing); err == nil || !strings.Contains(err.Error(), "nothing to transfer") {
+		t.Errorf("expected a 'nothing to transfer' error, got: %v", err)
+	}
+
+	conflict := opts
+	conflict.SelectedContextNames = map[string]bool{"deploy-prod": true}
+	if _, err := BuildPlan(m, &conflict); err == nil || !strings.Contains(err.Error(), "--context") {
+		t.Errorf("expected a --context conflict error, got: %v", err)
+	}
+}

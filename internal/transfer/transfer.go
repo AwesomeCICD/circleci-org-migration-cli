@@ -161,6 +161,13 @@ type Options struct {
 	// Empty means all contexts with at least one variable.
 	SelectedContextNames map[string]bool
 
+	// SkipContexts drops every context from the plan, so only the per-project
+	// pipelines (IncludeProjectVars / IncludeSSHKeys) run: no host project is
+	// resolved, no restriction is removed, and no context pipeline is triggered.
+	// For when contexts were already transferred.  Requires IncludeProjectVars
+	// or IncludeSSHKeys and cannot be combined with SelectedContextNames.
+	SkipContexts bool
+
 	// Mapping is an optional source→dest context/project name mapping.  When a
 	// source context name has an entry (key without "/"), the destination context
 	// is looked up by the mapped name.  When a source project slug has an entry
@@ -1208,8 +1215,20 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 		return Plan{}, errors.New("transfer: --dest-token-context is required (name of the source context holding the dest API token)")
 	}
 
+	if opts.SkipContexts {
+		if len(opts.SelectedContextNames) > 0 {
+			return Plan{}, errors.New("transfer: --skip-contexts cannot be combined with --context")
+		}
+		if !opts.IncludeProjectVars && !opts.IncludeSSHKeys {
+			return Plan{}, errors.New("transfer: --skip-contexts without --include-project-vars or --include-ssh-keys leaves nothing to transfer")
+		}
+	}
+
 	var ctxPlans []ContextPlan
 	for _, mc := range m.Contexts {
+		if opts.SkipContexts {
+			break
+		}
 		if len(opts.SelectedContextNames) > 0 && !opts.SelectedContextNames[mc.Name] {
 			continue
 		}
