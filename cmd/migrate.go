@@ -726,7 +726,7 @@ Examples:
 			// non-zero solely because of a parity gap.
 			if apply && !jsonOutput && !skipValidate {
 				runPostMigrateValidation(ctx, cmd, cfg, m, dstToken, destOrg,
-					destRunnerNamespace, destOrbNamespace, mapping)
+					destRunnerNamespace, destOrbNamespace, mapping, ignoredContexts(destTokenContext, nil)...)
 			}
 
 			return finalErr()
@@ -1791,6 +1791,7 @@ func runPostMigrateValidation(
 	srcManifest *manifest.Manifest,
 	dstToken, destOrg, destRunnerNamespace, destOrbNamespace string,
 	mapping *manifest.Mapping,
+	ignoreContexts ...string, // migration-only contexts (the --dest-token-context) left out of the comparison
 ) {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1808,6 +1809,7 @@ func runPostMigrateValidation(
 	result := validate.Compare(srcManifest, dstManifest, mapping, validate.Options{
 		DestRunnerNamespace: destRunnerNamespace,
 		DestOrbNamespace:    destOrbNamespace,
+		IgnoreContexts:      ignoreContexts,
 	})
 
 	var b strings.Builder
