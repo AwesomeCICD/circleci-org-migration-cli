@@ -348,25 +348,38 @@ type enableTriggerRequest struct {
 // Request body: {"disabled": false}
 // Response 200: trigger JSON (ignored)
 func (c *Client) EnableTrigger(ctx context.Context, projectID, triggerID string) error {
+	return c.SetTriggerDisabled(ctx, projectID, triggerID, false)
+}
+
+// SetTriggerDisabled pauses (disabled=true) or unpauses (disabled=false) a
+// trigger. It is not supported for github_oauth triggers.
+//
+// Endpoint: PATCH /api/v2/projects/{projUUID}/triggers/{triggerUUID}
+// Request body: {"disabled": <bool>}
+func (c *Client) SetTriggerDisabled(ctx context.Context, projectID, triggerID string, disabled bool) error {
 	if projectID == "" || triggerID == "" {
-		return fmt.Errorf("project: EnableTrigger requires projectID and triggerID")
+		return fmt.Errorf("project: SetTriggerDisabled requires projectID and triggerID")
 	}
 
 	path := "projects/" + url.PathEscape(projectID) +
 		"/triggers/" + url.PathEscape(triggerID)
 	u, err := url.Parse(path)
 	if err != nil {
-		return fmt.Errorf("project: EnableTrigger: build URL: %w", err)
+		return fmt.Errorf("project: SetTriggerDisabled: build URL: %w", err)
 	}
 
-	body := enableTriggerRequest{Disabled: false}
+	body := enableTriggerRequest{Disabled: disabled}
 	req, err := c.v2.NewRequest(ctx, "PATCH", u, &body)
 	if err != nil {
-		return fmt.Errorf("project: EnableTrigger: build request: %w", err)
+		return fmt.Errorf("project: SetTriggerDisabled: build request: %w", err)
 	}
 
 	if _, err := c.v2.DoRequest(req, nil); err != nil {
-		return fmt.Errorf("project: EnableTrigger %s/%s: %w", projectID, triggerID, err)
+		verb := "EnableTrigger"
+		if disabled {
+			verb = "DisableTrigger"
+		}
+		return fmt.Errorf("project: %s %s/%s: %w", verb, projectID, triggerID, err)
 	}
 	return nil
 }
