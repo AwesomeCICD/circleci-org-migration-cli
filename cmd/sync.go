@@ -165,6 +165,23 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
+// noBundleNotice explains, when sync runs without a secrets bundle, that it
+// writes no env var VALUES — which is not data loss: the values still exist in
+// the source org and are moved by `secrets transfer` or `secrets capture`.
+func noBundleNotice(envVars int) string {
+	return fmt.Sprintf("NOTE: no secrets bundle loaded: sync does not write env var values without one (%d variable(s) in the manifest). "+
+		"Nothing was lost — the values are still in the source org. Write them with 'secrets transfer' "+
+		"(in-pipeline, straight from the source org, no bundle file) or run 'secrets capture' and re-run sync with --secrets <bundle>.\n",
+		envVars)
+}
+
+// skipPipelinesUsage is the --skip-pipelines help text shared by sync and migrate.
+const skipPipelinesUsage = "GitHub App destinations: create or reuse each project and sync its settings, env vars and other " +
+	"project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). " +
+	"Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so " +
+	"'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; " +
+	"a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed."
+
 func newSyncCommand() *cobra.Command {
 	var (
 		manifestPath        string
@@ -194,6 +211,10 @@ func newSyncCommand() *cobra.Command {
 		// enableExistingTriggers also enables destination triggers that already
 		// exist and are disabled (default: only triggers created this run).
 		enableExistingTriggers bool
+
+		// skipPipelines syncs projects but creates no App pipeline definitions
+		// or triggers (create the projects before the GitHub App is moved).
+		skipPipelines bool
 	)
 
 	cmd := &cobra.Command{
@@ -250,18 +271,29 @@ re-run with --apply. Context restrictions are handled as follows:
   • group — resolved by name to the destination group UUID (requires the group
     to exist in the destination; falls back to "manual" if not found).
   • project — remapped automatically: source project UUID → source slug →
-    destination slug (via mapping) → destination project UUID. Requires that
-    the destination project already exists; if it does not (i.e. sync runs
-    contexts before projects on the first pass), the restriction falls back to
-    "manual" with a re-run instruction. Re-run sync after projects are created
-    to resolve remaining project restrictions.
+    destination slug (via mapping) → destination project UUID. For a GitHub App
+    destination, a project with no mapping entry is matched by NAME against
+    the destination org's projects instead (no 'projects' entries needed).
+    Requires that the destination project exists once the projects step has run;
+    if it does not, the restriction falls back to "manual" naming the project
+    and the fix. Re-run sync after the projects are created to resolve it.
 
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable
 builds (follow the project, which installs the webhook and may trigger an
-initial build). --yes / -y only matters together with --apply: it auto-confirms
-enabling builds without the interactive prompt (it has no effect in a dry run).
-Without a TTY, builds are not enabled unless --yes is passed.
+initial build). For a GitHub App destination the prompt instead offers to enable
+the N triggers that were created disabled, across M projects. --yes / -y only
+matters together with --apply: it auto-confirms enabling builds without the
+interactive prompt (it has no effect in a dry run). Without a TTY, builds are
+not enabled unless --yes is passed.
+
+--skip-pipelines (GitHub App destinations) creates or reuses each project and
+syncs its settings, env vars and other project data, but creates no pipeline
+definitions or triggers (reported as "skipped: --skip-pipelines"). Run it first
+to create the App projects BEFORE the GitHub App is moved off the source org, so
+'secrets transfer --include-project-vars' can run while the source's App
+pipeline definitions still exist; then run sync --apply again WITHOUT the flag
+to add the definitions and triggers to the existing projects.
 
 When the manifest contains self-hosted runner resource classes, pass
 --dest-runner-namespace to recreate them in the destination namespace. If the
@@ -274,7 +306,8 @@ Examples:
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --secrets secrets.json --apply --yes
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
-  circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
+  circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --skip-pipelines`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			cfg := configFromContext(ctx)
@@ -408,7 +441,8 @@ Examples:
 				// synthesized one on a GitHub App destination; that needs a
 				// GitHub token (see checkSynthesisToken). Only relevant when
 				// projects are actually being synced.
-				if !skipProjects {
+				pfDeps.skipPipelines = skipPipelines
+				if !skipProjects && !skipPipelines {
 					pfDeps.synthProjects = syncer.CountSynthesizedProjects(m)
 					// A project that already exists in the destination is
 					// reconciled without a GitHub lookup, so only the ones that
@@ -450,6 +484,7 @@ Examples:
 				IncludeDangerFlags:  includeDangerFlags,
 
 				EnableExistingTriggers: enableExistingTriggers,
+				SkipPipelines:          skipPipelines,
 			}
 
 			// Wire up the runner client when a destination namespace was provided
@@ -635,6 +670,7 @@ Examples:
 		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
+	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")

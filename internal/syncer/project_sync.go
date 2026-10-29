@@ -32,6 +32,7 @@ func (s *Syncer) SyncProjects(ctx context.Context, m *manifest.Manifest, bundle 
 		destSlug = m.Source.Org.Slug
 	}
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
+	s.projectsToCreate = map[string]bool{}
 
 	// Resolve the destination org ID once — needed for OIDC PATCH calls.
 	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
@@ -266,7 +267,13 @@ func (s *Syncer) syncAppProject(
 	synthesize := len(p.PipelineDefinitions) == 0
 	nDefs := len(p.PipelineDefinitions)
 	if !opts.Apply {
-		if synthesize {
+		if s.projectsToCreate != nil {
+			s.projectsToCreate[name] = true
+		}
+		if opts.SkipPipelines {
+			report.add("project", name, "created",
+				"would create App project (--skip-pipelines: no pipeline definitions or triggers)")
+		} else if synthesize {
 			report.add("project", name, "created",
 				"would create App project + 1 synthesized pipeline-definition (OAuth source)")
 		} else {
