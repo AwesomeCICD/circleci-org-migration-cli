@@ -46,7 +46,8 @@ has to go through the uninstall → reinstall handoff, just like a customer.
 | 5 | `sync --apply`, answering **N** at enable | Projects are created with **every** captured definition: same names, file paths, descriptions and all trigger fields, disabled. Contexts have values and restrictions. The exit code is 0 |
 | 6 | Run `sync --apply` again | Everything says `exists`; nothing is duplicated |
 | 7 | Delete one definition in the destination, then re-run `sync --apply` | The missing definition and its triggers are recreated |
-| 8 | Re-run `sync --apply --yes` | The triggers that were enabled in the source are enabled now, and source-disabled triggers stay disabled |
+| 8 | Re-run `sync --apply --yes` | Nothing is enabled: the triggers already exist and a re-run only enables triggers it creates. Each says "left disabled; pass --enable-existing-triggers" |
+| 8b | Re-run `sync --apply --yes --enable-existing-triggers` | The triggers that were enabled in the source are enabled now (each prints its trigger ID and definition name), and source-disabled triggers stay disabled |
 | 9 | Force an enable failure (for example, revoke the token mid-run) | Non-zero exit and a per-project error line |
 | 10 | Support runs `change-namespace-owner! "<ns>" "circleci/<short-id>"`, then you re-run `sync --apply` | Orbs need no action. Runner classes are recreated in the destination, or reported `manual` with the reason |
 | 11 | Push to Project B | The right definitions run; the orb resolves; contexts inject; OIDC tokens carry the new org ID |

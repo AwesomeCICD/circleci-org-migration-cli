@@ -585,15 +585,39 @@ definitions and triggers and then
   existing definition (this repairs a project whose definition failed earlier
   because the repo was not yet connected to the GitHub App);
 - reports everything already present as `exists` — a second run changes nothing;
-- queues for enable-builds every trigger that was enabled in the source but is
-  still disabled in the destination, so `sync --apply --yes` enables builds even
-  when the run that created the trigger never reached the enable step.
+- matches triggers by content (provider, preset, event name, refs, cron,
+  schedule parameters, webhook sender, enabled state) — exact matches first, so
+  look-alike triggers (for example two schedules with the same cron) are never
+  swapped and the server filling in default refs never creates a duplicate;
+- reports a definition that exists **by name** but differs from the manifest
+  (provider, repo ID or config `file_path`) as `manual` with the differences. It
+  is not modified and its triggers are not reconciled — align it by hand, then
+  re-run;
+- queues for enable-builds **only the triggers created in this run** that were
+  enabled in the source. A trigger that already exists and is disabled in the
+  destination is left alone, because you may have disabled it on purpose. Its
+  `exists` line says so and names the trigger ID and definition.
 
 A dry run (`sync` without `--apply`) shows exactly this: `would create` for what
-is missing and `exists` for what is present. If you deliberately disabled a
-trigger in the destination after migration, a later `sync --apply --yes` will
-re-enable it (the prompt/`--yes` is the gate) — drop `--yes` and answer **N**, or
-use `--skip-projects`, when re-running for other sections.
+is missing and `exists` for what is present.
+
+**Enabling triggers that already exist.** The usual case is answering **N** at
+the enable prompt on the first run and cutting over later. Triggers created by
+that first run already exist, so a plain `sync --apply --yes` enables nothing.
+Add `--enable-existing-triggers`:
+
+```bash
+circleci-migrate sync --manifest manifest.json --secrets secrets.json \
+  --mapping mapping.json --apply --yes --enable-existing-triggers
+```
+
+It additionally queues every existing destination trigger that is disabled while
+its source trigger was enabled. Each enable prints the trigger ID and the
+pipeline definition name before and after it runs. Triggers disabled in the
+source stay disabled, and a schedule trigger whose pipeline parameters were not
+captured (an older manifest) is never enabled automatically — it gets a
+`manual` note to verify the parameters first. (`--enable-existing-triggers` is
+accepted by `migrate` too.)
 
 ### 5.2 Projects with a `manual` pipeline definition
 
@@ -697,10 +721,13 @@ circleci-migrate sync \
 `--yes` auto-confirms the enable prompt. For GitHub App projects, this unpauses
 the pipeline triggers — future pushes to configured branches will trigger pipelines.
 
-This works on a **re-run** too: triggers created by an earlier `sync --apply`
-and still disabled are re-queued and enabled, so you do not need to re-create
-anything to cut over. If any enable fails, every result is still printed and
-`sync` exits **non-zero**; fix the cause and run the command again.
+On a **re-run** (for example after answering **N** the first time) the triggers
+already exist, so add `--enable-existing-triggers` to enable the ones that are
+still disabled — without it a re-run only enables triggers it creates itself, so
+a trigger you disabled on purpose is never re-enabled behind your back. You do
+not need to re-create anything to cut over. If any enable fails, every result is
+still printed and `sync` exits **non-zero**; fix the cause and run the command
+again.
 
 ### 7.1 Verify triggers are active
 

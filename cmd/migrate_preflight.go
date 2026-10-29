@@ -33,6 +33,14 @@ type preflightDeps struct {
 	// this (it has the manifest); migrate/doctor leave it 0 and instead assume
 	// synthesis may be needed for any OAuth-source to App-destination run.
 	synthProjects int
+	// synthUnverified is true when sync could not list the destination's projects
+	// to see which of the synthProjects already exist; the missing-token check is
+	// then a warning instead of a hard failure.
+	synthUnverified bool
+	// skipProjects is true when projects are not being synced (--skip-projects),
+	// so the GitHub-token checks (which only matter for pipeline definitions)
+	// are skipped.
+	skipProjects bool
 }
 
 // orgGetter retrieves an org by slug or ID.
@@ -125,15 +133,18 @@ func runMigratePreflight(
 	// ---- Check 7: GitHub token for repo resolution ----------------------
 	// An OAuth source onto a GitHub App destination may need synthesized
 	// pipeline definitions (any OAuth project without GitHub App pipelines),
-	// whose repo id only the GitHub API can supply — a hard requirement.
-	synth := 0
-	if srcOrg != nil && isOAuthOrgType(srcOrg.VCSType) {
-		synth = -1 // unknown until export; assume at least one
-	}
-	if r := checkSynthesisToken(deps.githubToken, destOrg, synth); r != nil {
-		results = append(results, *r)
-	} else if needsGitHubToken(deps) {
-		results = append(results, checkGitHubToken(deps.githubToken))
+	// whose repo id only the GitHub API can supply — a hard requirement. Not
+	// relevant when projects are skipped (--skip-projects).
+	if !deps.skipProjects {
+		synth := 0
+		if srcOrg != nil && isOAuthOrgType(srcOrg.VCSType) {
+			synth = -1 // unknown until export; assume at least one
+		}
+		if r := checkSynthesisToken(deps.githubToken, destOrg, synth); r != nil {
+			results = append(results, *r)
+		} else if needsGitHubToken(deps) {
+			results = append(results, checkGitHubToken(deps.githubToken))
+		}
 	}
 
 	// ---- Check 8: Follow-all offer (best-effort, gh/ orgs only) ---------
@@ -365,6 +376,12 @@ func runSyncPreflight(
 	// Hard requirement when the manifest has OAuth projects whose App pipeline
 	// definition must be synthesized (no captured repo id).
 	if r := checkSynthesisToken(deps.githubToken, destOrg, deps.synthProjects); r != nil {
+		if deps.synthUnverified {
+			// Could not tell which projects already exist in the destination
+			// (those need no GitHub lookup), so warn rather than block.
+			r.Status = preflight.StatusWarn
+			r.Detail += " (Could not list the destination's projects to see which already exist — projects that do need no lookup — so this is a warning, not a blocker.)"
+		}
 		results = append(results, *r)
 	} else if needsGitHubToken(deps) {
 		results = append(results, checkGitHubToken(deps.githubToken))
@@ -726,4 +743,35 @@ func checkSynthesisToken(githubToken string, destOrg *org.Organization, synthPro
 			"\"manual: no external_id available\". Set --github-token or $GITHUB_TOKEN (a token with repo read access " +
 			"to the destination GitHub org) and retry.",
 	}
+}
+
+// synthProjectsNeedingCreate returns how many of the named projects (those that
+// need a synthesized pipeline definition) do NOT already exist in the
+// destination org. A project that already exists is reconciled without any
+// GitHub lookup, so only the missing ones make a GitHub token mandatory. It
+// errors when the destination org or its project list cannot be read; callers
+// then fall back to a warning.
+func synthProjectsNeedingCreate(ctx context.Context, names []string, destSlug string, og orgGetter, pl projectLister) (int, error) {
+	if og == nil || pl == nil {
+		return len(names), fmt.Errorf("no destination client available")
+	}
+	o, err := og.GetOrganization(ctx, destSlug)
+	if err != nil {
+		return len(names), fmt.Errorf("resolve destination org %q: %w", destSlug, err)
+	}
+	projs, err := pl.ListOrgProjects(ctx, o.ID)
+	if err != nil {
+		return len(names), fmt.Errorf("list destination projects: %w", err)
+	}
+	existing := make(map[string]bool, len(projs))
+	for _, p := range projs {
+		existing[p.Name] = true
+	}
+	n := 0
+	for _, name := range names {
+		if !existing[name] {
+			n++
+		}
+	}
+	return n, nil
 }

@@ -2221,3 +2221,52 @@ func TestSyncActionLine_FriendlyNameOnly(t *testing.T) {
 		t.Errorf("expected '(api-service)' format when no URL, got: %q", line)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// appPipelineFailure / enable plan
+// ---------------------------------------------------------------------------
+
+func TestAppPipelineFailure(t *testing.T) {
+	mk := func(actions ...syncer.Action) map[string]*syncer.Report {
+		return map[string]*syncer.Report{"Projects": {Actions: actions}, "Contexts": nil}
+	}
+	if err := appPipelineFailure(mk(syncer.Action{Kind: "project-trigger", Target: "web/t", Status: "created"})); err != nil {
+		t.Errorf("no error actions: want nil, got %v", err)
+	}
+	// Other kinds keep their exit semantics.
+	if err := appPipelineFailure(mk(syncer.Action{Kind: "project-settings", Target: "x", Status: "error"})); err != nil {
+		t.Errorf("only pipeline-def/trigger errors fail the run, got %v", err)
+	}
+	for _, kind := range []string{"project-pipeline-def", "project-trigger"} {
+		err := appPipelineFailure(mk(syncer.Action{Kind: kind, Target: "web/def:default", Status: "error", Detail: "list destination pipeline definitions: boom"}))
+		if err == nil || !strings.Contains(err.Error(), "web/def:default") {
+			t.Errorf("%s error must fail the run naming the target, got %v", kind, err)
+		}
+	}
+	many := mk(
+		syncer.Action{Kind: "project-trigger", Target: "a", Status: "error"}, syncer.Action{Kind: "project-trigger", Target: "b", Status: "error"},
+		syncer.Action{Kind: "project-trigger", Target: "c", Status: "error"}, syncer.Action{Kind: "project-trigger", Target: "d", Status: "error"})
+	if err := appPipelineFailure(many); err == nil || !strings.Contains(err.Error(), "4 pipeline") || !strings.Contains(err.Error(), "+1 more") {
+		t.Errorf("want a count and truncation, got %v", err)
+	}
+}
+
+// TestHandleEnableBuilds_PrintsTriggerIDAndDefinition: every enable is listed
+// with its trigger id and definition name, in a dry run and when applying.
+func TestHandleEnableBuilds_PrintsTriggerIDAndDefinition(t *testing.T) {
+	rep := &syncer.Report{PendingEnable: []syncer.EnableTarget{
+		{Kind: "trigger", ProjectID: "p", ProjectName: "web", DefName: "release", TriggerID: "trig-77"},
+	}}
+	for _, apply := range []bool{false, true} {
+		c := internalTestCmd()
+		var errBuf bytes.Buffer
+		c.SetErr(&errBuf)
+		if err := handleEnableBuilds(c, &fakeEnabler{}, rep, apply, true, false); err != nil {
+			t.Fatalf("apply=%v: %v", apply, err)
+		}
+		out := errBuf.String()
+		if !strings.Contains(out, "trig-77") || !strings.Contains(out, `"release"`) || !strings.Contains(out, "web") {
+			t.Errorf("apply=%v: want trigger id, definition and project listed, got %q", apply, out)
+		}
+	}
+}

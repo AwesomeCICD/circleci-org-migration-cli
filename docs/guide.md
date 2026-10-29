@@ -954,8 +954,9 @@ circleci-migrate sync --manifest manifest.json --secrets secrets.json \
 
 App projects are created with triggers **disabled**; `--yes` enables them after
 creation. Omit `--yes` (answer N at the prompt) to keep them paused until you're
-ready, then re-run `--apply --yes`. Repos must already be connected to the
-destination GitHub App.
+ready, then re-run `--apply --yes --enable-existing-triggers` (the triggers
+already exist by then, and a re-run only enables ones it creates unless you pass
+that flag). Repos must already be connected to the destination GitHub App.
 
 ### 7c. CircleCI standalone → standalone
 
@@ -1036,9 +1037,13 @@ reused).
 
 **Re-runs.** `sync` reconciles existing App projects: it creates any missing
 definition or trigger (repairing a project whose repo was not yet connected to the
-GitHub App), reports present ones as `exists`, and re-queues still-disabled
-triggers, so a re-run of `sync --apply --yes` enables builds. A failed enable
-makes `sync` exit non-zero.
+GitHub App), reports present ones as `exists`, and reports a same-named
+definition whose provider, repo or config path differs as `manual` (it is not
+modified). A re-run enables only the triggers it creates; add
+`--enable-existing-triggers` to also enable existing destination triggers that
+are still disabled (say, after answering N the first time). A failed enable, or a
+pipeline-definition/trigger action that ends in `error`, makes `sync` and
+`migrate` exit non-zero — after printing the full summary.
 
 ### 7f. Repo-move / EMU (repos moved to a new GitHub org)
 

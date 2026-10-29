@@ -103,6 +103,33 @@ func CountSynthesizedProjects(m *manifest.Manifest) int {
 	return n
 }
 
+// SynthesizedProjectNames returns the destination project name (the name sync
+// finds-or-creates the App project under) of every manifest project that would
+// need a synthesized definition, so a caller can tell which of them already
+// exist in the destination.
+func SynthesizedProjectNames(m *manifest.Manifest) []string {
+	var names []string
+	for _, p := range m.Projects {
+		if !needsSynthesizedDefinition(p) {
+			continue
+		}
+		names = append(names, appProjectName(p))
+	}
+	return names
+}
+
+// appProjectName is the name an App-destination project is found or created
+// under: the manifest name, else the last component of the source slug.
+func appProjectName(p manifest.Project) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if _, _, repo, err := project.SplitSlug(p.Slug); err == nil {
+		return repo
+	}
+	return p.Slug
+}
+
 // warnOAuthOnlyFlags records "manual" actions for OAuth advanced-settings flags
 // that have no GitHub App equivalent, so onboarding does not silently change
 // behavior. It emits at most one action per applicable case.

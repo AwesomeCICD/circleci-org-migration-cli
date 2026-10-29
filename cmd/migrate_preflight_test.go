@@ -884,3 +884,87 @@ func TestRunMigratePreflight_OAuthToApp_NoToken_Fails(t *testing.T) {
 		t.Errorf("with token: unexpected error %v", err)
 	}
 }
+
+// TestRunMigratePreflight_SkipProjects_NoTokenNeeded: with --skip-projects the
+// OAuth → App GitHub-token requirement does not apply.
+func TestRunMigratePreflight_SkipProjects_NoTokenNeeded(t *testing.T) {
+	overrideNonTTY(t)
+	deps := preflightDeps{srcToken: "s", dstToken: "d", sourceOrg: "gh/acme", destOrg: "circleci/dst", skipProjects: true}
+	clients := preflightClients{
+		srcOrg:      &fakeOrgGetter{org: &org.Organization{Name: "acme", VCSType: "github"}},
+		dstOrg:      &fakeOrgGetter{org: &org.Organization{Name: "new", VCSType: "circleci"}},
+		srcFlags:    &fakeFlagGetter{flags: map[string]bool{"allow_api_trigger_with_config": true}},
+		srcProjects: &fakeProjectLister{projects: []project.OrgProject{{Name: "web", Slug: "gh/acme/web"}}},
+	}
+	var buf strings.Builder
+	if err := runMigratePreflight(context.Background(), deps, clients, &buf); err != nil {
+		t.Fatalf("--skip-projects must not require a GitHub token, got %v", err)
+	}
+	if strings.Contains(buf.String(), "GitHub token") {
+		t.Errorf("the GitHub-token check should be skipped entirely: %q", buf.String())
+	}
+
+	// Without --skip-projects it still fails (guards the test above).
+	deps.skipProjects = false
+	if err := runMigratePreflight(context.Background(), deps, clients, &strings.Builder{}); err == nil {
+		t.Error("without --skip-projects the missing token must still block")
+	}
+}
+
+// TestRunMigratePreflight_GitHubOrgMapped_WarnsWithoutToken: a mapping github_org
+// change needs the GitHub API like --dest-github-org does.
+func TestRunMigratePreflight_GitHubOrgMapped_WarnsWithoutToken(t *testing.T) {
+	overrideNonTTY(t)
+	deps := preflightDeps{srcToken: "s", dstToken: "d", sourceOrg: "gh/acme", destOrg: "gh/new", githubOrgMapped: true}
+	clients := preflightClients{
+		srcOrg: &fakeOrgGetter{org: &org.Organization{Name: "acme", VCSType: "github"}},
+		dstOrg: &fakeOrgGetter{org: &org.Organization{Name: "new", VCSType: "github"}},
+	}
+	var buf strings.Builder
+	if err := runMigratePreflight(context.Background(), deps, clients, &buf); err != nil {
+		t.Fatalf("a missing token for a moved GitHub org is a warning, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "GitHub org is changing") {
+		t.Errorf("expected the GitHub-org-change token warning: %q", buf.String())
+	}
+}
+
+// TestRunSyncPreflight_SynthUnverified_WarnsNotFails: when the destination's
+// projects could not be listed, a missing token is only a warning.
+func TestRunSyncPreflight_SynthUnverified_WarnsNotFails(t *testing.T) {
+	overrideNonTTY(t)
+	clients := preflightClients{dstOrg: &fakeOrgGetter{org: &org.Organization{Name: "new", VCSType: "circleci"}}}
+	deps := preflightDeps{dstToken: "tok-dst", destOrg: "circleci/new", synthProjects: 2, synthUnverified: true}
+	var buf strings.Builder
+	if err := runSyncPreflight(context.Background(), deps, clients, "github", &buf); err != nil {
+		t.Fatalf("an unverified lookup must warn, not fail: %v", err)
+	}
+	if !strings.Contains(buf.String(), "warning, not a blocker") {
+		t.Errorf("the warning should explain itself: %q", buf.String())
+	}
+}
+
+// TestSynthProjectsNeedingCreate: only projects missing from the destination
+// (by name) count toward the GitHub-token requirement.
+func TestSynthProjectsNeedingCreate(t *testing.T) {
+	ctx := context.Background()
+	og := &fakeOrgGetter{org: &org.Organization{ID: "dst-uuid", VCSType: "circleci"}}
+	pl := &fakeProjectLister{projects: []project.OrgProject{{Name: "web"}, {Name: "api"}}}
+
+	if n, err := synthProjectsNeedingCreate(ctx, []string{"web", "api"}, "circleci/new", og, pl); err != nil || n != 0 {
+		t.Errorf("all exist: got n=%d err=%v, want 0", n, err)
+	}
+	if n, err := synthProjectsNeedingCreate(ctx, []string{"web", "worker"}, "circleci/new", og, pl); err != nil || n != 1 {
+		t.Errorf("one missing: got n=%d err=%v, want 1", n, err)
+	}
+	// Lookup failures report an error and the full count (callers warn).
+	if n, err := synthProjectsNeedingCreate(ctx, []string{"web", "api"}, "circleci/new", og, &fakeProjectLister{err: errors.New("boom")}); err == nil || n != 2 {
+		t.Errorf("list failure: got n=%d err=%v, want 2 and an error", n, err)
+	}
+	if _, err := synthProjectsNeedingCreate(ctx, []string{"web"}, "circleci/new", &fakeOrgGetter{err: errors.New("nope")}, pl); err == nil {
+		t.Error("org lookup failure must be an error")
+	}
+	if _, err := synthProjectsNeedingCreate(ctx, []string{"web"}, "circleci/new", nil, nil); err == nil {
+		t.Error("missing clients must be an error")
+	}
+}

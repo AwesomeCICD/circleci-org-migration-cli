@@ -68,6 +68,9 @@ func newMigrateCommand() *cobra.Command {
 		removeRestrictions bool
 		// post-apply parity validation
 		skipValidate bool
+		// enableExistingTriggers also enables destination triggers that already
+		// exist and are disabled (default: only triggers created this run).
+		enableExistingTriggers bool
 	)
 
 	cmd := &cobra.Command{
@@ -312,14 +315,21 @@ Examples:
 						pfErr, pfErr2, pfErr3)
 				}
 
+				// A mapping file that moves repos to another GitHub org needs the
+				// GitHub API (and a token) just like --dest-github-org. A load
+				// error is ignored here; it is reported when the mapping is used.
+				pfMapping, _ := BuildMigrateMapping(mappingPath, sourceOrg, destOrg)
+
 				pfDeps := preflightDeps{
-					cfg:           cfg,
-					srcToken:      srcToken,
-					dstToken:      dstToken,
-					sourceOrg:     sourceOrg,
-					destOrg:       destOrg,
-					githubToken:   githubToken,
-					destGitHubOrg: destGitHubOrg,
+					cfg:             cfg,
+					srcToken:        srcToken,
+					dstToken:        dstToken,
+					sourceOrg:       sourceOrg,
+					destOrg:         destOrg,
+					githubToken:     githubToken,
+					destGitHubOrg:   destGitHubOrg,
+					githubOrgMapped: pfMapping != nil && pfMapping.GitHubOrg != nil,
+					skipProjects:    skipProjects,
 				}
 				if pfRunErr := runMigratePreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfRunErr != nil {
 					return pfRunErr
@@ -473,7 +483,12 @@ Examples:
 			// accumulated section reports. It is called once for dry-run and
 			// (in guided mode) once more for apply — reusing the same manifest
 			// and syncer so export never runs twice.
-			runSyncSections := func(applyNow bool) (map[string]*syncer.Report, error) {
+			//
+			// It returns two errors: deferred is an enable-builds failure that is
+			// remembered, not acted on, so the caller still runs every remaining
+			// step (summary / --json output, secrets transfer, validation) and
+			// returns it last; fatal aborts the run immediately.
+			runSyncSections := func(applyNow bool) (reps map[string]*syncer.Report, deferred, fatal error) {
 				sOpts := syncer.Options{
 					Apply:               applyNow,
 					MissingSecrets:      missing,
@@ -484,8 +499,10 @@ Examples:
 					DestOrgSlug:         migrateDestSlug(mapping, destOrg),
 					CreateProjectTokens: createProjectTokens,
 					IncludeDangerFlags:  includeDangerFlags,
+
+					EnableExistingTriggers: enableExistingTriggers,
 				}
-				reps := make(map[string]*syncer.Report)
+				reps = make(map[string]*syncer.Report)
 				// An enable-builds failure is remembered and returned after the
 				// remaining sections have run, so the run exits non-zero without
 				// abandoning runner/CIAM/orb sync.
@@ -494,7 +511,7 @@ Examples:
 				if !skipOrgSettings {
 					rep, syncErr := sy.SyncOrgSettings(ctx, m, mapping, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Org Settings"] = rep
 					if !jsonOutput && !quietMode {
@@ -504,7 +521,7 @@ Examples:
 				if !skipContexts {
 					rep, syncErr := sy.SyncContexts(ctx, m, bundle, mapping, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Contexts"] = rep
 					if !jsonOutput && !quietMode {
@@ -514,7 +531,7 @@ Examples:
 				if !skipProjects {
 					rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Projects"] = rep
 					if !jsonOutput && !quietMode {
@@ -540,7 +557,7 @@ Examples:
 				if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
 					rep, syncErr := sy.SyncRunnerResourceClasses(ctx, m, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Runner Resource Classes"] = rep
 					if !jsonOutput && !quietMode {
@@ -551,7 +568,7 @@ Examples:
 				if !skipCIAM && m.CIAM != nil {
 					rep, syncErr := sy.SyncCIAM(ctx, m, mapping, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["CIAM"] = rep
 					if !jsonOutput && !quietMode {
@@ -574,7 +591,7 @@ Examples:
 					}
 					rep, syncErr := sy.SyncOrbs(ctx, m, sOpts, orbFlagMgr, destVCSType, destOrgName)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Orbs"] = rep
 					if !jsonOutput && !quietMode {
@@ -586,14 +603,14 @@ Examples:
 				if m.Deploys != nil {
 					rep, syncErr := sy.SyncDeploys(ctx, m, mapping, sOpts)
 					if syncErr != nil {
-						return reps, syncErr
+						return reps, nil, syncErr
 					}
 					reps["Deploys"] = rep
 					if !jsonOutput && !quietMode {
 						printSyncReport(cmd, "Deploys", rep, m)
 					}
 				}
-				return reps, enableFailure
+				return reps, enableFailure, nil
 			}
 
 			// ── Sync pass ────────────────────────────────────────────────────
@@ -601,9 +618,15 @@ Examples:
 			// below. Non-interactive mode honors --apply directly: a regression in
 			// the guided-overhaul refactor hardcoded this to dry-run, so a scripted
 			// `migrate --apply` silently applied nothing.
-			repsBySection, err := runSyncSections(!wantsInteraction && apply)
+			repsBySection, deferredErr, err := runSyncSections(!wantsInteraction && apply)
 			if err != nil {
 				return err
+			}
+			// finalErr is what the run returns once every remaining step has run:
+			// an enable-builds failure and/or a failed pipeline-definition/trigger
+			// action (mirrors `sync`, which prints its summary before failing).
+			finalErr := func() error {
+				return errors.Join(deferredErr, appPipelineFailure(repsBySection))
 			}
 
 			if jsonOutput {
@@ -615,7 +638,10 @@ Examples:
 					Export: exportSummary,
 					Sync:   syncSummary,
 				}
-				return marshalJSON(cmd.OutOrStdout(), combined)
+				if jErr := marshalJSON(cmd.OutOrStdout(), combined); jErr != nil {
+					return jErr
+				}
+				return finalErr()
 			}
 
 			// Feature B: in quiet mode, show the consolidated end summary +
@@ -655,7 +681,7 @@ Examples:
 					apply = true
 					fmt.Fprintln(cmd.ErrOrStderr(), "")
 					fmt.Fprintln(cmd.ErrOrStderr(), "Applying changes to destination org...")
-					applyReps, applyErr := runSyncSections(true /* apply */)
+					applyReps, applyDeferred, applyErr := runSyncSections(true /* apply */)
 					if applyErr != nil {
 						return applyErr
 					}
@@ -665,11 +691,12 @@ Examples:
 						printEndSummary(progressOut, applyReps)
 					}
 					repsBySection = applyReps
+					deferredErr = applyDeferred
 				} else {
 					fmt.Fprintln(cmd.ErrOrStderr(), "")
 					fmt.Fprintln(cmd.ErrOrStderr(), "No changes applied. To apply later, re-run with:")
 					fmt.Fprintf(cmd.ErrOrStderr(), "  circleci-migrate migrate --source-org %s --dest-org %s --apply\n", sourceOrg, destOrg)
-					return nil
+					return finalErr()
 				}
 			}
 
@@ -678,7 +705,9 @@ Examples:
 			// (dry-run does not trigger the transfer pipeline).
 			if transferSecrets && apply {
 				if err := runMigrateSecretsTransfer(cmd, cfg, m, srcToken, sourceOrg, destOrg, destTokenContext, transferHostProj, true, includeProjectVars, includeSSHKeys, removeRestrictions); err != nil {
-					return err
+					// A transfer failure is fatal, but never hide an earlier
+					// enable/pipeline failure behind it.
+					return errors.Join(finalErr(), err)
 				}
 			} else if transferSecrets && !apply {
 				// Non-interactive dry-run: skip actual transfer.
@@ -695,7 +724,7 @@ Examples:
 					destRunnerNamespace, destOrbNamespace, mapping)
 			}
 
-			return nil
+			return finalErr()
 		},
 	}
 
@@ -725,12 +754,16 @@ Examples:
 			"in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required (preflight fails without it) when "+
 			"an OAuth source org is migrated to a GitHub App destination — OAuth projects without a GitHub App pipeline "+
 			"definition get a synthesized one whose repo ID only GitHub can supply — and when repos have moved to a new "+
-			"GitHub org (--dest-github-org or mapping github_org). Not needed when the GitHub org is unchanged and the "+
+			"GitHub org (--dest-github-org or mapping github_org); not checked with --skip-projects. Not needed when the GitHub org is unchanged and the "+
 			"export captured the repo IDs: those are reused.")
 	f.StringVar(&destGitHubOrg, "dest-github-org", "",
 		"Destination GitHub organization owner (e.g. 'acme-new'). Use when all repos have moved to a new "+
 			"GitHub org. Takes precedence over the source owner when resolving repo external IDs; overridden "+
 			"by an explicit github_org entry in the mapping file. Requires --github-token.")
+	f.BoolVar(&enableExistingTriggers, "enable-existing-triggers", false,
+		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
+			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
+			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
 	f.BoolVar(&skipContexts, "skip-contexts", false,
 		"Skip exporting and syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false,

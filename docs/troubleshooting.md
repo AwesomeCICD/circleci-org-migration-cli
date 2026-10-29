@@ -32,13 +32,39 @@ the missing pipeline definition and trigger (existing ones report `exists`).
 OAuth projects with no captured GitHub App pipeline definition get a synthesized
 `build-and-test` definition, and its repo ID is only available from the GitHub
 API. Set `--github-token` (or `$GITHUB_TOKEN`, repo read) and re-run. Without it
-each such project would end `manual: no external_id available`.
+each such project would end `manual: no external_id available`. The check does
+not apply with `--skip-projects`, and `sync` only fails it when a project that
+needs synthesis does not already exist in the destination (if the destination's
+projects cannot be listed, it warns instead of failing).
 
 ## `sync --apply --yes` exits non-zero after "enabling builds"
 
 At least one trigger/project failed to enable; every result is printed above the
-error (`[error] …`). Fix the cause and re-run `sync --apply --yes` — still-disabled
-triggers are re-queued, enabled ones report `exists`.
+error (`[error] …`), and the summary (or `--json` output) is still produced —
+the non-zero exit is returned last. Fix the cause and re-run
+`sync --apply --yes --enable-existing-triggers` — the still-disabled triggers
+already exist, and that flag is what queues them again; enabled ones report
+`exists`.
+
+## `sync` / `migrate` exit non-zero after a pipeline-definition or trigger `[error]`
+
+A failed read or write of a project's pipeline definitions or triggers (for
+example `list destination pipeline definitions: …`, `create pipeline definition:
+…`, `create trigger: …`) is recorded as an `error` on that project so the rest of
+the run still happens. After the summary, `sync` and `migrate` now exit non-zero
+if any `project-pipeline-def` or `project-trigger` action ended in `error`, so a
+script or CI job no longer sees a half-configured project as success. Fix the
+cause (API access, a transient failure) and re-run `sync --apply`: what already
+exists reports `exists` and only the missing pieces are created. `manual` items
+(for example a repo not yet connected to the GitHub App) do not fail the exit
+code. Other sections keep their existing exit behaviour.
+
+## A pipeline definition shows `manual`: "already exists … but differs"
+
+`sync` matches an existing definition by name. If its provider, repo ID or
+config `file_path` differ from the manifest, the definition is not modified and
+its triggers are not reconciled (the report lists each difference). Align the
+definition in the destination (or delete it) and re-run.
 
 ## Pipeline definitions show the wrong `external_id`
 
