@@ -115,6 +115,11 @@ type ProjectWriter interface {
 
 	// App-org (circleci/ vcs_type) project management.
 	CreateAppProject(ctx context.Context, orgID, name string) (*project.Project, error)
+	// ListPipelineDefinitions / ListTriggers read the destination's existing
+	// pipeline definitions and triggers so a re-run can reconcile instead of
+	// skipping an existing project.
+	ListPipelineDefinitions(ctx context.Context, projectID string) ([]project.PipelineDefinition, error)
+	ListTriggers(ctx context.Context, projectID, defID string) ([]project.Trigger, error)
 	CreatePipelineDefinition(ctx context.Context, projectID string, spec project.PipelineDefinitionSpec) (string, error)
 	CreateTrigger(ctx context.Context, projectID, defID string, spec project.TriggerSpec) (string, error)
 	EnableTrigger(ctx context.Context, projectID, triggerID string) error
@@ -152,11 +157,12 @@ type Options struct {
 	Placeholder string
 	// GitHubToken is an optional GitHub personal access token used to resolve
 	// repository external IDs when creating pipeline definitions in a GitHub App
-	// destination org. When empty and the GitHub org has not changed, the
-	// captured RepoExternalID from the source manifest is reused directly (valid
-	// for same-org migrations). When the GitHub org has changed (repos moved),
-	// a token is required to look up the new external_id; without one the
-	// project is skipped with a "manual" action.
+	// destination org. Whenever the GitHub org is unchanged and the manifest
+	// captured a repo external_id, that id is reused directly (token or not).
+	// The GitHub API is called only when the GitHub org changed (repos moved) or
+	// no id was captured (an OAuth-source project whose pipeline definition must
+	// be synthesized). In those cases a missing token leaves the project with a
+	// "manual" action.
 	GitHubToken string
 	// DestGitHubOrg is a convenience shorthand for the destination GitHub
 	// organization owner when all repos have moved to the same new GH org. It

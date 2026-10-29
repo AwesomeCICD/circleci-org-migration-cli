@@ -52,6 +52,8 @@ type fakeProjectWriter struct {
 	createPipelineDefinition func(projectID string, spec project.PipelineDefinitionSpec) (string, error)
 	createTrigger            func(projectID, defID string, spec project.TriggerSpec) (string, error)
 	enableTrigger            func(projectID, triggerID string) error
+	listPipelineDefinitions  func(projectID string) ([]project.PipelineDefinition, error)
+	listTriggers             func(projectID, defID string) ([]project.Trigger, error)
 	listOrgProjects          func(orgID string) ([]project.OrgProject, error)
 
 	calls           []projectCall
@@ -275,6 +277,22 @@ func (f *fakeProjectWriter) CreateAppProject(_ context.Context, orgID, name stri
 	}
 	slug := "circleci/" + orgID + "/new-proj-" + name
 	return &project.Project{Slug: slug, ID: "app-proj-id-" + name, Name: name}, nil
+}
+
+func (f *fakeProjectWriter) ListPipelineDefinitions(_ context.Context, projectID string) ([]project.PipelineDefinition, error) {
+	f.calls = append(f.calls, projectCall{"ListPipelineDefinitions", []string{projectID}})
+	if f.listPipelineDefinitions != nil {
+		return f.listPipelineDefinitions(projectID)
+	}
+	return nil, nil
+}
+
+func (f *fakeProjectWriter) ListTriggers(_ context.Context, projectID, defID string) ([]project.Trigger, error) {
+	f.calls = append(f.calls, projectCall{"ListTriggers", []string{projectID, defID}})
+	if f.listTriggers != nil {
+		return f.listTriggers(projectID, defID)
+	}
+	return nil, nil
 }
 
 func (f *fakeProjectWriter) CreatePipelineDefinition(_ context.Context, projectID string, spec project.PipelineDefinitionSpec) (string, error) {
@@ -2514,13 +2532,14 @@ func TestSyncProjects_AppDest_ExternalID_CapturedReused(t *testing.T) {
 	}
 }
 
-// TestSyncProjects_AppDest_ExternalID_TokenResolved verifies that when a
-// GitHubToken is set, the resolved ID is used instead of the captured one.
+// TestSyncProjects_AppDest_ExternalID_TokenResolved verifies that when the
+// GitHub org changed and a GitHubToken is set, the resolved ID is used instead
+// of the captured one.
 func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 	origResolve := resolveRepoID
 	defer func() { resolveRepoID = origResolve }()
 	resolveRepoID = func(_ context.Context, fullName, token, baseURL string) (string, error) {
-		if fullName == "acme/web" && token == "gh-tok" {
+		if fullName == "acme-new/web" && token == "gh-tok" {
 			return "resolved-id-999", nil
 		}
 		return "", errors.New("unexpected call")
@@ -2538,7 +2557,7 @@ func TestSyncProjects_AppDest_ExternalID_TokenResolved(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "old-captured-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"}); err != nil {
+	if _, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok", DestGitHubOrg: "acme-new"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -2564,7 +2583,7 @@ func TestSyncProjects_AppDest_ExternalID_ResolveOtherError_Skips(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "captured-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "bad-tok", DestGitHubOrg: "acme-new"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3001,15 +3020,16 @@ func TestResolveExternalID_TokenAndRepoFound(t *testing.T) {
 		t.Error("CreatePipelineDefinition must be called when repo is found in dest GH org")
 	}
 
-	// "set" actions must be present for config and checkout sources (repo found).
+	// A "set" action must be present (repo found); the lookup is memoized per
+	// repo so config, checkout and trigger share one resolution.
 	setCount := 0
 	for _, a := range actionsOfKind(rep, "project-ext-id") {
 		if a.Status == "set" {
 			setCount++
 		}
 	}
-	if setCount < 2 {
-		t.Errorf("expected at least 2 'set' ext-id actions (config+checkout), got %d", setCount)
+	if setCount != 1 {
+		t.Errorf("expected exactly 1 'set' ext-id action (one repo, resolved once), got %d", setCount)
 	}
 }
 
@@ -3645,7 +3665,7 @@ func TestSyncProjects_ExistingProject_App_EmitsExists(t *testing.T) {
 // repo resolution emits status "set" (not "resolved") so it appears in the
 // Counts() summary tally.
 func TestResolveExternalID_ResolvedCountsInSummary(t *testing.T) {
-	stubResolveRepoID(t, "acme/web", "id-123", nil)
+	stubResolveRepoID(t, "acme-new/web", "id-123", nil)
 
 	fp := &fakeProjectWriter{
 		createPipelineDefinition: func(projectID string, spec project.PipelineDefinitionSpec) (string, error) {
@@ -3657,7 +3677,7 @@ func TestResolveExternalID_ResolvedCountsInSummary(t *testing.T) {
 	p := appManifestProject("web", "gh/acme/web", "old-id", "code_push")
 	m := projectManifest("gh/acme", p)
 
-	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok"})
+	rep, err := sy.SyncProjects(context.Background(), m, nil, nil, Options{Apply: true, GitHubToken: "gh-tok", DestGitHubOrg: "acme-new"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
