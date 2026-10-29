@@ -3,9 +3,11 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -657,7 +659,7 @@ func TestSyncOrgSettings_FeatureFlags_CircleCIDest_DryRun(t *testing.T) {
 func TestSyncOrgSettings_FeatureFlags_CircleCIDest_RefusedIsManual(t *testing.T) {
 	fw := &fakeOrgSettingsWriter{
 		updateFeatureFlags: func(_, _ string, _ map[string]bool) error {
-			return errors.New("Feature flag is not settable for this organization")
+			return &rest.HTTPError{Code: 422, Message: "Feature flag is not settable for this organization"}
 		},
 	}
 	sy := newOrgSettingsSyncer(fw)
@@ -674,6 +676,41 @@ func TestSyncOrgSettings_FeatureFlags_CircleCIDest_RefusedIsManual(t *testing.T)
 	}
 	if n := len(actionsOfStatus(rep, "error")); n != 0 {
 		t.Errorf("a refused flag on a circleci/ org must not be an error, got %d", n)
+	}
+}
+
+// TestSyncOrgSettings_FeatureFlags_CircleCIDest_OnlyNotSettableIsManual: only a
+// response meaning "not settable here" is downgraded; auth, 5xx and network
+// failures stay errors.
+func TestSyncOrgSettings_FeatureFlags_CircleCIDest_OnlyNotSettableIsManual(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus string
+	}{
+		{"400", &rest.HTTPError{Code: 400, Message: "bad flag"}, "manual"},
+		{"404", &rest.HTTPError{Code: 404, Message: "no such flag"}, "manual"},
+		{"422", &rest.HTTPError{Code: 422, Message: "unsupported"}, "manual"},
+		{"403 flag not allowed", &rest.HTTPError{Code: 403, Message: "flag not allowed for this org"}, "manual"},
+		{"403 permission", &rest.HTTPError{Code: 403, Message: "forbidden"}, "error"},
+		{"401", &rest.HTTPError{Code: 401, Message: "unauthorized"}, "error"},
+		{"500", &rest.HTTPError{Code: 500, Message: "server error"}, "error"},
+		{"network", errors.New("dial tcp: connection refused"), "error"},
+		{"wrapped 422", fmt.Errorf("UpdateFeatureFlags: %w", &rest.HTTPError{Code: 422, Message: "x"}), "manual"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fw := &fakeOrgSettingsWriter{updateFeatureFlags: func(_, _ string, _ map[string]bool) error { return tc.err }}
+			sy := newOrgSettingsSyncer(fw)
+			m := orgSettingsManifest(&manifest.OrgSettings{FeatureFlags: map[string]bool{"allow_private_orbs": true}})
+			rep, err := sy.SyncOrgSettings(context.Background(), m, mappingTo("circleci/dest-uuid"), Options{Apply: true})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if n := len(actionsOfStatus(rep, tc.wantStatus)); n != 1 {
+				t.Errorf("want 1 %q action, got %+v", tc.wantStatus, rep.Actions)
+			}
+		})
 	}
 }
 

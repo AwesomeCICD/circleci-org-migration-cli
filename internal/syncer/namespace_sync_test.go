@@ -3,10 +3,12 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
@@ -310,7 +312,7 @@ func TestSyncRunner_SameNamespace_Create409_Manual(t *testing.T) {
 func TestSyncRunner_SameNamespace_UnknownOwner_NamespaceInaccessible_Manual(t *testing.T) {
 	rw := &nsRunnerWriter{}
 	rw.getResourceClasses = func(string) ([]apirunner.ResourceClass, error) {
-		return nil, errors.New("runner: GetResourceClassesByNamespace: HTTP 403: forbidden")
+		return nil, fmt.Errorf("runner: GetResourceClassesByNamespace: %w", &rest.HTTPError{Code: 403, Message: "forbidden"})
 	}
 	sy := &Syncer{Org: &nsOrgResolver{}, Runner: rw}
 	rep, _ := sy.SyncRunnerResourceClasses(context.Background(), sameNSManifest("bcbsm"),
@@ -372,6 +374,116 @@ func TestFlagOrgCoords(t *testing.T) {
 		v, n := flagOrgCoords(tc.in)
 		if v != tc.vcs || n != tc.name {
 			t.Errorf("flagOrgCoords(%q) = (%q,%q), want (%q,%q)", tc.in, v, n, tc.vcs, tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ownership detection edge cases
+// ---------------------------------------------------------------------------
+
+// bothOwn lists the namespace under the source AND the destination org.
+func bothOwn(ns string) map[string][]org.OrgOrb {
+	return map[string][]org.OrgOrb{
+		srcOrgUUID:  {{OrbName: "o", NamespaceName: ns}},
+		destOrgUUID: {{OrbName: "o", NamespaceName: ns}},
+	}
+}
+
+// TestSyncOrbs_SameNamespace_InBothOrgs_UnknownBlocking: a namespace listed
+// under both orgs is ambiguous — nothing is republished and the manual action
+// carries the exact command.
+func TestSyncOrbs_SameNamespace_InBothOrgs_UnknownBlocking(t *testing.T) {
+	ow := &fakeOrbWriter{}
+	sy := &Syncer{Org: &nsOrgResolver{orbsByOrg: bothOwn("bcbsm")}, Orb: ow}
+	rep, err := sy.SyncOrbs(context.Background(), sameNSManifest("bcbsm"),
+		Options{Apply: true, DestOrbNamespace: "bcbsm", DestOrgSlug: destSlugApp}, nil, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ow.createCalls) != 0 || len(ow.publishCalls) != 0 {
+		t.Errorf("must not publish when the owner is ambiguous: create=%v publish=%v", ow.createCalls, ow.publishCalls)
+	}
+	a := actionFor(rep, "orb-namespace")
+	if a == nil || a.Status != "manual" || !strings.Contains(a.Detail, wantCommand("bcbsm")) || !strings.Contains(a.Detail, "BOTH") {
+		t.Errorf("expected a manual action naming both orgs and the exact command, got %+v", rep.Actions)
+	}
+}
+
+// TestDetectNamespaceOwner_ListErrorIsUnknown: a failed GetOrgOrbs is never read
+// as "does not own" (which would make the other org look like the owner).
+func TestDetectNamespaceOwner_ListErrorIsUnknown(t *testing.T) {
+	sy := &Syncer{Org: &nsOrgResolver{orbsErr: errors.New("500")}}
+	if got := sy.detectNamespaceOwner(context.Background(), "bcbsm", srcOrgUUID, destOrgUUID); got != nsOwnerUnknown {
+		t.Errorf("a list error must be unknown, got %v", got)
+	}
+}
+
+// TestSyncOrbs_SameNamespace_ListError_UnknownManualWithCommand.
+func TestSyncOrbs_SameNamespace_ListError_UnknownManualWithCommand(t *testing.T) {
+	ow := &fakeOrbWriter{}
+	sy := &Syncer{Org: &nsOrgResolver{orbsErr: errors.New("500")}, Orb: ow}
+	rep, _ := sy.SyncOrbs(context.Background(), sameNSManifest("bcbsm"),
+		Options{Apply: true, DestOrbNamespace: "bcbsm", DestOrgSlug: destSlugApp}, nil, "", "")
+	if len(ow.createCalls) != 0 || len(ow.publishCalls) != 0 {
+		t.Error("must not publish when ownership could not be read")
+	}
+	a := actionFor(rep, "orb-namespace")
+	if a == nil || a.Status != "manual" || !strings.Contains(a.Detail, wantCommand("bcbsm")) {
+		t.Errorf("expected a manual action with the exact command, got %+v", rep.Actions)
+	}
+}
+
+// TestSyncRunner_SameNamespace_InBothOrgs_Blocked: runner classes are not
+// created while the owner is ambiguous.
+func TestSyncRunner_SameNamespace_InBothOrgs_Blocked(t *testing.T) {
+	rw := &nsRunnerWriter{}
+	sy := &Syncer{Org: &nsOrgResolver{orbsByOrg: bothOwn("bcbsm")}, Runner: rw}
+	rep, _ := sy.SyncRunnerResourceClasses(context.Background(), sameNSManifest("bcbsm"),
+		Options{Apply: true, DestRunnerNamespace: "bcbsm", DestOrgSlug: destSlugApp})
+	if len(rw.createCalls) != 0 {
+		t.Errorf("must not create classes when the owner is ambiguous: %v", rw.createCalls)
+	}
+	a := actionFor(rep, "runner-namespace")
+	if a == nil || a.Status != "manual" || !strings.Contains(a.Detail, wantCommand("bcbsm")) {
+		t.Errorf("expected a manual runner-namespace action with the command, got %+v", rep.Actions)
+	}
+}
+
+// TestSyncRunner_UnknownOwner_UnverifiedAttribution_Manual: owner unknown and
+// the destination org's class list unavailable — a class present in the
+// namespace is "manual (verify)", not "exists".
+func TestSyncRunner_UnknownOwner_UnverifiedAttribution_Manual(t *testing.T) {
+	rw := &fakeRunnerWriter{} // does not implement the by-org lister → attribution unverified
+	rw.getResourceClasses = func(string) ([]apirunner.ResourceClass, error) {
+		return []apirunner.ResourceClass{{ResourceClass: "bcbsm/fast"}}, nil
+	}
+	sy := &Syncer{Org: &nsOrgResolver{}, Runner: rw}
+	rep, _ := sy.SyncRunnerResourceClasses(context.Background(), sameNSManifest("bcbsm"),
+		Options{Apply: true, DestRunnerNamespace: "bcbsm", DestOrgSlug: destSlugApp})
+	var fast *Action
+	for i := range rep.Actions {
+		if rep.Actions[i].Target == "bcbsm/fast" {
+			fast = &rep.Actions[i]
+		}
+	}
+	if fast == nil || fast.Status != "manual" || !strings.Contains(fast.Detail, wantCommand("bcbsm")) {
+		t.Errorf("an unverified existing class with an unknown owner must be manual, got %+v", fast)
+	}
+}
+
+// TestIsNamespaceNotOwnedErr_UsesStatusCodes: only HTTP 401/403/404 mean "not
+// owned"; message text and non-HTTP errors do not.
+func TestIsNamespaceNotOwnedErr_UsesStatusCodes(t *testing.T) {
+	for code, want := range map[int]bool{401: true, 403: true, 404: true, 400: false, 409: false, 500: false} {
+		err := fmt.Errorf("runner: %w", &rest.HTTPError{Code: code, Message: "x"})
+		if got := isNamespaceNotOwnedErr(err); got != want {
+			t.Errorf("status %d: got %v want %v", code, got, want)
+		}
+	}
+	for _, err := range []error{errors.New("HTTP 403 forbidden"), errors.New("not found"), errors.New("dial tcp: i/o timeout"), nil} {
+		if isNamespaceNotOwnedErr(err) {
+			t.Errorf("non-HTTP error %v must not be read as not-owned", err)
 		}
 	}
 }

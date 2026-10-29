@@ -303,12 +303,16 @@ func (s *Syncer) syncOrbNamespaceHandoff(ctx context.Context, report *Report, m 
 				fmt.Sprintf("orb %q not republished: it moves with namespace %q once support runs `%s`", o.Name, ns, handoffCommand(ns, opts)))
 		}
 	default:
+		why := "the current owner could not be determined"
+		if owner == nsOwnerAmbiguous {
+			why = "the namespace appeared in BOTH the source and destination orgs' orb lists, so the owner is ambiguous"
+		}
 		s.logf("Cannot determine who owns orb namespace %q; NOT republishing (manual verification required)", ns)
 		report.add("orb-namespace", ns, "manual", fmt.Sprintf(
-			"the destination orb namespace %q has the same name as the source's, so orbs cannot be republished (a namespace belongs to one org) and the current owner could not be determined. "+
+			"the destination orb namespace %q has the same name as the source's, so orbs cannot be republished (a namespace belongs to one org) and %s. "+
 				"If the SOURCE org still owns it, ask CircleCI support to run `%s` (the orbs move with it; config references need no change). "+
 				"If the destination org already owns it, nothing is needed.",
-			ns, handoffCommand(ns, opts)))
+			ns, why, handoffCommand(ns, opts)))
 		for _, o := range m.Orbs {
 			report.add("orb", o.Name, "skipped",
 				fmt.Sprintf("orb %q not republished (same-name namespace %q; see the namespace action)", o.Name, ns))

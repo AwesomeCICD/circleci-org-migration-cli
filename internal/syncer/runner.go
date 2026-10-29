@@ -2,9 +2,12 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
@@ -167,6 +170,18 @@ func (s *Syncer) syncSameNamespaceRunners(ctx context.Context, report *Report, m
 		return
 	}
 
+	if owner == nsOwnerAmbiguous {
+		report.add("runner-namespace", ns, "manual", fmt.Sprintf(
+			"namespace %q appeared in BOTH the source and destination orgs' orb lists, so its owner is ambiguous and no runner resource class was created. "+
+				"Verify who owns it; if the SOURCE org does, ask CircleCI support to run `%s` (class names, and so config references, stay unchanged), then re-run `sync`.",
+			ns, handoffCommand(ns, opts)))
+		for _, rc := range m.RunnerResourceClasses {
+			report.add("runner-resource-class", rc.Name, "skipped",
+				fmt.Sprintf("runner resource class %q not created: the owner of namespace %q is ambiguous", rc.Name, ns))
+		}
+		return
+	}
+
 	if s.Runner == nil && opts.Apply {
 		for _, rc := range m.RunnerResourceClasses {
 			report.add("runner-resource-class", rc.Name, "manual",
@@ -226,6 +241,15 @@ func (s *Syncer) syncSameNamespaceRunners(ctx context.Context, report *Report, m
 		case destAttributed == nil && inNamespace[name]:
 			// Attribution unknown (could not list the destination org's classes):
 			// the class is in the namespace, but we cannot prove it is ours.
+			if owner == nsOwnerUnknown {
+				// Owner unknown AND attribution unverified: "exists" would be a
+				// guess — ask the operator to verify.
+				report.add("runner-resource-class", name, "manual",
+					fmt.Sprintf("runner resource class %q exists in namespace %q but neither the namespace owner nor the class's org attribution could be verified — "+
+						"confirm it is attributed to the destination org (if not, delete the source copy or ask CircleCI support, then re-run sync). "+
+						"If the SOURCE org still owns the namespace, ask CircleCI support to run `%s`.", name, ns, handoffCommand(ns, opts)))
+				continue
+			}
 			report.add("runner-resource-class", name, "exists",
 				fmt.Sprintf("runner resource class %q already exists in namespace %q (could not verify it is attributed to the destination org; "+
 					"if jobs cannot use it, delete the source copy and re-run sync)", name, ns))
@@ -283,6 +307,10 @@ func translateResourceClass(name, srcNs, destNs string) string {
 func isAlreadyExists(err error) bool {
 	if err == nil {
 		return false
+	}
+	var he *rest.HTTPError
+	if errors.As(err, &he) && he.Code == http.StatusConflict {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "already exists") || strings.Contains(msg, "conflict")

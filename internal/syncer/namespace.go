@@ -2,10 +2,12 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
+	"net/http"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	apirunner "github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 )
@@ -37,6 +39,10 @@ const (
 	nsOwnerUnknown nsOwner = iota // could not be determined
 	nsOwnerSource                 // still owned by the source org
 	nsOwnerDest                   // owned by the destination org (transfer done, or same org)
+	// nsOwnerAmbiguous means the namespace appeared in BOTH orgs' orb lists, which
+	// should be impossible (a namespace belongs to one org), so neither answer can
+	// be trusted. It is "unknown" that also blocks creating anything.
+	nsOwnerAmbiguous
 )
 
 // orgOrbLister lists the orbs whose namespace is owned by an org. The org client
@@ -71,6 +77,10 @@ func (s *Syncer) destOrgIDFor(ctx context.Context, opts Options) string {
 // namespace_name. (Runner class attribution is deliberately NOT used: it does
 // not follow a namespace transfer.) A namespace with no orbs therefore reports
 // nsOwnerUnknown.
+//
+// The answer is only trusted when every list that was attempted succeeded: a
+// failed lookup is "unknown", never "does not own" (which could wrongly point at
+// the other org). A namespace listed under both orgs is nsOwnerAmbiguous.
 func (s *Syncer) detectNamespaceOwner(ctx context.Context, ns, srcOrgID, destOrgID string) nsOwner {
 	if srcOrgID != "" && srcOrgID == destOrgID {
 		return nsOwnerDest // same org: nothing to hand off
@@ -79,27 +89,34 @@ func (s *Syncer) detectNamespaceOwner(ctx context.Context, ns, srcOrgID, destOrg
 	if !ok {
 		return nsOwnerUnknown
 	}
-	owns := func(orgID string) bool {
+	// owns reports whether orgID's orb list contains ns; ok is false when the
+	// list could not be read. An empty orgID is simply not checked.
+	owns := func(orgID string) (owned, ok bool) {
 		if orgID == "" {
-			return false
+			return false, true
 		}
 		orbs, err := lister.GetOrgOrbs(ctx, orgID)
 		if err != nil {
 			clog.Debugf("could not list orbs for org %s (namespace ownership): %v", orgID, err)
-			return false
+			return false, false
 		}
 		for _, o := range orbs {
 			if o.NamespaceName == ns {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 	}
-	// Check the destination first: once the transfer is done it is authoritative.
-	if owns(destOrgID) {
+	destOwns, destOK := owns(destOrgID)
+	srcOwns, srcOK := owns(srcOrgID)
+	switch {
+	case !destOK || !srcOK:
+		return nsOwnerUnknown
+	case destOwns && srcOwns:
+		return nsOwnerAmbiguous
+	case destOwns:
 		return nsOwnerDest
-	}
-	if owns(srcOrgID) {
+	case srcOwns:
 		return nsOwnerSource
 	}
 	return nsOwnerUnknown
@@ -128,14 +145,18 @@ func namespaceHandoffDetail(kind, ns string, opts Options) string {
 		ns, handoffCommand(ns, opts), moves, ns)
 }
 
-// isNamespaceNotOwnedErr reports whether err looks like the runner API refusing
-// an operation because the caller's org does not own the namespace.
+// isNamespaceNotOwnedErr reports whether err is the runner API refusing an
+// operation because the caller's org does not own the namespace: an HTTP 401,
+// 403 or 404 response. Anything else (a network error, a 5xx, an error that is
+// not an HTTP response) is NOT taken to mean "not owned".
 func isNamespaceNotOwnedErr(err error) bool {
-	if err == nil {
+	var he *rest.HTTPError
+	if !errors.As(err, &he) {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "403") || strings.Contains(msg, "404") ||
-		strings.Contains(msg, "forbidden") || strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "unauthorized")
+	switch he.Code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return true
+	}
+	return false
 }

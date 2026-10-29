@@ -57,7 +57,11 @@ func (s *Syncer) SyncDeploys(ctx context.Context, m *manifest.Manifest, mapping 
 
 	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
 	if err != nil {
-		return nil, fmt.Errorf("SyncDeploys: resolving destination org %q: %w", destSlug, err)
+		// Surface it in the Deploys report rather than aborting the whole sync
+		// before the summary: Deploys is a read-only reconcile.
+		report.add("deploy-environment", destSlug, "error",
+			fmt.Sprintf("could not resolve destination org %q, so the Deploys configuration was not reconciled: %v", destSlug, err))
+		return report, nil
 	}
 	report.DestOrgID = destOrgID
 
@@ -83,10 +87,12 @@ func (s *Syncer) SyncDeploys(ctx context.Context, m *manifest.Manifest, mapping 
 
 	// Destination projects by name (for the component → project mapping).
 	destProjByName := map[string]string{}
+	projectsListed := false
 	if s.Projects != nil {
 		if projs, perr := s.Projects.ListOrgProjects(ctx, destOrgID); perr != nil {
 			clog.Debugf("could not list destination projects for deploy mapping: %v", perr)
 		} else {
+			projectsListed = true
 			for _, p := range projs {
 				destProjByName[p.Name] = p.ID
 			}
@@ -122,6 +128,20 @@ func (s *Syncer) SyncDeploys(ctx context.Context, m *manifest.Manifest, mapping 
 		destProjID := ""
 		if projName != "" {
 			destProjID = destProjByName[projName]
+			if destProjID == "" {
+				// Never key the component lookup with an empty project: that would
+				// match a project-less component of the same name.
+				found := fmt.Sprintf("its project %q was not found in the destination org", projName)
+				if !projectsListed {
+					found = fmt.Sprintf("the destination org's projects could not be listed, so its project %q was not found", projName)
+				}
+				report.add("deploy-component", target, "manual", fmt.Sprintf(
+					"deploy component %q cannot be reconciled: %s — run the projects sync first, "+
+						"then recreate the component (the public Deploys API has no create endpoint; the first `circleci run release plan --component-name=%q` "+
+						"run in the destination project creates it). Deploy history does not transfer.",
+					c.Name, found, c.Name))
+				continue
+			}
 		}
 		if _, ok := destComps[c.Name+"\x00"+destProjID]; ok && readable {
 			report.add("deploy-component", target, "exists",
@@ -129,11 +149,8 @@ func (s *Syncer) SyncDeploys(ctx context.Context, m *manifest.Manifest, mapping 
 			continue
 		}
 		projNote := "it is not tied to a project"
-		switch {
-		case projName != "" && destProjID != "":
+		if projName != "" {
 			projNote = fmt.Sprintf("its project %q exists in the destination", projName)
-		case projName != "":
-			projNote = fmt.Sprintf("its project %q does not exist in the destination yet — run the projects sync first", projName)
 		}
 		report.add("deploy-component", target, "manual", fmt.Sprintf(
 			"deploy component %q must be recreated in the destination org (%s). The public Deploys API has no create endpoint; "+

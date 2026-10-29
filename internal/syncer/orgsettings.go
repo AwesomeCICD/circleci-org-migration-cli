@@ -2,9 +2,12 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
@@ -202,7 +205,10 @@ func (s *Syncer) reportAuditLogConfigs(ctx context.Context, report *Report, src 
 // is proven by the exporter; the write is the same route, but the server only
 // accepts flags that are "settable" for the org type, so a refused flag on a
 // circleci/ destination is reported as "manual" (set it in the UI) rather than
-// "error".
+// "error". Only a response that means "this flag cannot be set here" (HTTP 400,
+// 404 or 422, or a 403 whose message says the flag is not allowed/settable) is
+// downgraded; 401, other 403s, 5xx and network errors stay "error" so a real
+// failure is never hidden.
 func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *manifest.OrgSettings, vcs, orgName string, opts Options) {
 	if len(src.FeatureFlags) == 0 {
 		return
@@ -234,9 +240,9 @@ func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *mani
 		}
 
 		if err := s.OrgSettings.UpdateFeatureFlags(ctx, vcs, orgName, map[string]bool{flagKey: val}); err != nil {
-			if vcs == "circleci" {
+			if vcs == "circleci" && flagNotSettable(err) {
 				report.add("org-settings", target, "manual",
-					fmt.Sprintf("feature flag %q = %v could not be written to this circleci/ org via the API (%v); set it manually in Organization Settings", flagKey, val, err))
+					fmt.Sprintf("feature flag %q = %v is not settable on this circleci/ org via the API (%v); set it manually in Organization Settings", flagKey, val, err))
 				continue
 			}
 			report.add("org-settings", target, "error", err.Error())
@@ -244,6 +250,24 @@ func (s *Syncer) syncFeatureFlags(ctx context.Context, report *Report, src *mani
 		}
 		report.add("org-settings", target, "set", fmt.Sprintf("set feature flag %q = %v", flagKey, val))
 	}
+}
+
+// flagNotSettable reports whether err is the server refusing a feature-flag
+// write because the flag cannot be set on this org (rather than an auth, server
+// or network failure).
+func flagNotSettable(err error) bool {
+	var he *rest.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	switch he.Code {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return true
+	case http.StatusForbidden:
+		msg := strings.ToLower(he.Message)
+		return strings.Contains(msg, "not allowed") || strings.Contains(msg, "not settable") || strings.Contains(msg, "cannot be set")
+	}
+	return false
 }
 
 // syncOIDCClaims writes the OIDC audience/TTL when present.
