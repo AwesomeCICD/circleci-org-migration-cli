@@ -16,7 +16,6 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
@@ -1708,42 +1707,12 @@ func runMigrateSecretsTransfer(
 		return fmt.Errorf("creating project client for secrets transfer: %w", err)
 	}
 
-	// Enable the org-level trigger flag when needed (non-interactive: auto-enable
-	// since the user opted in with --transfer-secrets; restore after).
-	orgFlagEnabled := false
-	if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
-		orgMgr, oerr := newOrgClientForCapture(cfg, srcToken)
-		if oerr != nil {
-			fmt.Fprintf(stderr, "warning: could not create org client to check org-level trigger flag: %v\n", oerr)
-		} else {
-			enabled, restoreOrg, enErr := maybeEnableOrgTrigger(cmd, orgMgr, vcsType, orgName, true /* autoEnable */)
-			if enErr != nil {
-				return enErr
-			}
-			if restoreOrg != nil {
-				defer restoreOrg()
-			}
-			orgFlagEnabled = enabled
-		}
-	}
-
-	// Enable the project-level trigger flag for each source project that will
-	// run a pipeline (host project + per-project env-var pipelines).
+	// Resolve the host override (when given); otherwise transfer.Transfer
+	// auto-picks a host project that can actually run a pipeline (gh/ and bb/
+	// projects need a checkout key).
 	hostSlug := ""
 	if hostProjectOverride != "" {
 		hostSlug = normalizeVCSPrefix(hostProjectOverride)
-	} else if len(m.Projects) > 0 {
-		hostSlug = normalizeVCSPrefix(m.Projects[0].Slug)
-	}
-	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars, includeSSHKeys)
-	for _, slug := range slugsNeedingFlag {
-		restore, pErr := maybeEnableProjectTrigger(cmd, projClient, slug, true /* autoEnable */, orgFlagEnabled)
-		if pErr != nil {
-			return pErr
-		}
-		if restore != nil {
-			defer restore() //nolint:revive
-		}
 	}
 
 	// Build the context client for restriction management when --remove-restrictions is set.
@@ -1774,10 +1743,14 @@ func runMigrateSecretsTransfer(
 		IncludeSSHKeys:     includeSSHKeys,
 		RemoveRestrictions: removeRestrictions,
 		ContextClient:      ctxClient,
-		DryRun:             !apply,
-		PollTimeout:        30 * time.Minute,
-		Stdout:             cmd.OutOrStdout(),
-		Stderr:             stderr,
+		// Trigger flags are enabled by Transfer only after its read-only
+		// pre-flight checks pass (non-interactive: auto-enable since the user
+		// opted in with --transfer-secrets; restored afterwards).
+		BeforeMutate: newTriggerFlagHook(cmd, cfg, srcToken, m.Source.Org.Slug, projClient, true /* autoEnable */),
+		DryRun:       !apply,
+		PollTimeout:  30 * time.Minute,
+		Stdout:       cmd.OutOrStdout(),
+		Stderr:       stderr,
 	}
 
 	return transfer.Transfer(cmd.Context(), projClient, m, opts)

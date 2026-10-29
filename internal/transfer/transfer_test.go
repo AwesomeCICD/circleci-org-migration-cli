@@ -369,6 +369,22 @@ type fakeTransferDeps struct {
 	triggerErr error
 	workflows  [][]project.Workflow
 	wfIdx      int
+	// noKeys makes ListCheckoutKeys report a project with no checkout key
+	// (the default is one key, so gh/ and bb/ projects pass the pre-flight).
+	noKeys   bool
+	keysErr  error
+	keyCalls int
+}
+
+func (f *fakeTransferDeps) ListCheckoutKeys(context.Context, string) ([]project.CheckoutKey, error) {
+	f.keyCalls++
+	if f.keysErr != nil {
+		return nil, f.keysErr
+	}
+	if f.noKeys {
+		return nil, nil
+	}
+	return []project.CheckoutKey{{Type: "deploy-key", Fingerprint: "aa:bb"}}, nil
 }
 
 func (f *fakeTransferDeps) GetProject(context.Context, string) (*project.Project, error) {
@@ -1074,6 +1090,26 @@ type multiCallFakeTransferDeps struct {
 
 	// successWorkflow is returned for every GetPipelineWorkflows call.
 	successWorkflow project.Workflow
+
+	// noKeySlugs is the set of slugs whose live checkout-key list is empty
+	// (every other slug has one key).  keysErr, when set, makes the lookup fail.
+	noKeySlugs map[string]bool
+	keysErr    error
+	// keyListCalls records every slug ListCheckoutKeys was asked about.
+	keyListCalls []string
+}
+
+func (f *multiCallFakeTransferDeps) ListCheckoutKeys(_ context.Context, slug string) ([]project.CheckoutKey, error) {
+	f.mu.Lock()
+	f.keyListCalls = append(f.keyListCalls, slug)
+	f.mu.Unlock()
+	if f.keysErr != nil {
+		return nil, f.keysErr
+	}
+	if f.noKeySlugs[slug] {
+		return nil, nil
+	}
+	return []project.CheckoutKey{{Type: "deploy-key", Fingerprint: "aa:bb"}}, nil
 }
 
 func (f *multiCallFakeTransferDeps) GetProject(_ context.Context, slug string) (*project.Project, error) {
@@ -1489,6 +1525,10 @@ type retryFakeTransferDeps struct {
 	failCount    int // number of times to return "unauthorized" before success
 	proj         *project.Project
 	defs         []project.PipelineDefinition
+}
+
+func (f *retryFakeTransferDeps) ListCheckoutKeys(context.Context, string) ([]project.CheckoutKey, error) {
+	return []project.CheckoutKey{{Type: "deploy-key"}}, nil
 }
 
 func (f *retryFakeTransferDeps) GetProject(_ context.Context, slug string) (*project.Project, error) {
@@ -3051,5 +3091,450 @@ func TestRunContextPipeline_UsesHostDefaultBranch(t *testing.T) {
 	}
 	if calls[0].branch != "master" {
 		t.Errorf("context pipeline branch = %q, want master (host default branch)", calls[0].branch)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checkout-key pre-flight (GitHub OAuth / Bitbucket projects)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var testCheckoutKey = []manifest.CheckoutKey{{Type: "deploy-key", Fingerprint: "aa:bb"}}
+
+// mutationProbe records every way Transfer can change the source org before a
+// pipeline runs: the BeforeMutate hook (trigger flags) and the context client
+// (restriction removal).  A doomed run must leave all of them untouched.
+type mutationProbe struct {
+	hookCalls [][]string
+	ctxClient *fakeContextClient
+}
+
+func newMutationProbe() *mutationProbe {
+	return &mutationProbe{ctxClient: &fakeContextClient{
+		liveByContextID: map[string][]apicontext.Restriction{
+			"ctx-uuid-1": {{ID: "r1", Type: "project", Value: "proj-uuid-a"}},
+		},
+	}}
+}
+
+// wire installs the probe on opts: the flag hook, and --remove-restrictions
+// with the probe's context client.
+func (p *mutationProbe) wire(opts *Options) {
+	opts.BeforeMutate = func(slugs []string) (func(), error) {
+		p.hookCalls = append(p.hookCalls, slugs)
+		return nil, nil
+	}
+	opts.RemoveRestrictions = true
+	opts.ContextClient = p.ctxClient
+}
+
+// assertUntouched fails when anything in the source org was changed.
+func (p *mutationProbe) assertUntouched(t *testing.T, deps *multiCallFakeTransferDeps) {
+	t.Helper()
+	if len(p.hookCalls) != 0 {
+		t.Errorf("trigger flags were enabled (BeforeMutate called with %v) before the pre-flight failed", p.hookCalls)
+	}
+	if len(p.ctxClient.deleteCalls) != 0 || len(p.ctxClient.createCalls) != 0 {
+		t.Errorf("context restrictions were changed: deleted=%v created=%v", p.ctxClient.deleteCalls, p.ctxClient.createCalls)
+	}
+	if len(deps.triggerCalls) != 0 {
+		t.Errorf("no pipeline may be triggered, got %v", slugsFromCalls(deps.triggerCalls))
+	}
+}
+
+// restrictedManifest has one context with a blocking project restriction plus
+// the given projects.
+func restrictedManifest(projects ...manifest.Project) *manifest.Manifest {
+	m := manifestWithRestrictions([]manifest.Restriction{{Type: "project", Value: "proj-uuid-a"}})
+	m.Projects = projects
+	return m
+}
+
+func applyOpts() (Options, *bytes.Buffer, *bytes.Buffer) {
+	opts := baseOpts()
+	opts.DryRun = false
+	var out, errOut bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errOut
+	return opts, &out, &errOut
+}
+
+// The auto-pick must skip a project whose manifest carries no key (and the live
+// lookup agrees), and pick the next project that has one.
+func TestTransfer_AutoPick_SkipsProjectWithoutCheckoutKey(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/nokey"},
+			{Slug: "gh/acme/haskey", CheckoutKeys: testCheckoutKey},
+		},
+	}
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/nokey": true}
+	opts, _, errOut := applyOpts()
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/haskey" {
+		t.Errorf("context pipeline ran under %v, want [gh/acme/haskey]", got)
+	}
+	log := errOut.String()
+	if !strings.Contains(log, "Auto-picked host project gh/acme/haskey") ||
+		!strings.Contains(log, "checkout key") ||
+		!strings.Contains(log, "gh/acme/nokey (no checkout key)") {
+		t.Errorf("expected pick + reason + skipped project in log, got:\n%s", log)
+	}
+	// The manifest already proved gh/acme/haskey has a key: no live lookup for it.
+	if containsSlug(deps.keyListCalls, "gh/acme/haskey") {
+		t.Errorf("manifest checkout_keys should be used without a live lookup, calls: %v", deps.keyListCalls)
+	}
+}
+
+// A project with no pipeline definition is skipped too, even if it has a key.
+func TestTransfer_AutoPick_SkipsProjectWithoutPipelineDefinition(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{
+			{Slug: "gh/acme/nodef", CheckoutKeys: testCheckoutKey},
+			{Slug: "gh/acme/ok", CheckoutKeys: testCheckoutKey},
+		},
+	}
+	deps := happyMultiDeps()
+	deps.defsEmptyForSlugs = map[string]bool{"gh/acme/nodef": true}
+	opts, _, errOut := applyOpts()
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/ok" {
+		t.Errorf("context pipeline ran under %v, want [gh/acme/ok]", got)
+	}
+	if !strings.Contains(errOut.String(), "gh/acme/nodef (") || !strings.Contains(errOut.String(), "no pipeline definitions") {
+		t.Errorf("expected the skipped project and reason in log, got:\n%s", errOut.String())
+	}
+}
+
+// A manifest without checkout-key data (exported with --skip-extras) falls back
+// to the live ListCheckoutKeys lookup.
+func TestTransfer_AutoPick_ManifestWithoutKeyData_FallsBackToLiveLookup(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{{Slug: "gh/acme/a"}, {Slug: "gh/acme/b"}},
+	}
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/a": true} // live: a has none, b has one
+	opts, _, _ := applyOpts()
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"gh/acme/a", "gh/acme/b"}; strings.Join(deps.keyListCalls, ",") != strings.Join(want, ",") {
+		t.Errorf("live lookups = %v, want %v", deps.keyListCalls, want)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/b" {
+		t.Errorf("context pipeline ran under %v, want [gh/acme/b]", got)
+	}
+}
+
+// When no project can host the pipeline the error names the fix, and nothing in
+// the source org was changed (no flags enabled, no restriction removed).
+func TestTransfer_AutoPick_NoQualifyingProject_FailsBeforeAnyMutation(t *testing.T) {
+	m := restrictedManifest(manifest.Project{Slug: "gh/acme/a"}, manifest.Project{Slug: "bb/acme/b"})
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/a": true, "bb/acme/b": true}
+	opts, _, _ := applyOpts()
+	probe := newMutationProbe()
+	probe.wire(&opts)
+
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil {
+		t.Fatal("expected an error when no project has a checkout key")
+	}
+	for _, want := range []string{"checkout key", "gh/acme/a", "bb/acme/b", "Project Settings → SSH Keys", "--host-project"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+	probe.assertUntouched(t, deps)
+}
+
+// An explicit --host-project without a key fails fast with the same guidance,
+// before any mutation.
+func TestTransfer_ExplicitHostWithoutCheckoutKey_FailsBeforeAnyMutation(t *testing.T) {
+	m := restrictedManifest(manifest.Project{Slug: "gh/acme/web"})
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/web": true}
+	opts, _, _ := applyOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+	probe := newMutationProbe()
+	probe.wire(&opts)
+
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil {
+		t.Fatal("expected an error for an explicit host without a checkout key")
+	}
+	for _, want := range []string{"--host-project gh/acme/web has no checkout key", "Project Settings → SSH Keys"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+	probe.assertUntouched(t, deps)
+}
+
+// The check also fails fast in a dry run, so the operator learns before --apply.
+func TestTransfer_ExplicitHostWithoutCheckoutKey_DryRunFails(t *testing.T) {
+	m := baseManifest()
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/web": true}
+	opts := baseOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+
+	if err := Transfer(context.Background(), deps, m, opts); err == nil {
+		t.Fatal("expected the dry run to report the missing checkout key")
+	}
+}
+
+// A project key lookup that fails (e.g. unreadable) does not block the run:
+// the host is assumed to have a key, with a warning.
+func TestTransfer_CheckoutKeyLookupError_WarnsAndProceeds(t *testing.T) {
+	m := baseManifest()
+	deps := happyMultiDeps()
+	deps.keysErr = errors.New("403 forbidden")
+	opts, _, errOut := applyOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "could not list checkout keys for gh/acme/web") {
+		t.Errorf("expected a warning about the failed lookup, got:\n%s", errOut.String())
+	}
+}
+
+// circleci/ (GitHub App) sources need no checkout key: nothing is looked up and
+// the first project is picked as before.
+func TestTransfer_CircleCIProjects_CheckoutKeyNotChecked(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{
+			{Slug: "circleci/org-uuid/proj-1", EnvVars: []manifest.ProjectEnvVar{{Name: "V"}}},
+			{Slug: "circleci/org-uuid/proj-2"},
+		},
+	}
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"circleci/org-uuid/proj-1": true, "circleci/org-uuid/proj-2": true}
+	opts, _, errOut := applyOpts()
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{"circleci/org-uuid/proj-1": "circleci/new/proj-1"}
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deps.keyListCalls) != 0 {
+		t.Errorf("circleci/ projects must not be checked for checkout keys, got lookups: %v", deps.keyListCalls)
+	}
+	if !strings.Contains(errOut.String(), "Auto-picked host project circleci/org-uuid/proj-1") {
+		t.Errorf("expected the first circleci/ project to be auto-picked, got:\n%s", errOut.String())
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 2 {
+		t.Errorf("expected context + per-project pipelines, got %v", got)
+	}
+}
+
+// perProjectKeyManifest: host web has a key; api (with project vars) has none.
+func perProjectKeyManifest() *manifest.Manifest {
+	m := manifestWithTwoMappedProjects()
+	m.Projects[0].CheckoutKeys = testCheckoutKey // web
+	return m
+}
+
+func perProjectKeyOpts() (Options, *bytes.Buffer, *bytes.Buffer) {
+	opts, out, errOut := applyOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{
+		"gh/acme/web": "gh/new/web",
+		"gh/acme/api": "gh/new/api",
+	}
+	return opts, out, errOut
+}
+
+// Dry-run: the keyless project is shown as SKIP with the reason; nothing runs.
+func TestTransfer_PerProject_KeylessProjectShownAsSkipInDryRun(t *testing.T) {
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/api": true}
+	opts, out, _ := perProjectKeyOpts()
+	opts.DryRun = true
+
+	if err := Transfer(context.Background(), deps, perProjectKeyManifest(), opts); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	plan := out.String()
+	if !strings.Contains(plan, `SKIP project "gh/acme/api"`) || !strings.Contains(plan, "no checkout key") {
+		t.Errorf("plan should show gh/acme/api as SKIP with the reason, got:\n%s", plan)
+	}
+	if strings.Contains(plan, `SKIP project "gh/acme/web"`) {
+		t.Errorf("gh/acme/web has a key and must not be skipped:\n%s", plan)
+	}
+	if len(deps.triggerCalls) != 0 {
+		t.Errorf("dry run must not trigger pipelines, got %v", slugsFromCalls(deps.triggerCalls))
+	}
+}
+
+// Apply: the keyless project is skipped, the others run, and the final error
+// lists the skipped project and the fix.  Trigger flags are only enabled on
+// projects that will actually run.
+func TestTransfer_PerProject_KeylessProjectSkippedOnApply_FinalErrorListsIt(t *testing.T) {
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/api": true}
+	opts, out, _ := perProjectKeyOpts()
+	var hookSlugs []string
+	opts.BeforeMutate = func(slugs []string) (func(), error) {
+		hookSlugs = slugs
+		return nil, nil
+	}
+
+	err := Transfer(context.Background(), deps, perProjectKeyManifest(), opts)
+	if err == nil {
+		t.Fatal("expected a final error listing the skipped project")
+	}
+	for _, want := range []string{"gh/acme/api", "no checkout key", "Project Settings → SSH Keys"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "gh/acme/web") {
+		t.Errorf("error should list only the skipped project, got: %v", err)
+	}
+	// Host (context pipeline) + web (per-project) ran; api did not.
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 2 || containsSlug(got, "gh/acme/api") {
+		t.Errorf("pipelines ran under %v, want only gh/acme/web (x2)", got)
+	}
+	if strings.Join(hookSlugs, ",") != "gh/acme/web" {
+		t.Errorf("trigger flags enabled for %v, want only [gh/acme/web]", hookSlugs)
+	}
+	if !strings.Contains(out.String(), "1/1 project pipeline(s) succeeded") {
+		t.Errorf("expected the run to report the project that did run, got:\n%s", out.String())
+	}
+}
+
+// If every project is keyless the run still ends non-zero, with nothing enabled.
+func TestTransfer_PerProject_AllKeyless_ErrorsAndEnablesNothing(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil // project-vars only
+	deps := happyMultiDeps()
+	deps.noKeySlugs = map[string]bool{"gh/acme/web": true, "gh/acme/api": true}
+	opts, _, _ := perProjectKeyOpts()
+	opts.HostProjectSlug = ""
+	probe := newMutationProbe()
+	probe.wire(&opts)
+
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil || !strings.Contains(err.Error(), "gh/acme/web") || !strings.Contains(err.Error(), "gh/acme/api") {
+		t.Fatalf("expected an error listing both skipped projects, got: %v", err)
+	}
+	probe.assertUntouched(t, deps)
+}
+
+// The BeforeMutate hook gets the host and the active projects, and is skipped
+// entirely on a dry run.
+func TestTransfer_BeforeMutate_SlugsAndDryRun(t *testing.T) {
+	deps := happyMultiDeps()
+	opts, _, _ := perProjectKeyOpts()
+	var calls [][]string
+	opts.BeforeMutate = func(slugs []string) (func(), error) {
+		calls = append(calls, slugs)
+		return nil, nil
+	}
+
+	dry := opts
+	dry.DryRun = true
+	if err := Transfer(context.Background(), deps, perProjectKeyManifest(), dry); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("dry run must not enable trigger flags, hook calls: %v", calls)
+	}
+
+	if err := Transfer(context.Background(), deps, perProjectKeyManifest(), opts); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(calls) != 1 || strings.Join(calls[0], ",") != "gh/acme/web,gh/acme/api" {
+		t.Errorf("hook calls = %v, want one call with [gh/acme/web gh/acme/api]", calls)
+	}
+}
+
+// A hook error aborts before restrictions are touched or pipelines triggered.
+func TestTransfer_BeforeMutateError_Aborts(t *testing.T) {
+	m := restrictedManifest(manifest.Project{Slug: "gh/acme/web", CheckoutKeys: testCheckoutKey})
+	deps := happyMultiDeps()
+	opts, _, _ := applyOpts()
+	probe := newMutationProbe()
+	probe.wire(&opts)
+	opts.BeforeMutate = func([]string) (func(), error) { return nil, errors.New("flag off") }
+
+	if err := Transfer(context.Background(), deps, m, opts); err == nil || !strings.Contains(err.Error(), "flag off") {
+		t.Fatalf("expected the hook error, got: %v", err)
+	}
+	if len(probe.ctxClient.deleteCalls) != 0 || len(deps.triggerCalls) != 0 {
+		t.Errorf("nothing may run after a failed hook: deleted=%v triggers=%v", probe.ctxClient.deleteCalls, slugsFromCalls(deps.triggerCalls))
+	}
+}
+
+// CircleCI's "no SSH key" trigger rejection (when the pre-flight could not see
+// it) is wrapped with the same guidance and keeps the original error.
+func TestTransfer_NoSSHKeyAPIError_IsWrappedWithGuidance(t *testing.T) {
+	apiErr := errors.New(`TriggerPipelineRun "gh/acme/web": We did not run this pipeline because the project has no SSH key.`)
+
+	t.Run("context pipeline", func(t *testing.T) {
+		deps := happyMultiDeps()
+		deps.keysErr = errors.New("403") // pre-flight can't tell → proceeds
+		deps.triggerErr = apiErr
+		opts, _, _ := applyOpts()
+		opts.HostProjectSlug = "gh/acme/web"
+
+		err := Transfer(context.Background(), deps, baseManifest(), opts)
+		if err == nil || !errors.Is(err, apiErr) {
+			t.Fatalf("expected the wrapped API error, got: %v", err)
+		}
+		for _, want := range []string{"no SSH key", "Project Settings → SSH Keys", "--host-project"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error should mention %q, got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("project pipeline", func(t *testing.T) {
+		deps := happyMultiDeps()
+		deps.triggerErr = apiErr
+		pp := ProjectVarPlan{SourceSlug: "gh/acme/web", DestSlug: "gh/new/web", VarNames: []string{"V"}}
+		opts := baseOpts()
+
+		err := triggerAndPollProjectPipeline(context.Background(), deps, pp, &opts, &bytes.Buffer{})
+		if err == nil || !errors.Is(err, apiErr) || !strings.Contains(err.Error(), "Project Settings → SSH Keys") {
+			t.Fatalf("expected the wrapped API error with guidance, got: %v", err)
+		}
+	})
+
+	t.Run("other errors untouched", func(t *testing.T) {
+		other := errors.New("boom")
+		if got := explainTriggerError(other, "gh/a/b"); got != other {
+			t.Errorf("unrelated errors must pass through unchanged, got %v", got)
+		}
+	})
+}
+
+func TestRequiresCheckoutKey(t *testing.T) {
+	for slug, want := range map[string]bool{
+		"gh/acme/web":              true,
+		"github/acme/web":          true,
+		"bb/acme/web":              true,
+		"bitbucket/acme/web":       true,
+		"circleci/org-uuid/p-uuid": false,
+		"gitlab/acme/web":          false,
+	} {
+		if got := requiresCheckoutKey(slug); got != want {
+			t.Errorf("requiresCheckoutKey(%q) = %v, want %v", slug, got, want)
+		}
 	}
 }

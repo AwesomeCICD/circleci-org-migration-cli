@@ -12,6 +12,7 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/transfer"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/settings"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -92,7 +93,20 @@ PREREQUISITES:
      Pass that context name via --dest-token-context.
   3. (Optional) To transfer project env vars, prepare a mapping.json with
      entries for each source project slug → destination project slug.
-  4. Run 'secrets transfer --apply' to execute the transfer pipeline.
+  4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: every project that
+     runs a transfer pipeline needs a CHECKOUT KEY (a deploy key or user key),
+     or CircleCI refuses to start the pipeline ("the project has no SSH key"),
+     even with inline config. That means the host project and each project
+     transferred with --include-project-vars / --include-ssh-keys. Add one in
+     Project Settings → SSH Keys → Checkout SSH keys. circleci/ (GitHub App)
+     projects are not affected. This is checked BEFORE any context restriction is
+     removed or trigger flag enabled: the auto-picked host is the first manifest
+     project with a pipeline definition and a checkout key; an explicit
+     --host-project without one is rejected; a per-project transfer without one
+     is shown as SKIP, skipped on --apply, and the command exits non-zero listing
+     it. Keys come from the manifest's checkout_keys, or are looked up live when
+     the manifest was exported with --skip-extras.
+  5. Run 'secrets transfer --apply' to execute the transfer pipeline.
 
 DRY RUN (default — safe to run without --apply):
   Without --apply, transfer prints a plan: which contexts and variables would
@@ -293,54 +307,6 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		ctxClient = cc
 	}
 
-	// ── Org-level trigger flag ───────────────────────────────────────────────
-	// Enable allow_api_trigger_with_config on the source org when requested.
-	// Restore the prior value after the transfer (best-effort, via defer).
-	orgFlagEnabled := false
-	if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
-		orgClient, oerr := newOrgClientForCapture(cfg, srcToken)
-		if oerr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"WARNING: could not create org client to check org-level trigger flag: %v\n", oerr)
-		} else {
-			enabled, restoreOrgFn, enErr := maybeEnableOrgTrigger(cmd, orgClient, vcsType, orgName, tf.enableTrigger)
-			if enErr != nil {
-				return enErr
-			}
-			if restoreOrgFn != nil {
-				defer restoreOrgFn()
-			}
-			orgFlagEnabled = enabled
-		}
-	}
-
-	// ── Project-level trigger flags ──────────────────────────────────────────
-	// Collect the set of source project slugs that will actually run pipelines:
-	//   1. The host project (carries the context-transfer pipeline).
-	//   2. Each non-skipped source project (per-project env-var pipelines).
-	//
-	// We resolve the host project here using the same logic as transfer.Transfer
-	// (auto-pick first manifest project when --host-project is unset).
-	hostSlug := tf.hostProjectSlug
-	if hostSlug == "" && len(m.Projects) > 0 {
-		hostSlug = m.Projects[0].Slug
-	}
-
-	// Collect project slugs that will need the project-level flag.
-	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, tf.includeProjectVars, tf.includeSSHKeys)
-
-	// Enable the project-level api-trigger-with-config flag for each slug.
-	// Deferred restores are collected and run in reverse order at function exit.
-	for _, slug := range slugsNeedingFlag {
-		restore, pErr := maybeEnableProjectTrigger(cmd, projClient, slug, tf.enableTrigger, orgFlagEnabled)
-		if pErr != nil {
-			return pErr
-		}
-		if restore != nil {
-			defer restore() //nolint:revive // correct: closure captures slug independently via local copy
-		}
-	}
-
 	opts := transfer.Options{
 		HostProjectSlug:      tf.hostProjectSlug,
 		Branch:               tf.branch,
@@ -354,6 +320,7 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		IncludeSSHKeys:       tf.includeSSHKeys,
 		RemoveRestrictions:   tf.removeRestrictions,
 		ContextClient:        ctxClient,
+		BeforeMutate:         newTriggerFlagHook(cmd, cfg, srcToken, m.Source.Org.Slug, projClient, tf.enableTrigger),
 		DryRun:               !tf.apply,
 		PollTimeout:          tf.pollTimeout,
 		Stdout:               cmd.OutOrStdout(),
@@ -363,39 +330,65 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 	return transfer.Transfer(cmd.Context(), projClient, m, opts)
 }
 
-// collectTransferProjectSlugs returns the deduplicated set of source project
-// slugs that will run pipelines during transfer. The host project always runs
-// (for the context-transfer pipeline). When includeProjectVars is true, every
-// source project that has a resolved destination slug and env vars runs its own
-// per-project pipeline. When includeSSHKeys is true, every source project that
-// has a resolved destination slug and SSH keys also runs its own pipeline.
-func collectTransferProjectSlugs(hostSlug string, m *manifest.Manifest, combinedMapping map[string]string, includeProjectVars, includeSSHKeys bool) []string {
-	seen := make(map[string]bool)
-	var out []string
-
-	add := func(s string) {
-		if s != "" && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
+// newTriggerFlagHook returns the transfer.Options.BeforeMutate hook that
+// enables the org-level allow_api_trigger_with_config flag and the project-level
+// api-trigger-with-config flag on every project that will run a pipeline.
+//
+// transfer.Transfer calls it only on --apply and only after its read-only
+// pre-flight checks (host project, checkout keys) have passed, so a doomed run
+// never flips a flag.  The returned cleanup restores the prior values in
+// reverse order (project flags first, then the org flag).
+func newTriggerFlagHook(cmd *cobra.Command, cfg *settings.Config, srcToken, orgSlug string, projClient capture.FlagReaderWriter, enableTrigger bool) func([]string) (func(), error) {
+	var orgMgr capture.OrgFlagManager
+	if _, _, ok := capture.ParseOrgSlug(orgSlug); ok {
+		oc, oerr := newOrgClientForCapture(cfg, srcToken)
+		if oerr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"WARNING: could not create org client to check org-level trigger flag: %v\n", oerr)
+		} else {
+			orgMgr = oc
 		}
 	}
+	return triggerFlagHook(cmd, orgMgr, orgSlug, projClient, enableTrigger)
+}
 
-	add(hostSlug)
-
-	for _, mp := range m.Projects {
-		needsEnvVars := includeProjectVars && len(mp.EnvVars) > 0
-		needsSSHKeys := includeSSHKeys && len(mp.SSHKeys) > 0
-		if !needsEnvVars && !needsSSHKeys {
-			continue
-		}
-		// Only add if the project can be resolved to a destination slug.
-		if combinedMapping != nil {
-			if _, ok := combinedMapping[mp.Slug]; ok {
-				add(mp.Slug)
+// triggerFlagHook is newTriggerFlagHook with the org-flag manager injected
+// (nil skips the org-level flag).
+func triggerFlagHook(cmd *cobra.Command, orgMgr capture.OrgFlagManager, orgSlug string, projClient capture.FlagReaderWriter, enableTrigger bool) func([]string) (func(), error) {
+	return func(slugs []string) (func(), error) {
+		var restores []func()
+		cleanup := func() {
+			for i := len(restores) - 1; i >= 0; i-- {
+				restores[i]()
 			}
 		}
+
+		// Org-level flag: enable when requested; restore afterwards.
+		orgFlagEnabled := false
+		if vcsType, orgName, ok := capture.ParseOrgSlug(orgSlug); ok && orgMgr != nil {
+			enabled, restoreOrg, err := maybeEnableOrgTrigger(cmd, orgMgr, vcsType, orgName, enableTrigger)
+			if err != nil {
+				return nil, err
+			}
+			if restoreOrg != nil {
+				restores = append(restores, restoreOrg)
+			}
+			orgFlagEnabled = enabled
+		}
+
+		// Project-level flag for each project that will run a pipeline.
+		for _, slug := range slugs {
+			restore, err := maybeEnableProjectTrigger(cmd, projClient, slug, enableTrigger, orgFlagEnabled)
+			if err != nil {
+				cleanup() // undo whatever was already enabled
+				return nil, err
+			}
+			if restore != nil {
+				restores = append(restores, restore)
+			}
+		}
+		return cleanup, nil
 	}
-	return out
 }
 
 // maybeEnableOrgTrigger checks the org-level allow_api_trigger_with_config flag
@@ -558,8 +551,11 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 			"whose keys do not contain '/' are treated as context name → destination name mappings.")
 	f.StringVar(&tf.hostProjectSlug, "host-project", "",
 		"Source-org project slug under which the context-transfer pipeline runs. "+
-			"Any project with api-trigger-with-config enabled works. "+
-			"Auto-picked from the manifest when omitted.")
+			"Any project with api-trigger-with-config enabled works, but GitHub OAuth (gh/) and "+
+			"Bitbucket (bb/) projects must also have a checkout key (deploy key or user key — "+
+			"Project Settings → SSH Keys) or CircleCI refuses to run the pipeline; "+
+			"a project without one is rejected before anything is changed. "+
+			"When omitted, the first manifest project with a pipeline definition and a checkout key is picked.")
 	f.StringVar(&tf.branch, "branch", "",
 		"Branch to check out for the transfer pipeline run. "+
 			"Default: each project's default branch from the manifest, falling back to main. "+

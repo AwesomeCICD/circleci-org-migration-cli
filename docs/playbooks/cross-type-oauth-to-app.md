@@ -346,6 +346,23 @@ circleci-migrate secrets transfer \
 
 SSH keys still require Option A.
 
+> **Each source project needs a checkout key.** CircleCI will not start a
+> pipeline on a GitHub OAuth (`gh/`) or Bitbucket (`bb/`) project that has no
+> checkout key (deploy key or user key), even with inline config. `secrets
+> transfer` runs one pipeline under a *host project* (contexts) and one under
+> each source project (`--include-project-vars` / `--include-ssh-keys`), so:
+>
+> - the auto-picked host project is the first manifest project that has a
+>   pipeline definition **and** a checkout key (pass `--host-project` to choose);
+>   an explicit `--host-project` without a key is rejected up front;
+> - a source project without a key is shown as `SKIP` in the dry-run plan, left
+>   out on `--apply`, and the command exits non-zero listing it.
+>
+> Add a deploy key under **Project Settings → SSH Keys** for each such project and
+> re-run. All of this is checked *before* any context restriction is removed or
+> trigger flag enabled. See
+> [Troubleshooting](../troubleshooting.md#secrets-transfer-the-project-has-no-ssh-key).
+
 > **Project env vars are post-sync.** `secrets transfer --include-project-vars`
 > writes values directly to destination *projects*, which do not exist until
 > `sync --apply` (Phase 5) creates them — so run that step **after Phase 5**, not
