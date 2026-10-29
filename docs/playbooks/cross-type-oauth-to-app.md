@@ -830,6 +830,44 @@ not need to re-create anything to cut over. If any enable fails, every result is
 still printed and `sync` exits **non-zero**; fix the cause and run the command
 again.
 
+### 7.0 Controlled cutover with `cutover` (when the source is still building)
+
+If the source org is still running builds, avoid a window where both orgs build
+(or neither does) by switching with `circleci-migrate cutover`. It is a dry run
+unless `--apply` is given and records every change in `cutover-state.json`
+(mode 0600) so it can be undone:
+
+```bash
+# Preview, then apply: pause the source and enable the destination.
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest --apply
+
+# Roll back (source flags and triggers restored, destination triggers disabled again):
+circleci-migrate cutover --undo --apply
+```
+
+| Flag | Does |
+|---|---|
+| `--pause-source` | Sets the v1.1 flag `drop-all-build-requests=true` on each source OAuth project (prior value recorded) and disables the source triggers that are enabled and are not `github_oauth` triggers (ids recorded). Never unfollows a project. |
+| `--pause-org` | Also sets `drop-all-build-requests` on the whole source org (overrides every project). Use with `--pause-source`. |
+| `--enable-dest` | Enables destination triggers whose source counterpart was enabled; a trigger disabled in the source stays disabled. Run `sync --apply` first. |
+| `--undo` | Restores everything in the state file. |
+
+Each item is printed with its outcome, the command exits non-zero if any item
+fails, and re-running is idempotent.
+
+> **Pause the source before uninstalling the GitHub App from the source GitHub
+> org.** Uninstalling removes the source's GitHub App triggers, so they can no
+> longer be disabled or re-enabled; pausing then relies on
+> `drop-all-build-requests` alone, and `--undo` can only restore that flag.
+> `github_oauth` triggers cannot be disabled through the API at all, which is why
+> OAuth projects are paused with the flag.
+
+`cutover --enable-dest` replaces the `sync --apply --yes` step below when you use
+it; use one or the other.
+
 ### 7.1 Verify triggers are active
 
 In the destination org (**Project Settings → Triggers**): triggers show as active.
@@ -847,7 +885,7 @@ Push a commit or trigger a pipeline manually:
 
 ### Phase 7 checklist
 
-- [ ] `sync --apply --yes` run (or triggers enabled via UI)
+- [ ] `sync --apply --yes` run, or `cutover --pause-source --enable-dest --apply` (or triggers enabled via UI)
 - [ ] Pipeline triggers show as active in destination
 - [ ] At least one pipeline ran successfully in the destination
 - [ ] Context env vars accessible within a job

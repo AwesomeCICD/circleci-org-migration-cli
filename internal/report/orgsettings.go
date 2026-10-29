@@ -127,7 +127,7 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 		for _, lvl := range eh.Levels {
 			fmt.Fprintf(b, "  %d. %s\n", lvl.Position, orDash(lvl.IntegrationName))
 		}
-		fmt.Fprintf(b, "\n_Recreate manually — deploy-integration IDs are org-specific._\n\n")
+		fmt.Fprintf(b, "\n_`sync` recreates it (environments are matched or created by name); anything it cannot do is listed as manual._\n\n")
 	}
 
 	if len(s.AuditLogConfigs) > 0 {

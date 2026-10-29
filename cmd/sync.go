@@ -78,7 +78,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Deploys"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Environment Hierarchies", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -215,6 +215,9 @@ func newSyncCommand() *cobra.Command {
 		// skipPipelines syncs projects but creates no App pipeline definitions
 		// or triggers (create the projects before the GitHub App is moved).
 		skipPipelines bool
+		// webhookSecretsOut is the 0600 file that receives the new signing
+		// secrets / inbound webhook URLs generated for recreated webhooks.
+		webhookSecretsOut string
 	)
 
 	cmd := &cobra.Command{
@@ -485,6 +488,13 @@ Examples:
 
 				EnableExistingTriggers: enableExistingTriggers,
 				SkipPipelines:          skipPipelines,
+				WebhookSecretsOut:      webhookSecretsOut,
+			}
+			// Fail before creating any webhook with a secret we could not save.
+			if apply && webhookSecretsOut != "" {
+				if err := syncer.PrepareWebhookSecretsFile(webhookSecretsOut); err != nil {
+					return fmt.Errorf("--webhook-secrets-out: %w", err)
+				}
 			}
 
 			// Wire up the runner client when a destination namespace was provided
@@ -551,6 +561,16 @@ Examples:
 				}
 			}
 
+			// Save the generated webhook secrets right after the projects step that
+			// created them (the file is 0600; its contents are never printed).
+			if apply && webhookSecretsOut != "" {
+				if err := sy.WriteWebhookSecrets(webhookSecretsOut); err != nil {
+					return fmt.Errorf("--webhook-secrets-out: writing %s (the new webhook secrets are NOT saved — rotate them): %w", webhookSecretsOut, err)
+				}
+				ob, ib := sy.RecordedWebhookSecrets()
+				fmt.Fprintf(cmd.ErrOrStderr(), "Wrote %d outbound webhook signing secret(s) and %d inbound webhook URL(s) to %s (mode 0600)\n", ob, ib, webhookSecretsOut)
+			}
+
 			// Runner resource classes (attempted when present in manifest, unless skipped).
 			if !skipRunner && (len(m.RunnerResourceClasses) > 0 || destRunnerNamespace != "") {
 				rep, err := sy.SyncRunnerResourceClasses(ctx, m, opts)
@@ -599,6 +619,19 @@ Examples:
 				repsBySection["Orbs"] = rep
 				if !jsonOutput {
 					printSyncReport(cmd, "Orbs", rep, m)
+				}
+			}
+
+			// Environment hierarchies (after projects: PROJECT assignments match
+			// destination projects by name; before Deploys: it creates environments).
+			if !skipOrgSettings && syncer.HasEnvironmentHierarchies(m) {
+				rep, err := sy.SyncEnvironmentHierarchies(ctx, m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["Environment Hierarchies"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Environment Hierarchies", rep, m)
 				}
 			}
 
@@ -669,6 +702,11 @@ Examples:
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
 	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
+	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "",
+		"With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each "+
+			"outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. "+
+			"The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. "+
+			"Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")

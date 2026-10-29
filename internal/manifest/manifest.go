@@ -58,6 +58,11 @@ type Manifest struct {
 	// the org has none or the (experimental) deploy API was unreadable. The
 	// public deploy API is read-only, so sync reports these as manual steps.
 	Deploys *Deploys `json:"deploys,omitempty"`
+	// EnvironmentHierarchies captures every environment hierarchy of the org with
+	// its levels (by environment name) and where it is assigned (org default,
+	// project and component overrides, by name). Sync recreates them on the
+	// destination. Omitted when the org has none or they were unreadable.
+	EnvironmentHierarchies []EnvironmentHierarchyDef `json:"environment_hierarchies,omitempty"`
 	// Warnings records anything that could not be fully captured (for example
 	// a context secret value, which CircleCI never exposes via API). These are
 	// surfaced in the audit report so nothing is dropped silently.
@@ -71,6 +76,35 @@ type Deploys struct {
 	// ProjectSettings lists projects that have deploy/rollback pipelines
 	// configured. Pipeline UUIDs are source-specific and are not captured.
 	ProjectSettings []DeployProjectSettings `json:"project_settings,omitempty"`
+}
+
+// EnvironmentHierarchyDef is one environment hierarchy. Everything is keyed by
+// portable names: source integration/project/component UUIDs are never captured.
+type EnvironmentHierarchyDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// IsDefault is true when this hierarchy is the org-level default.
+	IsDefault bool `json:"is_default,omitempty"`
+	// Levels are ordered by Position; IntegrationName is the environment name.
+	Levels []EnvHierarchyLevel `json:"levels,omitempty"`
+	// Projects are the projects this hierarchy is assigned to (overriding the default).
+	Projects []EnvHierarchyProjectRef `json:"projects,omitempty"`
+	// Components are the components this hierarchy is assigned to.
+	Components []EnvHierarchyComponentRef `json:"components,omitempty"`
+}
+
+// EnvHierarchyProjectRef names a project a hierarchy is assigned to (source side).
+type EnvHierarchyProjectRef struct {
+	Slug string `json:"slug,omitempty"`
+	Name string `json:"name"`
+}
+
+// EnvHierarchyComponentRef names a component a hierarchy is assigned to. The
+// owning project (source slug/name) disambiguates same-named components.
+type EnvHierarchyComponentRef struct {
+	Name        string `json:"name"`
+	ProjectSlug string `json:"project_slug,omitempty"`
+	ProjectName string `json:"project_name,omitempty"`
 }
 
 // DeployLabel is one key/value label on a deploy environment or component.
@@ -754,6 +788,20 @@ func (m *Manifest) SortStable() {
 			return d.Components[i].ProjectSlug < d.Components[j].ProjectSlug
 		})
 		sort.SliceStable(d.ProjectSettings, func(i, j int) bool { return d.ProjectSettings[i].ProjectSlug < d.ProjectSettings[j].ProjectSlug })
+	}
+	sort.SliceStable(m.EnvironmentHierarchies, func(i, j int) bool {
+		return m.EnvironmentHierarchies[i].Name < m.EnvironmentHierarchies[j].Name
+	})
+	for i := range m.EnvironmentHierarchies {
+		h := &m.EnvironmentHierarchies[i]
+		sort.SliceStable(h.Levels, func(a, b int) bool { return h.Levels[a].Position < h.Levels[b].Position })
+		sort.SliceStable(h.Projects, func(a, b int) bool { return h.Projects[a].Name < h.Projects[b].Name })
+		sort.SliceStable(h.Components, func(a, b int) bool {
+			if h.Components[a].Name != h.Components[b].Name {
+				return h.Components[a].Name < h.Components[b].Name
+			}
+			return h.Components[a].ProjectSlug < h.Components[b].ProjectSlug
+		})
 	}
 	sort.SliceStable(m.Contexts, func(i, j int) bool { return m.Contexts[i].Name < m.Contexts[j].Name })
 	sort.SliceStable(m.Projects, func(i, j int) bool { return m.Projects[i].Slug < m.Projects[j].Slug })

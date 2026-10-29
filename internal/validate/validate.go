@@ -601,13 +601,13 @@ func compareOrgSettings(src, dst *manifest.Manifest) Section {
 		}
 	}
 
-	// Environment hierarchy — always manual.
+	// Environment hierarchy — sync recreates hierarchies by environment name; verify on the destination.
 	if ss.EnvironmentHierarchy != nil {
 		sec.Items = append(sec.Items, Item{
 			Status:  StatusManual,
 			Section: "Org Settings",
 			Name:    "environment-hierarchy",
-			Detail:  fmt.Sprintf("environment hierarchy %q is configured on source — cannot be auto-migrated (requires destination deploy-integration IDs)", ss.EnvironmentHierarchy.Name),
+			Detail:  fmt.Sprintf("environment hierarchy %q is configured on source — sync recreates it by environment name; verify its levels and assignments on the destination", ss.EnvironmentHierarchy.Name),
 		})
 	}
 

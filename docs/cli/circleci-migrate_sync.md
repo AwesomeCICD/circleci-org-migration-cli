@@ -125,6 +125,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --skip-projects                            Skip syncing projects
       --skip-runner                              Skip syncing self-hosted runner resource classes
       --skip-terraform-managed terraform apply   Skip syncing sections that Terraform manages (contexts, projects, runner resource classes). Use this for the CLI gap-fill step after terraform apply to avoid overwriting resources Terraform already owns. Syncs org-settings, CIAM, and extras (checkout-keys, ssh-keys, schedules). Mutually exclusive with --only.
+      --webhook-secrets-out string               With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.
   -y, --yes                                      Only with --apply: auto-confirm enabling builds after project creation (skip the interactive prompt). No effect in a dry run.
 ```
 

@@ -603,6 +603,16 @@ Examples:
 						printSyncReport(cmd, "Orbs", rep, m)
 					}
 				}
+				if !skipOrgSettings && syncer.HasEnvironmentHierarchies(m) {
+					rep, syncErr := sy.SyncEnvironmentHierarchies(ctx, m, mapping, sOpts)
+					if syncErr != nil {
+						return reps, nil, syncErr
+					}
+					reps["Environment Hierarchies"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Environment Hierarchies", rep, m)
+					}
+				}
 				// Deploys (environments / components / deploy settings): read-only
 				// reconcile; the public Deploys API has no create endpoint.
 				if m.Deploys != nil {
@@ -1466,7 +1476,7 @@ func printQuietSyncSummary(out io.Writer, repsBySection map[string]*syncer.Repor
 		action  syncer.Action
 	}
 
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs", "Deploys"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs", "Environment Hierarchies", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {

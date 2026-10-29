@@ -1,0 +1,127 @@
+.nh
+.TH "CIRCLECI-MIGRATE" "1" "Jun 2026" "circleci-migrate" "CircleCI Org Migration CLI"
+
+.SH NAME
+circleci-migrate-cutover - Switch builds from the source org to the destination (pause source, enable destination, undo).
+
+
+.SH SYNOPSIS
+\fBcircleci-migrate cutover [--pause-source] [--pause-org] [--enable-dest] [--undo] --manifest  [--apply] [flags]\fP
+
+
+.SH DESCRIPTION
+cutover performs the final switch of a migration: it stops builds in the SOURCE
+org and turns builds on in the DESTINATION org, recording every change so it can
+be reversed. It is a DRY RUN unless --apply is given.
+
+.PP
+--pause-source   For each source project, pause it reversibly: set the v1.1
+                   feature flag drop-all-build-requests=true on OAuth/VCS
+                   projects (the prior value is recorded), and disable the
+                   source triggers that are enabled and are not github_oauth
+                   triggers (the ids are recorded). github_oauth triggers cannot
+                   be disabled through the API, so OAuth projects rely on the
+                   flag. Projects are NEVER unfollowed (that is destructive).
+  --pause-org      Also set drop-all-build-requests=true on the whole source org
+                   (the org-level flag overrides every project). Use with
+                   --pause-source.
+  --enable-dest    Enable the destination triggers whose source counterpart was
+                   enabled (triggers are matched exactly as sync matches them).
+                   A trigger that was disabled in the source stays disabled.
+                   Run sync --apply first so the destination triggers exist.
+  --undo           Restore everything recorded in the state file: source flags
+                   back to their prior values, the source triggers it disabled
+                   re-enabled, and the destination triggers it enabled
+                   disabled again. Needs only --state (and --apply to act).
+
+.PP
+Every change is written to the state file (--state, default cutover-state.json, mode 0600)
+BEFORE it is made, so --undo works even after a partial failure. Re-running is
+idempotent: items already in the wanted state report "exists". Each item is
+printed with its outcome and the command exits non-zero if any item failed.
+
+.PP
+Order for a clean cutover: sync --apply (destination created paused), validate,
+cutover --pause-source --apply, cutover --enable-dest --apply (the two can be
+given together: the source is paused first). If something is wrong, cutover
+--undo --apply returns the source to its previous state.
+
+.PP
+CAUTION: once the GitHub App is UNINSTALLED from the source GitHub org, the
+source's GitHub App triggers no longer exist, so they can neither be disabled
+nor re-enabled; pausing then relies on drop-all-build-requests alone, and --undo
+can only restore that flag. Pause the source BEFORE uninstalling the App.
+
+.PP
+Source actions use the source token (--source-token / CIRCLECI_SOURCE_TOKEN,
+else --token); destination actions use the destination token (--dest-token /
+CIRCLECI_DEST_TOKEN, else --token).
+
+.PP
+Examples:
+  circleci-migrate cutover --manifest manifest.json --pause-source
+  circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source --enable-dest --apply
+  circleci-migrate cutover --manifest manifest.json --pause-source --pause-org --apply
+  circleci-migrate cutover --undo --apply
+
+
+.SH OPTIONS
+\fB--apply\fP[=false]
+	Make the changes (default: dry run)
+
+.PP
+\fB--enable-dest\fP[=false]
+	Enable destination triggers whose source counterpart was enabled
+
+.PP
+\fB-h\fP, \fB--help\fP[=false]
+	help for cutover
+
+.PP
+\fB--manifest\fP=""
+	Path to the export manifest (required unless --undo)
+
+.PP
+\fB--mapping\fP=""
+	Path to the source->destination mapping file (JSON); org.to is required with --enable-dest
+
+.PP
+\fB--pause-org\fP[=false]
+	Also set drop-all-build-requests on the whole source org (with --pause-source)
+
+.PP
+\fB--pause-source\fP[=false]
+	Pause the source: drop-all-build-requests on OAuth projects and disable enabled source App triggers
+
+.PP
+\fB--state\fP="cutover-state.json"
+	State file recording every change (mode 0600); read by --undo
+
+.PP
+\fB--undo\fP[=false]
+	Restore everything recorded in the state file
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+\fB--debug\fP[=false]
+	Enable debug logging
+
+.PP
+\fB--dest-token\fP=""
+	API token for the destination org (env: CIRCLECI_DEST_TOKEN)
+
+.PP
+\fB--host\fP="https://circleci.com"
+	CircleCI host URL (env: CIRCLECI_CLI_HOST, CIRCLECI_HOST, or CIRCLE_URL)
+
+.PP
+\fB--source-token\fP=""
+	API token for the source org (env: CIRCLECI_SOURCE_TOKEN)
+
+.PP
+\fB--token\fP=""
+	Personal API token — fallback for both orgs (env: CIRCLECI_CLI_TOKEN or CIRCLE_TOKEN)
+
+
+.SH SEE ALSO
+\fBcircleci-migrate(1)\fP
