@@ -54,7 +54,7 @@ brew install AwesomeCICD/tap/circleci-migrate
 go install github.com/AwesomeCICD/circleci-org-migration-cli@latest
 ```
 
-Or grab a prebuilt binary (Linux/macOS, amd64/arm64) from
+Or grab a prebuilt binary (Linux/macOS/Windows, amd64/arm64) from
 [GitHub Releases](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases):
 
 ```bash
@@ -65,6 +65,21 @@ curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/do
   | tar -xz
 sudo install -m 0755 circleci-migrate /usr/local/bin/
 ```
+
+On Windows (PowerShell), download the `.zip` for your architecture and run
+`circleci-migrate.exe` from where you extract it:
+
+```powershell
+$Version = (Invoke-RestMethod https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest).tag_name
+$Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+$Zip = "circleci-migrate_$($Version.TrimStart('v'))_windows_$Arch.zip"
+Invoke-WebRequest "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/$Version/$Zip" -OutFile $Zip
+Expand-Archive $Zip -DestinationPath "$env:LOCALAPPDATA\circleci-migrate" -Force
+& "$env:LOCALAPPDATA\circleci-migrate\circleci-migrate.exe" version
+```
+
+In PowerShell, set tokens with `$env:CIRCLECI_SOURCE_TOKEN = "<token>"` instead
+of `export`.
 
 > **Future namespace:** the tap and orb move to `CircleCI-Labs` / `cci-labs`
 > when the tool is republished under CircleCI Labs. `AwesomeCICD` is the current

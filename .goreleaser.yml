@@ -4,6 +4,9 @@
 #   https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/{tag}/
 #     circleci-migrate_{version-without-v}_{os}_{arch}.tar.gz
 #
+# Windows archives are .zip (format_overrides below) and hold circleci-migrate.exe;
+# the orb only installs linux/darwin, so its URL pattern is unaffected.
+#
 # GoReleaser's {{ .Version }} is the tag with the leading `v` stripped, so
 #   name_template: 'circleci-migrate_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 # produces e.g. circleci-migrate_1.2.3_linux_amd64.tar.gz — matching exactly.
@@ -17,6 +20,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -34,6 +38,11 @@ archives:
     # Produces: circleci-migrate_{version}_{os}_{arch}.tar.gz
     # e.g. for v1.2.3/linux/amd64: circleci-migrate_1.2.3_linux_amd64.tar.gz
     name_template: 'circleci-migrate_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    # Windows users expect a .zip they can extract without extra tools.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
 
 checksum:
   name_template: 'checksums.txt'

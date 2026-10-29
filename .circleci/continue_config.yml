@@ -33,6 +33,7 @@
 #   Wave A — build matrix, lint, coverage (parallel, no prerequisites):
 #             Build: linux/amd64, Build: linux/arm64,
 #             Build: darwin/amd64, Build: darwin/arm64,
+#             Build: windows/amd64, Build: windows/arm64,
 #             Lint, Coverage (85% gate)
 #   Wave B — test + security (require ALL of Wave A):
 #             Unit Tests (race), Security: govulncheck, Security: gosec (SAST),
@@ -941,7 +942,7 @@ workflows:
           name: "Build: << matrix.goos >>/<< matrix.goarch >>"
           matrix:
             parameters:
-              goos: [linux, darwin]
+              goos: [linux, darwin, windows]
               goarch: [amd64, arm64]
           filters:
             tags:
@@ -976,6 +977,8 @@ workflows:
             - "Build: linux/arm64"
             - "Build: darwin/amd64"
             - "Build: darwin/arm64"
+            - "Build: windows/amd64"
+            - "Build: windows/arm64"
             - Lint
             - "Coverage (85% gate)"
           filters:
@@ -989,6 +992,8 @@ workflows:
             - "Build: linux/arm64"
             - "Build: darwin/amd64"
             - "Build: darwin/arm64"
+            - "Build: windows/amd64"
+            - "Build: windows/arm64"
             - Lint
             - "Coverage (85% gate)"
           filters:
@@ -1002,6 +1007,8 @@ workflows:
             - "Build: linux/arm64"
             - "Build: darwin/amd64"
             - "Build: darwin/arm64"
+            - "Build: windows/amd64"
+            - "Build: windows/arm64"
             - Lint
             - "Coverage (85% gate)"
           filters:
@@ -1015,6 +1022,8 @@ workflows:
             - "Build: linux/arm64"
             - "Build: darwin/amd64"
             - "Build: darwin/arm64"
+            - "Build: windows/amd64"
+            - "Build: windows/arm64"
             - Lint
             - "Coverage (85% gate)"
           filters:
@@ -1028,6 +1037,8 @@ workflows:
             - "Build: linux/arm64"
             - "Build: darwin/amd64"
             - "Build: darwin/arm64"
+            - "Build: windows/amd64"
+            - "Build: windows/arm64"
             - Lint
             - "Coverage (85% gate)"
           filters:
