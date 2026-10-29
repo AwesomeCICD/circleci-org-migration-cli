@@ -55,18 +55,29 @@ re-run with --apply. Context restrictions are handled as follows:
   • group — resolved by name to the destination group UUID (requires the group
     to exist in the destination; falls back to "manual" if not found).
   • project — remapped automatically: source project UUID → source slug →
-    destination slug (via mapping) → destination project UUID. Requires that
-    the destination project already exists; if it does not (i.e. sync runs
-    contexts before projects on the first pass), the restriction falls back to
-    "manual" with a re-run instruction. Re-run sync after projects are created
-    to resolve remaining project restrictions.
+    destination slug (via mapping) → destination project UUID. For a GitHub App
+    destination, a project with no mapping entry is matched by NAME against
+    the destination org's projects instead (no 'projects' entries needed).
+    Requires that the destination project exists once the projects step has run;
+    if it does not, the restriction falls back to "manual" naming the project
+    and the fix. Re-run sync after the projects are created to resolve it.
 
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable
 builds (follow the project, which installs the webhook and may trigger an
-initial build). --yes / -y only matters together with --apply: it auto-confirms
-enabling builds without the interactive prompt (it has no effect in a dry run).
-Without a TTY, builds are not enabled unless --yes is passed.
+initial build). For a GitHub App destination the prompt instead offers to enable
+the N triggers that were created disabled, across M projects. --yes / -y only
+matters together with --apply: it auto-confirms enabling builds without the
+interactive prompt (it has no effect in a dry run). Without a TTY, builds are
+not enabled unless --yes is passed.
+
+--skip-pipelines (GitHub App destinations) creates or reuses each project and
+syncs its settings, env vars and other project data, but creates no pipeline
+definitions or triggers (reported as "skipped: --skip-pipelines"). Run it first
+to create the App projects BEFORE the GitHub App is moved off the source org, so
+'secrets transfer --include-project-vars' can run while the source's App
+pipeline definitions still exist; then run sync --apply again WITHOUT the flag
+to add the definitions and triggers to the existing projects.
 
 When the manifest contains self-hosted runner resource classes, pass
 --dest-runner-namespace to recreate them in the destination namespace. If the
@@ -80,6 +91,7 @@ Examples:
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --secrets secrets.json --apply --yes
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
   circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --skip-pipelines
 
 ```
 circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
@@ -108,6 +120,7 @@ circleci-migrate sync --manifest <file> [--secrets <file>] [--apply] [flags]
       --skip-extras                              Skip syncing project checkout keys, additional SSH keys, webhooks, and schedules
       --skip-orb                                 Skip syncing orbs
       --skip-org-settings                        Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
+      --skip-pipelines                           GitHub App destinations: create or reuse each project and sync its settings, env vars and other project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so 'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed.
       --skip-preflight                           Skip the startup destination-side preflight checks (token validation, destination org reachability, cross-type warning, GitHub token check). Preflight runs by default before sync; use --skip-preflight in CI pipelines or when checks have been verified manually.
       --skip-projects                            Skip syncing projects
       --skip-runner                              Skip syncing self-hosted runner resource classes

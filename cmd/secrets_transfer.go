@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	apicontext "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
@@ -55,13 +58,20 @@ ADDITIONAL SSH KEY TRANSFER (opt-in with --include-ssh-keys):
   shared host-project pipeline would silently produce blank values for every
   project that is not the host project (the bug this design explicitly prevents).
 
-  The destination project must already be onboarded/exist. Resolution of
-  source project slug → destination project slug requires an explicit --mapping
-  entry (keys containing "/" in the projects map). Projects without a
-  resolvable destination slug are SKIPPED and flagged in the plan:
+  The destination project must already exist. Source project slug →
+  destination project slug is resolved from an explicit --mapping entry (keys
+  containing "/" in the projects map) first. For a GitHub App ("circleci/")
+  destination, a project with no mapping entry is matched BY NAME against the
+  destination org's projects (the real circleci/<org-uuid>/<project-uuid> slug
+  is used), so 'mapping generate' is optional; the plan prints each source →
+  destination pair. Create the destination projects first with
+  'sync --apply --skip-pipelines' (it makes projects without pipeline
+  definitions, so the GitHub App can stay installed on the source until the
+  transfer has run). A project with no mapping entry and no match is SKIPPED,
+  flagged in the plan, and the run exits non-zero naming it:
 
-    SKIP project "gh/acme/api": dest project for "gh/acme/api" unknown
-    — provide --mapping or onboard it first; skipped
+    SKIP project "gh/acme/api": no destination project named "api" in the
+    destination org and no mapping entry for "gh/acme/api" — create it first …
 
 TRIGGER FLAGS (REQUIRED FOR --apply):
   For the in-pipeline unversioned-config trigger to work, BOTH of the following
@@ -91,8 +101,9 @@ PREREQUISITES:
        context name: "migration-secrets"
        env var:       CIRCLECI_DEST_TOKEN = <dest-org-api-token>
      Pass that context name via --dest-token-context.
-  3. (Optional) To transfer project env vars, prepare a mapping.json with
-     entries for each source project slug → destination project slug.
+  3. (Optional) To transfer project env vars into a gh/ or bb/ destination,
+     prepare a mapping.json with an entry per source project slug → destination
+     project slug. A GitHub App destination matches projects by name instead.
   4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: CircleCI refuses to
      start a pipeline that checks out over SSH on a project with no CHECKOUT KEY
      ("the project has no SSH key"), even with inline config. In a GitHub OAuth org
@@ -301,15 +312,15 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 
 	// Resolve --dest-org slug to UUID when --dest-org-id is not provided.
 	destOrgID := tf.destOrgID
-	if destOrgID == "" {
-		orgClient, oerr := org.NewClient(cfg, cfg.DestTokenOrDefault())
+	orgClient, oerr := org.NewClient(cfg, cfg.DestTokenOrDefault())
+	if oerr != nil {
+		// Fall back to source token for the org lookup (user may not have set dest token yet).
+		orgClient, oerr = org.NewClient(cfg, srcToken)
 		if oerr != nil {
-			// Fall back to source token for the org lookup (user may not have set dest token yet).
-			orgClient, oerr = org.NewClient(cfg, srcToken)
-			if oerr != nil {
-				return fmt.Errorf("creating org client to resolve --dest-org: %w", oerr)
-			}
+			return fmt.Errorf("creating org client to resolve the destination org: %w", oerr)
 		}
+	}
+	if destOrgID == "" {
 		resolved, rerr := orgClient.ResolveOrgID(cmd.Context(), tf.destOrgSlug)
 		if rerr != nil {
 			return fmt.Errorf("resolving destination org %q: %w\n"+
@@ -334,7 +345,19 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 		ctxClient = cc
 	}
 
+	// GitHub App destinations: projects with no mapping entry are resolved by
+	// name from the destination org's project list (mapping generate is optional).
+	var destProjects transfer.DestProjectLister
+	if (tf.includeProjectVars || tf.includeSSHKeys) && isAppDestOrg(cmd.Context(), orgClient, tf.destOrgSlug, destOrgID, cmd.ErrOrStderr()) {
+		dstClient, derr := project.NewClient(cfg, destClientToken(cfg, srcToken))
+		if derr != nil {
+			return fmt.Errorf("creating destination project client: %w", derr)
+		}
+		destProjects = dstClient
+	}
+
 	opts := transfer.Options{
+		DestProjects:         destProjects,
 		HostProjectSlug:      tf.hostProjectSlug,
 		Branch:               tf.branch,
 		DestHost:             tf.destHost,
@@ -356,6 +379,36 @@ func (tf *transferFlags) run(cmd *cobra.Command) error {
 	}
 
 	return transfer.Transfer(cmd.Context(), projClient, m, opts)
+}
+
+// destClientToken is the token used to read the destination org's project list:
+// the destination token, else the source token (the same fallback the org
+// lookup uses when no destination token is configured).
+func destClientToken(cfg *settings.Config, srcToken string) string {
+	if t := cfg.DestTokenOrDefault(); t != "" {
+		return t
+	}
+	return srcToken
+}
+
+// isAppDestOrg reports whether the destination is a GitHub App / standalone
+// ("circleci") org, whose project slugs carry UUIDs and so cannot be derived
+// from a repo name.  A "circleci/..." slug says so directly and a gh/ or bb/
+// slug rules it out; with only a bare UUID the org record's vcs_type decides.
+// A failed lookup is warned about and treated as "not App" (mapping-only).
+func isAppDestOrg(ctx context.Context, g orgGetter, destSlug, destOrgID string, errW io.Writer) bool {
+	switch {
+	case strings.HasPrefix(destSlug, "circleci/"):
+		return true
+	case strings.Contains(destSlug, "/"):
+		return false
+	}
+	o, err := g.GetOrganization(ctx, destOrgID)
+	if err != nil {
+		fmt.Fprintf(errW, "WARNING: could not read destination org %s to decide whether projects can be matched by name: %v\n", destOrgID, err)
+		return false
+	}
+	return strings.EqualFold(o.VCSType, "circleci")
 }
 
 // newTriggerFlagHook returns the transfer.Options.BeforeMutate hook that
@@ -575,8 +628,9 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 	f.StringArrayVar(&tf.contextNames, "context", nil,
 		"Context name(s) to transfer (default: all contexts with at least one env var in the manifest)")
 	f.StringVar(&tf.mappingPath, "mapping", "",
-		"Path to mapping.json for context name overrides (optional). Entries in the 'projects' map "+
-			"whose keys do not contain '/' are treated as context name → destination name mappings.")
+		"Path to mapping.json (optional). Entries in the 'projects' map whose keys do not contain '/' are "+
+			"context name → destination name mappings; keys containing '/' are source project slug → destination "+
+			"project slug entries, which win over the by-name match used for GitHub App destinations.")
 	f.StringVar(&tf.hostProjectSlug, "host-project", "",
 		"Source-org project slug under which the context-transfer pipeline runs. "+
 			"Any project with api-trigger-with-config enabled works, but a GitHub OAuth (gh/) or "+
@@ -599,15 +653,15 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 			"is required when any trigger flag is off.")
 	f.BoolVar(&tf.includeProjectVars, "include-project-vars", false,
 		"Also transfer project env-var values to the destination projects (default: off, context-only). "+
-			"Requires each source project to be resolvable to a destination project slug via --mapping; "+
-			"projects without a mapping entry are skipped with a warning. "+
-			"Destination project must already be onboarded/exist in the destination org.")
+			"Each source project is resolved to a destination project via --mapping, or, for a GitHub App destination, by name; "+
+			"a project that cannot be resolved is skipped and the run exits non-zero naming it. "+
+			"Destination project must already be onboarded/exist in the destination org (sync --skip-pipelines creates them).")
 	f.BoolVar(&tf.includeSSHKeys, "include-ssh-keys", false, //nolint:gosec // flag name, not a credential
 		"Also transfer additional project SSH keys to the destination projects via the in-pipeline "+
 			"zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with "+
 			"jq --rawfile and POSTed to the destination — never echoed to logs). "+
-			"Requires each source project to be resolvable to a destination project slug via --mapping; "+
-			"projects without a mapping entry are skipped. "+
+			"Projects are resolved like --include-project-vars (mapping entry, else name match for a GitHub App destination); "+
+			"unresolvable projects are skipped and make the run exit non-zero. "+
 			"A project with SSH keys but no env vars still triggers a per-project pipeline. "+
 			"Destination project must already be onboarded/exist in the destination org.")
 	f.BoolVar(&tf.skipContexts, "skip-contexts", false,

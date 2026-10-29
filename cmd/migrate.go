@@ -70,6 +70,10 @@ func newMigrateCommand() *cobra.Command {
 		// enableExistingTriggers also enables destination triggers that already
 		// exist and are disabled (default: only triggers created this run).
 		enableExistingTriggers bool
+
+		// skipPipelines syncs projects but creates no App pipeline definitions
+		// or triggers.
+		skipPipelines bool
 	)
 
 	cmd := &cobra.Command{
@@ -329,6 +333,7 @@ Examples:
 					destGitHubOrg:   destGitHubOrg,
 					githubOrgMapped: pfMapping != nil && pfMapping.GitHubOrg != nil,
 					skipProjects:    skipProjects,
+					skipPipelines:   skipPipelines,
 				}
 				if pfRunErr := runMigratePreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfRunErr != nil {
 					return pfRunErr
@@ -500,6 +505,7 @@ Examples:
 					IncludeDangerFlags:  includeDangerFlags,
 
 					EnableExistingTriggers: enableExistingTriggers,
+					SkipPipelines:          skipPipelines,
 				}
 				reps = make(map[string]*syncer.Report)
 				// An enable-builds failure is remembered and returned after the
@@ -720,7 +726,7 @@ Examples:
 			// non-zero solely because of a parity gap.
 			if apply && !jsonOutput && !skipValidate {
 				runPostMigrateValidation(ctx, cmd, cfg, m, dstToken, destOrg,
-					destRunnerNamespace, destOrbNamespace, mapping)
+					destRunnerNamespace, destOrbNamespace, mapping, ignoredContexts(destTokenContext, nil)...)
 			}
 
 			return finalErr()
@@ -763,6 +769,7 @@ Examples:
 		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
+	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false,
 		"Skip exporting and syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false,
@@ -1725,9 +1732,21 @@ func runMigrateSecretsTransfer(
 		ctxClient = cc
 	}
 
+	// GitHub App destination: projects with no derivable slug are matched by
+	// name against the destination org's projects.
+	var destProjects transfer.DestProjectLister
+	if (includeProjectVars || includeSSHKeys) && isAppDestOrg(cmd.Context(), orgClient, destOrg, destOrgID, stderr) {
+		dstClient, derr := project.NewClient(cfg, destClientToken(cfg, srcToken))
+		if derr != nil {
+			return fmt.Errorf("creating destination project client for secrets transfer: %w", derr)
+		}
+		destProjects = dstClient
+	}
+
 	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
 	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
+		DestProjects:    destProjects,
 		HostProjectSlug: hostSlug,
 		// Branch is intentionally empty so transfer.Transfer resolves the
 		// trigger branch per project (manifest vcs.default_branch, falling
@@ -1772,6 +1791,7 @@ func runPostMigrateValidation(
 	srcManifest *manifest.Manifest,
 	dstToken, destOrg, destRunnerNamespace, destOrbNamespace string,
 	mapping *manifest.Mapping,
+	ignoreContexts ...string, // migration-only contexts (the --dest-token-context) left out of the comparison
 ) {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1789,6 +1809,7 @@ func runPostMigrateValidation(
 	result := validate.Compare(srcManifest, dstManifest, mapping, validate.Options{
 		DestRunnerNamespace: destRunnerNamespace,
 		DestOrbNamespace:    destOrbNamespace,
+		IgnoreContexts:      ignoreContexts,
 	})
 
 	var b strings.Builder

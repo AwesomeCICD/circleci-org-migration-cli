@@ -39,6 +39,10 @@ func (s *Syncer) syncAppPipelines(
 	opts Options,
 	existing bool,
 ) {
+	if opts.SkipPipelines {
+		reportSkippedPipelines(report, p, projectName)
+		return
+	}
 	defs := p.PipelineDefinitions
 	synth := len(defs) == 0
 	if synth {
@@ -80,6 +84,32 @@ func (s *Syncer) syncAppPipelines(
 	for _, def := range defs {
 		s.syncAppPipelineDefinition(ctx, report, projectName, projectID, def, destSlug, mapping, opts,
 			synth, findDestDef(destDefs, def.Name))
+	}
+}
+
+// skipPipelinesDetail is the detail recorded for every definition and trigger
+// left uncreated by --skip-pipelines.
+const skipPipelinesDetail = "skipped: --skip-pipelines (re-run sync without it to create it)"
+
+// reportSkippedPipelines records, per pipeline definition and per trigger that a
+// normal run would reconcile, a "skipped" action. A project with no captured
+// definitions (a plain OAuth project) would get one synthesized definition and
+// trigger, so those are reported too.
+func reportSkippedPipelines(report *Report, p manifest.Project, projectName string) {
+	defs := p.PipelineDefinitions
+	if len(defs) == 0 {
+		fullName, ok := oauthSourceFullName(p.Slug)
+		if !ok {
+			return // nothing a later run could synthesize
+		}
+		defs = []manifest.PipelineDefinition{synthesizedDefinition(p, fullName)}
+	}
+	for _, def := range defs {
+		defTarget := projectName + "/def:" + def.Name
+		report.add("project-pipeline-def", defTarget, "skipped", skipPipelinesDetail)
+		for _, trig := range def.Triggers {
+			report.add("project-trigger", defTarget+"/trigger:"+trig.Name, "skipped", skipPipelinesDetail)
+		}
 	}
 }
 

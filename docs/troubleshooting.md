@@ -75,9 +75,16 @@ the new IDs. See the
 
 ## Context restriction shows `manual`
 
-Project-type context restrictions cannot be migrated automatically — source-org
-project UUIDs do not transfer. Recreate them in the destination org settings UI
-after sync. (Expression and group restrictions transfer where the API allows.)
+Project-type context restrictions are remapped in two hops: source project UUID →
+source project, then source project → destination project. For a GitHub App
+destination the second hop matches by **project name** against the destination
+org, so no `projects` mapping entries are needed. A restriction stays `manual`
+when no destination project of that name exists yet (the detail names the project
+and its source slug): create it — `sync --apply --skip-pipelines` makes the App
+projects without pipeline definitions — add a `projects` entry if the name
+differs, then re-run `sync --apply`. For a gh/bb destination a missing mapping
+entry is the usual cause. (Expression and group restrictions transfer where the
+API allows.)
 
 ## `secrets capture` fails with `api-trigger-with-config disabled`
 
@@ -93,6 +100,22 @@ extraction. Either:
 1. Pass `--context` and/or `--project` to scope exactly what is captured.
 2. Pass `--yes` (or `--no-input`) to acknowledge an unattended capture-all.
 3. Run on an interactive TTY (no `--manifest`) for the guided walkthrough.
+
+## `secrets transfer`: "no destination project could be resolved"
+
+```
+Error: transfer: 2 project(s) skipped because no destination project could be resolved …
+```
+
+With `--include-project-vars` / `--include-ssh-keys` each source project needs a
+destination project. For a GitHub App destination it is matched by name against
+the destination org's projects (a `projects` mapping entry wins); a project
+that has neither is listed here, shown as `SKIP` in the plan, and the run exits
+non-zero after the others have run. Create the missing projects with
+`sync --apply --skip-pipelines` — do this **before** the GitHub App leaves the
+source org, or the transfer pipelines will need checkout keys — or add
+`projects` entries to `--mapping`, then re-run (add `--skip-contexts` if the
+contexts already went through).
 
 ## `secrets transfer`: "the project has no SSH key"
 

@@ -3824,3 +3824,261 @@ func TestBuildPlan_SkipContexts(t *testing.T) {
 		t.Errorf("expected a --context conflict error, got: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Destination projects resolved by name (GitHub App destinations)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// fakeDestLister is a DestProjectLister fake.
+type fakeDestLister struct {
+	projs []project.OrgProject
+	err   error
+	calls int
+	orgID string
+}
+
+func (f *fakeDestLister) ListOrgProjects(_ context.Context, orgID string) ([]project.OrgProject, error) {
+	f.calls++
+	f.orgID = orgID
+	return f.projs, f.err
+}
+
+const destAppOrg = "0cbd7e08-0000-0000-0000-000000000000"
+
+func appDestProjects() []project.OrgProject {
+	return []project.OrgProject{
+		{ID: "p-web", Slug: "circleci/" + destAppOrg + "/p-web", Name: "web"},
+		{ID: "p-api", Slug: "circleci/" + destAppOrg + "/p-api", Name: "api"},
+	}
+}
+
+// With no mapping entries, an App destination resolves each project by name to
+// the real circleci/<org>/<project> slug, and the plan prints source -> dest.
+func TestBuildPlan_AppDestination_ResolvesByName(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	lister := &fakeDestLister{projs: appDestProjects()}
+	opts := baseOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = lister
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	want := map[string]string{
+		"gh/acme/web": "circleci/" + destAppOrg + "/p-web",
+		"gh/acme/api": "circleci/" + destAppOrg + "/p-api",
+	}
+	for _, pp := range plan.Projects {
+		if pp.Skipped || pp.DestSlug != want[pp.SourceSlug] || pp.ResolvedBy != resolvedByName {
+			t.Errorf("project %s = %+v, want dest %q resolved by name", pp.SourceSlug, pp, want[pp.SourceSlug])
+		}
+	}
+	if lister.orgID != destAppOrg || lister.calls != 1 {
+		t.Errorf("expected one listing of org %s, got %d call(s) for %q", destAppOrg, lister.calls, lister.orgID)
+	}
+}
+
+// A mapping entry always beats a name match.
+func TestBuildPlan_AppDestination_MappingWinsOverName(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	opts := baseOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: appDestProjects()}
+	opts.Mapping = map[string]string{"gh/acme/web": "circleci/" + destAppOrg + "/explicit"}
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pp := range plan.Projects {
+		switch pp.SourceSlug {
+		case "gh/acme/web":
+			if pp.DestSlug != "circleci/"+destAppOrg+"/explicit" || pp.ResolvedBy != resolvedByMapping {
+				t.Errorf("mapped project = %+v, want the mapping entry to win", pp)
+			}
+		case "gh/acme/api":
+			if pp.ResolvedBy != resolvedByName {
+				t.Errorf("unmapped project should resolve by name, got %+v", pp)
+			}
+		}
+	}
+}
+
+// The manifest project name, not the slug tail, is what is matched.
+func TestBuildPlan_AppDestination_UsesManifestProjectName(t *testing.T) {
+	m := &manifest.Manifest{Projects: []manifest.Project{
+		{Slug: "gh/acme/uipath-release-prototype", Name: "helloworld", EnvVars: []manifest.ProjectEnvVar{{Name: "V"}}},
+	}}
+	opts := baseOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: []project.OrgProject{{ID: "h", Slug: "circleci/" + destAppOrg + "/h", Name: "helloworld"}}}
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Projects[0].DestSlug; got != "circleci/"+destAppOrg+"/h" {
+		t.Errorf("DestSlug = %q, want the helloworld project", got)
+	}
+}
+
+// The slug is built from the project ID when the listing carries no slug.
+func TestResolveDestProjects_FallsBackToIDWhenNoSlug(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	opts := baseOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: []project.OrgProject{{ID: "p-web", Name: "web"}}}
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := opts.destByName["web"]; got != "circleci/"+destAppOrg+"/p-web" {
+		t.Errorf("web -> %q, want circleci/<org>/<id>", got)
+	}
+}
+
+// No listing happens when every project has a mapping entry or no project data
+// is requested.
+func TestResolveDestProjects_SkipsListingWhenNotNeeded(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	lister := &fakeDestLister{projs: appDestProjects()}
+
+	opts := baseOpts()
+	opts.DestProjects = lister
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{"gh/acme/web": "x/web", "gh/acme/api": "x/api"}
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatal(err)
+	}
+	ctxOnly := baseOpts()
+	ctxOnly.DestProjects = lister
+	if err := resolveDestProjectsByName(context.Background(), m, &ctxOnly); err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 0 {
+		t.Errorf("destination projects must not be listed, got %d call(s)", lister.calls)
+	}
+}
+
+func TestResolveDestProjects_ListErrorIsFatal(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	opts := baseOpts()
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{err: errors.New("boom")}
+	err := resolveDestProjectsByName(context.Background(), m, &opts)
+	if err == nil || !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "--mapping") {
+		t.Fatalf("expected a wrapped listing error with a --mapping tip, got: %v", err)
+	}
+}
+
+// End to end (the reported scenario): a mapping with only the org entry — no
+// projects — and an App destination.  Every per-project pipeline runs and
+// writes to the resolved circleci/<org>/<project> slug.
+func TestTransfer_AppDestination_ProjectVarsRunWithoutMapping(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil
+	deps := happyMultiDeps()
+	opts, out, _ := applyOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: appDestProjects()}
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 2 {
+		t.Fatalf("expected one pipeline per project, got %v", got)
+	}
+	for _, c := range deps.triggerCalls {
+		wantDest := "circleci/" + destAppOrg + "/p-" + strings.TrimPrefix(c.slug, "gh/acme/")
+		if !strings.Contains(c.yaml, wantDest) {
+			t.Errorf("pipeline under %s should write to %s; config:\n%s", c.slug, wantDest, c.yaml)
+		}
+	}
+	plan := out.String()
+	for _, want := range []string{
+		`"gh/acme/web" → "circleci/` + destAppOrg + `/p-web"`,
+		`"gh/acme/api" → "circleci/` + destAppOrg + `/p-api"`,
+		"matched by name",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan missing %q:\n%s", want, plan)
+		}
+	}
+}
+
+// A project the destination does not have is never skipped silently: the plan
+// has a SKIP line and an UNRESOLVED total, the others still run, and the final
+// error names it.
+func TestTransfer_AppDestination_UnmatchedProjectReportedAndFails(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil
+	deps := happyMultiDeps()
+	opts, out, _ := applyOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: appDestProjects()[:1]} // web only
+
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil {
+		t.Fatal("expected a final error naming the unresolved project")
+	}
+	for _, want := range []string{"gh/acme/api", "no destination project", "sync --apply --skip-pipelines"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "gh/acme/web") {
+		t.Errorf("error should list only the unresolved project: %v", err)
+	}
+	plan := out.String()
+	if !strings.Contains(plan, `SKIP project "gh/acme/api"`) || !strings.Contains(plan, "UNRESOLVED: 1 project(s)") {
+		t.Errorf("plan should flag the unresolved project:\n%s", plan)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/web" {
+		t.Errorf("only the resolved project should run, got %v", got)
+	}
+}
+
+// Without DestProjects (gh/bb destinations) an unmapped project is still
+// skipped, and now the run also ends non-zero.
+func TestTransfer_NoMappingNoLister_UnmappedProjectFails(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil
+	deps := happyMultiDeps()
+	opts, _, _ := applyOpts()
+	opts.IncludeProjectVars = true
+	opts.Mapping = map[string]string{"gh/acme/web": "gh/new/web"}
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil || !strings.Contains(err.Error(), "gh/acme/api") {
+		t.Fatalf("expected an error naming gh/acme/api, got: %v", err)
+	}
+}
+
+// A dry run warns but returns nil.
+func TestTransfer_AppDestination_DryRunWarnsAboutUnresolved(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil
+	opts, _, errOut := applyOpts()
+	opts.DryRun = true
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: appDestProjects()[:1]}
+	if err := Transfer(context.Background(), happyMultiDeps(), m, opts); err != nil {
+		t.Fatalf("dry run must not error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "gh/acme/api") {
+		t.Errorf("dry run should warn about gh/acme/api, got:\n%s", errOut.String())
+	}
+}

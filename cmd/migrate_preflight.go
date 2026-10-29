@@ -41,6 +41,10 @@ type preflightDeps struct {
 	// so the GitHub-token checks (which only matter for pipeline definitions)
 	// are skipped.
 	skipProjects bool
+	// skipPipelines is true under --skip-pipelines: projects are synced but no
+	// pipeline definitions or triggers are created, so no GitHub repo lookup is
+	// made and the GitHub-token checks are skipped too.
+	skipPipelines bool
 }
 
 // orgGetter retrieves an org by slug or ID.
@@ -135,7 +139,7 @@ func runMigratePreflight(
 	// pipeline definitions (any OAuth project without GitHub App pipelines),
 	// whose repo id only the GitHub API can supply — a hard requirement. Not
 	// relevant when projects are skipped (--skip-projects).
-	if !deps.skipProjects {
+	if !deps.skipProjects && !deps.skipPipelines {
 		synth := 0
 		if srcOrg != nil && isOAuthOrgType(srcOrg.VCSType) {
 			synth = -1 // unknown until export; assume at least one
@@ -375,7 +379,9 @@ func runSyncPreflight(
 	// ---- Check 4: GitHub token for repo resolution ----------------------
 	// Hard requirement when the manifest has OAuth projects whose App pipeline
 	// definition must be synthesized (no captured repo id).
-	if r := checkSynthesisToken(deps.githubToken, destOrg, deps.synthProjects); r != nil {
+	if deps.skipPipelines {
+		// --skip-pipelines creates no definitions, so nothing needs a repo id.
+	} else if r := checkSynthesisToken(deps.githubToken, destOrg, deps.synthProjects); r != nil {
 		if deps.synthUnverified {
 			// Could not tell which projects already exist in the destination
 			// (those need no GitHub lookup), so warn rather than block.

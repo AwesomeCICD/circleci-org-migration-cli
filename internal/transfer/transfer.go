@@ -109,6 +109,14 @@ type CheckoutKeyLister interface {
 	ListCheckoutKeys(ctx context.Context, slug string) ([]project.CheckoutKey, error)
 }
 
+// DestProjectLister lists the projects of the destination org.  It is used to
+// resolve destination project slugs by name for GitHub App ("circleci/")
+// destinations, whose slugs carry UUIDs that cannot be derived from a repo name.
+// Production uses the destination-token *project.Client.
+type DestProjectLister interface {
+	ListOrgProjects(ctx context.Context, orgID string) ([]project.OrgProject, error)
+}
+
 // Deps bundles all source-side API dependencies so callers can pass a single
 // concrete *project.Client or a fake in tests.
 type Deps interface {
@@ -174,11 +182,24 @@ type Options struct {
 	// (key containing "/"), the destination project slug is the value.
 	Mapping map[string]string
 
+	// DestProjects, when non-nil, lets Transfer resolve a source project that has
+	// NO Mapping entry to its destination project by NAME (the manifest project
+	// name, else the last segment of its slug) from the destination org's project
+	// list.  Set it only for GitHub App ("circleci/") destinations, where the
+	// slug (circleci/<org-uuid>/<project-uuid>) cannot be derived.  A Mapping
+	// entry always wins over a name match.  Nil keeps the mapping-only behaviour.
+	DestProjects DestProjectLister
+
+	// destByName is the name -> destination project slug index Transfer builds
+	// from DestProjects before planning (nil when DestProjects is unset).
+	destByName map[string]string
+
 	// IncludeProjectVars controls whether project env-var values are also
 	// transferred.  Default false (context-only).  When true, each source project
 	// that has env vars AND can be resolved to a destination project slug is
 	// included in the transfer pipeline.  Projects without a resolvable dest slug
-	// are skipped with a WARN line in the plan.
+	// are skipped with a SKIP line in the plan, and Transfer exits non-zero
+	// naming them once the resolvable projects have run.
 	IncludeProjectVars bool
 
 	// IncludeSSHKeys controls whether additional project SSH keys are also
@@ -302,6 +323,95 @@ func (o *Options) destProjectSlug(srcSlug string) (string, bool) {
 	return "", false
 }
 
+// Resolution sources recorded on ProjectVarPlan.ResolvedBy.
+const (
+	resolvedByMapping = "mapping"
+	resolvedByName    = "name"
+)
+
+// manifestProjectName is the name a project is matched under in the destination
+// org: the manifest name, else the last segment of the source slug.
+func manifestProjectName(mp manifest.Project) string {
+	if mp.Name != "" {
+		return mp.Name
+	}
+	return lastSegment(mp.Slug)
+}
+
+func lastSegment(slug string) string {
+	if i := strings.LastIndex(slug, "/"); i >= 0 {
+		return slug[i+1:]
+	}
+	return slug
+}
+
+// resolveDestProject resolves a manifest project to its destination slug: an
+// explicit Mapping entry first, then (App destinations, when DestProjects was
+// listed) a name match.  by reports which one matched.
+func (o *Options) resolveDestProject(mp manifest.Project) (slug, by string, ok bool) {
+	if dst, found := o.destProjectSlug(mp.Slug); found {
+		return dst, resolvedByMapping, true
+	}
+	if o.destByName != nil {
+		for _, name := range []string{manifestProjectName(mp), lastSegment(mp.Slug)} {
+			if dst, found := o.destByName[name]; found && name != "" {
+				return dst, resolvedByName, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// unresolvedReason explains why a project has no destination slug.
+func (o *Options) unresolvedReason(mp manifest.Project) string {
+	if o.destByName != nil {
+		return fmt.Sprintf("no destination project named %q in the destination org and no mapping entry for %q — "+
+			"create it first (sync --skip-pipelines creates projects without pipeline definitions) or add a mapping entry; skipped",
+			manifestProjectName(mp), mp.Slug)
+	}
+	return fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+}
+
+// resolveDestProjectsByName lists the destination org's projects (when
+// opts.DestProjects is set and some project that has data to transfer has no
+// Mapping entry) and indexes them by name for BuildPlan.  A failed listing is an
+// error: silently falling back to mapping-only would skip every project.
+func resolveDestProjectsByName(ctx context.Context, m *manifest.Manifest, opts *Options) error {
+	if opts.DestProjects == nil || (!opts.IncludeProjectVars && !opts.IncludeSSHKeys) {
+		return nil
+	}
+	needed := false
+	for _, mp := range m.Projects {
+		hasData := (opts.IncludeProjectVars && len(mp.EnvVars) > 0) || (opts.IncludeSSHKeys && len(mp.SSHKeys) > 0)
+		if _, mapped := opts.destProjectSlug(mp.Slug); hasData && !mapped {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil
+	}
+	projs, err := opts.DestProjects.ListOrgProjects(ctx, opts.DestOrgID)
+	if err != nil {
+		return fmt.Errorf("transfer: list destination org projects to resolve project slugs by name: %w\n"+
+			"tip: pass --mapping with a projects entry per source project to skip the lookup", err)
+	}
+	opts.destByName = make(map[string]string, len(projs))
+	for _, p := range projs {
+		slug := p.Slug
+		if slug == "" && p.ID != "" {
+			slug = "circleci/" + opts.DestOrgID + "/" + p.ID
+		}
+		if p.Name == "" || slug == "" {
+			continue
+		}
+		if _, dup := opts.destByName[p.Name]; !dup { // first occurrence wins
+			opts.destByName[p.Name] = slug
+		}
+	}
+	return nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plan — what would be transferred
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,6 +464,13 @@ type ProjectVarPlan struct {
 	Skipped bool
 	// SkipReason is a human-readable explanation of why Skipped is true.
 	SkipReason string
+	// ResolvedBy says how DestSlug was found: "mapping" (an explicit Mapping
+	// entry) or "name" (matched by project name in the destination org).
+	ResolvedBy string
+	// Unresolved is true (together with Skipped) when the project has data to
+	// transfer but no destination project could be found for it.  Transfer
+	// returns an error listing these projects after the others have run.
+	Unresolved bool
 	// MissingCheckoutKey is true (together with Skipped) when the project was
 	// skipped because it is a GitHub OAuth/Bitbucket project with no checkout
 	// key, so CircleCI would refuse to run its transfer pipeline.  Transfer
@@ -1280,6 +1397,7 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 	// into a single plan entry, then append to projPlans in stable manifest order.
 	type partialPlan struct {
 		destSlug      string
+		resolvedBy    string
 		varNames      []string
 		sshKeys       []SSHKeyPlan
 		defaultBranch string
@@ -1305,13 +1423,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 			}
 			p := ensureEntry(mp.Slug)
 			p.defaultBranch = mp.VCS.DefaultBranch
-			destSlug, ok := opts.destProjectSlug(mp.Slug)
+			destSlug, by, ok := opts.resolveDestProject(mp)
 			if !ok {
 				p.skipped = true
-				p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+				p.skipMsg = opts.unresolvedReason(mp)
 				continue
 			}
-			p.destSlug = destSlug
+			p.destSlug, p.resolvedBy = destSlug, by
 			varNames := make([]string, 0, len(mp.EnvVars))
 			for _, ev := range mp.EnvVars {
 				varNames = append(varNames, ev.Name)
@@ -1334,13 +1452,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				continue
 			}
 			if p.destSlug == "" {
-				destSlug, ok := opts.destProjectSlug(mp.Slug)
+				destSlug, by, ok := opts.resolveDestProject(mp)
 				if !ok {
 					p.skipped = true
-					p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+					p.skipMsg = opts.unresolvedReason(mp)
 					continue
 				}
-				p.destSlug = destSlug
+				p.destSlug, p.resolvedBy = destSlug, by
 			}
 			keys := make([]SSHKeyPlan, 0, len(mp.SSHKeys))
 			for _, k := range mp.SSHKeys {
@@ -1363,11 +1481,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				DefaultBranch: p.defaultBranch,
 				Skipped:       true,
 				SkipReason:    p.skipMsg,
+				Unresolved:    true,
 			})
 		} else {
 			projPlans = append(projPlans, ProjectVarPlan{
 				SourceSlug:    slug,
 				DestSlug:      p.destSlug,
+				ResolvedBy:    p.resolvedBy,
 				VarNames:      p.varNames,
 				SSHKeys:       p.sshKeys,
 				DefaultBranch: p.defaultBranch,
@@ -1445,6 +1565,11 @@ var ErrWorkflowFailed = errors.New("transfer workflow did not succeed")
 //
 // SECURITY: no secret values are logged or returned.
 func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options) error {
+	// App destinations: resolve projects with no mapping entry by name before
+	// planning (a read-only call on the destination org).
+	if err := resolveDestProjectsByName(ctx, m, &opts); err != nil {
+		return err
+	}
 	plan, err := BuildPlan(m, &opts)
 	if err != nil {
 		return err
@@ -1465,14 +1590,14 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		opts.HostProjectSlug = hostSlug
 	}
 	markProjectsMissingCheckoutKey(ctx, deps, m, &plan, &opts)
-	keyErr := missingCheckoutKeyError(&plan)
+	keyErr := errors.Join(missingCheckoutKeyError(&plan), unresolvedProjectsError(&plan))
 
 	// Always print the plan.
 	printPlan(opts.Stdout, opts.Stderr, &plan, &opts)
 
 	if opts.DryRun {
 		if keyErr != nil {
-			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would skip project(s) without a checkout key and then fail:\n%v\n", keyErr)
+			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would skip project(s) it cannot transfer and then fail:\n%v\n", keyErr)
 		}
 		fmt.Fprintln(opts.Stdout, "\nDry-run mode: no pipeline triggered. Pass --apply to execute the transfer.")
 		return nil
@@ -1923,6 +2048,25 @@ func missingCheckoutKeyError(plan *Plan) error {
 		len(slugs), checkoutKeyWhy, strings.Join(slugs, "\n  "), checkoutKeyFix)
 }
 
+// unresolvedProjectsError returns an error listing the projects that have data
+// to transfer but no destination project, or nil when there are none.  Such a
+// project is never skipped silently: the plan shows a SKIP line and the run
+// ends non-zero so the operator creates or maps it and re-runs.
+func unresolvedProjectsError(plan *Plan) error {
+	var slugs []string
+	for _, pp := range plan.Projects {
+		if pp.Unresolved {
+			slugs = append(slugs, pp.SourceSlug)
+		}
+	}
+	if len(slugs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("transfer: %d project(s) skipped because no destination project could be resolved (no mapping entry, no project of that name in the destination org):\n  %s\n"+
+		"Fix: run 'sync --apply --skip-pipelines' to create the destination projects (or add projects entries to --mapping), then re-run",
+		len(slugs), strings.Join(slugs, "\n  "))
+}
+
 // explainTriggerError appends the checkout-key remediation when CircleCI
 // rejects a pipeline trigger with "the project has no SSH key" (the pre-flight
 // could not see it, e.g. the key list was unreadable).  Other errors pass
@@ -2023,8 +2167,12 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 				if len(pp.SSHKeys) > 0 {
 					sshNote = fmt.Sprintf(", %d ssh key(s)", len(pp.SSHKeys))
 				}
-				label := fmt.Sprintf("project %q → %q (%d variable(s)%s) [pipeline under %s]",
-					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, pp.SourceSlug)
+				via := ""
+				if pp.ResolvedBy == resolvedByName {
+					via = ", matched by name"
+				}
+				label := fmt.Sprintf("project %q → %q (%d variable(s)%s%s) [pipeline under %s]",
+					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, via, pp.SourceSlug)
 				ren.Item("created", label, "")
 				for _, v := range pp.VarNames {
 					fmt.Fprintf(out, "      var: %s\n", v)
@@ -2053,6 +2201,16 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars(), plan.TotalSSHKeys())
 	} else {
 		fmt.Fprintf(out, "  Total: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
+	}
+
+	unresolved := 0
+	for _, pp := range plan.Projects {
+		if pp.Unresolved {
+			unresolved++
+		}
+	}
+	if unresolved > 0 {
+		fmt.Fprintf(out, "  UNRESOLVED: %d project(s) have no destination project and will be skipped (--apply then exits non-zero)\n", unresolved)
 	}
 
 	// ── Security note on stderr ───────────────────────────────────────────────
