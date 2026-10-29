@@ -300,13 +300,19 @@ func (s *Syncer) ApplyDeferredProjectRestrictions(ctx context.Context, report *R
 }
 
 // destProjectIndex lazily loads the destination org's projects by name, once.
+// Names are matched case-insensitively and exactly; a name shared by two
+// destination projects is recorded in ambiguous instead of byName, so it is
+// reported and never guessed.
 type destProjectIndex struct {
-	loaded bool
-	err    error
-	byName map[string]project.OrgProject
+	loaded    bool
+	err       error
+	byName    map[string]project.OrgProject
+	ambiguous map[string][]project.OrgProject
 }
 
-func (s *Syncer) lookup(ctx context.Context, ix *destProjectIndex, name string) (project.OrgProject, bool, error) {
+// lookup finds the destination project named name. ambiguous lists every
+// project tied for the name (found is then false and none is picked).
+func (s *Syncer) lookup(ctx context.Context, ix *destProjectIndex, name string) (dp project.OrgProject, found bool, ambiguous []project.OrgProject, err error) {
 	if !ix.loaded {
 		ix.loaded = true
 		if s.restrictionDestOrgID == "" {
@@ -315,18 +321,43 @@ func (s *Syncer) lookup(ctx context.Context, ix *destProjectIndex, name string) 
 			ix.err = err
 		} else {
 			ix.byName = make(map[string]project.OrgProject, len(projs))
+			ix.ambiguous = map[string][]project.OrgProject{}
 			for _, p := range projs {
-				if _, dup := ix.byName[p.Name]; !dup {
-					ix.byName[p.Name] = p
+				key := strings.ToLower(p.Name)
+				if amb, isAmb := ix.ambiguous[key]; isAmb {
+					ix.ambiguous[key] = append(amb, p)
+					continue
 				}
+				if prev, dup := ix.byName[key]; dup {
+					if prev.ID == p.ID && prev.Slug == p.Slug {
+						continue // the same project listed twice
+					}
+					ix.ambiguous[key] = []project.OrgProject{prev, p}
+					delete(ix.byName, key)
+					continue
+				}
+				ix.byName[key] = p
 			}
 		}
 	}
 	if ix.err != nil {
-		return project.OrgProject{}, false, ix.err
+		return project.OrgProject{}, false, nil, ix.err
 	}
-	p, ok := ix.byName[name]
-	return p, ok, nil
+	key := strings.ToLower(name)
+	if amb, isAmb := ix.ambiguous[key]; isAmb {
+		return project.OrgProject{}, false, amb, nil
+	}
+	p, ok := ix.byName[key]
+	return p, ok, nil, nil
+}
+
+// orgProjectIDs lists the ids of projects for an ambiguity message.
+func orgProjectIDs(ps []project.OrgProject) string {
+	ids := make([]string, 0, len(ps))
+	for _, p := range ps {
+		ids = append(ids, p.ID)
+	}
+	return strings.Join(ids, ", ")
 }
 
 // appDestMapping reports whether the mapping targets a GitHub App ("circleci/")
@@ -380,8 +411,13 @@ func (s *Syncer) applyDeferredProjectRestriction(ctx context.Context, report *Re
 		if name == "" {
 			name = srcSlug
 		}
-		dp, found, lerr := s.lookup(ctx, ix, name)
+		dp, found, amb, lerr := s.lookup(ctx, ix, name)
 		switch {
+		case len(amb) > 0:
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: %d projects in the destination org are named %q (%s) — cannot tell which one is meant, so none was picked; "+
+					"add a projects entry for %q to your mapping file, then re-run", label, len(amb), name, orgProjectIDs(amb), srcSlug))
+			return
 		case lerr != nil:
 			report.add("restriction", target, "manual",
 				fmt.Sprintf("project restriction %q: could not list the destination org's projects to match %q by name (%v) — "+

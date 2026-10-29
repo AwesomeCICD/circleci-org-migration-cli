@@ -4082,3 +4082,215 @@ func TestTransfer_AppDestination_DryRunWarnsAboutUnresolved(t *testing.T) {
 		t.Errorf("dry run should warn about gh/acme/api, got:\n%s", errOut.String())
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Name resolution: case-insensitive, ambiguity, slug-tail fallback
+// ─────────────────────────────────────────────────────────────────────────────
+
+func resolveWith(t *testing.T, m *manifest.Manifest, projs []project.OrgProject, mapping map[string]string) Options {
+	t.Helper()
+	opts := baseOpts()
+	opts.DestOrgID = destAppOrg
+	opts.IncludeProjectVars = true
+	opts.DestProjects = &fakeDestLister{projs: projs}
+	opts.Mapping = mapping
+	if err := resolveDestProjectsByName(context.Background(), m, &opts); err != nil {
+		t.Fatal(err)
+	}
+	return opts
+}
+
+func destProj(id, name string) project.OrgProject {
+	return project.OrgProject{ID: id, Slug: "circleci/" + destAppOrg + "/" + id, Name: name}
+}
+
+func TestResolveDestProject_NameMatchIsCaseInsensitive(t *testing.T) {
+	mp := manifest.Project{Slug: "gh/acme/web", Name: "Web", EnvVars: []manifest.ProjectEnvVar{{Name: "V"}}}
+	opts := resolveWith(t, &manifest.Manifest{Projects: []manifest.Project{mp}}, []project.OrgProject{destProj("p-web", "WEB")}, nil)
+	slug, by, ok := opts.resolveDestProject(mp)
+	if !ok || by != resolvedByName || slug != "circleci/"+destAppOrg+"/p-web" {
+		t.Fatalf("got %q %q %v", slug, by, ok)
+	}
+}
+
+// Two destination projects with the same name (ignoring case): neither is
+// picked, the plan skips the project and says why, and the run fails.
+func TestResolveDestProject_AmbiguousNameIsUnresolvedAndReported(t *testing.T) {
+	m := manifestWithTwoMappedProjects()
+	m.Contexts = nil
+	opts := resolveWith(t, m, []project.OrgProject{destProj("p-web1", "web"), destProj("p-web2", "Web"), destProj("p-api", "api")}, nil)
+	if _, _, ok := opts.resolveDestProject(m.Projects[0]); ok {
+		t.Fatal("an ambiguous name must not resolve")
+	}
+	if _, _, ok := opts.resolveDestProject(m.Projects[1]); !ok {
+		t.Fatal("the unambiguous project must still resolve")
+	}
+	plan, err := BuildPlan(m, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var web ProjectVarPlan
+	for _, pp := range plan.Projects {
+		if pp.SourceSlug == "gh/acme/web" {
+			web = pp
+		}
+	}
+	if !web.Skipped || !web.Unresolved || !strings.Contains(web.SkipReason, "2 projects") ||
+		!strings.Contains(web.SkipReason, "p-web1") || !strings.Contains(web.SkipReason, "p-web2") || !strings.Contains(web.SkipReason, "mapping entry") {
+		t.Errorf("web plan = %+v", web)
+	}
+	if err := unresolvedProjectsError(&plan); err == nil || !strings.Contains(err.Error(), "gh/acme/web") {
+		t.Errorf("unresolved error = %v", err)
+	}
+}
+
+// A mapping entry still wins over an ambiguous name.
+func TestResolveDestProject_MappingBeatsAmbiguousName(t *testing.T) {
+	mp := manifest.Project{Slug: "gh/acme/web", EnvVars: []manifest.ProjectEnvVar{{Name: "V"}}}
+	opts := resolveWith(t, &manifest.Manifest{Projects: []manifest.Project{{Slug: "gh/acme/web", EnvVars: mp.EnvVars}, {Slug: "gh/acme/other", EnvVars: mp.EnvVars}}},
+		[]project.OrgProject{destProj("a", "web"), destProj("b", "web")}, map[string]string{"gh/acme/web": "circleci/" + destAppOrg + "/chosen"})
+	slug, by, ok := opts.resolveDestProject(mp)
+	if !ok || by != resolvedByMapping || !strings.HasSuffix(slug, "/chosen") {
+		t.Fatalf("got %q %q %v", slug, by, ok)
+	}
+}
+
+// The slug tail is used only when the manifest name has no match and the tail
+// itself is unambiguous.
+func TestResolveDestProject_SlugTailFallbackOnlyWhenUnambiguous(t *testing.T) {
+	mp := manifest.Project{Slug: "gh/acme/web", Name: "renamed", EnvVars: []manifest.ProjectEnvVar{{Name: "V"}}}
+	m := &manifest.Manifest{Projects: []manifest.Project{mp}}
+
+	opts := resolveWith(t, m, []project.OrgProject{destProj("p-web", "web")}, nil)
+	if slug, _, ok := opts.resolveDestProject(mp); !ok || !strings.HasSuffix(slug, "/p-web") {
+		t.Errorf("an unambiguous slug tail should be used, got %q %v", slug, ok)
+	}
+
+	opts = resolveWith(t, m, []project.OrgProject{destProj("a", "web"), destProj("b", "WEB")}, nil)
+	if _, _, ok := opts.resolveDestProject(mp); ok {
+		t.Error("an ambiguous slug tail must not be used")
+	}
+	if got := opts.ambiguousDestSlugs(mp); len(got) != 2 {
+		t.Errorf("ambiguousDestSlugs = %v", got)
+	}
+
+	// An ambiguous manifest name is not rescued by an unambiguous tail.
+	opts = resolveWith(t, m, []project.OrgProject{destProj("a", "renamed"), destProj("b", "Renamed"), destProj("c", "web")}, nil)
+	if _, _, ok := opts.resolveDestProject(mp); ok {
+		t.Error("an ambiguous manifest name must not fall through to the slug tail")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-flight: a paused source project would drop the transfer pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+// flagDeps adds the v1.1 flag read to the multi-call fake.
+type flagDeps struct {
+	*multiCallFakeTransferDeps
+	paused map[string]bool
+	errFor map[string]error
+	reads  []string
+}
+
+func (f *flagDeps) GetV11ProjectFeatureFlags(_ context.Context, slug string) (map[string]bool, error) {
+	f.reads = append(f.reads, slug)
+	if err := f.errFor[slug]; err != nil {
+		return nil, err
+	}
+	return map[string]bool{"drop-all-build-requests": f.paused[slug], "api-trigger-with-config": true}, nil
+}
+
+func TestTransfer_FailsFastWhenASourceProjectIsPaused(t *testing.T) {
+	m := manifestWithTwoMappedProjects() // host + per-project pipelines for web and api
+	deps := &flagDeps{multiCallFakeTransferDeps: happyMultiDeps(), paused: map[string]bool{"gh/acme/api": true}}
+	opts, _, _ := applyOpts()
+	opts.IncludeProjectVars = true
+	opts.HostProjectSlug = "gh/acme/web"
+	opts.Mapping = map[string]string{"gh/acme/web": "gh/new/web", "gh/acme/api": "gh/new/api"}
+	mutated := false
+	opts.BeforeMutate = func([]string) (func(), error) { mutated = true; return nil, nil }
+
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil {
+		t.Fatal("expected a failure naming the paused project")
+	}
+	for _, want := range []string{"gh/acme/api", "drop-all-build-requests", "BEFORE 'cutover --pause-source'", "cutover --undo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "gh/acme/web\n") {
+		t.Errorf("the unpaused project must not be named: %v", err)
+	}
+	if mutated || len(deps.triggerCalls) != 0 {
+		t.Errorf("nothing may change before the check passes (mutated=%v, triggers=%v)", mutated, deps.triggerCalls)
+	}
+	for _, slug := range []string{"gh/acme/web", "gh/acme/api"} {
+		if !containsSlug(deps.reads, slug) {
+			t.Errorf("%s was not read (reads: %v)", slug, deps.reads)
+		}
+	}
+}
+
+func TestTransfer_PausedHostProjectFailsFast(t *testing.T) {
+	m := baseManifest()
+	deps := &flagDeps{multiCallFakeTransferDeps: happyMultiDeps(), paused: map[string]bool{"gh/acme/web": true}}
+	opts, _, _ := applyOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+	err := Transfer(context.Background(), deps, m, opts)
+	if err == nil || !strings.Contains(err.Error(), "gh/acme/web") || !strings.Contains(err.Error(), "paused") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(deps.triggerCalls) != 0 {
+		t.Error("no pipeline may be triggered")
+	}
+}
+
+func TestTransfer_DryRunWarnsAboutPausedProject(t *testing.T) {
+	m := baseManifest()
+	deps := &flagDeps{multiCallFakeTransferDeps: happyMultiDeps(), paused: map[string]bool{"gh/acme/web": true}}
+	opts := baseOpts()
+	var errOut bytes.Buffer
+	opts.Stderr = &errOut
+	opts.HostProjectSlug = "gh/acme/web"
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("a dry run only warns: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "gh/acme/web") || !strings.Contains(errOut.String(), "paused") {
+		t.Errorf("dry run should warn:\n%s", errOut.String())
+	}
+}
+
+func TestTransfer_UnpausedAndUnreadableProjectsProceed(t *testing.T) {
+	m := baseManifest()
+	deps := &flagDeps{multiCallFakeTransferDeps: happyMultiDeps(), errFor: map[string]error{"gh/acme/web": errors.New("HTTP 500")}}
+	opts, _, errOut := applyOpts()
+	opts.HostProjectSlug = "gh/acme/web"
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("an unreadable flag is a warning, not a failure: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "could not read the feature flags of gh/acme/web") {
+		t.Errorf("want a warning:\n%s", errOut.String())
+	}
+	if len(deps.triggerCalls) != 1 {
+		t.Errorf("the pipeline should run, got %v", deps.triggerCalls)
+	}
+}
+
+// GitHub App ("circleci/") projects are not paused by the flag and are not read.
+func TestTransfer_AppProjectsAreNotFlagChecked(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{{Slug: "circleci/org/proj-uuid"}},
+	}
+	deps := &flagDeps{multiCallFakeTransferDeps: happyMultiDeps(), paused: map[string]bool{"circleci/org/proj-uuid": true}}
+	opts, _, _ := applyOpts()
+	opts.HostProjectSlug = "circleci/org/proj-uuid"
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(deps.reads) != 0 {
+		t.Errorf("App projects must not be read: %v", deps.reads)
+	}
+}

@@ -167,3 +167,44 @@ func TestProjectRestriction_AppDest_DryRunPreviewsProjectCreatedInRun(t *testing
 		t.Errorf("dry run should preview the restriction, got %+v", a)
 	}
 }
+
+// Names match case-insensitively (exact otherwise).
+func TestProjectRestriction_AppDest_NameMatchIsCaseInsensitive(t *testing.T) {
+	sy, fw, _ := appRestrictionSyncer(t, []project.OrgProject{
+		{ID: "dest-proj-uuid", Slug: "circleci/dest-org-uuid/dest-proj-uuid", Name: "Web"},
+	}, nil)
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, appOnlyOrgMapping(), opts); err != nil {
+		t.Fatal(err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+	if a := projectRestrictionAction(t, rep); a.Status != "set" {
+		t.Fatalf("status = %q (%s), want set", a.Status, a.Detail)
+	}
+	if c := fw.callsTo("CreateRestriction"); len(c) != 1 || c[0].args[2] != "dest-proj-uuid" {
+		t.Errorf("want a restriction for dest-proj-uuid, got %+v", c)
+	}
+}
+
+// Two destination projects with the same name (ignoring case): nothing is
+// picked, the ambiguity is reported and no restriction is written.
+func TestProjectRestriction_AppDest_AmbiguousNameIsReportedNotGuessed(t *testing.T) {
+	sy, fw, _ := appRestrictionSyncer(t, []project.OrgProject{
+		{ID: "uuid-a", Slug: "circleci/dest-org-uuid/uuid-a", Name: "web"},
+		{ID: "uuid-b", Slug: "circleci/dest-org-uuid/uuid-b", Name: "WEB"},
+	}, nil)
+	m := projectRestrictionManifest("src-proj-uuid", "gh/src/web", "web")
+	opts := Options{Apply: true}
+	if _, err := sy.SyncContexts(context.Background(), m, nil, appOnlyOrgMapping(), opts); err != nil {
+		t.Fatal(err)
+	}
+	rep := sy.ApplyDeferredProjectRestrictions(context.Background(), nil, opts)
+	a := projectRestrictionAction(t, rep)
+	if a.Status != "manual" || !strings.Contains(a.Detail, "2 projects") || !strings.Contains(a.Detail, "uuid-a") || !strings.Contains(a.Detail, "uuid-b") {
+		t.Errorf("want a manual ambiguity report naming both candidates, got %+v", a)
+	}
+	if fw.hasCalled("CreateRestriction") {
+		t.Error("an ambiguous name must not be written")
+	}
+}

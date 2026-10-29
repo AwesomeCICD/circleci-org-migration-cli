@@ -109,6 +109,14 @@ type CheckoutKeyLister interface {
 	ListCheckoutKeys(ctx context.Context, slug string) ([]project.CheckoutKey, error)
 }
 
+// ProjectFlagReader reads a project's v1.1 feature flags (kebab-case keys).
+// It is asserted optionally on Deps (the project client implements it): the
+// pre-flight check that no pipeline-running source project is paused is skipped
+// for a Deps that cannot read flags.
+type ProjectFlagReader interface {
+	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
+}
+
 // DestProjectLister lists the projects of the destination org.  It is used to
 // resolve destination project slugs by name for GitHub App ("circleci/")
 // destinations, whose slugs carry UUIDs that cannot be derived from a repo name.
@@ -190,9 +198,12 @@ type Options struct {
 	// entry always wins over a name match.  Nil keeps the mapping-only behaviour.
 	DestProjects DestProjectLister
 
-	// destByName is the name -> destination project slug index Transfer builds
-	// from DestProjects before planning (nil when DestProjects is unset).
-	destByName map[string]string
+	// destByName is the lower-cased name -> destination project slug index
+	// Transfer builds from DestProjects before planning (nil when DestProjects
+	// is unset). A name shared by two destination projects is NOT in it: it is
+	// in destAmbiguous (name -> the matching slugs) so it is never guessed.
+	destByName    map[string]string
+	destAmbiguous map[string][]string
 
 	// IncludeProjectVars controls whether project env-var values are also
 	// transferred.  Default false (context-only).  When true, each source project
@@ -353,8 +364,12 @@ func (o *Options) resolveDestProject(mp manifest.Project) (slug, by string, ok b
 		return dst, resolvedByMapping, true
 	}
 	if o.destByName != nil {
-		for _, name := range []string{manifestProjectName(mp), lastSegment(mp.Slug)} {
-			if dst, found := o.destByName[name]; found && name != "" {
+		for _, name := range o.nameCandidates(mp) {
+			key := strings.ToLower(name)
+			if _, amb := o.destAmbiguous[key]; amb {
+				return "", "", false // never pick between two equally named projects
+			}
+			if dst, found := o.destByName[key]; found {
 				return dst, resolvedByName, true
 			}
 		}
@@ -362,8 +377,45 @@ func (o *Options) resolveDestProject(mp manifest.Project) (slug, by string, ok b
 	return "", "", false
 }
 
+// nameCandidates are the names tried, in order, to match a manifest project to
+// a destination project: the manifest name, then (only when different) the
+// slug tail.
+func (o *Options) nameCandidates(mp manifest.Project) []string {
+	names := []string{}
+	if n := manifestProjectName(mp); n != "" {
+		names = append(names, n)
+	}
+	if tail := lastSegment(mp.Slug); tail != "" && !strings.EqualFold(tail, manifestProjectName(mp)) {
+		names = append(names, tail)
+	}
+	return names
+}
+
+// ambiguousDestSlugs returns the destination slugs that tie for a manifest
+// project's name (nil when the name is not ambiguous).
+func (o *Options) ambiguousDestSlugs(mp manifest.Project) []string {
+	if o.destByName == nil {
+		return nil
+	}
+	for _, name := range o.nameCandidates(mp) {
+		key := strings.ToLower(name)
+		if slugs, amb := o.destAmbiguous[key]; amb {
+			return slugs
+		}
+		if _, found := o.destByName[key]; found {
+			return nil
+		}
+	}
+	return nil
+}
+
 // unresolvedReason explains why a project has no destination slug.
 func (o *Options) unresolvedReason(mp manifest.Project) string {
+	if slugs := o.ambiguousDestSlugs(mp); len(slugs) > 0 {
+		return fmt.Sprintf("%d projects in the destination org are named %q (%s) — cannot tell which one is meant, so none was picked; "+
+			"add a mapping entry for %q to choose, or rename/remove the duplicate; skipped",
+			len(slugs), manifestProjectName(mp), strings.Join(slugs, ", "), mp.Slug)
+	}
 	if o.destByName != nil {
 		return fmt.Sprintf("no destination project named %q in the destination org and no mapping entry for %q — "+
 			"create it first (sync --skip-pipelines creates projects without pipeline definitions) or add a mapping entry; skipped",
@@ -397,6 +449,7 @@ func resolveDestProjectsByName(ctx context.Context, m *manifest.Manifest, opts *
 			"tip: pass --mapping with a projects entry per source project to skip the lookup", err)
 	}
 	opts.destByName = make(map[string]string, len(projs))
+	opts.destAmbiguous = map[string][]string{}
 	for _, p := range projs {
 		slug := p.Slug
 		if slug == "" && p.ID != "" {
@@ -405,9 +458,20 @@ func resolveDestProjectsByName(ctx context.Context, m *manifest.Manifest, opts *
 		if p.Name == "" || slug == "" {
 			continue
 		}
-		if _, dup := opts.destByName[p.Name]; !dup { // first occurrence wins
-			opts.destByName[p.Name] = slug
+		key := strings.ToLower(p.Name)
+		if amb, isAmb := opts.destAmbiguous[key]; isAmb {
+			opts.destAmbiguous[key] = append(amb, slug)
+			continue
 		}
+		if prev, dup := opts.destByName[key]; dup {
+			if prev == slug {
+				continue // the same project listed twice
+			}
+			opts.destAmbiguous[key] = []string{prev, slug}
+			delete(opts.destByName, key)
+			continue
+		}
+		opts.destByName[key] = slug
 	}
 	return nil
 }
@@ -1592,15 +1656,27 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 	markProjectsMissingCheckoutKey(ctx, deps, m, &plan, &opts)
 	keyErr := errors.Join(missingCheckoutKeyError(&plan), unresolvedProjectsError(&plan))
 
+	// A source project paused with drop-all-build-requests (cutover
+	// --pause-source) accepts no pipeline, so the transfer would fail after it
+	// had already started changing things. Find them before any mutation.
+	pausedErr := pausedSourceProjectsError(ctx, deps, &plan, &opts)
+
 	// Always print the plan.
 	printPlan(opts.Stdout, opts.Stderr, &plan, &opts)
 
 	if opts.DryRun {
+		if pausedErr != nil {
+			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would fail:\n%v\n", pausedErr)
+		}
 		if keyErr != nil {
 			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would skip project(s) it cannot transfer and then fail:\n%v\n", keyErr)
 		}
 		fmt.Fprintln(opts.Stdout, "\nDry-run mode: no pipeline triggered. Pass --apply to execute the transfer.")
 		return nil
+	}
+
+	if pausedErr != nil {
+		return pausedErr
 	}
 
 	// ── Mutations start here ─────────────────────────────────────────────────
@@ -2030,6 +2106,56 @@ func markProjectsMissingCheckoutKey(ctx context.Context, deps Deps, m *manifest.
 		pp.MissingCheckoutKey = true
 		pp.SkipReason = "no checkout key and no GitHub App pipeline definition — " + checkoutKeyWhy + "; " + checkoutKeyFix + " on this project, then re-run"
 	}
+}
+
+// pausedFlag is the v1.1 flag (kebab-case, as the settings GET returns it) that
+// makes CircleCI drop every build request of a project.
+const pausedFlag = "drop-all-build-requests"
+
+// pausedSourceProjectsError reads the v1.1 feature flags of every source project
+// that will run a transfer pipeline (the host project and each non-skipped
+// per-project plan) and returns an error naming those whose drop-all-build-
+// requests flag is true, or nil. GitHub App ("circleci/") projects are not
+// paused by that flag and are not read. A project whose flags cannot be read
+// is warned about and not treated as paused.
+func pausedSourceProjectsError(ctx context.Context, deps Deps, plan *Plan, opts *Options) error {
+	reader, ok := deps.(ProjectFlagReader)
+	if !ok {
+		return nil
+	}
+	var slugs []string
+	seen := map[string]bool{}
+	add := func(slug string) {
+		if slug != "" && !seen[slug] && !strings.HasPrefix(slug, "circleci/") {
+			seen[slug] = true
+			slugs = append(slugs, slug)
+		}
+	}
+	if len(plan.Contexts) > 0 {
+		add(opts.HostProjectSlug)
+	}
+	for _, pp := range plan.Projects {
+		if !pp.Skipped && (len(pp.VarNames) > 0 || len(pp.SSHKeys) > 0) {
+			add(pp.SourceSlug)
+		}
+	}
+	var paused []string
+	for _, slug := range slugs {
+		flags, err := reader.GetV11ProjectFeatureFlags(ctx, slug)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "WARNING: could not read the feature flags of %s to check it is not paused: %v\n", slug, err)
+			continue
+		}
+		if flags[pausedFlag] {
+			paused = append(paused, slug)
+		}
+	}
+	if len(paused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("transfer: %d source project(s) are paused (%s=true), so CircleCI would drop the transfer pipeline:\n  %s\n"+
+		"Run the secrets transfer BEFORE 'cutover --pause-source', or restore the projects first with 'cutover --undo --apply', then re-run",
+		len(paused), pausedFlag, strings.Join(paused, "\n  "))
 }
 
 // missingCheckoutKeyError returns an error listing the projects skipped for
