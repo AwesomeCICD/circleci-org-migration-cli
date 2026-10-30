@@ -7,6 +7,13 @@
 
 * **secrets:** resolve the `transfer` pipeline branch per project from the manifest's `vcs.default_branch` (falling back to `main`), so orgs with mixed default branches (some `main`, some `master`) can transfer; `--branch` now defaults to empty and, when set, still forces a single branch for all projects.
 
+## [0.19.1](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.19.0...v0.19.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **deps:** update go modules ([#306](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/306)) ([21daefb](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/21daefbf270807f7f8b01b57c735a7e7ebb76c7c))
+
 ## [0.19.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.18.0...v0.19.0) (2026-10-30)
 
 
