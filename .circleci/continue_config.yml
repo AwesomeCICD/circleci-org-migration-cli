@@ -979,7 +979,7 @@ jobs:
           command: |
             # A new version needs its new SHA-256 value too (docs/contribute/docs-site.md). Renovate keeps the version only.
             # renovate: datasource=node-version depName=node extractVersion=^v(?<version>.*)$ versioning=node
-            node_version=24.21.0
+            node_version=24.22.2
             node_sha256=6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff
             curl -fsSL --retry 5 --retry-all-errors -o /tmp/node.tgz \
               "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-x64.tar.gz"
