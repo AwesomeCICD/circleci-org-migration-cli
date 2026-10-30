@@ -23,7 +23,8 @@ version: 2.1
 parameters:
   go-image-tag:
     type: string
-    default: "1.26"
+    # Exact tag: the org policy approved_language_images rejects floating tags.
+    default: "1.26.10"
 
 executors:
   go:

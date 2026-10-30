@@ -50,8 +50,9 @@ parameters:
     default: false
   go-image-tag:
     type: string
-    # cimg/go floating patch tag. circleci-migrate targets Go 1.26 (see go.mod).
-    default: "1.26"
+    # Exact cimg/go tag. The AwesomeCICD org policy (approved_language_images)
+    # rejects floating tags such as "1.26". circleci-migrate targets Go 1.26 (see go.mod).
+    default: "1.26.10"
 
 orbs:
   go: circleci/go@4.0.0
@@ -621,7 +622,8 @@ jobs:
   # you will need to add pull-requests:write — see the PR body for details.
   release-please:
     docker:
-      - image: cimg/node:lts
+      # Exact tag: the org policy approved_language_images rejects "lts".
+      - image: cimg/node:24.22.1
     resource_class: small
     steps:
       - run:
@@ -1132,6 +1134,11 @@ workflows:
       - orb-tools/lint:
           name: orb-lint-dev
           source_dir: orb/src
+          # Exact tag: the orb default (cimg/python:3.11) fails the org policy
+          # approved_language_images.
+          executor:
+            name: orb-tools/python
+            tag: "3.11.18"
           filters:
             branches:
               only: /.*/
@@ -1159,6 +1166,9 @@ workflows:
       - orb-tools/review:
           name: orb-review-dev
           source_dir: orb/src
+          executor:
+            name: orb-tools/python
+            tag: "3.11.18"
           filters:
             branches:
               only: /.*/
@@ -1196,6 +1206,9 @@ workflows:
       - orb-tools/lint:
           name: orb-lint-prod
           source_dir: orb/src
+          executor:
+            name: orb-tools/python
+            tag: "3.11.18"
           filters:
             tags:
               only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
@@ -1223,6 +1236,9 @@ workflows:
       - orb-tools/review:
           name: orb-review-prod
           source_dir: orb/src
+          executor:
+            name: orb-tools/python
+            tag: "3.11.18"
           filters:
             tags:
               only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
