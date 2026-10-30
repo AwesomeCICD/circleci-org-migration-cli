@@ -784,7 +784,8 @@ jobs:
   #   3. secrets merge against two minimal inline fixture bundles
   #   4. README curl install snippet verbatim (scratch-dir install)
   #
-  # Runs linux/amd64 and linux/arm64 in parallel via matrix.
+  # Runs linux/amd64 and linux/arm64 in parallel, each on an executor of its own
+  # architecture (an arm64 binary cannot run on an amd64 executor).
   # Requires the "goreleaser" context so GITHUB_TOKEN is available for the
   # GitHub API call in the README install step (avoids anonymous rate-limit).
   # Triggered only by version tags; runs AFTER the `release` job completes.
@@ -792,9 +793,12 @@ jobs:
     parameters:
       platform:
         type: string
+      resource-class:
+        type: string
+        default: small
     docker:
       - image: cimg/base:current
-    resource_class: small
+    resource_class: << parameters.resource-class >>
     steps:
       - checkout
       - run:
@@ -1105,10 +1109,22 @@ workflows:
       # `version`, `--help`, `secrets merge`, and the README install snippet.
       # -----------------------------------------------------------------------
       - release-smoke:
-          name: "Release Smoke: << matrix.platform >>"
-          matrix:
-            parameters:
-              platform: [linux_amd64, linux_arm64]
+          name: "Release Smoke: linux_amd64"
+          platform: linux_amd64
+          resource-class: small
+          requires:
+            - release
+          context:
+            - goreleaser
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - release-smoke:
+          name: "Release Smoke: linux_arm64"
+          platform: linux_arm64
+          resource-class: arm.medium
           requires:
             - release
           context:
