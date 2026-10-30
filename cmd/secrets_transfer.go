@@ -105,24 +105,26 @@ PREREQUISITES:
      prepare a mapping.json with an entry per source project slug → destination
      project slug. A GitHub App destination matches projects by name instead.
   4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: CircleCI refuses to
-     start a pipeline that checks out over SSH on a project with no CHECKOUT KEY
-     ("the project has no SSH key"), even with inline config. In a GitHub OAuth org
-     that also has the CircleCI GitHub App installed, each project also has GitHub
-     App pipeline definitions, which check out with the app token and need no key;
-     transfer prefers those automatically (the log says which definition ran).
-     So a project needs a key only if it has NO GitHub App pipeline definition:
-     add a deploy key under Project Settings → SSH Keys → Checkout SSH keys, or
-     give it an App definition. OAuth triggers may stay disabled. circleci/
-     projects are not affected. This is checked BEFORE any context restriction is
-     removed or trigger flag enabled: the auto-picked host is the first manifest
-     project with a GitHub App definition, else one with a pipeline definition and
-     a checkout key; an explicit --host-project with neither is rejected; a
-     per-project transfer with neither is shown as SKIP, skipped on --apply, and
-     the command exits non-zero listing it. Keys come from the manifest's
-     checkout_keys, or are looked up live when the manifest was exported with
-     --skip-extras. NOTE: once the GitHub App is uninstalled from the org its
-     App definitions are gone, so project-var / SSH-key transfers then need
-     checkout keys; contexts transferred before the uninstall do not.
+     start a pipeline on a project with no CHECKOUT KEY ("the project has no SSH
+     key"), even with inline config. In a GitHub OAuth org that also has the
+     CircleCI GitHub App installed, projects also have GitHub App pipeline
+     definitions, and transfer prefers those (the log says which definition ran),
+     but CircleCI can still refuse a keyless gh/ project through one. So give the
+     CONTEXT HOST project a checkout key: add a deploy key under Project Settings
+     → SSH Keys → Checkout SSH keys, and pass it as --host-project. OAuth
+     triggers may stay disabled. circleci/ projects are not affected. This is
+     checked BEFORE any context restriction is removed or trigger flag enabled:
+     the auto-picked host is the first circleci/ project, else the first manifest
+     project with a pipeline definition and a checkout key, else (with a warning)
+     one with only a GitHub App definition; an explicit --host-project with
+     neither a key nor an App definition is rejected, and one with only an App
+     definition is warned about; a per-project transfer with neither is shown as
+     SKIP, skipped on --apply, and the command exits non-zero listing it. If the
+     context pipeline fails, no per-project pipeline is started. Keys come from
+     the manifest's checkout_keys, or are looked up live when the manifest was
+     exported with --skip-extras. NOTE: once the GitHub App is uninstalled from
+     the org its App definitions are gone, so project-var / SSH-key transfers then
+     need checkout keys; contexts transferred before the uninstall do not.
   5. Contexts already transferred? Pass --skip-contexts with --include-project-vars
      and/or --include-ssh-keys to run only the per-project pipelines (no host
      project, no restriction removal, no context pipeline).
@@ -633,12 +635,12 @@ func (tf *transferFlags) bind(f *pflag.FlagSet) {
 			"project slug entries, which win over the by-name match used for GitHub App destinations.")
 	f.StringVar(&tf.hostProjectSlug, "host-project", "",
 		"Source-org project slug under which the context-transfer pipeline runs. "+
-			"Any project with api-trigger-with-config enabled works, but a GitHub OAuth (gh/) or "+
-			"Bitbucket (bb/) project must have a GitHub App pipeline definition or a checkout key "+
-			"(deploy key or user key — Project Settings → SSH Keys), or CircleCI refuses to run the pipeline; "+
-			"a project with neither is rejected before anything is changed. "+
-			"When omitted, the first manifest project with a GitHub App pipeline definition is picked, "+
-			"else the first with a pipeline definition and a checkout key.")
+			"Any project with api-trigger-with-config enabled works, but on a GitHub OAuth (gh/) or "+
+			"Bitbucket (bb/) project CircleCI needs a checkout key (deploy key or user key — Project Settings → SSH Keys), "+
+			"even when it runs through a GitHub App pipeline definition: a project with neither is rejected before "+
+			"anything is changed, and one with only an App definition is warned about. "+
+			"When omitted, the first circleci/ project is picked, else the first with a pipeline definition and a "+
+			"checkout key, else (with a warning) one with a GitHub App pipeline definition.")
 	f.StringVar(&tf.branch, "branch", "",
 		"Branch to check out for the transfer pipeline run. "+
 			"Default: each project's default branch from the manifest, falling back to main. "+
