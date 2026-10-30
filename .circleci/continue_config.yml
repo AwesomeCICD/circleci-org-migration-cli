@@ -623,7 +623,7 @@ jobs:
   release-please:
     docker:
       # Exact tag: the org policy approved_language_images rejects "lts".
-      - image: cimg/node:24.22.1
+      - image: cimg/node:26.13.0
     resource_class: small
     steps:
       - run:
