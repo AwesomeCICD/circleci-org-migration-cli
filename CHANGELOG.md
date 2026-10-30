@@ -7,6 +7,18 @@
 
 * **secrets:** resolve the `transfer` pipeline branch per project from the manifest's `vcs.default_branch` (falling back to `main`), so orgs with mixed default branches (some `main`, some `master`) can transfer; `--branch` now defaults to empty and, when set, still forces a single branch for all projects.
 
+## [0.19.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.18.0...v0.19.0) (2026-10-30)
+
+
+### Features
+
+* OAuth→App fixes from live test — transfer, skip-pipelines, v1.1 flags, env hierarchies, webhook secrets, cutover ([#315](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/315)) ([6ede464](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/6ede464cd0cdd3013f6052ed12bd720848edbce4))
+
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/crypto to v0.56.0 [security] ([#309](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/309)) ([d402d55](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/d402d55fd2a3d7148bfbf3c80d69841412043f0a))
+
 ## [0.18.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.2...v0.18.0) (2026-10-29)
 
 
