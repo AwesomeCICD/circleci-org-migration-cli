@@ -44,7 +44,7 @@ BEFORE it is made, so --undo works even after a partial failure. Re-running is
 idempotent: items already in the wanted state report "exists". Each item is
 printed with its outcome and the command exits non-zero if any item failed.
 
-Order for a clean cutover (the cross-type playbook has the full sequence):
+Order for a clean cutover (docs/migrations/oauth-to-app.md has the full sequence):
 freeze merges; sync --skip-pipelines --apply; secrets transfer ... --apply (it
 must run BEFORE the source is paused); cutover --pause-source --apply;
 uninstall the GitHub App from the source and install it on the destination;

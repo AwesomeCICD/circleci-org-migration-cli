@@ -509,7 +509,7 @@ func checkCrossType(srcOrg, dstOrg *org.Organization) preflight.Result {
 		Detail: fmt.Sprintf(
 			"Source org type (%s) differs from destination (%s). "+
 				"This is a cross-type migration: some features may not transfer (e.g. group context restrictions, "+
-				"GitHub OAuth app triggers). See docs/playbooks/cross-type-oauth-to-app.md for details.",
+				"GitHub OAuth app triggers). See docs/migrations/oauth-to-app.md for details.",
 			srcType, dstType,
 		),
 	}

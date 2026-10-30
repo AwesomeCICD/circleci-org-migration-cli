@@ -34,7 +34,7 @@ For full development setup, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Task-progress checklist
 
-- [ ] API endpoints identified and documented (see `docs/api-usage.md` for the pattern)
+- [ ] API endpoints identified and documented (see `docs/contribute/api-usage.md` for the pattern)
 - [ ] Manifest struct added (`internal/manifest/`)
 - [ ] Exporter implemented (`internal/export/`) + unit tests
 - [ ] Syncer implemented (`internal/sync/`) + unit tests
@@ -53,7 +53,7 @@ For full development setup, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Never store secret values in the manifest.** The manifest is non-secret and safe to commit and share. Secret values (env-var values, token values) go in the secrets bundle only.
 - **Never add API calls to `internal/manifest/` packages.** Manifest structs are pure data; API calls belong in the exporter.
 - **Run `make lint` before every commit.** The v0.5–v0.7 audit found that skipping lint let stale patterns accumulate. The CI gate catches it, but catching it locally is faster.
-- **Never fabricate API endpoint paths or response shapes.** Check against the live API reference or `docs/api-usage.md` first.
+- **Never fabricate API endpoint paths or response shapes.** Check against the live API reference or `docs/contribute/api-usage.md` first.
 - **Dry-run by default.** All syncers must check the dry-run flag and print `(would create)` / `(would set)` instead of writing. Use the existing syncers as a template.
 
 ---
@@ -143,7 +143,7 @@ generated `migration-report.md` lists:
 - Any `manual` items with clear instructions.
 - Any data-loss warnings (things that cannot transfer).
 
-Update the canonical "does not transfer" table in `docs/cutover-runbook.md` if
+Update the canonical "does not transfer" table in `docs/get-started/what-moves.md` if
 the new resource has items that cannot be migrated automatically.
 
 ---
@@ -198,6 +198,6 @@ code change. The CI `docs-check` gate will fail if generated docs are stale.
 ## See also
 
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — development setup, local validation loop
-- [docs/architecture.md](../../docs/architecture.md) — how export and sync are structured
-- [docs/api-usage.md](../../docs/api-usage.md) — API endpoints the CLI uses
-- [docs/adr/](../../docs/adr/) — architecture decision records (why certain patterns exist)
+- [docs/contribute/architecture.md](../../docs/contribute/architecture.md) — how export and sync are structured
+- [docs/contribute/api-usage.md](../../docs/contribute/api-usage.md) — API endpoints the CLI uses
+- [docs/contribute/adr/](../../docs/contribute/adr/) — architecture decision records (why certain patterns exist)

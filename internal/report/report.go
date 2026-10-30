@@ -66,7 +66,7 @@ func writeSummary(b *strings.Builder, ren *ui.Renderer, m *manifest.Manifest) {
 	fmt.Fprintf(b, "\n  Note: this manifest holds env-var NAMES only — secret values are never\n")
 	fmt.Fprintf(b, "  written to disk. To move the values to the destination, run the in-pipeline\n")
 	fmt.Fprintf(b, "  'secrets transfer' flow (recommended) — the values go org→org without ever\n")
-	fmt.Fprintf(b, "  leaving CircleCI. See docs/guide.md.\n")
+	fmt.Fprintf(b, "  leaving CircleCI. See docs/concepts/secrets.md.\n")
 }
 
 // Options tailors the audit document with facts the manifest does not record.

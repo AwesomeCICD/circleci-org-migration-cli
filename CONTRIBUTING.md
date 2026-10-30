@@ -505,8 +505,8 @@ messages appear in the generated changelog.
 - **Keep `go.mod` / `go.sum` tidy.** Run `make tidy` if you add or remove
   dependencies and commit both files together.
 - **Update docs alongside code.** If a flag, command, or behaviour changes,
-  update the README command reference and the relevant `docs/*.md` file in the
-  same PR.
+  update `docs/reference/flags.md` and the relevant page under `docs/` in the
+  same PR (the `doc-flags-check` gate fails on a flag no hand-written page mentions).
 - **Request review from at least one maintainer** before merging.
 
 ---

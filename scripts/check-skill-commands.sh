@@ -4,7 +4,7 @@
 #
 # Fails if a `circleci-migrate <subcommand>` invocation referenced in any
 # skills/**/*.md file is NOT present in the generated CLI reference under
-# docs/cli/ — the same staleness gate that protects docs/guide.md via
+# docs/cli/ — the same staleness gate that protects the hand-written docs via
 # scripts/check-doc-flags.sh.
 #
 # Mechanics:

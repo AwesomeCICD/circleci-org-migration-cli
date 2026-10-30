@@ -1,0 +1,47 @@
+# The sidebar of the docs site: its order, its groups and the labels of its pages (docs/contribute/docs-site.md).
+#
+#   == Group title | Group lead (optional)   starts a sidebar group. The lead becomes the group index description.
+#   ==                                          ends the group: the pages below it are top-level pages again.
+#   path | Sidebar label | Description (optional)   a page; the description is used when the page has no page-description.
+#   a path with a *                             every file that matches, sorted (docs/cli/*.md); the label of a command
+#                                               page is its command without the program name. README.md files never match.
+#
+# A page of site/pages/ (the plan builder) is staged at the top of the site (site/pages/plan.md is /plan/), not in the docs
+# tree; listing it here puts it in the index of its group.
+#
+# stage.sh fails on a docs/**/*.md file that is not listed here (docs/cli/README.md excepted), and on a listed file that does
+# not exist, so a new, renamed or removed page always shows up in this file. STAGE_LENIENT=1 turns both errors into warnings.
+# The landing page (README.md) is not listed: it is the content of the home page of the site.
+
+== Get started
+docs/get-started/install.md | Install
+docs/get-started/choose.md | Choose a migration
+docs/get-started/what-moves.md | What moves
+site/pages/plan.md | Plan builder | Answer a few questions about your orgs and get the commands of your migration, in order.
+
+== Migrations | One runbook for each kind of migration. Each is one page of steps with copy-paste commands.
+docs/migrations/oauth-to-app.md | OAuth to GitHub App
+docs/migrations/oauth-to-oauth.md | OAuth to OAuth
+docs/migrations/app-to-app.md | App to App
+
+== Concepts
+docs/concepts/how-it-works.md | How it works
+docs/concepts/secrets.md | Secrets
+docs/concepts/mapping.md | Mapping
+docs/concepts/cutover.md | Cutover
+
+== Reference
+docs/reference/troubleshooting.md | Troubleshooting
+docs/reference/flags.md | Flags
+docs/reference/terraform.md | Terraform
+
+== CLI reference | Every command and flag of circleci-migrate, generated from the code. Run make docs to refresh it.
+docs/cli/*.md
+
+== Contribute
+docs/contribute/architecture.md | Architecture
+docs/contribute/api-usage.md | API usage
+docs/contribute/testing.md | Testing
+docs/contribute/adr/README.md | Decision records | The significant architecture decisions, one short page each.
+docs/contribute/adr/0*.md
+docs/contribute/docs-site.md | Docs site | How the site is built and published, and how to move it to CircleCI-Labs.

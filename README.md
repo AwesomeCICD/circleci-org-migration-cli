@@ -1,14 +1,7 @@
 <!--
-  BADGE NOTES:
-  - CircleCI build-status badge removed: "Status Badges" is not enabled for this project
-    (dl.circleci.com/status-badge/... returns 404). To restore, enable
-    Project Settings → Status Badges in the CircleCI UI for AwesomeCICD/circleci-org-migration-cli,
-    then re-add:
-      [![CircleCI build](https://dl.circleci.com/status-badge/img/gh/AwesomeCICD/circleci-org-migration-cli/tree/main.svg?style=shield)](https://dl.circleci.com/status-badge/redirect/gh/AwesomeCICD/circleci-org-migration-cli/tree/main)
-  - Orb-registry badge removed: badges.circleci.com/orbs/awesomecicd/circleci-org-migration.svg
-    returns 404 because the orb is PRIVATE. Re-add once the orb is public after the
-    CircleCI-Labs namespace move:
-      [![orb: cci-labs/circleci-org-migration](https://badges.circleci.com/orbs/cci-labs/circleci-org-migration.svg)](https://circleci.com/developer/orbs/orb/cci-labs/circleci-org-migration)
+  Badge notes: the CircleCI build-status badge needs Project Settings > Status Badges enabled;
+  the orb-registry badge needs the orb to be public (badges.circleci.com/orbs/<namespace>/circleci-org-migration.svg).
+  Re-add each when its prerequisite is met.
 -->
 [![GitHub release](https://img.shields.io/github/v/release/AwesomeCICD/circleci-org-migration-cli?logo=github)](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/latest)
 [![Homebrew](https://img.shields.io/badge/homebrew-AwesomeCICD%2Ftap%2Fcircleci--migrate-orange?logo=homebrew)](https://github.com/AwesomeCICD/homebrew-tap)
@@ -18,72 +11,42 @@
 
 # circleci-migrate
 
-`circleci-migrate` moves configuration data from one CircleCI organization to
-another — contexts, project settings, environment variables, org-level settings,
-runner resource classes, orbs (full version history), and more — with a safe,
-auditable approach that never requires you to expose secrets in plain text until
-they are needed. A built-in `validate` parity check confirms the destination
-matches the source after migration.
+Move a CircleCI organization to another one without losing contexts, secrets, projects or settings. `circleci-migrate` exports your org, copies it to the destination, switches builds over, and checks that the two match. Every step is a dry run until you pass `--apply`.
 
 <p align="center">
   <img src="docs/demo.gif" alt="circleci-migrate demo" width="900">
 </p>
 
-## What & why
-
-`export` reads everything it can from your source org into a non-secret
-`manifest.json` (structure and names only — safe to review and diff). `sync`
-replays that manifest into the destination — a **dry run by default**, `--apply`
-to write. Because the CircleCI API never returns secret values, a separate
-`secrets capture` step runs a short-lived pipeline in the source org to collect
-them, encrypted by default. The recommended way to move secret values is the
-in-pipeline **`secrets transfer`** flow (org-to-org, nothing written to disk);
-the captured-bundle approach (`secrets capture` + `--secrets`) is the
-alternative when a direct pipeline connection is not available. A few things
-cannot be migrated by any API and are listed in each export's
-`migration-report.md` and in the
-[cutover runbook](docs/cutover-runbook.md#4-does-not-transfer--data-loss).
-
 ## Install
 
+macOS and Linux:
+
 ```bash
-# Homebrew (recommended)
 brew install AwesomeCICD/tap/circleci-migrate
-
-# go install (Go 1.26+)
-go install github.com/AwesomeCICD/circleci-org-migration-cli@latest
 ```
 
-Or grab a prebuilt binary (Linux/macOS/Windows, amd64/arm64) from
-[GitHub Releases](https://github.com/AwesomeCICD/circleci-org-migration-cli/releases):
-
-```bash
-# Resolve the latest release tag (e.g. v0.8.0) from the GitHub API.
-VERSION=$(curl -sfL https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest \
-  | grep '"tag_name"' | head -1 | cut -d'"' -f4)
-curl -sfL "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/${VERSION}/circleci-migrate_${VERSION#v}_linux_amd64.tar.gz" \
-  | tar -xz
-sudo install -m 0755 circleci-migrate /usr/local/bin/
-```
-
-On Windows (PowerShell), download the `.zip` for your architecture and run
-`circleci-migrate.exe` from where you extract it:
+Windows (PowerShell):
 
 ```powershell
-$Version = (Invoke-RestMethod https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest).tag_name
-$Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$Zip = "circleci-migrate_$($Version.TrimStart('v'))_windows_$Arch.zip"
-Invoke-WebRequest "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/$Version/$Zip" -OutFile $Zip
-Expand-Archive $Zip -DestinationPath "$env:LOCALAPPDATA\circleci-migrate" -Force
-& "$env:LOCALAPPDATA\circleci-migrate\circleci-migrate.exe" version
+$v = (irm https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest).tag_name
+$a = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+iwr "https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/$v/circleci-migrate_$($v.TrimStart('v'))_windows_$a.zip" -OutFile cm.zip
+Expand-Archive cm.zip -DestinationPath "$env:LOCALAPPDATA\circleci-migrate" -Force
 ```
 
-In PowerShell, set tokens with `$env:CIRCLECI_SOURCE_TOKEN = "<token>"` instead
-of `export`.
+Other options, signature checks and proxy notes are in [install](docs/get-started/install.md).
 
-> **Future namespace:** the tap and orb move to `CircleCI-Labs` / `cci-labs`
-> when the tool is republished under CircleCI Labs. `AwesomeCICD` is the current
-> production location.
+## Pick your migration
+
+Start with the docs site: **https://awesomecicd.github.io/circleci-org-migration-cli/**. It has a plan builder that fills in the commands for your own orgs. Everything is also here on GitHub.
+
+| You are moving | Runbook |
+|---|---|
+| GitHub OAuth org (`gh/…`) to a GitHub App org (`circleci/…`) | [OAuth to GitHub App](docs/migrations/oauth-to-app.md) |
+| OAuth org to another OAuth org, including a new GitHub org | [OAuth to OAuth](docs/migrations/oauth-to-oauth.md) |
+| GitHub App or standalone org to another | [App to App](docs/migrations/app-to-app.md) |
+
+Not sure which one? Read [choose your migration](docs/get-started/choose.md). To see what carries over, read [what moves](docs/get-started/what-moves.md).
 
 ## Quickstart
 
@@ -91,60 +54,16 @@ of `export`.
 export CIRCLECI_SOURCE_TOKEN="<source-org-admin-token>"
 export CIRCLECI_DEST_TOKEN="<destination-org-admin-token>"
 
-# Interactive guided walkthrough (recommended for first-time use).
-# Covers contexts, projects, org settings, extras, orbs, and runners,
-# and leads with the in-pipeline secrets transfer flow.
-circleci-migrate migrate
-
-# …or scripted: export → capture secrets → dry-run → apply
-circleci-migrate export --source-org gh/acme
-circleci-migrate secrets capture --manifest manifest.json --encrypt --generate-key --enable-trigger
-circleci-migrate sync --manifest manifest.json --secrets secrets.json --mapping mapping.json          # dry run
-circleci-migrate sync --manifest manifest.json --secrets secrets.json --mapping mapping.json --apply  # write
-
-# Parity check: confirm the destination matches the source after migrating
-circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new   # parity check after migrating
+circleci-migrate doctor --source-org gh/acme --dest-org gh/acme-new   # preflight, read-only
+circleci-migrate export --source-org gh/acme                          # writes manifest.json, migration-report.md
 ```
 
-> **`secrets.json` holds plaintext values** — treat it like a password file
-> (written `0600`, never commit it), and **rotate every captured value** after
-> the destination is healthy. To target a *different* org you must pass
-> `--mapping` with `org.to` (otherwise sync hits your source org).
+Then follow your runbook. For a guided, prompt-driven run of a simple OAuth to OAuth move, run `circleci-migrate migrate`.
 
 ## Documentation
 
-Read in this order:
+- [Concepts](docs/concepts/how-it-works.md): how it works, [secrets](docs/concepts/secrets.md), [mapping](docs/concepts/mapping.md), [cutover](docs/concepts/cutover.md).
+- Reference: [troubleshooting](docs/reference/troubleshooting.md), [flags](docs/reference/flags.md), [Terraform](docs/reference/terraform.md), [CLI reference](docs/cli/README.md).
+- Contribute: [architecture](docs/contribute/architecture.md), [testing](docs/contribute/testing.md), [CONTRIBUTING](CONTRIBUTING.md).
 
-1. **[Migration guide](docs/guide.md)** — the single walkthrough: org types,
-   prerequisites & token permissions, and export → capture → sync with
-   per-org-type examples.
-2. **[Playbooks](docs/playbooks/README.md)** — step-by-step operator runbooks
-   with per-phase checklists and validation gates, one per account/org-type:
-   [OAuth → OAuth](docs/playbooks/oauth-to-oauth.md),
-   [standalone → standalone](docs/playbooks/standalone-to-standalone.md),
-   [OAuth → App (cross-type)](docs/playbooks/cross-type-oauth-to-app.md).
-3. **[mapping.json reference](docs/mapping.md)** — when you need a mapping file
-   and what the `org` / `projects` / `github_org` keys do.
-4. **[Cutover runbook](docs/cutover-runbook.md)** — the operator checklist for a
-   production cutover, including the full *what does NOT transfer* list.
-5. **[Troubleshooting](docs/troubleshooting.md)** — common errors and fixes.
-6. **[CLI reference](docs/cli/README.md)** — complete, auto-generated
-   per-command flag tables, including `validate` for post-migration parity
-   checks. (Also available as [man pages](man/).)
-
-Further reading: [architecture & data flow](docs/architecture.md),
-[API usage](docs/api-usage.md), [contributing](CONTRIBUTING.md).
-
-## Using the official `circleci` CLI
-
-`circleci-migrate` is also a plugin to the official
-[circleci CLI](https://circleci.com/docs/local-cli/). Invoke it as
-`circleci run migrate <args>` and the `circleci` CLI execs it on your `PATH`,
-injecting your configured token and host — no extra flags required:
-
-```bash
-circleci run migrate export --source-org gh/acme
-circleci run migrate sync   --manifest manifest.json --apply
-```
-
-Bare `circleci migrate` (without `run`) is not supported.
+Prefer the official [circleci CLI](https://circleci.com/docs/local-cli/)? Run `circleci run migrate <args>`.

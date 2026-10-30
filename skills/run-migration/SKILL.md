@@ -11,7 +11,7 @@ description: >
 # Run Migration — Orchestrator Skill
 
 This skill guides an end-to-end CircleCI org migration using `circleci-migrate`.
-It maps 1:1 to the phases in [docs/guide.md](../../docs/guide.md) and delegates
+It follows the runbooks in [docs/migrations/](../../docs/migrations/) and delegates
 to the task-scoped skills for secrets capture, orb inlining, and cutover.
 
 ---
@@ -245,8 +245,9 @@ circleci-migrate migrate \
 
 ## See also
 
-- [docs/guide.md](../../docs/guide.md) — full step-by-step walkthrough with all org-type scenarios
-- [docs/cutover-runbook.md](../../docs/cutover-runbook.md) — operator checklist + what-does-not-transfer
+- [docs/migrations/oauth-to-app.md](../../docs/migrations/oauth-to-app.md), [oauth-to-oauth.md](../../docs/migrations/oauth-to-oauth.md), [app-to-app.md](../../docs/migrations/app-to-app.md) — the step-by-step runbooks
+- [docs/concepts/cutover.md](../../docs/concepts/cutover.md) — cutover order, state file and undo
+- [docs/get-started/what-moves.md](../../docs/get-started/what-moves.md) — what transfers and what does not
 - [reference.md](reference.md) — org types, slug remapping, dry-run-first rationale
 - [capture-secrets/SKILL.md](../capture-secrets/SKILL.md)
 - [apply-inline-orbs/SKILL.md](../apply-inline-orbs/SKILL.md)

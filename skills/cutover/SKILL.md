@@ -6,14 +6,14 @@ description: >
   to new CircleCI org", "enable builds in destination org", "go live with
   migration", "finalize circleci migration", "rotate migrated secrets",
   "decommission source circleci org", "validate migrated org", "migration
-  cutover runbook". Wraps docs/cutover-runbook.md phases 5–8.
+  cutover runbook". Wraps docs/concepts/cutover.md and the runbooks in docs/migrations/.
 ---
 
 # Cutover
 
 This skill covers the production cutover after `sync --apply` has completed:
 validation, enabling builds, secret rotation, and decommissioning the source.
-It maps to [docs/cutover-runbook.md](../../docs/cutover-runbook.md) steps 5–8.
+It maps to [docs/concepts/cutover.md](../../docs/concepts/cutover.md) and the cutover steps of the runbooks in [docs/migrations/](../../docs/migrations/).
 
 **Do not start cutover until `sync --apply` has completed and been verified.**
 
@@ -213,6 +213,7 @@ header values. Re-add them manually in the destination org settings.
 
 ## See also
 
-- [docs/cutover-runbook.md](../../docs/cutover-runbook.md) — full operator checklist + canonical "what does not transfer" list
-- [docs/guide.md § Step 4 — Validate, enable, rotate](../../docs/guide.md#8-step-4--validate-enable-rotate)
+- [docs/concepts/cutover.md](../../docs/concepts/cutover.md) — pause, move the App, enable, undo
+- [docs/get-started/what-moves.md](../../docs/get-started/what-moves.md) — canonical "what does not transfer" list
+- [docs/migrations/](../../docs/migrations/) — the runbooks, including validate and rotate
 - [capture-secrets/SKILL.md](../capture-secrets/SKILL.md) — if secrets rotation reveals gaps

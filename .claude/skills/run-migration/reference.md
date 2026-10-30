@@ -114,6 +114,6 @@ building when followed (via `--yes` or the prompt).
 
 ## See also
 
-- [docs/guide.md](../../docs/guide.md) — full walkthrough with all scenarios
-- [docs/mapping.md](../../docs/mapping.md) — mapping file schema reference
-- [docs/architecture.md](../../docs/architecture.md) — how export/sync work internally
+- [docs/migrations/](../../docs/migrations/) — one runbook per migration type
+- [docs/concepts/mapping.md](../../docs/concepts/mapping.md) — mapping file schema reference
+- [docs/contribute/architecture.md](../../docs/contribute/architecture.md) — how export/sync work internally
