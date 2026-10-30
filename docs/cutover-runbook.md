@@ -134,21 +134,63 @@ Bring the destination live:
 - For GitHub App orgs this enables (unpauses) the pipeline triggers.
 - For GitHub OAuth orgs this follows the projects, installing deploy keys and webhooks.
 
+> **Only when nothing is still building in the source.** If the source org is
+> live, enabling the destination with `--yes` leaves **both** orgs building. Use
+> `cutover` (below) instead. For an **OAuth → GitHub App** migration the order is
+> different again — follow the
+> [cross-type playbook, Phase 7.0 "Cutover order"](playbooks/cross-type-oauth-to-app.md#70-cutover-order)
+> (or the customer-facing
+> [OAuth → GitHub App guide](customer/oauth-to-app-migration-guide.md)).
+
 #### Switching traffic with `cutover` (recommended for a live source)
 
-When the source org is still building, switch over in one controlled step with
-the `cutover` command instead of leaving both orgs live. It is a dry run unless
-you pass `--apply`, and it records every change in a state file
-(`cutover-state.json`, mode 0600) so it can be reversed:
+When the source org is still building, switch over in a controlled, reversible
+way with the `cutover` command instead of leaving both orgs live. It is a dry
+run unless you pass `--apply`, and it records every change in a state file
+(`cutover-state.json`, mode 0600) so it can be reversed.
+
+**OAuth → GitHub App (cross-type).** The order is fixed, because the secrets
+transfer needs a source that can still build, and the source's GitHub App
+triggers disappear when the App is uninstalled. The full sequence, with each
+reason, is the cross-type playbook's
+[Phase 7.0 "Cutover order"](playbooks/cross-type-oauth-to-app.md#70-cutover-order):
+
+1. **Freeze merges** in the source repos.
+2. `sync --skip-pipelines --apply` — create the destination projects (no
+   pipeline definitions or triggers yet).
+3. `secrets transfer --include-project-vars --include-ssh-keys
+   --remove-restrictions --enable-trigger --apply` — **before** the source is
+   paused (it fails fast naming any paused project).
+4. `cutover --pause-source --apply`.
+5. **Move the GitHub App:** uninstall it from the source GitHub org, install it
+   from the new `circleci/<id>` org (users Authorize / Refresh permissions).
+   Only after step 4.
+6. `sync --apply --webhook-secrets-out webhook-secrets.json` — add the pipeline
+   definitions and triggers (created disabled; answer **N** at the enable prompt).
+7. `cutover --enable-dest --apply`.
+8. `validate … --dest-token-context migration-secrets`.
+
+**App → App (same type).** The destination projects, definitions and triggers
+already exist after `sync --apply`, so one controlled step is enough:
 
 ```bash
-# 1. Preview, then pause the source and turn the destination on.
+# Preview, then pause the source and turn the destination on.
 circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
   --pause-source --enable-dest
 circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
   --pause-source --enable-dest --apply
+```
 
-# 2. Something wrong? Put everything back from the state file.
+**OAuth → OAuth.** `--enable-dest` acts on pipeline *triggers*, so it applies to
+a GitHub App destination only; an OAuth destination is brought live by following
+its projects (the enable-builds prompt of `sync --apply`). Once the destination
+is validated, pause the source with
+`cutover --manifest manifest.json --pause-source --apply`
+(add `--pause-org` for the whole source org).
+
+**Something wrong? Put everything back from the state file:**
+
+```bash
 circleci-migrate cutover --undo --apply
 ```
 
@@ -160,12 +202,16 @@ circleci-migrate cutover --undo --apply
   Projects are never unfollowed.
 - `--enable-dest` enables the destination triggers whose source counterpart was
   enabled, matched the way `sync` matches them. A trigger that was disabled in
-  the source stays disabled. Run `sync --apply` first so the triggers exist.
+  the source stays disabled. An ambiguous match, and a project the manifest shows
+  as paused or not followed, is reported `manual` and not enabled. Run
+  `sync --apply` first so the triggers exist.
 - Every item is printed with its outcome; the command exits non-zero if any item
   failed, and re-running is idempotent.
 - **Pause the source before uninstalling the GitHub App from the source GitHub
   org.** Uninstalling removes the source's App triggers, so afterwards pausing
   relies on `drop-all-build-requests` alone and `--undo` can only restore that flag.
+- Keep `cutover-state.json` (and, cross-type, `webhook-secrets.json`) safe until
+  the cutover is confirmed.
 
 ### Step 7 — Rotate the captured secrets
 
@@ -187,7 +233,9 @@ Repoint everything that references the old org (see [Section 5](#5-update-extern
 - Project settings, environment variables, webhooks, and scheduled pipelines.
 - Project additional SSH keys — re-uploaded by fingerprint match (skipped with `--skip-extras`). The private key material must be supplied; see manual steps.
 - Project- and org-level OIDC custom claims (audience / TTL).
-- Project pipeline definitions and triggers (GitHub App orgs; triggers created disabled).
+- Project pipeline definitions and triggers (GitHub App orgs; triggers created disabled). `sync --skip-pipelines` creates the App projects first, without definitions or triggers, so `secrets transfer` can run while the source still has its GitHub App definitions.
+- **Environment hierarchies** — environments, hierarchy levels, the org default, and project/component assignments are recreated by name (a hierarchy that already exists with different levels is reported `manual`, never modified).
+- **Webhook signing secrets** — with `--webhook-secrets-out <file>` (and `--apply`), a new signing secret is generated for each outbound webhook created in the run, and the new URL of each recreated inbound webhook trigger is recorded (mode 0600, never printed).
 - **CIAM org-level roles and groups** (standalone `circleci/`-type orgs only): groups are recreated and org roles are assigned for users who already exist in the destination org (matched by email). Skipped with `--skip-ciam`. Per-project CIAM grants are **manual** (see [#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179) and Section 3).
 - Org settings:
   - v1.1 feature flags
@@ -231,16 +279,24 @@ the relevant ones.
 - **Project API tokens** — recreated only with `--create-project-tokens`; by
   default they are reported as manual. Recreating a token mints a NEW value, so
   repoint every consumer of the old token.
-- **Webhook signing secrets** — not exported; regenerate and update receivers.
+- **Webhook signing secrets** — never exported (the source secrets are
+  unreadable). Run `sync --apply --webhook-secrets-out webhook-secrets.json` to
+  get a freshly generated secret for each recreated outbound webhook and the new
+  URL of each recreated inbound webhook trigger, then hand each receiver and
+  sender its new value and delete the file. Without the flag, webhooks are
+  created with an empty signing secret.
 - **SSO (SAML)** — recreate manually (DNS TXT domain verification + IdP-side SAML
   app). Not automatable.
 - **Audit-log streaming** — the S3 ARN/region/bucket/endpoint point at the source
   AWS account; recreate each stream against destination-owned infrastructure.
 - **OpenTelemetry exporter headers** — header values are server-redacted and
   cannot be replayed; re-add them manually after `sync` creates the exporters.
-- **Context project restrictions** — source-org project UUIDs do not transfer;
-  recreate project-type context restrictions in the destination org settings UI
-  after sync.
+- **Context project restrictions** — source-org project UUIDs do not transfer, so
+  `sync` remaps each project-type restriction through the project mapping (for a
+  GitHub App destination, by project name). One whose destination project does
+  not exist yet, or cannot be matched, is reported `manual` naming the project;
+  create the project and re-run `sync --apply`, or recreate the restriction in
+  the destination org settings UI. **Group** restrictions are always manual.
 - **Danger flags** (`require_context_group_restriction`, `drop_all_build_requests`)
   — enable only after validation, or they can silently break or drop builds.
 - **Org orbs / namespaces** — a namespace belongs to exactly one org. A
@@ -264,7 +320,10 @@ the relevant ones.
   steps (GitHub App move, OIDC `sub` claims, IP ranges, SSO default role) are in
   the ordered checklist the report adds when you pass `--dest-org circleci/<id>`
   to `export` (or use `migrate`).
-- **Environment hierarchy** — captured as reference data; apply manually if needed.
+- **Environment hierarchy** — recreated by `sync` through a private release-tracker
+  API. If that API rejects the token's write, the remaining environments and
+  hierarchies are reported `manual`: create them under **Deploys → Environments**
+  and **Deploys → Environment hierarchies**, then assign them.
 - **Repository connections (App destinations)** — repos must exist and be
   connected to the destination CircleCI GitHub App before `sync --apply`, or
   project onboarding is skipped with a warning.
@@ -282,7 +341,7 @@ This is the single canonical "does not transfer / data loss" reference for
 | **Secret values** | Masked by the API; only captured plaintext (via `secrets capture`/orb) can be synced. | Capture, sync, then **rotate** — treat every captured value as exposed once written to a file or artifact, even if encrypted. |
 | **Checkout / deploy key private material** | Never exportable via any API. | Regenerate deploy keys on the destination and update the VCS side. |
 | **Additional SSH key private material** | Public key + fingerprint export, but private keys are never returned. | Re-upload by supplying the private key to `sync`, or regenerate. |
-| **Webhook signing (HMAC) secrets** | Not exported. | Regenerate and update receivers after sync creates the webhooks. |
+| **Webhook signing (HMAC) secrets** | Not exported; the source secrets are unreadable. | Use `sync --apply --webhook-secrets-out <file>` to generate new values, then update every receiver and sender. |
 | **Project API token values** | Returned only once at creation. | Recreate with `--create-project-tokens` (mints NEW values) and repoint consumers, or recreate manually. |
 | **Per-project CIAM role grants** | Destination project UUID not reliably mappable ([#179](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179)). | Recreate user/group grants on the destination project. |
 | **CIAM org roles for users not yet in the dest org** | Roles can only be assigned to existing destination members. | Add the user first, then re-run `sync --apply`. |
@@ -327,9 +386,19 @@ installation in the destination org's settings.
 orgs, add `--github-token` and `--dest-github-org` (see
 [Example 6 in docs/examples.md](examples.md#example-6--repo-move--emu-repos-moved-to-a-new-github-org)).
 
-**Context restriction shows `manual`:** project-type restrictions cannot be
-migrated automatically (source-org project UUIDs do not transfer). Recreate
-them in the destination org settings UI after sync.
+**Context restriction shows `manual`:** *group* restrictions cannot be migrated
+automatically (group IDs differ between orgs) — recreate them in the destination.
+A *project* restriction is remapped through the project mapping (by name for a
+GitHub App destination); it shows `manual` only when the destination project
+does not exist yet or cannot be matched. Create the project and re-run
+`sync --apply`.
+
+**`secrets transfer` fails with "the project has no SSH key" or "source
+project(s) are paused":** a `gh/`/`bb/` source project needs a GitHub App
+pipeline definition or a checkout key to run a transfer pipeline, and the source
+must not be paused. Run the transfer **before** `cutover --pause-source` and
+before uninstalling the GitHub App from the source org. See
+[Troubleshooting](troubleshooting.md#secrets-transfer-the-project-has-no-ssh-key).
 
 **`secrets capture` fails with `api-trigger-with-config disabled`:** add
 `--enable-trigger` to the capture command. This enables the flag temporarily
