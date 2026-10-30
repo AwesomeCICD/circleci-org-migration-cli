@@ -16,7 +16,6 @@ import (
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/org"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/runner"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/exporter"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/report"
@@ -71,6 +70,14 @@ func newMigrateCommand() *cobra.Command {
 		// enableExistingTriggers also enables destination triggers that already
 		// exist and are disabled (default: only triggers created this run).
 		enableExistingTriggers bool
+
+		// skipPipelines syncs projects but creates no App pipeline definitions
+		// or triggers.
+		skipPipelines bool
+
+		// webhookSecretsOut is the 0600 file that receives the new secrets of
+		// webhooks recreated by the projects step (same as sync).
+		webhookSecretsOut string
 	)
 
 	cmd := &cobra.Command{
@@ -330,6 +337,7 @@ Examples:
 					destGitHubOrg:   destGitHubOrg,
 					githubOrgMapped: pfMapping != nil && pfMapping.GitHubOrg != nil,
 					skipProjects:    skipProjects,
+					skipPipelines:   skipPipelines,
 				}
 				if pfRunErr := runMigratePreflight(ctx, pfDeps, pfClients, cmd.ErrOrStderr()); pfRunErr != nil {
 					return pfRunErr
@@ -501,6 +509,17 @@ Examples:
 					IncludeDangerFlags:  includeDangerFlags,
 
 					EnableExistingTriggers: enableExistingTriggers,
+					SkipPipelines:          skipPipelines,
+					WebhookSecretsOut:      webhookSecretsOut,
+				}
+				// Fail before creating any webhook with a secret we could not
+				// save. An existing file is never truncated (it is merged into
+				// afterwards); with --skip-projects nothing is touched.
+				saveWebhookSecrets := applyNow && webhookSecretsOut != "" && !skipProjects
+				if saveWebhookSecrets {
+					if prepErr := syncer.PrepareWebhookSecretsFile(webhookSecretsOut); prepErr != nil {
+						return nil, nil, fmt.Errorf("--webhook-secrets-out: %w", prepErr)
+					}
 				}
 				reps = make(map[string]*syncer.Report)
 				// An enable-builds failure is remembered and returned after the
@@ -531,9 +550,20 @@ Examples:
 				if !skipProjects {
 					rep, syncErr := sy.SyncProjects(ctx, m, bundle, mapping, sOpts)
 					if syncErr != nil {
+						if saveWebhookSecrets {
+							if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "warning: --webhook-secrets-out: could not save the secrets of webhooks created before the failure: %v\n", serr)
+							}
+						}
 						return reps, nil, syncErr
 					}
 					reps["Projects"] = rep
+					if saveWebhookSecrets {
+						if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+							return reps, nil, fmt.Errorf("--webhook-secrets-out: writing %s (the new webhook secrets are NOT saved — rotate them): %w", webhookSecretsOut, serr)
+						}
+						printWebhookSecretsSaved(cmd.ErrOrStderr(), sy, webhookSecretsOut)
+					}
 					if !jsonOutput && !quietMode {
 						printSyncReport(cmd, "Projects", rep, m)
 					}
@@ -596,6 +626,16 @@ Examples:
 					reps["Orbs"] = rep
 					if !jsonOutput && !quietMode {
 						printSyncReport(cmd, "Orbs", rep, m)
+					}
+				}
+				if !skipOrgSettings && syncer.HasEnvironmentHierarchies(m) {
+					rep, syncErr := sy.SyncEnvironmentHierarchies(ctx, m, mapping, sOpts)
+					if syncErr != nil {
+						return reps, nil, syncErr
+					}
+					reps["Environment Hierarchies"] = rep
+					if !jsonOutput && !quietMode {
+						printSyncReport(cmd, "Environment Hierarchies", rep, m)
 					}
 				}
 				// Deploys (environments / components / deploy settings): read-only
@@ -721,7 +761,7 @@ Examples:
 			// non-zero solely because of a parity gap.
 			if apply && !jsonOutput && !skipValidate {
 				runPostMigrateValidation(ctx, cmd, cfg, m, dstToken, destOrg,
-					destRunnerNamespace, destOrbNamespace, mapping)
+					destRunnerNamespace, destOrbNamespace, mapping, ignoredContexts(destTokenContext, nil)...)
 			}
 
 			return finalErr()
@@ -764,6 +804,8 @@ Examples:
 		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
+	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
+	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "", webhookSecretsOutUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false,
 		"Skip exporting and syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false,
@@ -1460,7 +1502,7 @@ func printQuietSyncSummary(out io.Writer, repsBySection map[string]*syncer.Repor
 		action  syncer.Action
 	}
 
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs", "Deploys"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Context Project Restrictions", "Runner Resource Classes", "CIAM", "Orbs", "Environment Hierarchies", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -1708,42 +1750,12 @@ func runMigrateSecretsTransfer(
 		return fmt.Errorf("creating project client for secrets transfer: %w", err)
 	}
 
-	// Enable the org-level trigger flag when needed (non-interactive: auto-enable
-	// since the user opted in with --transfer-secrets; restore after).
-	orgFlagEnabled := false
-	if vcsType, orgName, ok := capture.ParseOrgSlug(m.Source.Org.Slug); ok {
-		orgMgr, oerr := newOrgClientForCapture(cfg, srcToken)
-		if oerr != nil {
-			fmt.Fprintf(stderr, "warning: could not create org client to check org-level trigger flag: %v\n", oerr)
-		} else {
-			enabled, restoreOrg, enErr := maybeEnableOrgTrigger(cmd, orgMgr, vcsType, orgName, true /* autoEnable */)
-			if enErr != nil {
-				return enErr
-			}
-			if restoreOrg != nil {
-				defer restoreOrg()
-			}
-			orgFlagEnabled = enabled
-		}
-	}
-
-	// Enable the project-level trigger flag for each source project that will
-	// run a pipeline (host project + per-project env-var pipelines).
+	// Resolve the host override (when given); otherwise transfer.Transfer
+	// auto-picks a host project that can actually run a pipeline (gh/ and bb/
+	// projects need a checkout key).
 	hostSlug := ""
 	if hostProjectOverride != "" {
 		hostSlug = normalizeVCSPrefix(hostProjectOverride)
-	} else if len(m.Projects) > 0 {
-		hostSlug = normalizeVCSPrefix(m.Projects[0].Slug)
-	}
-	slugsNeedingFlag := collectTransferProjectSlugs(hostSlug, m, combinedMapping, includeProjectVars, includeSSHKeys)
-	for _, slug := range slugsNeedingFlag {
-		restore, pErr := maybeEnableProjectTrigger(cmd, projClient, slug, true /* autoEnable */, orgFlagEnabled)
-		if pErr != nil {
-			return pErr
-		}
-		if restore != nil {
-			defer restore() //nolint:revive
-		}
 	}
 
 	// Build the context client for restriction management when --remove-restrictions is set.
@@ -1756,9 +1768,21 @@ func runMigrateSecretsTransfer(
 		ctxClient = cc
 	}
 
+	// GitHub App destination: projects with no derivable slug are matched by
+	// name against the destination org's projects.
+	var destProjects transfer.DestProjectLister
+	if (includeProjectVars || includeSSHKeys) && isAppDestOrg(cmd.Context(), orgClient, destOrg, destOrgID, stderr) {
+		dstClient, derr := project.NewClient(cfg, destClientToken(cfg, srcToken))
+		if derr != nil {
+			return fmt.Errorf("creating destination project client for secrets transfer: %w", derr)
+		}
+		destProjects = dstClient
+	}
+
 	// #nosec G101 -- DestTokenEnvVar is the NAME of an env var (not a secret
 	// value); the token is injected at runtime from the source-org context.
 	opts := transfer.Options{
+		DestProjects:    destProjects,
 		HostProjectSlug: hostSlug,
 		// Branch is intentionally empty so transfer.Transfer resolves the
 		// trigger branch per project (manifest vcs.default_branch, falling
@@ -1774,10 +1798,14 @@ func runMigrateSecretsTransfer(
 		IncludeSSHKeys:     includeSSHKeys,
 		RemoveRestrictions: removeRestrictions,
 		ContextClient:      ctxClient,
-		DryRun:             !apply,
-		PollTimeout:        30 * time.Minute,
-		Stdout:             cmd.OutOrStdout(),
-		Stderr:             stderr,
+		// Trigger flags are enabled by Transfer only after its read-only
+		// pre-flight checks pass (non-interactive: auto-enable since the user
+		// opted in with --transfer-secrets; restored afterwards).
+		BeforeMutate: newTriggerFlagHook(cmd, cfg, srcToken, m.Source.Org.Slug, projClient, true /* autoEnable */),
+		DryRun:       !apply,
+		PollTimeout:  30 * time.Minute,
+		Stdout:       cmd.OutOrStdout(),
+		Stderr:       stderr,
 	}
 
 	return transfer.Transfer(cmd.Context(), projClient, m, opts)
@@ -1799,6 +1827,7 @@ func runPostMigrateValidation(
 	srcManifest *manifest.Manifest,
 	dstToken, destOrg, destRunnerNamespace, destOrbNamespace string,
 	mapping *manifest.Mapping,
+	ignoreContexts ...string, // migration-only contexts (the --dest-token-context) left out of the comparison
 ) {
 	stderr := cmd.ErrOrStderr()
 	stdout := cmd.OutOrStdout()
@@ -1816,6 +1845,7 @@ func runPostMigrateValidation(
 	result := validate.Compare(srcManifest, dstManifest, mapping, validate.Options{
 		DestRunnerNamespace: destRunnerNamespace,
 		DestOrbNamespace:    destOrbNamespace,
+		IgnoreContexts:      ignoreContexts,
 	})
 
 	var b strings.Builder

@@ -78,7 +78,7 @@ func buildSyncSummary(apply bool, repsBySection map[string]*syncer.Report) SyncJ
 	}
 
 	// Stable section order matches the sync execution order.
-	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Deploys"}
+	sectionOrder := []string{"Org Settings", "Contexts", "Projects", "Runner Resource Classes", "Orbs", "Environment Hierarchies", "Deploys"}
 	for _, section := range sectionOrder {
 		rep, ok := repsBySection[section]
 		if !ok || rep == nil {
@@ -165,6 +165,23 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
+// noBundleNotice explains, when sync runs without a secrets bundle, that it
+// writes no env var VALUES — which is not data loss: the values still exist in
+// the source org and are moved by `secrets transfer` or `secrets capture`.
+func noBundleNotice(envVars int) string {
+	return fmt.Sprintf("NOTE: no secrets bundle loaded: sync does not write env var values without one (%d variable(s) in the manifest). "+
+		"Nothing was lost — the values are still in the source org. Write them with 'secrets transfer' "+
+		"(in-pipeline, straight from the source org, no bundle file) or run 'secrets capture' and re-run sync with --secrets <bundle>.\n",
+		envVars)
+}
+
+// skipPipelinesUsage is the --skip-pipelines help text shared by sync and migrate.
+const skipPipelinesUsage = "GitHub App destinations: create or reuse each project and sync its settings, env vars and other " +
+	"project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). " +
+	"Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so " +
+	"'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; " +
+	"a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed."
+
 func newSyncCommand() *cobra.Command {
 	var (
 		manifestPath        string
@@ -194,6 +211,13 @@ func newSyncCommand() *cobra.Command {
 		// enableExistingTriggers also enables destination triggers that already
 		// exist and are disabled (default: only triggers created this run).
 		enableExistingTriggers bool
+
+		// skipPipelines syncs projects but creates no App pipeline definitions
+		// or triggers (create the projects before the GitHub App is moved).
+		skipPipelines bool
+		// webhookSecretsOut is the 0600 file that receives the new signing
+		// secrets / inbound webhook URLs generated for recreated webhooks.
+		webhookSecretsOut string
 	)
 
 	cmd := &cobra.Command{
@@ -250,18 +274,29 @@ re-run with --apply. Context restrictions are handled as follows:
   • group — resolved by name to the destination group UUID (requires the group
     to exist in the destination; falls back to "manual" if not found).
   • project — remapped automatically: source project UUID → source slug →
-    destination slug (via mapping) → destination project UUID. Requires that
-    the destination project already exists; if it does not (i.e. sync runs
-    contexts before projects on the first pass), the restriction falls back to
-    "manual" with a re-run instruction. Re-run sync after projects are created
-    to resolve remaining project restrictions.
+    destination slug (via mapping) → destination project UUID. For a GitHub App
+    destination, a project with no mapping entry is matched by NAME against
+    the destination org's projects instead (no 'projects' entries needed).
+    Requires that the destination project exists once the projects step has run;
+    if it does not, the restriction falls back to "manual" naming the project
+    and the fix. Re-run sync after the projects are created to resolve it.
 
 When OAuth projects are missing in the destination, --apply creates them in a
 paused state (no webhook, no builds). After creation you are prompted to enable
 builds (follow the project, which installs the webhook and may trigger an
-initial build). --yes / -y only matters together with --apply: it auto-confirms
-enabling builds without the interactive prompt (it has no effect in a dry run).
-Without a TTY, builds are not enabled unless --yes is passed.
+initial build). For a GitHub App destination the prompt instead offers to enable
+the N triggers that were created disabled, across M projects. --yes / -y only
+matters together with --apply: it auto-confirms enabling builds without the
+interactive prompt (it has no effect in a dry run). Without a TTY, builds are
+not enabled unless --yes is passed.
+
+--skip-pipelines (GitHub App destinations) creates or reuses each project and
+syncs its settings, env vars and other project data, but creates no pipeline
+definitions or triggers (reported as "skipped: --skip-pipelines"). Run it first
+to create the App projects BEFORE the GitHub App is moved off the source org, so
+'secrets transfer --include-project-vars' can run while the source's App
+pipeline definitions still exist; then run sync --apply again WITHOUT the flag
+to add the definitions and triggers to the existing projects.
 
 When the manifest contains self-hosted runner resource classes, pass
 --dest-runner-namespace to recreate them in the destination namespace. If the
@@ -274,7 +309,8 @@ Examples:
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --secrets secrets.json --apply --yes
   circleci-migrate sync --manifest manifest.json --mapping mapping.json --dest-token $DST_TOKEN --apply
-  circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply`,
+  circleci-migrate sync --manifest manifest.json --dest-runner-namespace acme-new --apply
+  circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --skip-pipelines`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			cfg := configFromContext(ctx)
@@ -408,7 +444,8 @@ Examples:
 				// synthesized one on a GitHub App destination; that needs a
 				// GitHub token (see checkSynthesisToken). Only relevant when
 				// projects are actually being synced.
-				if !skipProjects {
+				pfDeps.skipPipelines = skipPipelines
+				if !skipProjects && !skipPipelines {
 					pfDeps.synthProjects = syncer.CountSynthesizedProjects(m)
 					// A project that already exists in the destination is
 					// reconciled without a GitHub lookup, so only the ones that
@@ -450,6 +487,18 @@ Examples:
 				IncludeDangerFlags:  includeDangerFlags,
 
 				EnableExistingTriggers: enableExistingTriggers,
+				SkipPipelines:          skipPipelines,
+				WebhookSecretsOut:      webhookSecretsOut,
+			}
+			// Fail before creating any webhook with a secret we could not save. An
+			// existing file is never truncated (it is merged into after the run),
+			// and nothing is touched at all with --skip-projects: no webhook is
+			// created, so there is nothing to record.
+			saveWebhookSecrets := apply && webhookSecretsOut != "" && !skipProjects
+			if saveWebhookSecrets {
+				if err := syncer.PrepareWebhookSecretsFile(webhookSecretsOut); err != nil {
+					return fmt.Errorf("--webhook-secrets-out: %w", err)
+				}
 			}
 
 			// Wire up the runner client when a destination namespace was provided
@@ -489,6 +538,13 @@ Examples:
 			if !skipProjects {
 				rep, err := sy.SyncProjects(ctx, m, bundle, mapping, opts)
 				if err != nil {
+					// Webhooks created before the failure already carry their new
+					// secrets: save them rather than lose them with the error.
+					if saveWebhookSecrets {
+						if serr := sy.WriteWebhookSecrets(webhookSecretsOut); serr != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: --webhook-secrets-out: could not save the secrets of webhooks created before the failure: %v\n", serr)
+						}
+					}
 					return err
 				}
 				repsBySection["Projects"] = rep
@@ -514,6 +570,15 @@ Examples:
 						printSyncReport(cmd, "Context Project Restrictions", prRep, m)
 					}
 				}
+			}
+
+			// Save the generated webhook secrets right after the projects step that
+			// created them (the file is 0600; its contents are never printed).
+			if saveWebhookSecrets {
+				if err := sy.WriteWebhookSecrets(webhookSecretsOut); err != nil {
+					return fmt.Errorf("--webhook-secrets-out: writing %s (the new webhook secrets are NOT saved — rotate them): %w", webhookSecretsOut, err)
+				}
+				printWebhookSecretsSaved(cmd.ErrOrStderr(), sy, webhookSecretsOut)
 			}
 
 			// Runner resource classes (attempted when present in manifest, unless skipped).
@@ -567,6 +632,19 @@ Examples:
 				}
 			}
 
+			// Environment hierarchies (after projects: PROJECT assignments match
+			// destination projects by name; before Deploys: it creates environments).
+			if !skipOrgSettings && syncer.HasEnvironmentHierarchies(m) {
+				rep, err := sy.SyncEnvironmentHierarchies(ctx, m, mapping, opts)
+				if err != nil {
+					return err
+				}
+				repsBySection["Environment Hierarchies"] = rep
+				if !jsonOutput {
+					printSyncReport(cmd, "Environment Hierarchies", rep, m)
+				}
+			}
+
 			// Deploys (environments / components / deploy settings): a read-only
 			// reconcile that reports what must be recreated by hand — the public
 			// Deploys API has no create endpoint.
@@ -592,9 +670,7 @@ Examples:
 					totalEnvVars += len(proj.EnvVars)
 				}
 				if totalEnvVars > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(),
-						"WARNING: no secrets bundle loaded; %d env var value(s) were not synced and require manual entry\n",
-						totalEnvVars)
+					fmt.Fprint(cmd.ErrOrStderr(), noBundleNotice(totalEnvVars))
 				}
 			}
 
@@ -635,6 +711,8 @@ Examples:
 		"Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled "+
 			"(GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a "+
 			"trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.")
+	f.BoolVar(&skipPipelines, "skip-pipelines", false, skipPipelinesUsage)
+	f.StringVar(&webhookSecretsOut, "webhook-secrets-out", "", webhookSecretsOutUsage)
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip syncing contexts")
 	f.BoolVar(&skipProjects, "skip-projects", false, "Skip syncing projects")
 	f.BoolVar(&skipOrgSettings, "skip-org-settings", false, "Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)")
@@ -717,11 +795,19 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 		printEnablePlan(cmd.ErrOrStderr(), pending, apply)
 	}
 
+	sum := summarizeEnable(pending)
+
 	if !apply {
 		// Dry-run plan message goes to stderr (not data, not JSON).
 		if !jsonOutput {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+			if sum.appOnly() {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"\n%d trigger(s) across %d project(s) would be created disabled; re-run with --apply, then confirm enabling them (or pass --yes).\n",
+					sum.triggers, sum.triggerProjects)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"\n%d project(s) would be created paused; re-run with --apply, then confirm enabling builds (or pass --yes).\n", n)
+			}
 		}
 		return nil
 	}
@@ -737,10 +823,7 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 	// which installs the webhook and may trigger an initial build — make that
 	// clear so the operator knows what they are consenting to.
 	confirm := func() bool {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"\nFollow (enable builds for) %d project(s) in the destination org now?\n"+
-				"  Note: following installs the webhook and may trigger an initial build.\n"+
-				"  [y/N]: ", n)
+		fmt.Fprint(cmd.ErrOrStderr(), sum.prompt())
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
@@ -751,12 +834,11 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 
 	if !decideEnable(apply, yes, isTTY, confirm) {
 		if !jsonOutput {
-			if !isTTY && !yes {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"\nSkipped following projects (no TTY and --yes not set). "+
-						"Re-run with --apply --yes to follow (enable builds for) the %d created project(s).\n", n)
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "\nSkipped following projects (enable builds).\n")
+			switch {
+			case !isTTY && !yes:
+				fmt.Fprint(cmd.ErrOrStderr(), sum.skippedNoTTY())
+			default:
+				fmt.Fprint(cmd.ErrOrStderr(), sum.skipped())
 			}
 			if hasTriggerTarget(pending) {
 				fmt.Fprintln(cmd.ErrOrStderr(),
@@ -767,7 +849,7 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 	}
 
 	if !jsonOutput {
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nFollowing (enabling builds for) %d project(s)...\n", n)
+		fmt.Fprint(cmd.ErrOrStderr(), sum.progress())
 	}
 	failed := 0
 	for _, t := range pending {
@@ -783,6 +865,85 @@ func handleEnableBuilds(cmd *cobra.Command, sy enableBuilder, rep *syncer.Report
 		return fmt.Errorf("enabling builds failed for %d of %d target(s); fix the errors above and re-run sync --apply --yes", failed, n)
 	}
 	return nil
+}
+
+// enableSummary counts what the enable-builds step will do, so the prompt can
+// speak in the destination's own terms: a GitHub App destination enables
+// triggers (there is no webhook to install and no "follow"), while OAuth and
+// Bitbucket destinations follow projects.
+type enableSummary struct {
+	follows         int // OAuth "follow" targets (projects)
+	triggers        int // App trigger targets
+	triggerProjects int // distinct projects those triggers belong to
+}
+
+func summarizeEnable(pending []syncer.EnableTarget) enableSummary {
+	var s enableSummary
+	projects := map[string]bool{}
+	for _, t := range pending {
+		if t.Kind == "trigger" {
+			s.triggers++
+			key := t.ProjectID
+			if key == "" {
+				key = t.ProjectName
+			}
+			projects[key] = true
+			continue
+		}
+		s.follows++
+	}
+	s.triggerProjects = len(projects)
+	return s
+}
+
+// appOnly reports whether every target is an App trigger (the OAuth follow
+// wording would then be wrong).
+func (s enableSummary) appOnly() bool { return s.triggers > 0 && s.follows == 0 }
+
+// prompt is the interactive confirmation text. OAuth wording is kept for gh/bb
+// destinations; a GitHub App destination speaks of enabling triggers.
+func (s enableSummary) prompt() string {
+	switch {
+	case s.appOnly():
+		return fmt.Sprintf("\nEnable %d trigger(s) across %d project(s) in the destination org now?\n"+
+			"  Note: an enabled trigger starts pipelines on matching pushes and events right away.\n"+
+			"  [y/N]: ", s.triggers, s.triggerProjects)
+	case s.triggers > 0: // mixed
+		return fmt.Sprintf("\nFollow (enable builds for) %d project(s) and enable %d trigger(s) across %d project(s) in the destination org now?\n"+
+			"  Note: following installs the webhook and may trigger an initial build; enabled triggers start pipelines on matching events.\n"+
+			"  [y/N]: ", s.follows, s.triggers, s.triggerProjects)
+	default:
+		return fmt.Sprintf("\nFollow (enable builds for) %d project(s) in the destination org now?\n"+
+			"  Note: following installs the webhook and may trigger an initial build.\n"+
+			"  [y/N]: ", s.follows)
+	}
+}
+
+func (s enableSummary) skippedNoTTY() string {
+	if s.appOnly() {
+		return fmt.Sprintf("\nSkipped enabling triggers (no TTY and --yes not set). "+
+			"Re-run with --apply --yes to enable the %d trigger(s) across %d project(s).\n", s.triggers, s.triggerProjects)
+	}
+	return fmt.Sprintf("\nSkipped following projects (no TTY and --yes not set). "+
+		"Re-run with --apply --yes to follow (enable builds for) the %d created project(s).\n", s.follows+s.triggerProjects)
+}
+
+func (s enableSummary) skipped() string {
+	if s.appOnly() {
+		return "\nSkipped enabling triggers.\n"
+	}
+	return "\nSkipped following projects (enable builds).\n"
+}
+
+func (s enableSummary) progress() string {
+	switch {
+	case s.appOnly():
+		return fmt.Sprintf("\nEnabling %d trigger(s) across %d project(s)...\n", s.triggers, s.triggerProjects)
+	case s.triggers > 0:
+		return fmt.Sprintf("\nFollowing %d project(s) and enabling %d trigger(s) across %d project(s)...\n", s.follows, s.triggers, s.triggerProjects)
+	default:
+		return fmt.Sprintf("\nFollowing (enabling builds for) %d project(s)...\n", s.follows)
+	}
 }
 
 // hasTriggerTarget reports whether any pending enable target is an App trigger.
@@ -1407,3 +1568,22 @@ func syncProjectDisplayName(p manifest.Project) string {
 	}
 	return slugLastComponent(p.Slug)
 }
+
+// printWebhookSecretsSaved reports what a --webhook-secrets-out save did. The
+// file is merged, never truncated: entries from earlier runs stay, and a run
+// that created no webhook leaves it untouched.
+func printWebhookSecretsSaved(w io.Writer, sy *syncer.Syncer, path string) {
+	ob, ib := sy.RecordedWebhookSecrets()
+	if ob+ib == 0 {
+		fmt.Fprintf(w, "No webhook was recreated in this run; %s was left unchanged\n", path)
+		return
+	}
+	fmt.Fprintf(w, "Saved %d outbound webhook signing secret(s) and %d inbound webhook URL(s) to %s (mode 0600, merged with any earlier entries)\n", ob, ib, path)
+}
+
+// webhookSecretsOutUsage is the --webhook-secrets-out help text shared by sync and migrate.
+const webhookSecretsOutUsage = "With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each " +
+	"outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. " +
+	"An existing file is merged into (earlier entries are kept, never truncated) and saved atomically; it is left untouched when nothing is recreated. " +
+	"The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. " +
+	"Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run."

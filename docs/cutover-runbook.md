@@ -75,9 +75,12 @@ for the full orb-based alternative (committed config, matrix capture).
 > `secrets transfer`, which pushes values directly to the destination. With that
 > method, **context** values can move any time, but **project** env vars and SSH
 > keys (`--include-project-vars` / `--include-ssh-keys`) must be transferred
-> *after* `sync --apply` (Step 4), because they target destination projects that
-> don't exist until sync creates them. Pick one path; don't mix bundle and
-> in-pipeline for the same resources.
+> *after* the destination projects exist, because they target those projects.
+> For a GitHub App destination, create them early with
+> `sync --apply --skip-pipelines` (no pipeline definitions or triggers) so the
+> transfer can run while the source's GitHub App pipeline definitions still
+> exist; a later `sync --apply` adds the definitions. Pick one path; don't mix
+> bundle and in-pipeline for the same resources.
 
 ### Step 3 — Dry run (review the plan)
 
@@ -130,6 +133,39 @@ Bring the destination live:
   re-run `sync --apply --yes` / `migrate --apply --yes`.
 - For GitHub App orgs this enables (unpauses) the pipeline triggers.
 - For GitHub OAuth orgs this follows the projects, installing deploy keys and webhooks.
+
+#### Switching traffic with `cutover` (recommended for a live source)
+
+When the source org is still building, switch over in one controlled step with
+the `cutover` command instead of leaving both orgs live. It is a dry run unless
+you pass `--apply`, and it records every change in a state file
+(`cutover-state.json`, mode 0600) so it can be reversed:
+
+```bash
+# 1. Preview, then pause the source and turn the destination on.
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest --apply
+
+# 2. Something wrong? Put everything back from the state file.
+circleci-migrate cutover --undo --apply
+```
+
+- `--pause-source` sets `drop-all-build-requests=true` on each source OAuth
+  project (the prior value is recorded) and disables the source triggers that
+  are enabled (GitHub App, webhook and schedule triggers; `github_oauth`
+  triggers cannot be disabled through the API, so those projects rely on the
+  flag). Add `--pause-org` to also set the flag on the whole source org.
+  Projects are never unfollowed.
+- `--enable-dest` enables the destination triggers whose source counterpart was
+  enabled, matched the way `sync` matches them. A trigger that was disabled in
+  the source stays disabled. Run `sync --apply` first so the triggers exist.
+- Every item is printed with its outcome; the command exits non-zero if any item
+  failed, and re-running is idempotent.
+- **Pause the source before uninstalling the GitHub App from the source GitHub
+  org.** Uninstalling removes the source's App triggers, so afterwards pausing
+  relies on `drop-all-build-requests` alone and `--undo` can only restore that flag.
 
 ### Step 7 — Rotate the captured secrets
 

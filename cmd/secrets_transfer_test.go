@@ -4,7 +4,7 @@ package cmd
 // helpers introduced in cmd/secrets_transfer.go.
 //
 // Tests live in package cmd (not cmd_test) so they can call unexported
-// functions (collectTransferProjectSlugs, maybeEnableOrgTrigger,
+// functions (triggerFlagHook, maybeEnableOrgTrigger,
 // maybeEnableProjectTrigger) and override stdinIsTerminal.
 
 import (
@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/capture"
-	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,92 +67,54 @@ func (f *fakeProjFlagClient) SetV11ProjectFeatureFlags(_ context.Context, slug s
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// collectTransferProjectSlugs
+// triggerFlagHook (transfer.Options.BeforeMutate)
 // ─────────────────────────────────────────────────────────────────────────────
 
-func makeManifestWithProjects(slugs ...string) *manifest.Manifest {
-	m := &manifest.Manifest{}
-	for _, s := range slugs {
-		m.Projects = append(m.Projects, manifest.Project{
-			Slug:    s,
-			EnvVars: []manifest.ProjectEnvVar{{Name: "VAR1"}},
-		})
+// TestTriggerFlagHook_EnablesOrgAndProjectFlagsThenRestoresInReverse verifies
+// the hook enables the org flag and each project flag, and its cleanup restores
+// the project flags before the org flag.
+func TestTriggerFlagHook_EnablesOrgAndProjectFlagsThenRestoresInReverse(t *testing.T) {
+	overrideTTY(t, false)
+	orgMgr := &fakeTriggerFlagMgr{flags: map[string]bool{capture.OrgAPITriggerKey: false}}
+	proj := newFakeProjFlagClient().
+		withFlags("gh/old-org/web", map[string]bool{projectTriggerKey: false}).
+		withFlags("gh/old-org/api", map[string]bool{projectTriggerKey: false})
+	var errBuf bytes.Buffer
+	cmd := newTestCobraCmd(&errBuf)
+
+	hook := triggerFlagHook(cmd, orgMgr, "gh/old-org", proj, true)
+	cleanup, err := hook([]string{"gh/old-org/web", "gh/old-org/api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	return m
-}
-
-// TestCollectTransferProjectSlugs_HostOnly verifies that when includeProjectVars
-// is false only the host slug is returned.
-func TestCollectTransferProjectSlugs_HostOnly(t *testing.T) {
-	m := makeManifestWithProjects("gh/old-org/web", "gh/old-org/api")
-	mapping := map[string]string{
-		"gh/old-org/web": "gh/new-org/web",
-		"gh/old-org/api": "gh/new-org/api",
-	}
-
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, false, false)
-
-	if len(slugs) != 1 || slugs[0] != "gh/old-org/web" {
-		t.Errorf("slugs = %v; want [gh/old-org/web]", slugs)
-	}
-}
-
-// TestCollectTransferProjectSlugs_IncludeProjectVars verifies that when
-// includeProjectVars=true all projects with a mapping entry are included
-// (plus the host project, deduplicated).
-func TestCollectTransferProjectSlugs_IncludeProjectVars(t *testing.T) {
-	m := makeManifestWithProjects("gh/old-org/web", "gh/old-org/api", "gh/old-org/nomapping")
-	mapping := map[string]string{
-		"gh/old-org/web": "gh/new-org/web",
-		"gh/old-org/api": "gh/new-org/api",
-		// gh/old-org/nomapping intentionally absent
+	if !orgMgr.flags[capture.OrgAPITriggerKey] || !proj.flags["gh/old-org/web"][projectTriggerKey] || !proj.flags["gh/old-org/api"][projectTriggerKey] {
+		t.Fatalf("expected org and both project flags enabled; org=%v proj=%v", orgMgr.flags, proj.flags)
 	}
 
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, mapping, true, false)
-
-	seen := make(map[string]bool)
-	for _, s := range slugs {
-		seen[s] = true
+	cleanup()
+	if orgMgr.flags[capture.OrgAPITriggerKey] || proj.flags["gh/old-org/web"][projectTriggerKey] || proj.flags["gh/old-org/api"][projectTriggerKey] {
+		t.Errorf("expected all flags restored to false; org=%v proj=%v", orgMgr.flags, proj.flags)
 	}
-
-	if !seen["gh/old-org/web"] {
-		t.Error("host project gh/old-org/web should be in the list")
-	}
-	if !seen["gh/old-org/api"] {
-		t.Error("gh/old-org/api should be included (has mapping entry)")
-	}
-	if seen["gh/old-org/nomapping"] {
-		t.Error("gh/old-org/nomapping should be excluded (no mapping entry)")
-	}
-	// host must not appear twice
-	count := 0
-	for _, s := range slugs {
-		if s == "gh/old-org/web" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("gh/old-org/web should appear exactly once; appears %d time(s)", count)
+	out := errBuf.String()
+	if strings.Index(out, "Restoring api-trigger-with-config=false for project gh/old-org/api") > strings.Index(out, "Restoring org-level") {
+		t.Errorf("project flags must be restored before the org flag; got:\n%s", out)
 	}
 }
 
-// TestCollectTransferProjectSlugs_EmptyManifest verifies that an empty manifest
-// returns just the host slug.
-func TestCollectTransferProjectSlugs_EmptyManifest(t *testing.T) {
-	m := &manifest.Manifest{}
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true, false)
-	if len(slugs) != 1 || slugs[0] != "gh/old-org/web" {
-		t.Errorf("slugs = %v; want [gh/old-org/web]", slugs)
-	}
-}
+// TestTriggerFlagHook_FlagOff_NoEnableTrigger_ErrorsWithoutChanges verifies the
+// hook fails (non-interactive, no --enable-trigger) without flipping anything.
+func TestTriggerFlagHook_FlagOff_NoEnableTrigger_ErrorsWithoutChanges(t *testing.T) {
+	overrideTTY(t, false)
+	orgMgr := &fakeTriggerFlagMgr{flags: map[string]bool{capture.OrgAPITriggerKey: false}}
+	proj := newFakeProjFlagClient()
+	cmd := newTestCobraCmd(&bytes.Buffer{})
 
-// TestCollectTransferProjectSlugs_NilMapping verifies that nil mapping with
-// includeProjectVars=true still returns only the host (no mapping → no projects).
-func TestCollectTransferProjectSlugs_NilMapping(t *testing.T) {
-	m := makeManifestWithProjects("gh/old-org/web", "gh/old-org/api")
-	slugs := collectTransferProjectSlugs("gh/old-org/web", m, nil, true, false)
-	if len(slugs) != 1 {
-		t.Errorf("slugs = %v; want only host slug with nil mapping", slugs)
+	hook := triggerFlagHook(cmd, orgMgr, "gh/old-org", proj, false)
+	if _, err := hook([]string{"gh/old-org/web"}); err == nil {
+		t.Fatal("expected error when the org flag is off and --enable-trigger is not set")
+	}
+	if len(orgMgr.updateCalls) != 0 || len(proj.setCalls) != 0 {
+		t.Errorf("no flag may change on failure; org=%v proj=%v", orgMgr.updateCalls, proj.setCalls)
 	}
 }
 

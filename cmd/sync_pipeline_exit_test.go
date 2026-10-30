@@ -133,3 +133,46 @@ func TestEnableExistingTriggersFlag_RegisteredOnSyncAndMigrate(t *testing.T) {
 		}
 	}
 }
+
+// TestWebhookSecretsOutFlag_RegisteredOnSyncAndMigrate: --webhook-secrets-out
+// is available on both commands.
+func TestWebhookSecretsOutFlag_RegisteredOnSyncAndMigrate(t *testing.T) {
+	for _, sub := range []string{"sync", "migrate"} {
+		root := cmd.MakeCommands()
+		var found bool
+		for _, c := range root.Commands() {
+			if strings.HasPrefix(c.Use, sub) {
+				if c.Flags().Lookup("webhook-secrets-out") == nil {
+					t.Fatalf("%s: --webhook-secrets-out not registered", sub)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s command not found", sub)
+		}
+	}
+}
+
+// TestSyncCmd_WebhookSecretsOut_NeverTruncatedOnRerun: an existing secrets file
+// survives --apply runs byte for byte when no webhook is recreated, including
+// with --skip-projects (where nothing may touch it at all).
+func TestSyncCmd_WebhookSecretsOut_NeverTruncatedOnRerun(t *testing.T) {
+	srv := pipelineExitServer(t, http.StatusOK)
+	mPath, mapPath := writeAppPipelineFixture(t)
+	out := filepath.Join(t.TempDir(), "secrets.json")
+	orig := `{"generated_at":"2020-01-01T00:00:00Z","outbound_webhooks":[{"project":"web","name":"n","url":"u","signing_secret":"KEEP"}],"inbound_webhook_triggers":[]}`
+	if err := os.WriteFile(out, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, extra := range [][]string{{"--skip-projects"}, {"--skip-pipelines"}} {
+		args := append([]string{"--manifest", mPath, "--mapping", mapPath, "--host", srv.URL, "--token", "tok",
+			"--skip-preflight", "--skip-contexts", "--skip-org-settings", "--apply", "--yes", "--webhook-secrets-out", out}, extra...)
+		if _, stderr, err := runSyncCmd(t, args...); err != nil {
+			t.Fatalf("%v: %v\n%s", extra, err, stderr)
+		}
+		if got, _ := os.ReadFile(out); string(got) != orig {
+			t.Fatalf("%v: the existing secrets file was modified:\n%s", extra, got)
+		}
+	}
+}

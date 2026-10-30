@@ -369,12 +369,18 @@ func TestSyncCmd_SkippedSecretsWarning_NoBundle(t *testing.T) {
 		t.Fatalf("expected success, got: %v", err)
 	}
 
-	// The WARNING must appear on stderr.
-	if !strings.Contains(stderr, "WARNING: no secrets bundle loaded") {
-		t.Errorf("expected skipped-secrets warning on stderr; got: %q", stderr)
+	// The notice must appear on stderr, must not read like data loss, and must
+	// point at the commands that actually write the values.
+	if !strings.Contains(stderr, "no secrets bundle loaded") {
+		t.Errorf("expected the no-bundle notice on stderr; got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "env var value(s) were not synced") {
-		t.Errorf("expected 'env var value(s) were not synced' in warning; got: %q", stderr)
+	if strings.Contains(stderr, "WARNING") || strings.Contains(stderr, "were not synced") {
+		t.Errorf("notice must not read like data loss; got: %q", stderr)
+	}
+	for _, want := range []string{"does not write env var values", "Nothing was lost", "secrets transfer", "secrets capture"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("notice should mention %q; got: %q", want, stderr)
+		}
 	}
 }
 
@@ -409,7 +415,7 @@ func TestSyncCmd_SkippedSecretsWarning_WithBundle(t *testing.T) {
 		t.Fatalf("expected success, got: %v", err)
 	}
 
-	if strings.Contains(stderr, "WARNING: no secrets bundle loaded") {
+	if strings.Contains(stderr, "no secrets bundle loaded") {
 		t.Errorf("warning must not appear when bundle is loaded; got stderr: %q", stderr)
 	}
 }

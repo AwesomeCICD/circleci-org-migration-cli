@@ -213,12 +213,29 @@ type Options struct {
 	// once the destination is validated and ready.
 	IncludeDangerFlags bool
 
+	// SkipPipelines makes project sync for a GitHub App destination create or
+	// reuse each project and sync its settings, env vars and other project data,
+	// but create NO pipeline definitions or triggers (each is reported as
+	// "skipped: --skip-pipelines"). It lets the App projects exist BEFORE the
+	// GitHub App is moved off the source org, so `secrets transfer
+	// --include-project-vars` can run while the source's App pipeline definitions
+	// still exist; a later sync without it adds the definitions through the normal
+	// reconcile path. It has no effect on OAuth/Bitbucket destinations.
+	SkipPipelines bool
+
 	// EnableExistingTriggers additionally queues, for the enable-builds step,
 	// destination triggers that ALREADY exist and are disabled while their source
 	// trigger was enabled. Default false: only triggers created in this run are
 	// queued, so a re-run never re-enables a trigger an operator disabled on
 	// purpose. This is how enable is retried on a re-run after answering N.
 	EnableExistingTriggers bool
+
+	// WebhookSecretsOut, when non-empty, is the file the caller will write the
+	// recorded webhook secrets to (Syncer.WriteWebhookSecrets). While set, every
+	// recreated OUTBOUND webhook is created with a freshly generated signing
+	// secret and every recreated INBOUND custom-webhook trigger's new URL is
+	// recorded. Secrets are never printed or logged.
+	WebhookSecretsOut string
 }
 
 func (o Options) placeholder() string {
@@ -254,6 +271,21 @@ type Syncer struct {
 	// must run ApplyDeferredProjectRestrictions AFTER SyncProjects so each
 	// restriction can be remapped to a destination project UUID in the same run.
 	deferredProjectRestrictions []deferredProjectRestriction
+
+	// restrictionDest* carry, from SyncContexts to ApplyDeferredProjectRestrictions,
+	// what a GitHub App destination needs to resolve a project restriction whose
+	// source project has no mapping entry: the destination org id and the source
+	// slug -> project name index used to match destination projects by name.
+	restrictionDestOrgID string
+	restrictionSrcNames  map[string]string
+
+	// projectsToCreate records (by App project name) the destination projects a
+	// dry run would create, so a deferred project restriction on one of them
+	// previews as "would add" instead of "destination project not found".
+	projectsToCreate map[string]bool
+	// webhookSecrets collects new outbound signing secrets and inbound webhook
+	// URLs when Options.WebhookSecretsOut is set. Secret material: never print.
+	webhookSecrets WebhookSecrets
 }
 
 // deferredProjectRestriction is one project-type context restriction whose
@@ -268,6 +300,7 @@ type deferredProjectRestriction struct {
 	existing      []cctx.Restriction   // restrictions already on the dest context
 	restriction   manifest.Restriction // the source project restriction
 	srcUUIDToSlug map[string]string    // source project UUID → source slug index
+	srcNames      map[string]string    // source slug → App project name (name-match key)
 	mapping       *manifest.Mapping    // project-slug remap
 }
 

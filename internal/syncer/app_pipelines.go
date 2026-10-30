@@ -39,6 +39,10 @@ func (s *Syncer) syncAppPipelines(
 	opts Options,
 	existing bool,
 ) {
+	if opts.SkipPipelines {
+		reportSkippedPipelines(report, p, projectName)
+		return
+	}
 	defs := p.PipelineDefinitions
 	synth := len(defs) == 0
 	if synth {
@@ -80,6 +84,32 @@ func (s *Syncer) syncAppPipelines(
 	for _, def := range defs {
 		s.syncAppPipelineDefinition(ctx, report, projectName, projectID, def, destSlug, mapping, opts,
 			synth, findDestDef(destDefs, def.Name))
+	}
+}
+
+// skipPipelinesDetail is the detail recorded for every definition and trigger
+// left uncreated by --skip-pipelines.
+const skipPipelinesDetail = "skipped: --skip-pipelines (re-run sync without it to create it)"
+
+// reportSkippedPipelines records, per pipeline definition and per trigger that a
+// normal run would reconcile, a "skipped" action. A project with no captured
+// definitions (a plain OAuth project) would get one synthesized definition and
+// trigger, so those are reported too.
+func reportSkippedPipelines(report *Report, p manifest.Project, projectName string) {
+	defs := p.PipelineDefinitions
+	if len(defs) == 0 {
+		fullName, ok := oauthSourceFullName(p.Slug)
+		if !ok {
+			return // nothing a later run could synthesize
+		}
+		defs = []manifest.PipelineDefinition{synthesizedDefinition(p, fullName)}
+	}
+	for _, def := range defs {
+		defTarget := projectName + "/def:" + def.Name
+		report.add("project-pipeline-def", defTarget, "skipped", skipPipelinesDetail)
+		for _, trig := range def.Triggers {
+			report.add("project-trigger", defTarget+"/trigger:"+trig.Name, "skipped", skipPipelinesDetail)
+		}
 	}
 }
 
@@ -395,16 +425,23 @@ func (s *Syncer) syncAppTriggers(
 			continue
 		}
 
-		trigID, err := s.Projects.CreateTrigger(ctx, projectID, defID, spec)
+		var trigID, webhookURL, webhookSender string
+		var err error
+		if dc, ok := s.Projects.(triggerDetailCreator); ok && provider == "webhook" {
+			var ct *project.CreatedTrigger
+			if ct, err = dc.CreateTriggerDetailed(ctx, projectID, defID, spec); err == nil {
+				trigID, webhookURL, webhookSender = ct.ID, ct.WebhookURL, ct.WebhookSender
+			}
+		} else {
+			trigID, err = s.Projects.CreateTrigger(ctx, projectID, defID, spec)
+		}
 		if err != nil {
 			report.add("project-trigger", target, "error", fmt.Sprintf("create trigger: %v", err))
 			continue
 		}
 		report.add("project-trigger", target, "created", createdTriggerDetail(synth, trig, spec))
 		if provider == "webhook" {
-			report.add("project-trigger", target+"/webhook-secret", "manual",
-				fmt.Sprintf("webhook trigger %q was recreated with a NEW URL and secret — fetch it from the destination "+
-					"project's trigger and redistribute it to the sender%s", trig.Name, senderSuffix(trig)))
+			s.noteInboundWebhook(report, target, projectName, def.Name, trig, trigID, webhookURL, webhookSender, opts)
 		}
 		unverified := noteScheduleParams(report, target, trig)
 
@@ -421,6 +458,33 @@ func (s *Syncer) syncAppTriggers(
 				TriggerID:   trigID,
 			})
 		}
+	}
+}
+
+// noteInboundWebhook handles a recreated inbound custom-webhook trigger. CircleCI
+// generates a NEW URL (it embeds a secret) and returns it unmasked only in the
+// create response; every later read redacts the secret. With
+// Options.WebhookSecretsOut the URL is recorded for the secrets file (never
+// printed); otherwise the manual line says how to get a usable URL.
+func (s *Syncer) noteInboundWebhook(report *Report, target, projectName, defName string, trig manifest.Trigger, trigID, webhookURL, sender string, opts Options) {
+	who := fmt.Sprintf("webhook trigger %q%s in %s (definition %q)", trig.Name, senderSuffix(trig), projectName, defName)
+	if sender == "" {
+		sender = trig.EventSource.WebhookSender
+	}
+	switch {
+	case opts.WebhookSecretsOut != "" && webhookURL != "":
+		s.webhookSecrets.InboundTriggers = append(s.webhookSecrets.InboundTriggers, InboundWebhookTrigger{
+			Project: projectName, Definition: defName, Trigger: trigID, EventName: trig.EventName, Sender: sender, URL: webhookURL,
+		})
+		report.add("project-trigger", target+"/webhook-secret", "manual", fmt.Sprintf(
+			"%s was recreated with a NEW URL and secret, saved to %s (never printed): give that URL to the sender so it posts to the destination", who, opts.WebhookSecretsOut))
+	case opts.WebhookSecretsOut != "":
+		report.add("project-trigger", target+"/webhook-secret", "manual", fmt.Sprintf(
+			"%s was recreated, but CircleCI returned no URL for it, so nothing could be saved to %s — delete and recreate the trigger in the destination project to obtain its URL, then give it to the sender", who, opts.WebhookSecretsOut))
+	default:
+		report.add("project-trigger", target+"/webhook-secret", "manual", fmt.Sprintf(
+			"%s was recreated with a NEW URL and secret. CircleCI shows the secret URL only in the create response (later reads redact it as secret=**REDACTED**), "+
+				"so it was not kept: delete the destination trigger and recreate it (or re-run sync on a fresh project with --webhook-secrets-out <file> to save the URL), then give the new URL to the sender", who))
 	}
 }
 

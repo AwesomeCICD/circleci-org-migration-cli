@@ -37,6 +37,7 @@ Use "circleci-migrate [command] --help" for more information about a command.
 
 ### SEE ALSO
 
+* [circleci-migrate cutover](circleci-migrate_cutover.md)	 - Switch builds from the source org to the destination (pause source, enable destination, undo).
 * [circleci-migrate doctor](circleci-migrate_doctor.md)	 - Run migration preflight checks without migrating.
 * [circleci-migrate export](circleci-migrate_export.md)	 - Export source-org data to a local manifest file.
 * [circleci-migrate mapping](circleci-migrate_mapping.md)	 - Generate and manage project slug mapping files.

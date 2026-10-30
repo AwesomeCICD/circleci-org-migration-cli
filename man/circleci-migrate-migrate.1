@@ -248,6 +248,10 @@ Examples:
 	Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
 
 .PP
+\fB--skip-pipelines\fP[=false]
+	GitHub App destinations: create or reuse each project and sync its settings, env vars and other project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so 'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed.
+
+.PP
 \fB--skip-preflight\fP[=false]
 	Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
 
@@ -270,6 +274,10 @@ Examples:
 .PP
 \fB--transfer-secrets\fP[=false]
 	After sync, run the in-pipeline secrets transfer to copy context env-var values directly from source to destination without writing a bundle file. Requires --dest-token-context. Mutually exclusive with --secrets.
+
+.PP
+\fB--webhook-secrets-out\fP=""
+	With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. An existing file is merged into (earlier entries are kept, never truncated) and saved atomically; it is left untouched when nothing is recreated. The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.
 
 .PP
 \fB-y\fP, \fB--yes\fP[=false]

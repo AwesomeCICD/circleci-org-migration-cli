@@ -546,3 +546,51 @@ func mustJSON(v any) string {
 	b, _ := json.Marshal(v) // map keys are sorted by encoding/json
 	return string(b)
 }
+
+func TestCreateTriggerDetailed_ReturnsWebhookURLAndSender(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"id": "trig-1",
+			"event_source": map[string]any{
+				"provider": "webhook",
+				"webhook":  map[string]any{"url": "https://x.example/e/1?secret=abc", "sender": "datadog"},
+			},
+		})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	got, err := c.CreateTriggerDetailed(context.Background(), "p", "d", TriggerSpec{Provider: "webhook", WebhookSender: "datadog", EventName: "e", CheckoutRef: "main", ConfigRef: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "trig-1" || got.WebhookURL != "https://x.example/e/1?secret=abc" || got.WebhookSender != "datadog" {
+		t.Errorf("got %+v", got)
+	}
+	// CreateTrigger still returns just the id.
+	id, err := c.CreateTrigger(context.Background(), "p", "d", TriggerSpec{Provider: "webhook", WebhookSender: "datadog", EventName: "e", CheckoutRef: "main", ConfigRef: "main"})
+	if err != nil || id != "trig-1" {
+		t.Errorf("CreateTrigger = %q, %v", id, err)
+	}
+}
+
+func TestSetTriggerDisabled_SendsDisabledTrue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.EscapedPath() != "/api/v2/projects/p1/triggers/t1" {
+			t.Errorf("%s %s", r.Method, r.URL.EscapedPath())
+		}
+		var got map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		if got["disabled"] != true {
+			t.Errorf("disabled = %v, want true", got["disabled"])
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"id": "t1", "disabled": true})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if err := c.SetTriggerDisabled(context.Background(), "p1", "t1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetTriggerDisabled(context.Background(), "", "t1", true); err == nil {
+		t.Error("missing project id should error")
+	}
+}

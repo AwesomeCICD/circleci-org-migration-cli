@@ -963,6 +963,17 @@ func TestRunMigrateSecretsTransfer_MixedDefaultBranches_PerProject(t *testing.T)
 				"state":  "created",
 			})
 
+		// List checkout keys: GET /api/v2/project/{slug}/checkout-key. gh/ projects
+		// need one before CircleCI will run a pipeline, so report a deploy key.
+		case r.Method == http.MethodGet &&
+			strings.HasPrefix(path, "/api/v2/project/") &&
+			strings.HasSuffix(path, "/checkout-key"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items":           []map[string]any{{"type": "deploy-key", "fingerprint": "aa:bb"}},
+				"next_page_token": "",
+			})
+
 		// Get project: GET /api/v2/project/{slug} (no /pipeline suffix).
 		case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v2/project/"):
 			slug := strings.TrimPrefix(path, "/api/v2/project/")
