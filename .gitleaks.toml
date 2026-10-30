@@ -45,3 +45,18 @@ paths = [
 regexes = [
   '''labs-disclaimer-[a-z0-9-]+''',
 ]
+
+[[allowlists]]
+description = """
+Vendored, minified Mermaid library in the published docs site (the gh-pages
+branch written by the docs-site-publish job). The file name carries a content
+hash, so it is a build artifact of a third-party library, not our code. The
+generic-api-key heuristic matches a `.key` property access in the minified
+source. Scoped to this one rule and to Hugo's fingerprinted mermaid bundle, so
+every other detector still scans these files and every other generic-api-key
+hit on gh-pages is still reported.
+"""
+targetRules = ["generic-api-key"]
+paths = [
+  '''js/mermaid\.min\.[a-f0-9]{64}\.js''',
+]
