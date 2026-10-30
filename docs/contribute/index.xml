@@ -1,0 +1,1619 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>CircleCI org migration – Contribute</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/</link><description>Recent content in Contribute on CircleCI org migration</description><generator>Hugo -- gohugo.io</generator><language>en-US</language><atom:link href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/index.xml" rel="self" type="application/rss+xml"/><item><title>Architecture and data flow</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/architecture/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/architecture/</guid><description>
+&lt;p&gt;This document describes how &lt;code&gt;circleci-migrate&lt;/code&gt; is structured and how data
+moves through the system during each phase of a migration.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="component-diagram"&gt;Component diagram&lt;span class="hx:absolute hx:-mt-20" id="component-diagram"&gt;&lt;/span&gt;
+&lt;a href="#component-diagram" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;graph TD
+subgraph cmd [&amp;#34;cmd/ (Cobra commands)&amp;#34;]
+ROOT[root]
+EXPORT[export]
+SECRETS_CMD[&amp;#34;secrets extract / merge / capture&amp;#34;]
+SYNC[sync]
+MIGRATE[migrate]
+ORB_INLINE[&amp;#34;orb inline&amp;#34;]
+end
+subgraph internal [&amp;#34;internal/&amp;#34;]
+EXPORTER[&amp;#34;exporter&amp;lt;br/&amp;gt;Orchestrates API reads&amp;lt;br/&amp;gt;into a Manifest&amp;#34;]
+SYNCER[&amp;#34;syncer&amp;lt;br/&amp;gt;Applies a Manifest + SecretBundle&amp;lt;br/&amp;gt;to the destination org&amp;#34;]
+SECRETS_PKG[&amp;#34;secrets&amp;lt;br/&amp;gt;Reads live env vars&amp;lt;br/&amp;gt;into a SecretBundle&amp;#34;]
+CAPTURE_PKG[&amp;#34;capture&amp;lt;br/&amp;gt;Generates inline config,&amp;lt;br/&amp;gt;triggers pipeline, polls,&amp;lt;br/&amp;gt;downloads artifact&amp;#34;]
+REPORT[&amp;#34;report&amp;lt;br/&amp;gt;Formats terminal summary&amp;lt;br/&amp;gt;and audit Markdown&amp;#34;]
+MANIFEST[&amp;#34;manifest&amp;lt;br/&amp;gt;Shared on-disk contract:&amp;lt;br/&amp;gt;Manifest - SecretBundle - Mapping&amp;#34;]
+GITHUB_PKG[&amp;#34;github&amp;lt;br/&amp;gt;Resolves GitHub repo numeric ID&amp;lt;br/&amp;gt;for App pipeline definitions&amp;#34;]
+ORB_PKG[&amp;#34;orb&amp;lt;br/&amp;gt;Fetches orb source via GraphQL&amp;lt;br/&amp;gt;and inlines into config YAML&amp;#34;]
+end
+subgraph api [&amp;#34;api/ (thin HTTP clients)&amp;#34;]
+ORG_API[&amp;#34;org&amp;lt;br/&amp;gt;v2: GetOrg, ResolveOrgID, Usage export&amp;lt;br/&amp;gt;v1.1: GetOrgSettings&amp;lt;br/&amp;gt;CIAM: groups, SSO, org/project role-grants&amp;#34;]
+CTX_API[&amp;#34;context&amp;lt;br/&amp;gt;v2: List, Create, UpsertEnvVar&amp;lt;br/&amp;gt;ListRestrictions, CreateRestriction&amp;#34;]
+PROJ_API[&amp;#34;project&amp;lt;br/&amp;gt;v2: GetProject, CreateProjectShell&amp;lt;br/&amp;gt;CreateAppProject, PipelineDefs, Triggers&amp;lt;br/&amp;gt;ListEnvVars, Settings, Follow, OIDC&amp;lt;br/&amp;gt;v1.1: ListFollowedProjects, flags,&amp;lt;br/&amp;gt;additional SSH keys, API tokens&amp;lt;br/&amp;gt;private: ListOrgProjects&amp;#34;]
+RUNNER_API[&amp;#34;runner&amp;lt;br/&amp;gt;v3 on runner.circleci.com&amp;lt;br/&amp;gt;resource classes (list/create/delete)&amp;#34;]
+PIPELINE_API[&amp;#34;pipeline&amp;lt;br/&amp;gt;v2: TriggerWithConfig, GetStatus&amp;lt;br/&amp;gt;ListWorkflows, ListJobArtifacts&amp;#34;]
+REST[&amp;#34;rest&amp;lt;br/&amp;gt;Shared HTTP client&amp;lt;br/&amp;gt;Circle-Token header&amp;lt;br/&amp;gt;JSON encode / decode&amp;#34;]
+GRAPHQL[&amp;#34;graphql&amp;lt;br/&amp;gt;graphql-unstable endpoint&amp;lt;br/&amp;gt;OrbSource query&amp;#34;]
+end
+CIRCLE_API[&amp;#34;CircleCI API&amp;lt;br/&amp;gt;circleci.com/api/v2&amp;lt;br/&amp;gt;circleci.com/api/v1.1&amp;lt;br/&amp;gt;circleci.com/api/private&amp;lt;br/&amp;gt;circleci.com/graphql-unstable&amp;lt;br/&amp;gt;runner.circleci.com/api/v3&amp;lt;br/&amp;gt;app.circleci.com/private/ciam&amp;#34;]
+GITHUB_API[&amp;#34;GitHub REST API&amp;lt;br/&amp;gt;api.github.com/repos&amp;#34;]
+ROOT --&amp;gt; EXPORT
+ROOT --&amp;gt; SECRETS_CMD
+ROOT --&amp;gt; SYNC
+ROOT --&amp;gt; MIGRATE
+ROOT --&amp;gt; ORB_INLINE
+MIGRATE --&amp;gt; EXPORTER
+MIGRATE --&amp;gt; SYNCER
+EXPORT --&amp;gt; EXPORTER
+EXPORT --&amp;gt; REPORT
+SECRETS_CMD --&amp;gt; SECRETS_PKG
+SECRETS_CMD --&amp;gt; CAPTURE_PKG
+SYNC --&amp;gt; SYNCER
+ORB_INLINE --&amp;gt; ORB_PKG
+EXPORTER --&amp;gt; ORG_API
+EXPORTER --&amp;gt; CTX_API
+EXPORTER --&amp;gt; PROJ_API
+EXPORTER --&amp;gt; RUNNER_API
+EXPORTER --&amp;gt; MANIFEST
+SYNCER --&amp;gt; ORG_API
+SYNCER --&amp;gt; CTX_API
+SYNCER --&amp;gt; PROJ_API
+SYNCER --&amp;gt; RUNNER_API
+SYNCER --&amp;gt; MANIFEST
+SYNCER --&amp;gt; GITHUB_PKG
+CAPTURE_PKG --&amp;gt; MANIFEST
+CAPTURE_PKG --&amp;gt; PIPELINE_API
+SECRETS_PKG --&amp;gt; MANIFEST
+REPORT --&amp;gt; MANIFEST
+GITHUB_PKG --&amp;gt; GITHUB_API
+ORB_PKG --&amp;gt; GRAPHQL
+ORG_API --&amp;gt; REST
+CTX_API --&amp;gt; REST
+PROJ_API --&amp;gt; REST
+RUNNER_API --&amp;gt; REST
+PIPELINE_API --&amp;gt; REST
+GRAPHQL --&amp;gt; REST
+REST --&amp;gt; CIRCLE_API&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;internal/manifest&lt;/code&gt; is the shared data contract. Every command reads or
+writes &lt;code&gt;Manifest&lt;/code&gt;, &lt;code&gt;SecretBundle&lt;/code&gt;, or &lt;code&gt;Mapping&lt;/code&gt; structs from this package.
+The API clients never depend on each other; they communicate only through
+the manifest types.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="migrate-command-flow"&gt;&lt;code&gt;migrate&lt;/code&gt; command flow&lt;span class="hx:absolute hx:-mt-20" id="migrate-command-flow"&gt;&lt;/span&gt;
+&lt;a href="#migrate-command-flow" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;&lt;code&gt;migrate&lt;/code&gt; combines the export and sync steps into one command.
+The manifest is held in memory; it is never written to disk unless
+&lt;code&gt;--output&lt;/code&gt; is passed.&lt;/p&gt;
+&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+START([&amp;#34;circleci-migrate migrate&amp;lt;br/&amp;gt;--source-org gh/acme --dest-org gh/acme-new --apply&amp;#34;])
+START --&amp;gt; SRC_CLIENTS[&amp;#34;Build source API clients&amp;lt;br/&amp;gt;(source token)&amp;#34;]
+SRC_CLIENTS --&amp;gt; EXPORT_STEP[&amp;#34;Export source org&amp;lt;br/&amp;gt;(same as Phase 1 — read-only)&amp;#34;]
+EXPORT_STEP --&amp;gt; IN_MEM[&amp;#34;In-memory Manifest&amp;lt;br/&amp;gt;(no disk write unless --output set)&amp;#34;]
+IN_MEM --&amp;gt; OPTWRITE{&amp;#34;--output / --report&amp;lt;br/&amp;gt;set?&amp;#34;}
+OPTWRITE --&amp;gt;|Yes| SAVE[&amp;#34;Save manifest.json&amp;lt;br/&amp;gt;and/or migration-report.md&amp;#34;]
+OPTWRITE --&amp;gt;|No| DST_CLIENTS
+SAVE --&amp;gt; DST_CLIENTS
+DST_CLIENTS[&amp;#34;Build destination API clients&amp;lt;br/&amp;gt;(dest token)&amp;#34;]
+DST_CLIENTS --&amp;gt; SYNC_ORG[&amp;#34;SyncOrgSettings&amp;lt;br/&amp;gt;(feature flags, OIDC, URL-orb, policies, OTel,&amp;lt;br/&amp;gt;contacts, retention, budgets, release-tracker)&amp;#34;]
+SYNC_ORG --&amp;gt; SYNC_CTX[&amp;#34;SyncContexts&amp;lt;br/&amp;gt;(create / reuse contexts, set vars, add restrictions)&amp;#34;]
+SYNC_CTX --&amp;gt; SYNC_PROJ[&amp;#34;SyncProjects&amp;lt;br/&amp;gt;(create / configure projects, SSH keys, tokens)&amp;#34;]
+SYNC_PROJ --&amp;gt; SYNC_RUNNER[&amp;#34;SyncRunnerClasses&amp;lt;br/&amp;gt;(when --dest-runner-namespace set)&amp;#34;]
+SYNC_RUNNER --&amp;gt; SYNC_CIAM[&amp;#34;SyncCIAM&amp;lt;br/&amp;gt;(standalone circleci/ orgs:&amp;lt;br/&amp;gt;org roles + groups automated,&amp;lt;br/&amp;gt;per-project grants manual)&amp;#34;]
+SYNC_CIAM --&amp;gt; ENABLE[&amp;#34;handleEnableBuilds&amp;lt;br/&amp;gt;(follow OAuth / enable App triggers)&amp;#34;]
+ENABLE --&amp;gt; END([Done])&lt;/pre&gt;&lt;/div&gt;&lt;hr&gt;
+&lt;h2 data-hextra-search-id="phase-1--export-flow"&gt;Phase 1 — Export flow&lt;span class="hx:absolute hx:-mt-20" id="phase-1--export-flow"&gt;&lt;/span&gt;
+&lt;a href="#phase-1--export-flow" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;sequenceDiagram
+participant User
+participant export as &amp;#34;cmd/export&amp;#34;
+participant ex as &amp;#34;internal/exporter&amp;#34;
+participant orgAPI as &amp;#34;api/org&amp;#34;
+participant ctxAPI as &amp;#34;api/context&amp;#34;
+participant projAPI as &amp;#34;api/project&amp;#34;
+participant CCI as &amp;#34;CircleCI API&amp;#34;
+User-&amp;gt;&amp;gt;export: &amp;#34;circleci-migrate export --org gh/acme&amp;#34;
+export-&amp;gt;&amp;gt;ex: &amp;#34;Export(Options)&amp;#34;
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetOrganization(gh/acme)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/organization/gh%2Facme&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: &amp;#34;id, name, slug, vcs_type&amp;#34;
+orgAPI--&amp;gt;&amp;gt;ex: Organization
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetFeatureFlags(github, acme)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v1.1/organization/github/acme/settings&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: feature_flags map
+orgAPI--&amp;gt;&amp;gt;ex: OrgSettings
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetOIDCClaims(orgID)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/org/orgID/oidc-custom-claims&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: &amp;#34;audience, ttl&amp;#34;
+orgAPI--&amp;gt;&amp;gt;ex: OIDCClaims
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetURLOrbAllowList(orgSlug)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/organization/orgSlug/url-orb-allow-list&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: items
+orgAPI--&amp;gt;&amp;gt;ex: URLOrbAllowList
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetPolicyBundle(ownerID)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/owner/ownerID/context/config/policy-bundle&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: &amp;#34;policy name to Rego map&amp;#34;
+orgAPI--&amp;gt;&amp;gt;ex: ConfigPolicies
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetAuditLogConfigs(orgID)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/organizations/orgID/audit-log/configs&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: audit-log config items
+orgAPI--&amp;gt;&amp;gt;ex: AuditLogConfigs
+ex-&amp;gt;&amp;gt;orgAPI: &amp;#34;GetSSOEnforced(orgID)&amp;#34;
+orgAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET app.circleci.com/private/ciam/orgs/orgID/sso/enforced&amp;#34;
+CCI--&amp;gt;&amp;gt;orgAPI: enforced bool
+orgAPI--&amp;gt;&amp;gt;ex: SSOEnforced
+loop For each context page
+ex-&amp;gt;&amp;gt;ctxAPI: &amp;#34;ListContexts(ownerID)&amp;#34;
+ctxAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/context?owner-id=id&amp;#34;
+CCI--&amp;gt;&amp;gt;ctxAPI: &amp;#34;items, next_page_token&amp;#34;
+end
+loop For each context
+ex-&amp;gt;&amp;gt;ctxAPI: &amp;#34;ListEnvVars(contextID)&amp;#34;
+ctxAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/context/id/environment-variable&amp;#34;
+CCI--&amp;gt;&amp;gt;ctxAPI: &amp;#34;items with names only (values masked)&amp;#34;
+ex-&amp;gt;&amp;gt;ctxAPI: &amp;#34;ListRestrictions(contextID)&amp;#34;
+ctxAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/context/id/restrictions&amp;#34;
+CCI--&amp;gt;&amp;gt;ctxAPI: &amp;#34;restriction_type, restriction_value, name&amp;#34;
+end
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;DiscoverProjects(orgID, orgName)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v1.1/projects (OAuth)&amp;lt;br/&amp;gt;or GET /api/private/project?organization-id=id (App)&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: project list
+loop For each project slug
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;GetProject(slug)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/project/slug&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: &amp;#34;id, name, slug, vcs_info&amp;#34;
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;GetSettings(provider, org, proj)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/project/provider/org/proj/settings&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: advanced settings object
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;ListEnvVars(slug)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/project/slug/envvar&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: &amp;#34;names with masked values&amp;#34;
+opt App org project
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;ListPipelineDefinitions(projectID)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/projects/projectID/pipeline-definitions&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: pipeline definition list
+loop For each pipeline definition
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;ListTriggers(projectID, defID)&amp;#34;
+projAPI-&amp;gt;&amp;gt;CCI: &amp;#34;GET /api/v2/projects/projectID/pipeline-definitions/defID/triggers&amp;#34;
+CCI--&amp;gt;&amp;gt;projAPI: trigger list
+end
+end
+opt &amp;#34;--skip-extras not set&amp;#34;
+ex-&amp;gt;&amp;gt;projAPI: &amp;#34;ListCheckoutKeys, ListWebhooks, ListSchedules&amp;#34;
+end
+end
+ex--&amp;gt;&amp;gt;export: &amp;#34;Manifest (no secret values)&amp;#34;
+export-&amp;gt;&amp;gt;export: &amp;#34;manifest.Save(manifest.json)&amp;#34;
+export-&amp;gt;&amp;gt;export: &amp;#34;report.SaveMarkdown(m, migration-report.md)&amp;#34;
+export--&amp;gt;&amp;gt;User: &amp;#34;terminal summary + file paths&amp;#34;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Key properties of the export phase:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Read-only.&lt;/strong&gt; No writes to CircleCI. Safe to run multiple times.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;No secret values.&lt;/strong&gt; The API masks all values; the manifest records only
+names and metadata.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Best-effort per resource.&lt;/strong&gt; An error on one context or project produces a
+warning in the manifest and audit report, not a fatal failure.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Stable output.&lt;/strong&gt; Contexts, projects, and their variable lists are sorted
+by name so repeated exports of unchanged data produce identical files.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="phase-2--secret-value-capture"&gt;Phase 2 — Secret-value capture&lt;span class="hx:absolute hx:-mt-20" id="phase-2--secret-value-capture"&gt;&lt;/span&gt;
+&lt;a href="#phase-2--secret-value-capture" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;CircleCI never returns env-var values over the API, so capturing them requires
+running inside a CircleCI pipeline. There are two ways to do this:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;secrets capture&lt;/code&gt; (recommended)&lt;/strong&gt; — CLI-orchestrated. The CLI generates an
+ephemeral pipeline config, submits it inline, polls, and downloads the
+bundle. No config is committed to the repo. See
+&lt;a href="#secrets-capture--cli-orchestrated-flow-recommended"&gt;&lt;code&gt;secrets capture&lt;/code&gt; — CLI-orchestrated flow&lt;/a&gt;
+below.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Orb / &lt;code&gt;secrets extract&lt;/code&gt; (alternative)&lt;/strong&gt; — commit a &lt;code&gt;.circleci/config.yml&lt;/code&gt;
+that uses the &lt;code&gt;circleci-org-migration&lt;/code&gt; orb to run one extract job per context
+plus a merge job. Use this when you prefer a committed, reviewable config or
+need a matrix fan-out. Documented immediately below.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Both produce the same &lt;code&gt;secrets.json&lt;/code&gt; bundle for the sync phase.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="orb--secrets-extract-flow-alternative"&gt;Orb / &lt;code&gt;secrets extract&lt;/code&gt; flow (alternative)&lt;span class="hx:absolute hx:-mt-20" id="orb--secrets-extract-flow-alternative"&gt;&lt;/span&gt;
+&lt;a href="#orb--secrets-extract-flow-alternative" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+START([&amp;#34;User commits manifest.json to source-org repo&amp;#34;])
+START --&amp;gt; TRIGGER[&amp;#34;Push triggers CircleCI pipeline in source org&amp;#34;]
+TRIGGER --&amp;gt; PARALLEL
+subgraph PARALLEL [&amp;#34;Parallel extract jobs — one per context&amp;#34;]
+J1[&amp;#34;Job: extract-deploy-prod&amp;lt;br/&amp;gt;context: deploy-prod&amp;lt;br/&amp;gt;&amp;lt;br/&amp;gt;1. checkout&amp;lt;br/&amp;gt;2. orb: install circleci-migrate&amp;lt;br/&amp;gt;3. secrets extract --context deploy-prod&amp;lt;br/&amp;gt;4. persist bundle to workspace&amp;#34;]
+J2[&amp;#34;Job: extract-shared&amp;lt;br/&amp;gt;context: shared&amp;lt;br/&amp;gt;&amp;lt;br/&amp;gt;1. checkout&amp;lt;br/&amp;gt;2. orb: install circleci-migrate&amp;lt;br/&amp;gt;3. secrets extract --context shared&amp;lt;br/&amp;gt;4. persist bundle to workspace&amp;#34;]
+JN[&amp;#34;... one job per context ...&amp;#34;]
+end
+PARALLEL --&amp;gt; MERGE
+MERGE[&amp;#34;Job: merge&amp;lt;br/&amp;gt;(requires all extract jobs)&amp;lt;br/&amp;gt;&amp;lt;br/&amp;gt;1. attach_workspace&amp;lt;br/&amp;gt;2. circleci-migrate secrets merge -o secrets.json&amp;lt;br/&amp;gt;3. store_artifacts: secrets.json&amp;#34;]
+MERGE --&amp;gt; DOWNLOAD[&amp;#34;User downloads secrets.json artifact from CircleCI UI&amp;#34;]
+DOWNLOAD --&amp;gt; NOTE[&amp;#34;secrets.json contains plaintext values&amp;lt;br/&amp;gt;Protect it and do not commit it&amp;#34;]&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Why one job per context?&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Each job can reference only the contexts listed under its &lt;code&gt;context:&lt;/code&gt; key in
+the workflow. If two contexts define a variable with the same name, combining
+them in one job would cause one value to overwrite the other. Running one job
+per context guarantees isolation.&lt;/p&gt;
+&lt;p&gt;The &lt;code&gt;secrets extract&lt;/code&gt; command reads variable names from &lt;code&gt;manifest.json&lt;/code&gt;, looks
+each up in &lt;code&gt;os.LookupEnv&lt;/code&gt;, and records found values in a &lt;code&gt;SecretBundle&lt;/code&gt; JSON
+file. Variables not present in the environment are listed under &amp;quot;Not found&amp;quot; in
+the output (and cause a non-zero exit if &lt;code&gt;--strict&lt;/code&gt; is passed).&lt;/p&gt;
+&lt;p&gt;After all extract jobs complete, the &lt;code&gt;merge&lt;/code&gt; job combines the per-context
+bundles into a single &lt;code&gt;secrets.json&lt;/code&gt; using &lt;code&gt;secrets merge&lt;/code&gt;.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h3 data-hextra-search-id="secrets-capture--cli-orchestrated-flow-recommended"&gt;&lt;code&gt;secrets capture&lt;/code&gt; — CLI-orchestrated flow (recommended)&lt;span class="hx:absolute hx:-mt-20" id="secrets-capture--cli-orchestrated-flow-recommended"&gt;&lt;/span&gt;
+&lt;a href="#secrets-capture--cli-orchestrated-flow-recommended" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;p&gt;&lt;code&gt;secrets capture&lt;/code&gt; is the recommended capture path. It achieves the same result
+as the orb-based flow without requiring a committed &lt;code&gt;.circleci/config.yml&lt;/code&gt;: the
+entire pipeline is generated at runtime and submitted as an inline (unversioned)
+config via the v2 Pipelines API.&lt;/p&gt;
+&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+START([&amp;#34;circleci-migrate secrets capture --org gh/acme --manifest manifest.json&amp;#34;])
+START --&amp;gt; LOAD[&amp;#34;Load manifest.json&amp;lt;br/&amp;gt;Build list of contexts and projects to extract&amp;#34;]
+LOAD --&amp;gt; GEN[&amp;#34;Generate inline pipeline config&amp;lt;br/&amp;gt;(one extract job per context, one merge job)&amp;#34;]
+GEN --&amp;gt; TRIGGER[&amp;#34;POST /api/v2/project/slug/pipeline&amp;lt;br/&amp;gt;body: branch + inline config YAML&amp;lt;br/&amp;gt;Returns pipeline ID&amp;#34;]
+TRIGGER --&amp;gt; POLL
+subgraph POLL [&amp;#34;Poll until terminal state or --poll-timeout&amp;#34;]
+direction TB
+STATUS[&amp;#34;GET /api/v2/pipeline/id&amp;lt;br/&amp;gt;Check state field&amp;#34;]
+STATUS --&amp;gt;|&amp;#34;running / pending&amp;#34;| WAIT[&amp;#34;Wait 5 s, retry&amp;#34;]
+WAIT --&amp;gt; STATUS
+STATUS --&amp;gt;|success| FETCH[&amp;#34;Fetch artifact&amp;#34;]
+STATUS --&amp;gt;|&amp;#34;failed / errored&amp;#34;| FAIL[&amp;#34;Exit non-zero&amp;lt;br/&amp;gt;Print workflow/job state&amp;#34;]
+end
+FETCH --&amp;gt; JOBS[&amp;#34;GET /api/v2/pipeline/id/workflow&amp;lt;br/&amp;gt;GET /api/v2/workflow/wf-id/job&amp;lt;br/&amp;gt;Locate merge job by name&amp;#34;]
+JOBS --&amp;gt; ARTIFACTS[&amp;#34;GET /api/v2/project/slug/job-number/artifacts&amp;lt;br/&amp;gt;Locate secrets.json artifact URL&amp;#34;]
+ARTIFACTS --&amp;gt; DOWNLOAD[&amp;#34;GET artifact URL (Circle-Token header)&amp;lt;br/&amp;gt;Write to --output path (mode 0600)&amp;#34;]
+DOWNLOAD --&amp;gt; DONE([Done — secrets.json ready for sync])&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Why this is the recommended path (vs. the orb-based alternative):&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;No &lt;code&gt;.circleci/config.yml&lt;/code&gt; is committed to the repository.&lt;/li&gt;
+&lt;li&gt;The inline config is ephemeral — it exists only for the duration of the run.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--enable-trigger&lt;/code&gt; and &lt;code&gt;--remove-restrictions&lt;/code&gt; allow the command to temporarily
+unlock contexts or triggers that would otherwise block the pipeline from running,
+restoring them after the run completes.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--skip-restricted-contexts&lt;/code&gt; is a safer alternative: skip any context with
+active restrictions rather than modifying them.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="phase-3--sync-flow"&gt;Phase 3 — Sync flow&lt;span class="hx:absolute hx:-mt-20" id="phase-3--sync-flow"&gt;&lt;/span&gt;
+&lt;a href="#phase-3--sync-flow" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+START([&amp;#34;circleci-migrate sync --manifest manifest.json --secrets secrets.json --apply&amp;#34;])
+START --&amp;gt; LOAD[&amp;#34;Load manifest.json&amp;lt;br/&amp;gt;Load secrets.json (optional)&amp;lt;br/&amp;gt;Load mapping.json (optional)&amp;#34;]
+LOAD --&amp;gt; RESOLVE[&amp;#34;Resolve destination org slug to UUID&amp;lt;br/&amp;gt;GET /api/v2/organization/slug&amp;#34;]
+RESOLVE --&amp;gt; ORG_SETTINGS[&amp;#34;Sync org settings&amp;lt;br/&amp;gt;(feature flags, OIDC, URL-orb allow list,&amp;lt;br/&amp;gt;config policies, OTel exporters, contacts,&amp;lt;br/&amp;gt;storage retention, budgets, release-tracker)&amp;lt;br/&amp;gt;Skipped with --skip-org-settings&amp;#34;]
+ORG_SETTINGS --&amp;gt; LIST_CTX[&amp;#34;List existing contexts in destination org&amp;lt;br/&amp;gt;GET /api/v2/context?owner-id=dest-id&amp;#34;]
+LIST_CTX --&amp;gt; CTX_LOOP
+subgraph CTX_LOOP [&amp;#34;For each context in manifest&amp;#34;]
+ENSURE{&amp;#34;Context exists&amp;lt;br/&amp;gt;in destination?&amp;#34;}
+ENSURE --&amp;gt;|Yes| REUSE[&amp;#34;Status: exists&amp;lt;br/&amp;gt;Reuse existing context ID&amp;#34;]
+ENSURE --&amp;gt;|&amp;#34;No — dry run&amp;#34;| WOULD_CREATE[&amp;#34;Status: created (would create)&amp;lt;br/&amp;gt;No API call&amp;#34;]
+ENSURE --&amp;gt;|&amp;#34;No — --apply&amp;#34;| CREATE[&amp;#34;POST /api/v2/context&amp;lt;br/&amp;gt;Status: created&amp;#34;]
+REUSE --&amp;gt; VARS
+WOULD_CREATE --&amp;gt; VARS
+CREATE --&amp;gt; VARS
+subgraph VARS [&amp;#34;For each env var in context&amp;#34;]
+HAS_VAL{&amp;#34;Value in&amp;lt;br/&amp;gt;secret bundle?&amp;#34;}
+HAS_VAL --&amp;gt;|&amp;#34;Yes — --apply&amp;#34;| UPSERT[&amp;#34;PUT context/id/environment-variable/name&amp;lt;br/&amp;gt;Status: set&amp;#34;]
+HAS_VAL --&amp;gt;|&amp;#34;Yes — dry run&amp;#34;| DRY_SET[&amp;#34;Status: set (would set)&amp;lt;br/&amp;gt;No API call&amp;#34;]
+HAS_VAL --&amp;gt;|&amp;#34;No — skip policy&amp;#34;| SKIP[&amp;#34;Status: manual&amp;lt;br/&amp;gt;Skipped — set manually&amp;#34;]
+HAS_VAL --&amp;gt;|&amp;#34;No — placeholder policy&amp;#34;| PLACEHOLDER[&amp;#34;PUT with REPLACE_ME value&amp;lt;br/&amp;gt;Status: set (placeholder)&amp;#34;]
+end
+VARS --&amp;gt; RESTRS
+subgraph RESTRS [&amp;#34;For each restriction in context&amp;#34;]
+RTYPE{&amp;#34;Restriction&amp;lt;br/&amp;gt;type?&amp;#34;}
+RTYPE --&amp;gt;|expression| EXPR_CHECK{&amp;#34;Already exists&amp;lt;br/&amp;gt;in destination?&amp;#34;}
+EXPR_CHECK --&amp;gt;|Yes| EXISTS[&amp;#34;Status: exists&amp;#34;]
+EXPR_CHECK --&amp;gt;|&amp;#34;No — --apply&amp;#34;| CREATE_RESTR[&amp;#34;POST context/id/restrictions&amp;lt;br/&amp;gt;Status: set&amp;#34;]
+EXPR_CHECK --&amp;gt;|&amp;#34;No — dry run&amp;#34;| WOULD_RESTR[&amp;#34;Status: set (would add)&amp;#34;]
+RTYPE --&amp;gt;|group| GROUP_RESOLVE[&amp;#34;Resolve dest group UUID by name&amp;lt;br/&amp;gt;via CIAM /groups endpoint&amp;#34;]
+GROUP_RESOLVE --&amp;gt;|&amp;#34;Found&amp;#34;| CREATE_GRP[&amp;#34;POST context/id/restrictions&amp;lt;br/&amp;gt;Status: set&amp;#34;]
+GROUP_RESOLVE --&amp;gt;|&amp;#34;Not found&amp;#34;| MANUAL_G[&amp;#34;Status: manual&amp;lt;br/&amp;gt;Create group in dest then re-run&amp;#34;]
+RTYPE --&amp;gt;|project| MANUAL_P[&amp;#34;Status: manual&amp;lt;br/&amp;gt;Source-org project UUID does not transfer&amp;#34;]
+end
+end
+CTX_LOOP --&amp;gt; PROJ_LOOP
+subgraph PROJ_LOOP [&amp;#34;For each project in manifest&amp;#34;]
+DEST_TYPE{&amp;#34;Destination org&amp;lt;br/&amp;gt;type?&amp;#34;}
+DEST_TYPE --&amp;gt;|&amp;#34;OAuth (gh/)&amp;#34;| OAUTH_PATH[&amp;#34;OAuth path:&amp;lt;br/&amp;gt;GET project by slug&amp;#34;]
+DEST_TYPE --&amp;gt;|&amp;#34;App (circleci/)&amp;#34;| APP_PATH[&amp;#34;App path:&amp;lt;br/&amp;gt;GET /api/private/project?org-id=...&amp;#34;]
+OAUTH_PATH --&amp;gt; PROJ_EXISTS{&amp;#34;Project exists?&amp;#34;}
+PROJ_EXISTS --&amp;gt;|Yes| PROJ_CONFIG[&amp;#34;Configure: settings, vars,&amp;lt;br/&amp;gt;webhooks, schedules, OIDC, v1.1 flags&amp;#34;]
+PROJ_EXISTS --&amp;gt;|&amp;#34;No — dry run&amp;#34;| WOULD_CREATE_PROJ[&amp;#34;Status: created (would create)&amp;lt;br/&amp;gt;Queued for enable-builds&amp;#34;]
+PROJ_EXISTS --&amp;gt;|&amp;#34;No — --apply&amp;#34;| CREATE_SHELL[&amp;#34;POST /api/v2/organization/provider/org/project&amp;lt;br/&amp;gt;Status: created (paused)&amp;#34;]
+CREATE_SHELL --&amp;gt; QUEUE_FOLLOW[&amp;#34;Queue EnableTarget (kind: follow)&amp;#34;]
+QUEUE_FOLLOW --&amp;gt; PROJ_CONFIG
+APP_PATH --&amp;gt; APP_EXISTS{&amp;#34;Project exists&amp;lt;br/&amp;gt;by name?&amp;#34;}
+APP_EXISTS --&amp;gt;|Yes| APP_CONFIG[&amp;#34;Configure: settings, vars,&amp;lt;br/&amp;gt;webhooks, schedules, OIDC, v1.1 flags&amp;#34;]
+APP_EXISTS --&amp;gt;|&amp;#34;No — dry run&amp;#34;| WOULD_CREATE_APP[&amp;#34;Status: created (would create)&amp;lt;br/&amp;gt;Pipeline defs shown as planned&amp;#34;]
+APP_EXISTS --&amp;gt;|&amp;#34;No -- --apply&amp;#34;| CREATE_APP[&amp;#34;POST /api/v2/organization/orgID/project&amp;lt;br/&amp;gt;Status: created&amp;#34;]
+CREATE_APP --&amp;gt; CREATE_DEFS[&amp;#34;POST pipeline-definitions&amp;lt;br/&amp;gt;POST triggers (disabled=true)&amp;#34;]
+CREATE_DEFS --&amp;gt; QUEUE_TRIGGERS[&amp;#34;Queue EnableTarget (kind: trigger)&amp;lt;br/&amp;gt;for each created trigger&amp;#34;]
+QUEUE_TRIGGERS --&amp;gt; APP_CONFIG
+end
+PROJ_LOOP --&amp;gt; ENABLE_STEP
+subgraph ENABLE_STEP [&amp;#34;Enable-builds step&amp;#34;]
+PENDING{&amp;#34;PendingEnable&amp;lt;br/&amp;gt;list empty?&amp;#34;}
+PENDING --&amp;gt;|Yes| DONE
+PENDING --&amp;gt;|&amp;#34;No — dry run&amp;#34;| DRY_ENABLE[&amp;#34;Print: re-run with --apply to enable&amp;#34;]
+PENDING --&amp;gt;|&amp;#34;No -- --apply + --yes&amp;#34;| AUTO_ENABLE[&amp;#34;Enable all automatically&amp;#34;]
+PENDING --&amp;gt;|&amp;#34;No -- --apply + TTY&amp;#34;| PROMPT[&amp;#34;Prompt: Enable builds? y/N&amp;#34;]
+PROMPT --&amp;gt;|y| ENABLE_ALL[&amp;#34;For each target:&amp;lt;br/&amp;gt;follow (OAuth) or EnableTrigger (App)&amp;#34;]
+PROMPT --&amp;gt;|N| SKIP_ENABLE[&amp;#34;Print: re-run with --yes to enable later&amp;#34;]
+AUTO_ENABLE --&amp;gt; DONE
+ENABLE_ALL --&amp;gt; DONE
+end
+DONE([Done])
+ENABLE_STEP --&amp;gt; REPORT_OUT[&amp;#34;Print sync report:&amp;lt;br/&amp;gt;DRY RUN or APPLIED&amp;lt;br/&amp;gt;created / exists / set / manual / error counts&amp;lt;br/&amp;gt;Needs-attention list&amp;#34;]
+REPORT_OUT --&amp;gt; END([Done])&lt;/pre&gt;&lt;/div&gt;&lt;hr&gt;
+&lt;h2 data-hextra-search-id="project-creation-and-enable-builds-detail"&gt;Project creation and enable-builds detail&lt;span class="hx:absolute hx:-mt-20" id="project-creation-and-enable-builds-detail"&gt;&lt;/span&gt;
+&lt;a href="#project-creation-and-enable-builds-detail" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The create-then-enable model ensures that builds never fire on a destination
+project until you explicitly say so. The flow differs between org types:&lt;/p&gt;
+&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart LR
+subgraph OAUTH [&amp;#34;OAuth org (gh/)&amp;#34;]
+O1[&amp;#34;CreateProjectShell&amp;lt;br/&amp;gt;POST /organization/provider/org/project&amp;lt;br/&amp;gt;No webhook installed&amp;lt;br/&amp;gt;No builds fire&amp;#34;] --&amp;gt; O2[&amp;#34;Queue EnableTarget&amp;lt;br/&amp;gt;kind: follow&amp;#34;]
+O2 --&amp;gt; O3[&amp;#34;EnableBuilds: FollowProject&amp;lt;br/&amp;gt;POST /api/v1.1/project/vcs/org/repo/follow&amp;lt;br/&amp;gt;Installs deploy key + webhook&amp;lt;br/&amp;gt;May trigger initial build&amp;#34;]
+end
+subgraph APP [&amp;#34;GitHub App org (circleci/)&amp;#34;]
+A1[&amp;#34;CreateAppProject&amp;lt;br/&amp;gt;POST /organization/orgID/project&amp;lt;br/&amp;gt;Project shell created&amp;#34;] --&amp;gt; A2[&amp;#34;CreatePipelineDefinition&amp;lt;br/&amp;gt;POST /projects/projID/pipeline-definitions&amp;#34;]
+A2 --&amp;gt; A3[&amp;#34;CreateTrigger (disabled=true)&amp;lt;br/&amp;gt;POST /projects/projID/pipeline-definitions/defID/triggers&amp;lt;br/&amp;gt;Trigger exists but is paused — no builds fire&amp;#34;]
+A3 --&amp;gt; A4[&amp;#34;Queue EnableTarget&amp;lt;br/&amp;gt;kind: trigger&amp;#34;]
+A4 --&amp;gt; A5[&amp;#34;EnableBuilds: EnableTrigger&amp;lt;br/&amp;gt;PATCH /projects/projID/triggers/triggerID&amp;lt;br/&amp;gt;Sets disabled=false&amp;lt;br/&amp;gt;Builds can now fire&amp;#34;]
+end&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Webhook and schedule triggers&lt;/strong&gt; (App orgs) are flagged as &lt;code&gt;manual&lt;/code&gt; — the
+webhook HMAC secret cannot be migrated and schedule-trigger creation via the
+Trigger API is a planned future addition.&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;Key properties of the sync phase:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Dry run by default.&lt;/strong&gt; No writes to CircleCI unless &lt;code&gt;--apply&lt;/code&gt; is passed.
+Reviewing the dry-run output before applying is strongly recommended.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Idempotent.&lt;/strong&gt; Existing contexts and projects are reused by name. Re-running
+sync with &lt;code&gt;--apply&lt;/code&gt; is safe — it will not duplicate resources or overwrite
+restrictions that already exist.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Transparent report.&lt;/strong&gt; Every action (created, exists, set, manual, error)
+is recorded and printed. Items requiring manual follow-up are surfaced
+explicitly.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="orb-inline--graphql-orb-source-flow"&gt;&lt;code&gt;orb inline&lt;/code&gt; — GraphQL orb-source flow&lt;span class="hx:absolute hx:-mt-20" id="orb-inline--graphql-orb-source-flow"&gt;&lt;/span&gt;
+&lt;a href="#orb-inline--graphql-orb-source-flow" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The &lt;code&gt;orb inline&lt;/code&gt; command rewrites a CircleCI config file, replacing each private
+orb reference in the &lt;code&gt;orbs:&lt;/code&gt; stanza with the orb's inlined YAML source. This is
+used during the namespace-transfer overlap window (e.g. while &lt;code&gt;awesomecicd/&lt;/code&gt;
+content is being moved to &lt;code&gt;cci-labs/&lt;/code&gt;) to produce a config that works regardless
+of which namespace is active.&lt;/p&gt;
+&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+START([&amp;#34;circleci-migrate orb inline --config .circleci/config.yml&amp;#34;])
+START --&amp;gt; PARSE[&amp;#34;Parse config YAML&amp;lt;br/&amp;gt;Extract orbs: stanza&amp;#34;]
+PARSE --&amp;gt; LOOP
+subgraph LOOP [&amp;#34;For each orb reference&amp;#34;]
+direction TB
+QUERY[&amp;#34;POST circleci.com/graphql-unstable&amp;lt;br/&amp;gt;OrbSource query with orbVersionRef&amp;#34;]
+QUERY --&amp;gt;|&amp;#34;source returned&amp;#34;| INLINE[&amp;#34;Replace orb reference with inline source block&amp;#34;]
+QUERY --&amp;gt;|&amp;#34;null source (public or not found)&amp;#34;| PASS[&amp;#34;Pass through unchanged&amp;#34;]
+end
+LOOP --&amp;gt; WRITE[&amp;#34;Write merged config to --output (or stdout)&amp;#34;]
+WRITE --&amp;gt; DONE([Done])&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The GraphQL query (&lt;code&gt;OrbSource&lt;/code&gt;) is sent to the &lt;code&gt;graphql-unstable&lt;/code&gt; endpoint with
+a &lt;code&gt;Circle-Token&lt;/code&gt; header. The &lt;code&gt;source&lt;/code&gt; field in the response is the raw orb YAML
+string. Public orbs return a source but are left as references (they are
+resolvable without a token). Private orbs with a &lt;code&gt;null&lt;/code&gt; source are left as-is
+with a warning — they require a token with access to that namespace.&lt;/p&gt;</description></item><item><title>CircleCI API usage</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/api-usage/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/api-usage/</guid><description>
+&lt;p&gt;&lt;code&gt;circleci-migrate&lt;/code&gt; is v2-first. The vast majority of operations use the
+CircleCI API v2 (&lt;code&gt;/api/v2/&lt;/code&gt;). The remaining surfaces are:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;the legacy &lt;strong&gt;v1.1&lt;/strong&gt; API for settings not exposed by v2 (feature flags,
+project follow, additional SSH keys, project API tokens);&lt;/li&gt;
+&lt;li&gt;the &lt;strong&gt;runner API v3&lt;/strong&gt; on &lt;code&gt;runner.circleci.com&lt;/code&gt; for self-hosted runner
+resource classes;&lt;/li&gt;
+&lt;li&gt;the private &lt;strong&gt;&lt;code&gt;/api/private/&lt;/code&gt;&lt;/strong&gt; endpoint on &lt;code&gt;circleci.com&lt;/code&gt; for App-org
+project discovery and a few org settings (contacts);&lt;/li&gt;
+&lt;li&gt;the private &lt;strong&gt;CIAM&lt;/strong&gt; endpoints on &lt;code&gt;app.circleci.com&lt;/code&gt; for groups, SSO state,
+and org/project role grants;&lt;/li&gt;
+&lt;li&gt;the &lt;strong&gt;&lt;code&gt;graphql-unstable&lt;/code&gt;&lt;/strong&gt; endpoint for orb-source introspection.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The private endpoints are unofficial and may change — see the
+&lt;a href="#private-endpoint-risk-note"&gt;private-endpoint risk note&lt;/a&gt;. Each surface is
+documented explicitly below.&lt;/p&gt;
+&lt;p&gt;All requests carry a &lt;code&gt;Circle-Token&lt;/code&gt; header and a &lt;code&gt;User-Agent&lt;/code&gt; header in the
+form &lt;code&gt;circleci-migrate/&amp;lt;version&amp;gt;&lt;/code&gt;. The main host is configurable via &lt;code&gt;--host&lt;/code&gt;
+(env &lt;code&gt;CIRCLECI_CLI_HOST&lt;/code&gt;, &lt;code&gt;CIRCLECI_HOST&lt;/code&gt;, or &lt;code&gt;CIRCLE_URL&lt;/code&gt;; default:
+&lt;code&gt;https://circleci.com&lt;/code&gt;). The private CIAM endpoints always target
+&lt;code&gt;app.circleci.com&lt;/code&gt; and the runner API always targets &lt;code&gt;runner.circleci.com&lt;/code&gt; (or
+the equivalent for Server installs); all use the same token.&lt;/p&gt;
+&lt;p&gt;Secret values are &lt;strong&gt;never returned by any API version&lt;/strong&gt;. The CircleCI API
+masks every environment-variable value everywhere it appears. Capturing real
+values requires running inside a CircleCI job (see
+&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/secrets/"&gt;Moving secret values&lt;/a&gt;).&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="organization"&gt;Organization&lt;span class="hx:absolute hx:-mt-20" id="organization"&gt;&lt;/span&gt;
+&lt;a href="#organization" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="v2-endpoints"&gt;v2 endpoints&lt;span class="hx:absolute hx:-mt-20" id="v2-endpoints"&gt;&lt;/span&gt;
+&lt;a href="#v2-endpoints" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organization/{org-slug-or-id}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Resolve org slug to name and UUID. The slug is percent-encoded (&lt;code&gt;gh%2Facme&lt;/code&gt;) because it contains a &lt;code&gt;/&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/me/collaborations&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List all orgs the authenticated user collaborates with (defined; not called in current export/sync paths).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="v11-org-settings-feature-flags"&gt;v1.1 org settings (feature flags)&lt;span class="hx:absolute hx:-mt-20" id="v11-org-settings-feature-flags"&gt;&lt;/span&gt;
+&lt;a href="#v11-org-settings-feature-flags" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/organization/{vcsType}/{orgName}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the full org-level &lt;code&gt;feature_flags&lt;/code&gt; map, including &lt;code&gt;require_context_group_restriction&lt;/code&gt; and others.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/organization/{vcsType}/{orgName}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Write feature flags to the destination org. Keys are converted from &lt;code&gt;snake_case&lt;/code&gt; to &lt;code&gt;kebab-case&lt;/code&gt; for the write path.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Why v1.1?&lt;/strong&gt; The &lt;code&gt;feature_flags&lt;/code&gt; object is not exposed by the v2 API. This
+call is best-effort: if it fails (for example because the org is a GitHub App
+org with no v1.1 slug), a warning is recorded in the manifest and export
+continues.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="v2-oidc-custom-claims"&gt;v2 OIDC custom claims&lt;span class="hx:absolute hx:-mt-20" id="v2-oidc-custom-claims"&gt;&lt;/span&gt;
+&lt;a href="#v2-oidc-custom-claims" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/oidc-custom-claims&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's OIDC audience list and token TTL.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PATCH&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/oidc-custom-claims&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Write audience and TTL to the destination org.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="v2-url-orb-allow-list"&gt;v2 URL-orb allow list&lt;span class="hx:absolute hx:-mt-20" id="v2-url-orb-allow-list"&gt;&lt;/span&gt;
+&lt;a href="#v2-url-orb-allow-list" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organization/{slug-or-id}/url-orb-allow-list&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's URL-orb allow list. Available on GitHub App (&lt;code&gt;circleci/&lt;/code&gt;) orgs.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organization/{slug-or-id}/url-orb-allow-list&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Add an entry to the destination org's URL-orb allow list.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="v2-config-policies-scale-plan"&gt;v2 config policies (Scale plan)&lt;span class="hx:absolute hx:-mt-20" id="v2-config-policies-scale-plan"&gt;&lt;/span&gt;
+&lt;a href="#v2-config-policies-scale-plan" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/owner/{ownerID}/context/config/policy-bundle&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read all Rego policies in the org's config policy bundle. Returns an empty map if the org has no bundle or is not on Scale.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/owner/{ownerID}/context/config/policy-bundle&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Replace the destination org's policy bundle. Body: &lt;code&gt;{&amp;quot;policies&amp;quot;: {name: rego}}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/owner/{ownerID}/context/config/decision/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read whether config-policy enforcement is enabled.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PATCH&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/owner/{ownerID}/context/config/decision/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Enable or disable config-policy enforcement on the destination.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="v2-audit-log-streaming-configs-capture-only"&gt;v2 audit-log streaming configs (capture only)&lt;span class="hx:absolute hx:-mt-20" id="v2-audit-log-streaming-configs-capture-only"&gt;&lt;/span&gt;
+&lt;a href="#v2-audit-log-streaming-configs-capture-only" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organizations/{orgID}/audit-log/configs&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's audit-log streaming configurations (S3 ARN, region, bucket, etc.).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Why capture-only?&lt;/strong&gt; Audit-log configs contain AWS ARN, region, and bucket
+values that are specific to the source org's AWS account. &lt;code&gt;sync&lt;/code&gt; surfaces them
+as manual actions in the report; they are never automatically written to the
+destination. Recreate them in the destination org's settings UI.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="v2-opentelemetry-exporters"&gt;v2 OpenTelemetry exporters&lt;span class="hx:absolute hx:-mt-20" id="v2-opentelemetry-exporters"&gt;&lt;/span&gt;
+&lt;a href="#v2-opentelemetry-exporters" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/otel-exporter&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's OTel exporter configurations (up to 5 per org). Header values are redacted as &lt;code&gt;&amp;quot;xxxx&amp;quot;&lt;/code&gt; by the server.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/otel-exporter&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create an OTel exporter on the destination org. Header values must be set manually after creation.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="v2-org-contacts"&gt;v2 org contacts&lt;span class="hx:absolute hx:-mt-20" id="v2-org-contacts"&gt;&lt;/span&gt;
+&lt;a href="#v2-org-contacts" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/contacts&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's primary and security contact email lists.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/contacts&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Overwrite the destination org's contact lists.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="private-ciam-endpoints-groups-and-sso"&gt;Private CIAM endpoints (groups and SSO)&lt;span class="hx:absolute hx:-mt-20" id="private-ciam-endpoints-groups-and-sso"&gt;&lt;/span&gt;
+&lt;a href="#private-ciam-endpoints-groups-and-sso" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;p&gt;These endpoints are served by &lt;code&gt;app.circleci.com&lt;/code&gt; (not &lt;code&gt;circleci.com&lt;/code&gt;). The
+&lt;code&gt;api/org&lt;/code&gt; client maintains a separate HTTP client (&lt;code&gt;app&lt;/code&gt;) that targets this
+host. The &lt;code&gt;Circle-Token&lt;/code&gt; header is used identically.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/groups&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List the org's CIAM groups (named sets of members used for context group restrictions).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/sso/enforced&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read whether SSO login is enforced for the org.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/sso/connection&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the org's SAML SSO connection body (realm, IdP fields). Returns HTTP 404 when no SSO is configured — treated as &amp;quot;not an error&amp;quot;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Why SSO is capture-only:&lt;/strong&gt; Recreating SSO on a destination org requires DNS
+TXT domain verification and IdP-side SAML app / iframe-origin setup. This
+cannot be automated via API. &lt;code&gt;sync&lt;/code&gt; surfaces SSO state as a manual action in
+the report and never writes it. See your IdP and CircleCI SSO documentation
+for recreation steps.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="contexts"&gt;Contexts&lt;span class="hx:absolute hx:-mt-20" id="contexts"&gt;&lt;/span&gt;
+&lt;a href="#contexts" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="read-export-phase"&gt;Read (export phase)&lt;span class="hx:absolute hx:-mt-20" id="read-export-phase"&gt;&lt;/span&gt;
+&lt;a href="#read-export-phase" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context?owner-id={id}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List all contexts for an org. Paginated (&lt;code&gt;page-token&lt;/code&gt;).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context/{id}/environment-variable&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List env-var &lt;strong&gt;names&lt;/strong&gt; for a context. Values are always masked. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context/{id}/restrictions&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List project, expression, and group restrictions. Returns &lt;code&gt;restriction_type&lt;/code&gt;, &lt;code&gt;restriction_value&lt;/code&gt;, and &lt;code&gt;name&lt;/code&gt;. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="write-sync-phase"&gt;Write (sync phase)&lt;span class="hx:absolute hx:-mt-20" id="write-sync-phase"&gt;&lt;/span&gt;
+&lt;a href="#write-sync-phase" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a context in the destination org. Body: &lt;code&gt;{&amp;quot;name&amp;quot;: &amp;quot;&amp;lt;name&amp;gt;&amp;quot;, &amp;quot;owner&amp;quot;: {&amp;quot;id&amp;quot;: &amp;quot;&amp;lt;org-id&amp;gt;&amp;quot;, &amp;quot;type&amp;quot;: &amp;quot;organization&amp;quot;}}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context/{id}/environment-variable/{name}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create or update an environment variable in a context. Body: &lt;code&gt;{&amp;quot;value&amp;quot;: &amp;quot;&amp;lt;value&amp;gt;&amp;quot;}&lt;/code&gt;. Idempotent upsert.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/context/{id}/restrictions&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create an expression or group restriction on a context. Body: &lt;code&gt;{&amp;quot;restriction_type&amp;quot;: &amp;quot;&amp;lt;type&amp;gt;&amp;quot;, &amp;quot;restriction_value&amp;quot;: &amp;quot;&amp;lt;value&amp;gt;&amp;quot;}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Note on restriction writes:&lt;/strong&gt; expression-type and group-type restriction
+writes are generally available. Group restrictions are resolved by name from
+the destination org's CIAM group list; the &amp;quot;All members&amp;quot; group resolves to the
+destination org UUID. Project-type restrictions are flagged as manual because
+source-org project UUIDs do not transfer to the destination.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="projects"&gt;Projects&lt;span class="hx:absolute hx:-mt-20" id="projects"&gt;&lt;/span&gt;
+&lt;a href="#projects" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="read-export-phase-1"&gt;Read (export phase)&lt;span class="hx:absolute hx:-mt-20" id="read-export-phase-1"&gt;&lt;/span&gt;
+&lt;a href="#read-export-phase-1" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Fetch project metadata (name, ID, VCS info). Slug components are individually percent-encoded.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{provider}/{org}/{project}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read advanced project settings (&lt;code&gt;autocancel_builds&lt;/code&gt;, &lt;code&gt;build_fork_prs&lt;/code&gt;, etc.). Response is wrapped in an &lt;code&gt;&amp;quot;advanced&amp;quot;&lt;/code&gt; key.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/envvar&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List env-var names. The API returns a masked value (&lt;code&gt;&amp;quot;xxxx1234&amp;quot;&lt;/code&gt;) for each variable; stored as &lt;code&gt;masked_value&lt;/code&gt; in the manifest. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/checkout-key&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List checkout/deploy key metadata (type, fingerprint, public key). Private key material is never returned. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/webhook?scope-id={project-id}&amp;amp;scope-type=project&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List outbound webhooks scoped to a project. Requires the project UUID, not the slug. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/schedule&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List pipeline schedules. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/projects/{projectID}/pipeline-definitions&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List App-pipeline definitions for a project. Each definition includes its config source, checkout source, and file path. Paginated.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/projects/{projectID}/pipeline-definitions/{defID}/triggers&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List the triggers attached to a pipeline definition. Returns &lt;code&gt;event_source&lt;/code&gt;, &lt;code&gt;event_preset&lt;/code&gt;, and &lt;code&gt;disabled&lt;/code&gt; fields. Paginated. Also read from the &lt;strong&gt;destination&lt;/strong&gt; on a &lt;code&gt;sync&lt;/code&gt; re-run (together with the pipeline-definitions list) to reconcile what already exists.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/project/{projectID}/oidc-custom-claims&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read per-project OIDC audience and TTL.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="project-discovery"&gt;Project discovery&lt;span class="hx:absolute hx:-mt-20" id="project-discovery"&gt;&lt;/span&gt;
+&lt;a href="#project-discovery" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/projects&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List all projects the authenticated user follows. Used for OAuth org export; returns a flat JSON array (not paginated).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/private/project?organization-id={orgID}&amp;amp;page-size=50&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List all projects belonging to an org by UUID. Used for GitHub App org export. Covers both &lt;code&gt;gh/&lt;/code&gt; and &lt;code&gt;circleci/&lt;/code&gt; slugs. Paginated via &lt;code&gt;next_page_token&lt;/code&gt;. Page size capped at 50 (server returns HTTP 500 for larger values).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Why two endpoints?&lt;/strong&gt; The v1.1 &lt;code&gt;GET /projects&lt;/code&gt; endpoint covers OAuth orgs
+but returns only followed projects, and does not work for GitHub App orgs
+whose slugs use UUIDs. The private &lt;code&gt;/api/private/project&lt;/code&gt; endpoint covers all
+org types by UUID and is used for App org export. For OAuth orgs where the
+source token's user does not follow every repository, pass an explicit
+&lt;code&gt;--projects&lt;/code&gt; list to &lt;code&gt;export&lt;/code&gt;.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="write-sync-phase-1"&gt;Write (sync phase)&lt;span class="hx:absolute hx:-mt-20" id="write-sync-phase-1"&gt;&lt;/span&gt;
+&lt;a href="#write-sync-phase-1" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="common-project-operations"&gt;Common project operations&lt;span class="hx:absolute hx:-mt-20" id="common-project-operations"&gt;&lt;/span&gt;
+&lt;a href="#common-project-operations" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/envvar&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create or replace a project environment variable. Body: &lt;code&gt;{&amp;quot;name&amp;quot;: &amp;quot;&amp;lt;name&amp;gt;&amp;quot;, &amp;quot;value&amp;quot;: &amp;quot;&amp;lt;value&amp;gt;&amp;quot;}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PATCH&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{provider}/{org}/{project}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Apply a partial update to project advanced settings. Body: &lt;code&gt;{&amp;quot;advanced&amp;quot;: { &amp;lt;non-nil fields only&amp;gt; }}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/webhook&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a webhook on a project. Body includes &lt;code&gt;name&lt;/code&gt;, &lt;code&gt;url&lt;/code&gt;, &lt;code&gt;events&lt;/code&gt;, &lt;code&gt;verify-tls&lt;/code&gt;, and &lt;code&gt;scope&lt;/code&gt; (project UUID). The HMAC signing secret cannot be migrated — it must be set manually.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/schedule&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a pipeline schedule on an OAuth project. Body includes &lt;code&gt;name&lt;/code&gt;, &lt;code&gt;description&lt;/code&gt;, &lt;code&gt;timetable&lt;/code&gt;, &lt;code&gt;parameters&lt;/code&gt;, and &lt;code&gt;attribution-actor&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PATCH&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/org/{orgID}/project/{projectID}/oidc-custom-claims&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Write per-project OIDC audience and TTL.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 data-hextra-search-id="v11-per-project-feature-flags"&gt;v1.1 per-project feature flags&lt;span class="hx:absolute hx:-mt-20" id="v11-per-project-feature-flags"&gt;&lt;/span&gt;
+&lt;a href="#v11-per-project-feature-flags" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the &lt;code&gt;feature_flags&lt;/code&gt; blob for a project (e.g. &lt;code&gt;api_trigger_with_config&lt;/code&gt;, &lt;code&gt;drop_all_build_requests&lt;/code&gt;).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/settings&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Write project feature flags. &lt;code&gt;drop_all_build_requests&lt;/code&gt; is a danger flag that is skipped by default.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 data-hextra-search-id="v11-additional-ssh-keys"&gt;v1.1 additional SSH keys&lt;span class="hx:absolute hx:-mt-20" id="v11-additional-ssh-keys"&gt;&lt;/span&gt;
+&lt;a href="#v11-additional-ssh-keys" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Project &lt;strong&gt;additional SSH keys&lt;/strong&gt; (keys added beyond the checkout/deploy key) are
+captured as metadata on export and re-uploaded on sync (skipped with
+&lt;code&gt;--skip-extras&lt;/code&gt;). Private key material is never returned by any API, so it must
+be supplied to re-upload (the syncer matches by fingerprint to avoid duplicates).&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/settings?ssh-key-digest=sha256&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Read the &lt;code&gt;ssh_keys&lt;/code&gt; array: &lt;code&gt;hostname&lt;/code&gt;, &lt;code&gt;public_key&lt;/code&gt;, and SHA256 &lt;code&gt;fingerprint&lt;/code&gt;. Private keys are never present.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/ssh-key&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Upload an additional SSH key. Body: &lt;code&gt;{&amp;quot;hostname&amp;quot;: &amp;quot;&amp;lt;host&amp;gt;&amp;quot;, &amp;quot;private_key&amp;quot;: &amp;quot;&amp;lt;PEM&amp;gt;&amp;quot;}&lt;/code&gt;. &lt;code&gt;hostname&lt;/code&gt; may be empty for a globally-scoped key. Idempotent at the API level (re-uploading the same key is a no-op).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 data-hextra-search-id="v11-project-api-tokens"&gt;v1.1 project API tokens&lt;span class="hx:absolute hx:-mt-20" id="v11-project-api-tokens"&gt;&lt;/span&gt;
+&lt;a href="#v11-project-api-tokens" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Project &lt;strong&gt;API tokens&lt;/strong&gt; are captured as metadata on export. They are recreated
+on sync only when &lt;code&gt;--create-project-tokens&lt;/code&gt; is set (default: emit manual steps).
+Token &lt;em&gt;values&lt;/em&gt; are never returned by the list API and are returned by &lt;code&gt;create&lt;/code&gt;
+&lt;strong&gt;once only&lt;/strong&gt;.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/token&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List token metadata: &lt;code&gt;id&lt;/code&gt;, &lt;code&gt;label&lt;/code&gt;, &lt;code&gt;scope&lt;/code&gt; (&lt;code&gt;status&lt;/code&gt; / &lt;code&gt;view-builds&lt;/code&gt; / &lt;code&gt;all&lt;/code&gt;). The token value is always null on list.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{slug}/token&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a token. Body: &lt;code&gt;{&amp;quot;scope&amp;quot;: &amp;quot;&amp;lt;scope&amp;gt;&amp;quot;, &amp;quot;label&amp;quot;: &amp;quot;&amp;lt;label&amp;gt;&amp;quot;}&lt;/code&gt;. The response includes the plaintext &lt;code&gt;token&lt;/code&gt; &lt;strong&gt;once&lt;/strong&gt; — the CLI prints it to stderr and it cannot be retrieved again. Recreated tokens mint NEW secrets, so every consumer of the old token must be repointed.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 data-hextra-search-id="oauth-project-creation-and-enable-builds"&gt;OAuth project creation and enable-builds&lt;span class="hx:absolute hx:-mt-20" id="oauth-project-creation-and-enable-builds"&gt;&lt;/span&gt;
+&lt;a href="#oauth-project-creation-and-enable-builds" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organization/{provider}/{org}/project&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a project shell in an OAuth org. Body: &lt;code&gt;{&amp;quot;name&amp;quot;: &amp;quot;&amp;lt;repo&amp;gt;&amp;quot;}&lt;/code&gt;. The project is created without a webhook; no builds fire until the project is followed.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v1.1/project/{vcsType}/{org}/{repo}/follow&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Follow a project. Installs a deploy key and webhook on the VCS repository. This is the &amp;quot;enable builds&amp;quot; action for OAuth projects — it may trigger an initial build.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 data-hextra-search-id="github-app-project-creation-and-enable-builds"&gt;GitHub App project creation and enable-builds&lt;span class="hx:absolute hx:-mt-20" id="github-app-project-creation-and-enable-builds"&gt;&lt;/span&gt;
+&lt;a href="#github-app-project-creation-and-enable-builds" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organization/{orgID}/project&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a GitHub App project by org UUID and name. Body: &lt;code&gt;{&amp;quot;name&amp;quot;: &amp;quot;&amp;lt;name&amp;gt;&amp;quot;}&lt;/code&gt;. The &lt;code&gt;orgID&lt;/code&gt; is the bare UUID (not a slug) for App-type orgs. Returns the new project's UUID.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/projects/{projUUID}/pipeline-definitions&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a pipeline definition on an App project. Body includes &lt;code&gt;name&lt;/code&gt;, &lt;code&gt;description&lt;/code&gt;, &lt;code&gt;config_source&lt;/code&gt; (provider, repo external_id, file_path), and &lt;code&gt;checkout_source&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/projects/{projUUID}/pipeline-definitions/{defUUID}/triggers&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a trigger on a pipeline definition. Created with &lt;code&gt;disabled: true&lt;/code&gt; so no builds fire until explicitly enabled. Body includes &lt;code&gt;event_source&lt;/code&gt; (provider plus &lt;code&gt;repo.external_id&lt;/code&gt;, &lt;code&gt;webhook.sender&lt;/code&gt; or &lt;code&gt;schedule.{cron_expression,attribution_actor}&lt;/code&gt;), &lt;code&gt;event_preset&lt;/code&gt;, &lt;code&gt;checkout_ref&lt;/code&gt;, &lt;code&gt;config_ref&lt;/code&gt;, &lt;code&gt;event_name&lt;/code&gt; (webhook/schedule) and &lt;code&gt;parameters&lt;/code&gt; (schedule). The API accepts no trigger &lt;code&gt;name&lt;/code&gt; or &lt;code&gt;description&lt;/code&gt; on create.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PATCH&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/projects/{projUUID}/triggers/{triggerUUID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Enable a trigger by setting &lt;code&gt;disabled: false&lt;/code&gt;. This is the &amp;quot;enable builds&amp;quot; action for App projects — after this call, the trigger may fire on matching events.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;DELETE&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{slug}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Delete a project. Used for rollback and test cleanup only.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;GitHub repository external_id:&lt;/strong&gt; App pipeline definitions and triggers
+require a numeric GitHub repository ID (&lt;code&gt;external_id&lt;/code&gt;). When the GitHub org is
+unchanged and the ID was captured in the manifest, it is reused directly (no
+GitHub call, no token). The tool calls the GitHub API (needs &lt;code&gt;--github-token&lt;/code&gt;)
+only when the GitHub org changed, or when no ID was captured — an OAuth project
+whose App pipeline definition is synthesized.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="github-api"&gt;GitHub API&lt;span class="hx:absolute hx:-mt-20" id="github-api"&gt;&lt;/span&gt;
+&lt;a href="#github-api" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://api.github.com/repos/{owner}/{repo}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Resolve a GitHub repository's numeric ID (&lt;code&gt;id&lt;/code&gt; field). Used when &lt;code&gt;--github-token&lt;/code&gt; is set and a pipeline definition needs an &lt;code&gt;external_id&lt;/code&gt; that was not captured, or a fresh one because the GitHub org changed.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;The request carries an &lt;code&gt;Authorization: Bearer {token}&lt;/code&gt; header when a token is
+supplied. A 404 response means the repo is not in the destination GitHub org: the project is
+reported &lt;code&gt;manual&lt;/code&gt; and its pipeline definition is skipped (no fallback to a stale
+captured id).&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="circleci-graphql-api-orb-inline"&gt;CircleCI GraphQL API (&lt;code&gt;orb inline&lt;/code&gt;)&lt;span class="hx:absolute hx:-mt-20" id="circleci-graphql-api-orb-inline"&gt;&lt;/span&gt;
+&lt;a href="#circleci-graphql-api-orb-inline" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The &lt;code&gt;orb inline&lt;/code&gt; command fetches private orb source via the CircleCI GraphQL API.
+Unlike the REST endpoints above, this uses the &lt;strong&gt;&lt;code&gt;graphql-unstable&lt;/code&gt;&lt;/strong&gt; endpoint:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;pre&gt;&lt;code&gt;POST https://circleci.com/graphql-unstable&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;The request carries a &lt;code&gt;Circle-Token&lt;/code&gt; header and a JSON body with a &lt;code&gt;query&lt;/code&gt;
+field. The query used to fetch orb source is:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-graphql" data-lang="graphql"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kd"&gt;query&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nc"&gt;OrbSource&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="nv"&gt;$orbVersionRef&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nc"&gt;String&lt;/span&gt;&lt;span class="p"&gt;!)&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="py"&gt;orbVersion&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="py"&gt;orbVersionRef&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nv"&gt;$orbVersionRef&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="py"&gt;source&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;&lt;code&gt;orbVersionRef&lt;/code&gt; is the fully qualified orb reference from the config's &lt;code&gt;orbs:&lt;/code&gt;
+stanza (e.g. &lt;code&gt;awesomecicd/circleci-org-migration@0.8.0&lt;/code&gt;). Public orbs are
+fetched without a token; private orbs require a token that belongs to a user or
+machine-user with access to that orb's namespace. A &lt;code&gt;null&lt;/code&gt; &lt;code&gt;source&lt;/code&gt; in the
+response is treated as &amp;quot;orb not found or not accessible.&amp;quot;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Why &lt;code&gt;graphql-unstable&lt;/code&gt;?&lt;/strong&gt; Orb source is not exposed by the REST API v2. The
+&lt;code&gt;graphql-unstable&lt;/code&gt; endpoint is the canonical way to introspect orb content and
+is used by the CircleCI CLI for the same purpose.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="pipelines-api-secrets-capture"&gt;Pipelines API (&lt;code&gt;secrets capture&lt;/code&gt;)&lt;span class="hx:absolute hx:-mt-20" id="pipelines-api-secrets-capture"&gt;&lt;/span&gt;
+&lt;a href="#pipelines-api-secrets-capture" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The &lt;code&gt;secrets capture&lt;/code&gt; command drives a CircleCI pipeline run from the CLI
+without requiring a committed &lt;code&gt;.circleci/config.yml&lt;/code&gt;. It uses the v2 Pipelines
+API to submit an &lt;strong&gt;inline (unversioned) config&lt;/strong&gt; and then polls for completion:&lt;/p&gt;
+&lt;h3 data-hextra-search-id="trigger-a-pipeline-with-inline-config"&gt;Trigger a pipeline with inline config&lt;span class="hx:absolute hx:-mt-20" id="trigger-a-pipeline-with-inline-config"&gt;&lt;/span&gt;
+&lt;a href="#trigger-a-pipeline-with-inline-config" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/pipeline&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Trigger a new pipeline run. When the body includes a &lt;code&gt;config&lt;/code&gt; field, the supplied YAML is used as the pipeline config rather than the repo's committed config.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Request body:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-json" data-lang="json"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nt"&gt;&amp;#34;branch&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;main&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nt"&gt;&amp;#34;config&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;inline YAML config string&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;The inline config is generated at runtime: it contains one extraction job per
+context listed in the manifest (one context per job to guarantee variable
+isolation) and a final merge job that uploads &lt;code&gt;secrets.json&lt;/code&gt; as an artifact.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="poll-for-pipeline-status"&gt;Poll for pipeline status&lt;span class="hx:absolute hx:-mt-20" id="poll-for-pipeline-status"&gt;&lt;/span&gt;
+&lt;a href="#poll-for-pipeline-status" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/pipeline/{pipeline-id}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Fetch pipeline metadata including &lt;code&gt;state&lt;/code&gt; (&lt;code&gt;created&lt;/code&gt;, &lt;code&gt;errored&lt;/code&gt;, &lt;code&gt;setup-pending&lt;/code&gt;, &lt;code&gt;setup&lt;/code&gt;, &lt;code&gt;pending&lt;/code&gt;, &lt;code&gt;running&lt;/code&gt;, &lt;code&gt;failing&lt;/code&gt;, &lt;code&gt;failed&lt;/code&gt;, &lt;code&gt;success&lt;/code&gt;, &lt;code&gt;canceled&lt;/code&gt;).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/pipeline/{pipeline-id}/workflow&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List the workflows in a pipeline. Used to surface workflow-level errors to the user when a run fails.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="download-the-artifact"&gt;Download the artifact&lt;span class="hx:absolute hx:-mt-20" id="download-the-artifact"&gt;&lt;/span&gt;
+&lt;a href="#download-the-artifact" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/workflow/{workflow-id}/job&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List the jobs in a workflow. Used to identify the merge job by name.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/project/{project-slug}/{job-number}/artifacts&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List artifacts for a job. Used to locate the &lt;code&gt;secrets.json&lt;/code&gt; artifact produced by the merge job.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;The artifact download itself (&lt;code&gt;url&lt;/code&gt; from the artifacts list) is a direct GET
+with the &lt;code&gt;Circle-Token&lt;/code&gt; header; no separate API client is required.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Error handling:&lt;/strong&gt; if the pipeline run does not reach &lt;code&gt;success&lt;/code&gt; within
+&lt;code&gt;--poll-timeout&lt;/code&gt; (default 10 minutes), &lt;code&gt;secrets capture&lt;/code&gt; exits with a non-zero
+status and prints the workflow and job state. The partially run pipeline is left
+in place for inspection; it is not cancelled automatically.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="runner-api-v3-self-hosted-runner-resource-classes"&gt;Runner API v3 (self-hosted runner resource classes)&lt;span class="hx:absolute hx:-mt-20" id="runner-api-v3-self-hosted-runner-resource-classes"&gt;&lt;/span&gt;
+&lt;a href="#runner-api-v3-self-hosted-runner-resource-classes" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Self-hosted runner &lt;strong&gt;resource classes&lt;/strong&gt; have been migrated since v0.3.0. The
+runner API lives on its own host — &lt;code&gt;https://runner.circleci.com&lt;/code&gt; — not on
+&lt;code&gt;circleci.com&lt;/code&gt;. The &lt;code&gt;api/runner&lt;/code&gt; client always targets &lt;code&gt;runner.circleci.com&lt;/code&gt;
+regardless of &lt;code&gt;--host&lt;/code&gt; (on Server installs the host is reused as-is). The same
+&lt;code&gt;Circle-Token&lt;/code&gt; header is used.&lt;/p&gt;
+&lt;p&gt;Resource classes are keyed by &lt;strong&gt;namespace&lt;/strong&gt;, and there is no clean
+org → namespace lookup in the API, so the namespace must be supplied
+explicitly: &lt;code&gt;--runner-namespace&lt;/code&gt; on &lt;code&gt;export&lt;/code&gt;, &lt;code&gt;--dest-runner-namespace&lt;/code&gt; on
+&lt;code&gt;sync&lt;/code&gt;. Only the class &lt;em&gt;definition&lt;/em&gt; (&lt;code&gt;resource_class&lt;/code&gt;, &lt;code&gt;description&lt;/code&gt;) is
+captured; ephemeral runner instances are intentionally ignored, and no tokens
+are exported (runner registration tokens are never returned).&lt;/p&gt;
+&lt;h3 data-hextra-search-id="read-export-phase-2"&gt;Read (export phase)&lt;span class="hx:absolute hx:-mt-20" id="read-export-phase-2"&gt;&lt;/span&gt;
+&lt;a href="#read-export-phase-2" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://runner.circleci.com/api/v3/runner/resource?namespace={ns}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List all resource classes registered under a namespace. Returns &lt;code&gt;{ &amp;quot;items&amp;quot;: [...] }&lt;/code&gt;. &lt;code&gt;namespace&lt;/code&gt; is a bare name (e.g. &lt;code&gt;acme&lt;/code&gt;), not a slug.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;| &lt;code&gt;GET&lt;/code&gt; | &lt;code&gt;https://runner.circleci.com/api/v3/runner/resource-classes?filter[org_id]={orgUUID}&lt;/code&gt; | Sync only (read): classes &lt;strong&gt;attributed to an org&lt;/strong&gt; (&lt;code&gt;references.org.id&lt;/code&gt;). Used for the same-name-namespace handoff — attribution does not follow a namespace-owner change. |
+| &lt;code&gt;GET&lt;/code&gt; | &lt;code&gt;https://app.circleci.com/api/private/orb?org-id={orgUUID}&lt;/code&gt; | Sync only (read): orbs whose namespace the org owns; each carries &lt;code&gt;namespace_name&lt;/code&gt;, which is how the syncer detects who owns a same-name namespace. |&lt;/p&gt;
+&lt;h3 data-hextra-search-id="deploys-read-only-export--sync"&gt;Deploys (read-only; export + sync)&lt;span class="hx:absolute hx:-mt-20" id="deploys-read-only-export--sync"&gt;&lt;/span&gt;
+&lt;a href="#deploys-read-only-export--sync" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;p&gt;The public Deploys v3 API is experimental and has &lt;strong&gt;no create endpoints&lt;/strong&gt;.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/api/v3/deploy/environments?filter[org_id]={orgUUID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List environments (paginated).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/api/v3/deploy/environments/{id}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;kind&lt;/code&gt; / &lt;code&gt;description&lt;/code&gt; for one environment.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/api/v3/deploy/components?filter[org_id]={orgUUID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List components with their &lt;code&gt;references.project.id&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/api/v3/deploy/settings?filter[project_id]={projectUUID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Per-project deploy/rollback pipelines.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="write-sync-phase-2"&gt;Write (sync phase)&lt;span class="hx:absolute hx:-mt-20" id="write-sync-phase-2"&gt;&lt;/span&gt;
+&lt;a href="#write-sync-phase-2" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://runner.circleci.com/api/v3/runner/resource&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a resource class in the destination namespace. Body: &lt;code&gt;{&amp;quot;resource_class&amp;quot;: &amp;quot;&amp;lt;ns&amp;gt;/&amp;lt;name&amp;gt;&amp;quot;, &amp;quot;description&amp;quot;: &amp;quot;&amp;lt;desc&amp;gt;&amp;quot;}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;DELETE&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://runner.circleci.com/api/v3/runner/resource/{id}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Delete a resource class by UUID. Used for rollback and test cleanup only.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;If the manifest contains runner classes but &lt;code&gt;--dest-runner-namespace&lt;/code&gt; is not
+supplied, each class is flagged as &lt;code&gt;manual&lt;/code&gt; in the sync report — the syncer
+never guesses the destination namespace.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="private-ciam-role-grants-and-groups-appcirclecicom"&gt;Private CIAM role-grants and groups (&lt;code&gt;app.circleci.com&lt;/code&gt;)&lt;span class="hx:absolute hx:-mt-20" id="private-ciam-role-grants-and-groups-appcirclecicom"&gt;&lt;/span&gt;
+&lt;a href="#private-ciam-role-grants-and-groups-appcirclecicom" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;These are private, unofficial endpoints.&lt;/strong&gt; See the
+&lt;a href="#private-endpoint-risk-note"&gt;private-endpoint risk note&lt;/a&gt; below.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;CIAM (Identity &amp;amp; Access Management) roles and groups are migrated for
+&lt;strong&gt;standalone &lt;code&gt;circleci/&lt;/code&gt;-type orgs only&lt;/strong&gt;. Like the CIAM group/SSO reads
+documented under &lt;a href="#private-ciam-endpoints-groups-and-sso"&gt;Organization&lt;/a&gt;, these
+endpoints are served by &lt;code&gt;app.circleci.com&lt;/code&gt; via the &lt;code&gt;api/org&lt;/code&gt; client's separate
+&lt;code&gt;app&lt;/code&gt; HTTP client. &lt;code&gt;sync&lt;/code&gt; skips this section entirely on OAuth (&lt;code&gt;gh/&lt;/code&gt;) orgs and
+when &lt;code&gt;--skip-ciam&lt;/code&gt; is passed.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="org-level-role-grants"&gt;Org-level role grants&lt;span class="hx:absolute hx:-mt-20" id="org-level-role-grants"&gt;&lt;/span&gt;
+&lt;a href="#org-level-role-grants" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List org-level role grants. Each item has &lt;code&gt;user_id&lt;/code&gt;, &lt;code&gt;email&lt;/code&gt;, &lt;code&gt;username&lt;/code&gt;, and &lt;code&gt;role&lt;/code&gt; (&lt;code&gt;org-admin&lt;/code&gt; / &lt;code&gt;org-contributor&lt;/code&gt; / &lt;code&gt;org-viewer&lt;/code&gt;). Used both to capture source grants and to resolve destination user IDs by email.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/role-grants/user/{userID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Assign an org role to a user. Body: &lt;code&gt;{&amp;quot;role&amp;quot;: &amp;quot;&amp;lt;role&amp;gt;&amp;quot;}&lt;/code&gt;. &lt;strong&gt;Automated&lt;/strong&gt; by &lt;code&gt;sync&lt;/code&gt; for users who already exist in the destination org (matched by email); unmatched users are reported as &lt;code&gt;manual&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="groups"&gt;Groups&lt;span class="hx:absolute hx:-mt-20" id="groups"&gt;&lt;/span&gt;
+&lt;a href="#groups" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/groups&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List the org's CIAM groups (&lt;code&gt;id&lt;/code&gt;, &lt;code&gt;name&lt;/code&gt;). The &amp;quot;All members&amp;quot; group's UUID equals the org ID.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/groups&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Create a group. Body: &lt;code&gt;{&amp;quot;orgId&amp;quot;: &amp;quot;...&amp;quot;, &amp;quot;name&amp;quot;: &amp;quot;...&amp;quot;, &amp;quot;description&amp;quot;: &amp;quot;...&amp;quot;}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/groups/{groupID}/add-users&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Add users to a group by UUID. Body: &lt;code&gt;{&amp;quot;user_ids&amp;quot;: [...]}&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 data-hextra-search-id="project-level-role-grants-capture--manual-only"&gt;Project-level role grants (capture / manual only)&lt;span class="hx:absolute hx:-mt-20" id="project-level-role-grants-capture--manual-only"&gt;&lt;/span&gt;
+&lt;a href="#project-level-role-grants-capture--manual-only" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List per-project &lt;strong&gt;user&lt;/strong&gt; role grants (&lt;code&gt;user_id&lt;/code&gt;, &lt;code&gt;email&lt;/code&gt;, &lt;code&gt;username&lt;/code&gt;, &lt;code&gt;role&lt;/code&gt;).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;List per-project &lt;strong&gt;group&lt;/strong&gt; role grants (&lt;code&gt;group_id&lt;/code&gt;, &lt;code&gt;role&lt;/code&gt;).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;PUT&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/role-grants/user/{userID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Assign a project role to a user. Body: &lt;code&gt;{&amp;quot;role&amp;quot;: &amp;quot;&amp;lt;role&amp;gt;&amp;quot;}&lt;/code&gt;. (Client method exists; not driven automatically — see below.)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;https://app.circleci.com/private/ciam/orgs/{orgID}/projects/{projectID}/groups&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Grant a role to groups on a project. Body: &lt;code&gt;{&amp;quot;group_ids&amp;quot;: [...], &amp;quot;role&amp;quot;: &amp;quot;&amp;lt;role&amp;gt;&amp;quot;}&lt;/code&gt;. (Client method exists; not driven automatically — see below.)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Why project-level grants are not applied automatically:&lt;/strong&gt; the destination
+project UUID is not reliably mappable from the source, so &lt;code&gt;sync&lt;/code&gt; records every
+per-project user and group grant as &lt;code&gt;manual&lt;/code&gt; and the operator recreates them on
+the destination project (tracked in
+&lt;a href="https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/179" target="_blank" rel="noopener"&gt;#179&lt;/a&gt;).
+The org-level role-grant and group write methods &lt;em&gt;are&lt;/em&gt; driven automatically.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="usage-api-async-usage-export-job"&gt;Usage API (async usage-export job)&lt;span class="hx:absolute hx:-mt-20" id="usage-api-async-usage-export-job"&gt;&lt;/span&gt;
+&lt;a href="#usage-api-async-usage-export-job" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The opt-in &lt;code&gt;export --include-usage&lt;/code&gt; flow requests a historical usage report
+from the v2 Usage API. This is an &lt;strong&gt;asynchronous job&lt;/strong&gt;: create the job, poll for
+completion, then download the resulting gzip-compressed CSV files. The window
+defaults to the last 30 days and may not exceed 31 days (server-enforced).&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Endpoint&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;POST&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organizations/{orgID}/usage_export_job&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Submit a usage-export job. Body: &lt;code&gt;{&amp;quot;start&amp;quot;: &amp;quot;&amp;lt;RFC3339&amp;gt;&amp;quot;, &amp;quot;end&amp;quot;: &amp;quot;&amp;lt;RFC3339&amp;gt;&amp;quot;, &amp;quot;shared_org_ids&amp;quot;: [...]}&lt;/code&gt; (&lt;code&gt;shared_org_ids&lt;/code&gt; optional). Returns &lt;code&gt;usage_export_job_id&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GET&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/api/v2/organizations/{orgID}/usage_export_job/{jobID}&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Poll job &lt;code&gt;state&lt;/code&gt;; when &lt;code&gt;completed&lt;/code&gt;, returns pre-signed &lt;code&gt;download_urls&lt;/code&gt;. The CLI downloads each URL into a &lt;code&gt;usage/&lt;/code&gt; sub-directory next to the manifest.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Local baseline only.&lt;/strong&gt; Usage data is a record/baseline for the source org. It
+is &lt;strong&gt;never&lt;/strong&gt; transferred to the destination by &lt;code&gt;sync&lt;/code&gt; or &lt;code&gt;migrate&lt;/code&gt;. If the
+export job fails or exceeds &lt;code&gt;--usage-timeout&lt;/code&gt; (default 10 minutes), the main
+export still succeeds and a warning is printed.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="private-endpoint-risk-note"&gt;Private-endpoint risk note&lt;span class="hx:absolute hx:-mt-20" id="private-endpoint-risk-note"&gt;&lt;/span&gt;
+&lt;a href="#private-endpoint-risk-note" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;&lt;code&gt;circleci-migrate&lt;/code&gt; is v2-first, but a handful of capabilities are only
+reachable through &lt;strong&gt;private, unofficial&lt;/strong&gt; endpoints. These are not part of the
+documented public API and &lt;strong&gt;may change or disappear without notice&lt;/strong&gt;. They are:&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Surface&lt;/th&gt;
+&lt;th&gt;Host / base&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;/api/private/project&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;circleci.com&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Project discovery for GitHub App orgs (by org UUID).&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;/private/ciam/...&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;app.circleci.com&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;CIAM groups, SSO state, and org/project role grants.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;/api/private/...&lt;/code&gt; org settings&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;circleci.com&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Org contacts and other settings not yet promoted to v2.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;graphql-unstable&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;circleci.com&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Orb-source introspection for &lt;code&gt;orb inline&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Implications for operators:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Treat any feature built on a private endpoint as best-effort. The tool records
+a warning and continues rather than aborting when one of these calls fails.&lt;/li&gt;
+&lt;li&gt;A 4xx/5xx from a private endpoint is &lt;strong&gt;not&lt;/strong&gt; necessarily a bug in the CLI — the
+endpoint contract may have shifted. Re-run with &lt;code&gt;--debug&lt;/code&gt; to capture the
+request/response, and check for a newer release.&lt;/li&gt;
+&lt;li&gt;This is the primary motivation for the planned migration off private endpoints
+(M4): public/GA replacements should be adopted as they become available.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="pagination"&gt;Pagination&lt;span class="hx:absolute hx:-mt-20" id="pagination"&gt;&lt;/span&gt;
+&lt;a href="#pagination" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;All paginated v2 endpoints follow the same pattern: the response includes a
+&lt;code&gt;next_page_token&lt;/code&gt; field. When non-empty, the next request includes
+&lt;code&gt;?page-token=&amp;lt;token&amp;gt;&lt;/code&gt;. &lt;code&gt;circleci-migrate&lt;/code&gt; fetches all pages automatically.&lt;/p&gt;
+&lt;p&gt;The private &lt;code&gt;/api/private/project&lt;/code&gt; endpoint uses the same &lt;code&gt;next_page_token&lt;/code&gt;
+pattern but requires a &lt;code&gt;page-size&lt;/code&gt; query parameter. The page size is capped at
+50 to avoid server errors.&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 data-hextra-search-id="error-handling"&gt;Error handling&lt;span class="hx:absolute hx:-mt-20" id="error-handling"&gt;&lt;/span&gt;
+&lt;a href="#error-handling" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The HTTP client (&lt;code&gt;api/rest&lt;/code&gt;) returns an &lt;code&gt;HTTPError&lt;/code&gt; for any &lt;code&gt;4xx&lt;/code&gt; or &lt;code&gt;5xx&lt;/code&gt;
+response. The tool extracts the &lt;code&gt;message&lt;/code&gt; field from JSON error bodies when
+present. Per-resource errors during export are recorded as warnings in the
+manifest rather than aborting the entire export. During sync, per-context and
+per-project errors are recorded in the report under &lt;code&gt;error&lt;/code&gt; status and the
+remaining resources continue to be processed.&lt;/p&gt;</description></item><item><title>Testing guide</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/testing/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/testing/</guid><description>
+&lt;p&gt;This document has moved. Testing instructions — including how the e2e fixtures
+are structured and how to run a manual dry-run or &lt;code&gt;--apply&lt;/code&gt; migration against a
+dummy org — now live in the &lt;strong&gt;End-to-end and manual testing&lt;/strong&gt; section of
+&lt;a href="https://github.com/AwesomeCICD/circleci-org-migration-cli/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener"&gt;CONTRIBUTING.md&lt;/a&gt;. The test topology is described in
+&lt;a href="https://github.com/AwesomeCICD/circleci-org-migration-cli/blob/main/e2e-fixtures.yaml" target="_blank" rel="noopener"&gt;&lt;code&gt;e2e-fixtures.yaml&lt;/code&gt;&lt;/a&gt; at the repo root.&lt;/p&gt;</description></item><item><title>Architecture Decision Records</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/adr/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/adr/</guid><description>
+&lt;p&gt;This directory records the significant architectural decisions for
+&lt;code&gt;circleci-migrate&lt;/code&gt;. Each ADR is a short, standalone document using the standard
+Context / Decision / Consequences / Status format.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;ADR&lt;/th&gt;
+&lt;th&gt;Title&lt;/th&gt;
+&lt;th&gt;Status&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0001-thin-rest-clients-over-sdk/"&gt;0001&lt;/a&gt;&lt;/td&gt;
+&lt;td&gt;Thin REST clients instead of a third-party SDK&lt;/td&gt;
+&lt;td&gt;Accepted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0002-inline-pipeline-config-for-secret-capture/"&gt;0002&lt;/a&gt;&lt;/td&gt;
+&lt;td&gt;Inline (unversioned) pipeline config for secret-value capture&lt;/td&gt;
+&lt;td&gt;Accepted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0003-projects-created-paused-then-enabled/"&gt;0003&lt;/a&gt;&lt;/td&gt;
+&lt;td&gt;Create projects paused, then enable them explicitly&lt;/td&gt;
+&lt;td&gt;Accepted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0004-two-client-design/"&gt;0004&lt;/a&gt;&lt;/td&gt;
+&lt;td&gt;Two-host client design (&lt;code&gt;app.circleci.com&lt;/code&gt; vs &lt;code&gt;circleci.com&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;Accepted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 data-hextra-search-id="adding-a-new-adr"&gt;Adding a new ADR&lt;span class="hx:absolute hx:-mt-20" id="adding-a-new-adr"&gt;&lt;/span&gt;
+&lt;a href="#adding-a-new-adr" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Create &lt;code&gt;NNNN-title.md&lt;/code&gt; with the next number, fill in Context / Decision /
+Consequences / Status, and add a row to the table above.&lt;/p&gt;</description></item><item><title>1. Thin REST clients instead of a third-party SDK</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0001-thin-rest-clients-over-sdk/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0001-thin-rest-clients-over-sdk/</guid><description>
+&lt;h2 data-hextra-search-id="status"&gt;Status&lt;span class="hx:absolute hx:-mt-20" id="status"&gt;&lt;/span&gt;
+&lt;a href="#status" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Accepted.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="context"&gt;Context&lt;span class="hx:absolute hx:-mt-20" id="context"&gt;&lt;/span&gt;
+&lt;a href="#context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The CLI talks to several CircleCI API surfaces (v2, v1.1, v3, the private CIAM
+BFF, and a private project-list endpoint). It is modeled structurally on
+&lt;code&gt;CircleCI-Public/circleci-cli&lt;/code&gt; so that it could one day merge into the official
+CLI. We needed to decide whether to depend on a generated or third-party Go SDK
+or to own the HTTP layer directly.&lt;/p&gt;
+&lt;p&gt;No single SDK covers all of the surfaces we use — in particular the private
+CIAM/groups endpoints and the private project-list endpoint. A heavy SDK
+dependency would also complicate an eventual merge into the official CLI and
+obscure exactly which endpoints and JSON shapes we depend on.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="decision"&gt;Decision&lt;span class="hx:absolute hx:-mt-20" id="decision"&gt;&lt;/span&gt;
+&lt;a href="#decision" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Own thin REST clients under &lt;code&gt;api/&lt;/code&gt; (&lt;code&gt;org&lt;/code&gt;, &lt;code&gt;context&lt;/code&gt;, &lt;code&gt;project&lt;/code&gt;, plus a shared
+&lt;code&gt;rest&lt;/code&gt; client). No third-party CircleCI SDK. Each client method is small and
+documents the exact endpoint, method, and request/response JSON shape it uses.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="consequences"&gt;Consequences&lt;span class="hx:absolute hx:-mt-20" id="consequences"&gt;&lt;/span&gt;
+&lt;a href="#consequences" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Full control over every request (escaped paths, methods, headers, page sizes)
+and clear visibility into which API surface each call hits.&lt;/li&gt;
+&lt;li&gt;We can mix v2, v1.1, v3, and private endpoints freely as the migration needs
+dictate, without waiting on an SDK to expose them.&lt;/li&gt;
+&lt;li&gt;We carry the maintenance cost of the HTTP layer and must track API changes
+ourselves; this is mitigated by wire-level &lt;code&gt;httptest&lt;/code&gt; tests that assert request
+details.&lt;/li&gt;
+&lt;li&gt;Aligns with the official CLI's style, easing a potential future merge.&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>2. Inline (unversioned) pipeline config for secret-value capture</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0002-inline-pipeline-config-for-secret-capture/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0002-inline-pipeline-config-for-secret-capture/</guid><description>
+&lt;h2 data-hextra-search-id="status"&gt;Status&lt;span class="hx:absolute hx:-mt-20" id="status"&gt;&lt;/span&gt;
+&lt;a href="#status" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Accepted.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="context"&gt;Context&lt;span class="hx:absolute hx:-mt-20" id="context"&gt;&lt;/span&gt;
+&lt;a href="#context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Context and project environment-variable &lt;em&gt;values&lt;/em&gt; are masked by the CircleCI
+API on read — only the variable names are returned. Migrating an org faithfully
+requires transferring the actual secret values, so we needed a way to obtain
+them without asking the operator to re-enter every secret by hand, and without
+committing any helper configuration into the source org's repositories.&lt;/p&gt;
+&lt;p&gt;A pipeline running inside the source org can read the values it has access to.
+The question was how to run such a pipeline without modifying the customer's
+committed &lt;code&gt;.circleci/config.yml&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="decision"&gt;Decision&lt;span class="hx:absolute hx:-mt-20" id="decision"&gt;&lt;/span&gt;
+&lt;a href="#decision" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;&lt;code&gt;secrets capture&lt;/code&gt; runs an &lt;strong&gt;inline (unversioned) pipeline config&lt;/strong&gt;: it
+temporarily enables &lt;code&gt;api-trigger-with-config&lt;/code&gt; (at org and project scope),
+triggers a pipeline via &lt;code&gt;POST .../pipeline/run&lt;/code&gt; with an inline &lt;code&gt;config.content&lt;/code&gt;
+that dumps the exported variable names and attached contexts to an artifact,
+polls for completion, downloads the artifact, parses the values, and aggregates
+them client-side. The &lt;code&gt;api-trigger-with-config&lt;/code&gt; setting is restored to its
+prior state afterward.&lt;/p&gt;
+&lt;p&gt;An orb (&lt;code&gt;extract_context&lt;/code&gt; / &lt;code&gt;extract_project&lt;/code&gt; jobs) provides the same capability
+as an in-pipeline alternative for teams that prefer to drive it from their own
+config.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="consequences"&gt;Consequences&lt;span class="hx:absolute hx:-mt-20" id="consequences"&gt;&lt;/span&gt;
+&lt;a href="#consequences" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Secret values can be captured with &lt;strong&gt;no committed configuration&lt;/strong&gt; in the
+customer's repositories — nothing is left behind in source control.&lt;/li&gt;
+&lt;li&gt;Requires the ability to toggle &lt;code&gt;api-trigger-with-config&lt;/code&gt;; the tool restores the
+original value to avoid leaving the org in a changed state.&lt;/li&gt;
+&lt;li&gt;The capture pipeline must run on a project; contexts can be captured via any
+project, while project env-vars run under their own project.&lt;/li&gt;
+&lt;li&gt;Values transit a pipeline artifact; this is handled with storage-access
+controls and (optionally) encryption rather than persisting plaintext longer
+than necessary.&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>3. Create projects paused, then enable them explicitly</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0003-projects-created-paused-then-enabled/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0003-projects-created-paused-then-enabled/</guid><description>
+&lt;h2 data-hextra-search-id="status"&gt;Status&lt;span class="hx:absolute hx:-mt-20" id="status"&gt;&lt;/span&gt;
+&lt;a href="#status" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Accepted.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="context"&gt;Context&lt;span class="hx:absolute hx:-mt-20" id="context"&gt;&lt;/span&gt;
+&lt;a href="#context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;When syncing to a GitHub App destination org, project creation involves a chain:
+create the project, create its pipeline-definitions, then create triggers. Once
+triggers are live, the destination project can start building on incoming
+events. During a migration the operator may not be ready for the destination
+org to react to webhooks immediately — premature builds could fire before the
+cutover is intended, or before the operator has verified the migrated
+configuration.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="decision"&gt;Decision&lt;span class="hx:absolute hx:-mt-20" id="decision"&gt;&lt;/span&gt;
+&lt;a href="#decision" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;For GitHub App destinations, create each trigger &lt;strong&gt;disabled (paused)&lt;/strong&gt; and enable
+it as a distinct, explicit step: &lt;code&gt;PATCH .../triggers {disabled:false}&lt;/code&gt;.
+Enabling builds is gated behind an interactive confirmation prompt (or &lt;code&gt;--yes&lt;/code&gt;
+for non-interactive runs). This makes &amp;quot;the destination starts building&amp;quot; a
+deliberate operator action rather than a side effect of project creation.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="consequences"&gt;Consequences&lt;span class="hx:absolute hx:-mt-20" id="consequences"&gt;&lt;/span&gt;
+&lt;a href="#consequences" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Migration can create the full destination project structure without triggering
+unintended builds, supporting a controlled cutover.&lt;/li&gt;
+&lt;li&gt;The operator gets a clear, auditable enable step and can verify the migrated
+setup before going live.&lt;/li&gt;
+&lt;li&gt;Slightly more API work (create-then-PATCH) versus creating already-enabled
+triggers, in exchange for safety during cutover.&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>4. Two-host client design (app.circleci.com vs circleci.com)</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0004-two-client-design/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/0004-two-client-design/</guid><description>
+&lt;h2 data-hextra-search-id="status"&gt;Status&lt;span class="hx:absolute hx:-mt-20" id="status"&gt;&lt;/span&gt;
+&lt;a href="#status" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Accepted.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="context"&gt;Context&lt;span class="hx:absolute hx:-mt-20" id="context"&gt;&lt;/span&gt;
+&lt;a href="#context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Different CircleCI capabilities live behind different hosts and API versions, and
+they are not interchangeable:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Most v2 work and the private project-list endpoint use the standard REST host.&lt;/li&gt;
+&lt;li&gt;The private CIAM BFF (org groups, SSO) lives on &lt;strong&gt;&lt;code&gt;app.circleci.com&lt;/code&gt;&lt;/strong&gt;.&lt;/li&gt;
+&lt;li&gt;Some org/project settings are only writable via &lt;strong&gt;v1.1 on &lt;code&gt;circleci.com&lt;/code&gt;&lt;/strong&gt; —
+notably feature-flag writes, which are a &lt;code&gt;PUT .../api/v1.1/.../settings&lt;/code&gt;. The
+equivalent &lt;code&gt;POST&lt;/code&gt; against &lt;code&gt;app.circleci.com&lt;/code&gt; returns 404 (verified live).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Treating these as one base URL led to wrong-host calls failing.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="decision"&gt;Decision&lt;span class="hx:absolute hx:-mt-20" id="decision"&gt;&lt;/span&gt;
+&lt;a href="#decision" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Model the destinations explicitly so each call is routed to the correct host and
+API version. The REST client layer distinguishes the standard host from the
+&lt;code&gt;app.circleci.com&lt;/code&gt; host, and v1.1 feature-flag writes are sent as &lt;code&gt;PUT&lt;/code&gt; to
+&lt;code&gt;circleci.com&lt;/code&gt; rather than to &lt;code&gt;app.circleci.com&lt;/code&gt;. Each client method documents
+which host/version it targets.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="consequences"&gt;Consequences&lt;span class="hx:absolute hx:-mt-20" id="consequences"&gt;&lt;/span&gt;
+&lt;a href="#consequences" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Calls land on the host that actually serves them; the v1.1-PUT-on-circleci.com
+path for feature flags is encoded once and reused, avoiding the 404 trap.&lt;/li&gt;
+&lt;li&gt;The code makes the host/version split visible at the call site, which helps
+future maintainers reason about CircleCI's heterogeneous API surface.&lt;/li&gt;
+&lt;li&gt;Adding a new capability requires knowing (and recording) which host/version
+serves it; this is a deliberate, low cost given the alternative of silent
+wrong-host failures.&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>Docs site</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/docs-site/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/contribute/docs-site/</guid><description>
+&lt;p&gt;The docs site is Hugo and the Hextra theme, built from the Markdown in this repository. CircleCI builds it on every branch and publishes it to GitHub Pages from &lt;code&gt;main&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="preview-it"&gt;Preview it&lt;span class="hx:absolute hx:-mt-20" id="preview-it"&gt;&lt;/span&gt;
+&lt;a href="#preview-it" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Install Hugo extended 0.168.0 and Go, then run:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;make site-serve &lt;span class="c1"&gt;# stage the Markdown and serve http://localhost:1313/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;make site-check &lt;span class="c1"&gt;# build, then check every link and heading anchor offline (needs lychee 0.24.2)&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Restage after you edit a page: stop the server and run &lt;code&gt;make site-serve&lt;/code&gt; again. &lt;code&gt;site/stage.sh&lt;/code&gt; copies the pages into &lt;code&gt;site/content/&lt;/code&gt; (not tracked). It never changes the sources.&lt;/p&gt;
+&lt;p&gt;Check: &lt;code&gt;make site&lt;/code&gt; ends with no warning. A warning fails the build.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="add-or-move-a-page"&gt;Add or move a page&lt;span class="hx:absolute hx:-mt-20" id="add-or-move-a-page"&gt;&lt;/span&gt;
+&lt;a href="#add-or-move-a-page" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;List the page in &lt;code&gt;site/nav.txt&lt;/code&gt;, in the group where it belongs. &lt;code&gt;site/stage.sh&lt;/code&gt; fails on a &lt;code&gt;docs/**/*.md&lt;/code&gt; file that nav.txt misses and on a listed file that does not exist. &lt;code&gt;docs/cli/*.md&lt;/code&gt; is generated: never edit it by hand.&lt;/p&gt;
+&lt;p&gt;Site-only pages, such as the plan builder, live in &lt;code&gt;site/pages/&lt;/code&gt; and are staged at the top of the site (&lt;code&gt;site/pages/plan.md&lt;/code&gt; is &lt;code&gt;/plan/&lt;/code&gt;).&lt;/p&gt;
+&lt;h2 data-hextra-search-id="how-ci-builds-and-publishes-it"&gt;How CI builds and publishes it&lt;span class="hx:absolute hx:-mt-20" id="how-ci-builds-and-publishes-it"&gt;&lt;/span&gt;
+&lt;a href="#how-ci-builds-and-publishes-it" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The workflow &lt;code&gt;docs-site&lt;/code&gt; in &lt;code&gt;.circleci/continue_config.yml&lt;/code&gt; has two jobs:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;docs-site-build&lt;/code&gt; runs on every branch with no context. It tests the plan builder (&lt;code&gt;node --test site/tests/&lt;/code&gt;), stages the Markdown, runs &lt;code&gt;hugo --minify --panicOnWarning&lt;/code&gt; and checks the links with &lt;code&gt;site/check.sh&lt;/code&gt;. Hugo, lychee and Node are pinned and SHA-256 verified.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;docs-site-publish&lt;/code&gt; runs on &lt;code&gt;main&lt;/code&gt; only, after the build. It pushes the built site to the &lt;code&gt;gh-pages&lt;/code&gt; branch with &lt;code&gt;site/publish.sh&lt;/code&gt;. Without &lt;code&gt;GITHUB_TOKEN&lt;/code&gt; it publishes nothing and says so.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="one-time-setup"&gt;One-time setup&lt;span class="hx:absolute hx:-mt-20" id="one-time-setup"&gt;&lt;/span&gt;
+&lt;a href="#one-time-setup" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ol&gt;
+&lt;li&gt;Create a CircleCI context named &lt;code&gt;docs-site-publish&lt;/code&gt; with &lt;code&gt;GITHUB_TOKEN&lt;/code&gt;, a fine-grained token with Contents: write on this repository.&lt;/li&gt;
+&lt;li&gt;Merge to &lt;code&gt;main&lt;/code&gt;. The first publish creates the &lt;code&gt;gh-pages&lt;/code&gt; branch.&lt;/li&gt;
+&lt;li&gt;Turn on GitHub Pages with &lt;code&gt;gh-pages&lt;/code&gt; and &lt;code&gt;/&lt;/code&gt; as the source:&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s1"&gt;&amp;#39;{&amp;#34;source&amp;#34;:{&amp;#34;branch&amp;#34;:&amp;#34;gh-pages&amp;#34;,&amp;#34;path&amp;#34;:&amp;#34;/&amp;#34;}}&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;|&lt;/span&gt; gh api -X POST &lt;span class="s2"&gt;&amp;#34;repos/AwesomeCICD/circleci-org-migration-cli/pages&amp;#34;&lt;/span&gt; --input -&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;If Pages already exists, use &lt;code&gt;-X PUT&lt;/code&gt;. Send the JSON body as shown: with &lt;code&gt;-f &amp;quot;source[path]=/&amp;quot;&lt;/code&gt; the API ignores the path.&lt;/p&gt;
+&lt;p&gt;Check: &lt;code&gt;https://awesomecicd.github.io/circleci-org-migration-cli/&lt;/code&gt; loads, in light and dark mode.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="moving-to-circleci-labs"&gt;Moving to CircleCI-Labs&lt;span class="hx:absolute hx:-mt-20" id="moving-to-circleci-labs"&gt;&lt;/span&gt;
+&lt;a href="#moving-to-circleci-labs" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The site works the same under the CircleCI-Labs organization. Change these four things:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;In &lt;code&gt;site/hugo.yaml&lt;/code&gt;, set &lt;code&gt;baseURL&lt;/code&gt; to &lt;code&gt;https://circleci-labs.github.io/&amp;lt;repository&amp;gt;/&lt;/code&gt; and the GitHub menu &lt;code&gt;url&lt;/code&gt; to the new repository. The footer, &lt;code&gt;stage.sh&lt;/code&gt; and &lt;code&gt;publish.sh&lt;/code&gt; read that URL.&lt;/li&gt;
+&lt;li&gt;Change the site link in &lt;code&gt;README.md&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;Create the &lt;code&gt;docs-site-publish&lt;/code&gt; context for the new project, merge to &lt;code&gt;main&lt;/code&gt;, and enable Pages again with the &lt;code&gt;gh api&lt;/code&gt; command above (new owner in the path).&lt;/li&gt;
+&lt;li&gt;Add an entry for the project to &lt;code&gt;data/projects.yaml&lt;/code&gt; in &lt;code&gt;CircleCI-Labs/circleci-labs.github.io&lt;/code&gt;, then build and push that hub.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;GitHub redirects the repository URL after a transfer, but not the old Pages path. Update the links that point to the old site.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="upgrade-a-pinned-tool"&gt;Upgrade a pinned tool&lt;span class="hx:absolute hx:-mt-20" id="upgrade-a-pinned-tool"&gt;&lt;/span&gt;
+&lt;a href="#upgrade-a-pinned-tool" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;The versions of Hugo, lychee and Node are in the &lt;code&gt;docs-site&lt;/code&gt; command and the &lt;code&gt;docs-site-build&lt;/code&gt; job. A new version needs its new SHA-256 value too, from the release checksums. The Hextra version is in &lt;code&gt;site/go.mod&lt;/code&gt; and &lt;code&gt;site/go.sum&lt;/code&gt;.&lt;/p&gt;</description></item></channel></rss>

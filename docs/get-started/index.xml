@@ -1,0 +1,399 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>CircleCI org migration – Get started</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/</link><description>Recent content in Get started on CircleCI org migration</description><generator>Hugo -- gohugo.io</generator><language>en-US</language><atom:link href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/index.xml" rel="self" type="application/rss+xml"/><item><title>Install</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/</guid><description>
+&lt;p&gt;Install with Homebrew on macOS or Linux, or download a signed binary for any platform. Then check the version.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="macos-and-linux"&gt;macOS and Linux&lt;span class="hx:absolute hx:-mt-20" id="macos-and-linux"&gt;&lt;/span&gt;
+&lt;a href="#macos-and-linux" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;brew install AwesomeCICD/tap/circleci-migrate
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate version&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;No Homebrew? Download the release archive for your platform:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;VERSION&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="k"&gt;$(&lt;/span&gt;curl -sfL https://api.github.com/repos/AwesomeCICD/circleci-org-migration-cli/releases/latest &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;|&lt;/span&gt; grep &lt;span class="s1"&gt;&amp;#39;&amp;#34;tag_name&amp;#34;&amp;#39;&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; head -1 &lt;span class="p"&gt;|&lt;/span&gt; cut -d&lt;span class="s1"&gt;&amp;#39;&amp;#34;&amp;#39;&lt;/span&gt; -f4&lt;span class="k"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;OS&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="k"&gt;$(&lt;/span&gt;uname -s &lt;span class="p"&gt;|&lt;/span&gt; tr &lt;span class="s1"&gt;&amp;#39;[:upper:]&amp;#39;&lt;/span&gt; &lt;span class="s1"&gt;&amp;#39;[:lower:]&amp;#39;&lt;/span&gt;&lt;span class="k"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;ARCH&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="k"&gt;$(&lt;/span&gt;uname -m &lt;span class="p"&gt;|&lt;/span&gt; sed &lt;span class="s1"&gt;&amp;#39;s/x86_64/amd64/; s/aarch64/arm64/&amp;#39;&lt;/span&gt;&lt;span class="k"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;curl -sfL &lt;span class="s2"&gt;&amp;#34;https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/&lt;/span&gt;&lt;span class="si"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;VERSION&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;/circleci-migrate_&lt;/span&gt;&lt;span class="si"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;VERSION&lt;/span&gt;&lt;span class="p"&gt;#v&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;_&lt;/span&gt;&lt;span class="si"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;OS&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;_&lt;/span&gt;&lt;span class="si"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;ARCH&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;.tar.gz&amp;#34;&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; tar -xz
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo install -m &lt;span class="m"&gt;0755&lt;/span&gt; circleci-migrate /usr/local/bin/
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate version&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: &lt;code&gt;version&lt;/code&gt; prints the release you installed.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="windows-powershell"&gt;Windows (PowerShell)&lt;span class="hx:absolute hx:-mt-20" id="windows-powershell"&gt;&lt;/span&gt;
+&lt;a href="#windows-powershell" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$Version&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="nb"&gt;Invoke-RestMethod&lt;/span&gt; &lt;span class="n"&gt;https&lt;/span&gt;&lt;span class="err"&gt;:&lt;/span&gt;&lt;span class="p"&gt;//&lt;/span&gt;&lt;span class="n"&gt;api&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="py"&gt;github&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="n"&gt;com&lt;/span&gt;&lt;span class="p"&gt;/&lt;/span&gt;&lt;span class="n"&gt;repos&lt;/span&gt;&lt;span class="p"&gt;/&lt;/span&gt;&lt;span class="n"&gt;AwesomeCICD&lt;/span&gt;&lt;span class="p"&gt;/&lt;/span&gt;&lt;span class="nb"&gt;circleci-org&lt;/span&gt;&lt;span class="n"&gt;-migration-cli&lt;/span&gt;&lt;span class="p"&gt;/&lt;/span&gt;&lt;span class="n"&gt;releases&lt;/span&gt;&lt;span class="p"&gt;/&lt;/span&gt;&lt;span class="n"&gt;latest&lt;/span&gt;&lt;span class="p"&gt;).&lt;/span&gt;&lt;span class="py"&gt;tag_name&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$Arch&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="nv"&gt;$env:PROCESSOR_ARCHITECTURE&lt;/span&gt; &lt;span class="o"&gt;-eq&lt;/span&gt; &lt;span class="s1"&gt;&amp;#39;ARM64&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s1"&gt;&amp;#39;arm64&amp;#39;&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s1"&gt;&amp;#39;amd64&amp;#39;&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$Zip&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;circleci-migrate_&lt;/span&gt;&lt;span class="p"&gt;$(&lt;/span&gt;&lt;span class="nv"&gt;$Version&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="py"&gt;TrimStart&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;v&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt;&lt;span class="s2"&gt;_windows_&lt;/span&gt;&lt;span class="nv"&gt;$Arch&lt;/span&gt;&lt;span class="s2"&gt;.zip&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;Invoke-WebRequest&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;https://github.com/AwesomeCICD/circleci-org-migration-cli/releases/download/&lt;/span&gt;&lt;span class="nv"&gt;$Version&lt;/span&gt;&lt;span class="s2"&gt;/&lt;/span&gt;&lt;span class="nv"&gt;$Zip&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; &lt;span class="n"&gt;-OutFile&lt;/span&gt; &lt;span class="nv"&gt;$Zip&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;Expand-Archive&lt;/span&gt; &lt;span class="nv"&gt;$Zip&lt;/span&gt; &lt;span class="n"&gt;-DestinationPath&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$env:LOCALAPPDATA&lt;/span&gt;&lt;span class="s2"&gt;\circleci-migrate&amp;#34;&lt;/span&gt; &lt;span class="n"&gt;-Force&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;&amp;amp;&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$env:LOCALAPPDATA&lt;/span&gt;&lt;span class="s2"&gt;\circleci-migrate\circleci-migrate.exe&amp;#34;&lt;/span&gt; &lt;span class="n"&gt;version&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Add &lt;code&gt;%LOCALAPPDATA%\circleci-migrate&lt;/code&gt; to your &lt;code&gt;PATH&lt;/code&gt; to run &lt;code&gt;circleci-migrate&lt;/code&gt; from anywhere. In PowerShell, set tokens with &lt;code&gt;$env:CIRCLECI_SOURCE_TOKEN = &amp;quot;&amp;lt;token&amp;gt;&amp;quot;&lt;/code&gt; instead of &lt;code&gt;export&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="with-go"&gt;With Go&lt;span class="hx:absolute hx:-mt-20" id="with-go"&gt;&lt;/span&gt;
+&lt;a href="#with-go" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;go install github.com/AwesomeCICD/circleci-org-migration-cli@latest&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;This needs Go 1.26 or later.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="verify-the-download"&gt;Verify the download&lt;span class="hx:absolute hx:-mt-20" id="verify-the-download"&gt;&lt;/span&gt;
+&lt;a href="#verify-the-download" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Every release archive has a &lt;code&gt;.bundle&lt;/code&gt; file next to it. It holds a Sigstore signature made keylessly by CircleCI's release pipeline. Download both, then verify with &lt;a href="https://docs.sigstore.dev/cosign/system_config/installation/" target="_blank" rel="noopener"&gt;cosign&lt;/a&gt; v3:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;cosign verify-blob circleci-migrate_&amp;lt;version&amp;gt;_&amp;lt;os&amp;gt;_&amp;lt;arch&amp;gt;.tar.gz &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --bundle circleci-migrate_&amp;lt;version&amp;gt;_&amp;lt;os&amp;gt;_&amp;lt;arch&amp;gt;.tar.gz.bundle &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --certificate-oidc-issuer https://oidc.circleci.com &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --certificate-identity-regexp &lt;span class="s1"&gt;&amp;#39;https://circleci\.com/api/v2/projects/.*&amp;#39;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: cosign prints &lt;code&gt;Verified OK&lt;/code&gt;. Do not run a binary that fails this check.&lt;/p&gt;
+&lt;p&gt;The certificate records the exact CircleCI pipeline definition that built the release, and the signature is logged on the public Rekor transparency log. To pin to that project, read the identity from the bundle, then replace &lt;code&gt;--certificate-identity-regexp&lt;/code&gt; with &lt;code&gt;--certificate-identity &amp;lt;url&amp;gt;&lt;/code&gt;:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;jq -r &lt;span class="s1"&gt;&amp;#39;.verificationMaterial.certificate.rawBytes&amp;#39;&lt;/span&gt; circleci-migrate_&amp;lt;version&amp;gt;_&amp;lt;os&amp;gt;_&amp;lt;arch&amp;gt;.tar.gz.bundle &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;|&lt;/span&gt; base64 -d &lt;span class="p"&gt;|&lt;/span&gt; openssl x509 -inform DER -noout -text &lt;span class="p"&gt;|&lt;/span&gt; grep URI&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;The URL has the form &lt;code&gt;https://circleci.com/api/v2/projects/&amp;lt;project-id&amp;gt;/pipeline-definitions/&amp;lt;definition-id&amp;gt;&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="behind-a-proxy-or-allowlist"&gt;Behind a proxy or allowlist&lt;span class="hx:absolute hx:-mt-20" id="behind-a-proxy-or-allowlist"&gt;&lt;/span&gt;
+&lt;a href="#behind-a-proxy-or-allowlist" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Allow these hosts for the install method you use.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Method&lt;/th&gt;
+&lt;th&gt;Hosts&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Release download&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;api.github.com&lt;/code&gt;, &lt;code&gt;github.com&lt;/code&gt;, &lt;code&gt;release-assets.githubusercontent.com&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Homebrew&lt;/td&gt;
+&lt;td&gt;The hosts above, plus &lt;code&gt;formulae.brew.sh&lt;/code&gt; and &lt;code&gt;raw.githubusercontent.com&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;go install&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;github.com&lt;/code&gt;, &lt;code&gt;proxy.golang.org&lt;/code&gt;, &lt;code&gt;sum.golang.org&lt;/code&gt;, &lt;code&gt;filippo.io&lt;/code&gt;, &lt;code&gt;golang.org&lt;/code&gt;, &lt;code&gt;gopkg.in&lt;/code&gt;, &lt;code&gt;go.yaml.in&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;If only &lt;code&gt;github.com&lt;/code&gt; is reachable, &lt;code&gt;GOPROXY=off go install github.com/AwesomeCICD/circleci-org-migration-cli@&amp;lt;version&amp;gt;&lt;/code&gt; fetches straight from the repository. Go still needs the vanity-import hosts, because it reads their &lt;code&gt;go-import&lt;/code&gt; metadata over HTTPS even with the proxy off. Behind a corporate proxy, set &lt;code&gt;HTTPS_PROXY&lt;/code&gt; or &lt;code&gt;GOPROXY=https://&amp;lt;your-proxy&amp;gt;&lt;/code&gt; first.&lt;/p&gt;
+&lt;p&gt;Building from source (&lt;code&gt;git clone&lt;/code&gt;, then &lt;code&gt;go build -o circleci-migrate .&lt;/code&gt;) needs &lt;code&gt;github.com&lt;/code&gt; for the clone and the same hosts for dependencies. The repository does not ship a &lt;code&gt;vendor/&lt;/code&gt; directory, so &lt;code&gt;GOFLAGS=-mod=vendor&lt;/code&gt; works only if you vendor the tree yourself with &lt;code&gt;go mod vendor&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="tokens-and-hosts"&gt;Tokens and hosts&lt;span class="hx:absolute hx:-mt-20" id="tokens-and-hosts"&gt;&lt;/span&gt;
+&lt;a href="#tokens-and-hosts" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Each command reads these environment variables. A flag overrides the variable.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Variable&lt;/th&gt;
+&lt;th&gt;Used for&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;CIRCLECI_SOURCE_TOKEN&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Reading the source org (&lt;code&gt;--source-token&lt;/code&gt;)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;CIRCLECI_DEST_TOKEN&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Writing the destination org (&lt;code&gt;--dest-token&lt;/code&gt;)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;CIRCLECI_CLI_TOKEN&lt;/code&gt; or &lt;code&gt;CIRCLE_TOKEN&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Fallback for both sides (&lt;code&gt;--token&lt;/code&gt;)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;GITHUB_TOKEN&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Looking up GitHub repo IDs when needed (&lt;code&gt;--github-token&lt;/code&gt;)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;CIRCLECI_CLI_HOST&lt;/code&gt;, &lt;code&gt;CIRCLECI_HOST&lt;/code&gt; or &lt;code&gt;CIRCLE_URL&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Host URL for CircleCI Server (&lt;code&gt;--host&lt;/code&gt;)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Create tokens under User Settings &amp;gt; Personal API Tokens. The token's user must be an admin of the org it acts on. The host defaults to &lt;code&gt;https://circleci.com&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="as-a-plugin-to-the-circleci-cli"&gt;As a plugin to the circleci CLI&lt;span class="hx:absolute hx:-mt-20" id="as-a-plugin-to-the-circleci-cli"&gt;&lt;/span&gt;
+&lt;a href="#as-a-plugin-to-the-circleci-cli" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;If you use the official &lt;a href="https://circleci.com/docs/local-cli/" target="_blank" rel="noopener"&gt;circleci CLI&lt;/a&gt;, run &lt;code&gt;circleci run migrate &amp;lt;args&amp;gt;&lt;/code&gt;. It starts &lt;code&gt;circleci-migrate&lt;/code&gt; from your &lt;code&gt;PATH&lt;/code&gt; and passes your configured token and host. Bare &lt;code&gt;circleci migrate&lt;/code&gt; is not supported.&lt;/p&gt;
+&lt;p&gt;Next: &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/choose/"&gt;choose your migration&lt;/a&gt;.&lt;/p&gt;</description></item><item><title>Which migration am I doing?</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/choose/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/choose/</guid><description>
+&lt;p&gt;Find your source org's slug (Organization Settings &amp;gt; Overview), then follow the arrows to a runbook. A slug starting with &lt;code&gt;gh/&lt;/code&gt; or &lt;code&gt;bb/&lt;/code&gt; is an OAuth org. A slug starting with &lt;code&gt;circleci/&lt;/code&gt; is a GitHub App or standalone org.&lt;/p&gt;
+&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart TD
+S{&amp;#34;Source org slug&amp;#34;} --&amp;gt;|&amp;#34;gh/ or bb/&amp;#34;| D1{&amp;#34;Destination slug&amp;#34;}
+S --&amp;gt;|&amp;#34;circleci/&amp;#34;| D2{&amp;#34;Destination slug&amp;#34;}
+D1 --&amp;gt;|&amp;#34;gh/ or bb/&amp;#34;| R1[&amp;#34;OAuth to OAuth&amp;#34;]
+D1 --&amp;gt;|&amp;#34;circleci/&amp;#34;| R2[&amp;#34;OAuth to GitHub App&amp;#34;]
+D2 --&amp;gt;|&amp;#34;circleci/&amp;#34;| R3[&amp;#34;App to App&amp;#34;]
+D2 --&amp;gt;|&amp;#34;gh/ or bb/&amp;#34;| R4[&amp;#34;No runbook: ask support&amp;#34;]
+M{&amp;#34;One GitHub org has both?&amp;#34;} --&amp;gt;|&amp;#34;yes&amp;#34;| T[&amp;#34;Two legs: one runbook each&amp;#34;]&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;If one GitHub org has both an OAuth record and an App record, CircleCI keeps them as two orgs. Migrate each as its own leg.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Scenario&lt;/th&gt;
+&lt;th&gt;Runbook&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Rename or consolidate GitHub OAuth orgs (&lt;code&gt;gh/&lt;/code&gt; to &lt;code&gt;gh/&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/"&gt;OAuth to OAuth&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Repos moved to a new GitHub org, OAuth on both sides&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/"&gt;OAuth to OAuth&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Bitbucket OAuth to Bitbucket OAuth (&lt;code&gt;bb/&lt;/code&gt; to &lt;code&gt;bb/&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/"&gt;OAuth to OAuth&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Legacy OAuth org to a GitHub App org (&lt;code&gt;gh/&lt;/code&gt; to &lt;code&gt;circleci/&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-app/"&gt;OAuth to GitHub App&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;GitHub App or standalone org to another (&lt;code&gt;circleci/&lt;/code&gt; to &lt;code&gt;circleci/&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/app-to-app/"&gt;App to App&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;App org, repos moved to a new GitHub org&lt;/td&gt;
+&lt;td&gt;&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/app-to-app/"&gt;App to App&lt;/a&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Mixed org: OAuth record plus App record&lt;/td&gt;
+&lt;td&gt;One runbook per leg&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;How long it takes depends on your org. Plan a freeze window long enough for the steps marked Cutover. A dry run against a test org tells you how long they take, because the secrets transfer runs one pipeline per project.&lt;/p&gt;
+&lt;p&gt;Not sure what is in your org? Run &lt;code&gt;circleci-migrate export --source-org &amp;lt;slug&amp;gt;&lt;/code&gt; and read &lt;code&gt;migration-report.md&lt;/code&gt;. It is read-only.&lt;/p&gt;
+&lt;p&gt;To get the commands filled in for your own org slugs, use the &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/plan/"&gt;plan builder&lt;/a&gt; on the docs site. It runs in your browser and never asks for a token.&lt;/p&gt;
+&lt;p&gt;Next: &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/"&gt;install the CLI&lt;/a&gt;, then see &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/"&gt;what moves&lt;/a&gt;.&lt;/p&gt;</description></item><item><title>What moves</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/</guid><description>
+&lt;p&gt;Names, structure and settings move on their own. Secret values move with one extra command. A short list has to be done by hand.&lt;/p&gt;
+&lt;p&gt;Read each row as: does it move automatically, does it need a step in your runbook, or do you do it yourself. Nothing is ever deleted from the source org.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Item&lt;/th&gt;
+&lt;th&gt;Moves automatically&lt;/th&gt;
+&lt;th&gt;Moves with a step&lt;/th&gt;
+&lt;th&gt;Do by hand&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Contexts and variable names&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Context secret values&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;secrets transfer&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Treat every value as exposed once moved: rotate it&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Context restrictions: project and expression&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt; remaps projects by name&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Context restrictions: group&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Automatic only if a group of the same name exists in the destination&lt;/td&gt;
+&lt;td&gt;Otherwise recreate in the destination UI&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Project settings&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;OAuth-only settings with no App equivalent are dropped: fork-PR builds, fork-PR secrets, &lt;code&gt;pr_only_branch_overrides&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;OSS flag&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;App projects detect it from repo visibility. For an OAuth destination with a public repo, set &amp;quot;Free and Open Source&amp;quot; in Advanced settings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Project env vars&lt;/td&gt;
+&lt;td&gt;Names via &lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Values via &lt;code&gt;secrets transfer --include-project-vars&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Additional SSH keys&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;secrets transfer --include-ssh-keys&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Checkout and deploy keys&lt;/td&gt;
+&lt;td&gt;Created when an OAuth project is followed&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Private keys are never exportable. App destinations need none. Re-add manually uploaded deploy keys on OAuth&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Pipeline definitions and triggers (App destinations)&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt; creates them, disabled&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;cutover --enable-dest&lt;/code&gt; turns them on&lt;/td&gt;
+&lt;td&gt;A plain OAuth project gets one synthesized &lt;code&gt;build-and-test&lt;/code&gt; definition. Add others by hand. Trigger names are assigned by CircleCI&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Schedules&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Webhooks&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt; recreates them&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;--webhook-secrets-out&lt;/code&gt; writes the new outbound signing secrets and inbound URLs&lt;/td&gt;
+&lt;td&gt;Give every sender and receiver the new value. Without the flag, secrets are empty&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Environments and hierarchies&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt;, by name&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;If the API rejects the write, create them under Deploys. Components appear on the first &lt;code&gt;circleci run release plan&lt;/code&gt;. Deploy history stays in the source&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Orbs and namespace&lt;/td&gt;
+&lt;td&gt;A different destination namespace is republished by &lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;A same-name namespace is moved by CircleCI support. Rewrite orb references if you changed namespace&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Runner resource classes&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync --dest-runner-namespace&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;After a same-name namespace move the classes stay attributed to the source: delete the copies, re-run &lt;code&gt;sync&lt;/code&gt;, issue new tokens&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Runner instances and tokens&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Never move. Register agents against the destination classes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Org roles and groups&lt;/td&gt;
+&lt;td&gt;App and standalone orgs, for users already in the destination (&lt;code&gt;--skip-ciam&lt;/code&gt; leaves them alone)&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Add users to the destination first, then re-run &lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Per-project role grants&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Recreate on each destination project&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;SSO (SAML)&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;DNS verification and IdP setup. New SSO users default to Viewer: set Contributor for people who trigger pipelines&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Org settings&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt;: feature flags, OIDC claims, URL-orb allow list, config policies, contacts, retention, budgets, release tracker, block-unregistered-users&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;--include-danger-flags&lt;/code&gt; after you validate&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;OpenTelemetry exporter headers, audit-log streaming&lt;/td&gt;
+&lt;td&gt;Exporter config via &lt;code&gt;sync&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Re-add header values. Recreate streams against destination-owned infrastructure&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Cloud OIDC trust policies, IP allowlists&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Update them for the new org ID and ranges&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Plan and billing&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Ask CircleCI support to move the plan. The destination should be on the Free plan and not share another org's plan&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Project API tokens&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;sync --create-project-tokens&lt;/code&gt; mints new values&lt;/td&gt;
+&lt;td&gt;Repoint every consumer of the old token&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Personal API tokens&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Each user creates their own for the new org&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Insights, build history, usage data&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;Do not move. &lt;code&gt;export --include-usage&lt;/code&gt; saves a local usage snapshot only&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;IDs and slugs&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;New project, context and pipeline IDs are assigned, and &lt;code&gt;gh/acme/web&lt;/code&gt; becomes &lt;code&gt;circleci/&amp;lt;org&amp;gt;/&amp;lt;project&amp;gt;&lt;/code&gt; for App destinations. Update anything that hard-codes the old ones&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Secret values are never readable through the API. &lt;code&gt;secrets transfer&lt;/code&gt; copies them from inside a pipeline, straight to the destination, and never writes them to disk. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/secrets/"&gt;secrets&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;Moving from OAuth to a GitHub App loses a few settings that have no equivalent. The &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-app/"&gt;OAuth to GitHub App runbook&lt;/a&gt; lists them.&lt;/p&gt;</description></item></channel></rss>

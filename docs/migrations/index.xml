@@ -1,0 +1,1099 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>CircleCI org migration – Migrations</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/</link><description>Recent content in Migrations on CircleCI org migration</description><generator>Hugo -- gohugo.io</generator><language>en-US</language><atom:link href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/index.xml" rel="self" type="application/rss+xml"/><item><title>GitHub OAuth to GitHub App</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-app/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-app/</guid><description>
+&lt;p&gt;Use this runbook to move a GitHub OAuth org (&lt;code&gt;gh/…&lt;/code&gt;) to a standalone GitHub App org (&lt;code&gt;circleci/…&lt;/code&gt;). Do the prep ahead of time, including the support requests, then run the cutover inside a freeze window.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="at-a-glance"&gt;At a glance&lt;span class="hx:absolute hx:-mt-20" id="at-a-glance"&gt;&lt;/span&gt;
+&lt;a href="#at-a-glance" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart LR
+subgraph prep [&amp;#34;Prep (days before)&amp;#34;]
+direction TB
+A[&amp;#34;Doctor, export&amp;#34;] --&amp;gt; B[&amp;#34;mapping.json,&amp;lt;br/&amp;gt;secrets context&amp;#34;] --&amp;gt; C[&amp;#34;Dry runs&amp;#34;]
+end
+subgraph before [&amp;#34;Cutover: source still live&amp;#34;]
+direction TB
+D[&amp;#34;Freeze merges,&amp;lt;br/&amp;gt;create projects&amp;#34;] --&amp;gt; E[&amp;#34;Transfer secrets&amp;#34;] --&amp;gt; F[&amp;#34;Pause source&amp;#34;]
+end
+subgraph after [&amp;#34;Cutover: destination&amp;#34;]
+direction TB
+H[&amp;#34;Add pipelines&amp;lt;br/&amp;gt;and triggers&amp;#34;] --&amp;gt; I[&amp;#34;Plan, orbs, runners&amp;#34;] --&amp;gt; J[&amp;#34;Enable destination&amp;#34;] --&amp;gt; K[&amp;#34;Smoke test, validate&amp;#34;]
+end
+prep --&amp;gt; before --&amp;gt; G[&amp;#34;Move GitHub App&amp;lt;br/&amp;gt;POINT OF NO RETURN&amp;#34;] --&amp;gt; after
+classDef ponr fill:#b42318,stroke:#7a1a12,stroke-width:2px,color:#fff
+class G ponr&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Order matters: move secrets while the source can still build, and pause the source before the App moves.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="what-moves"&gt;What moves&lt;span class="hx:absolute hx:-mt-20" id="what-moves"&gt;&lt;/span&gt;
+&lt;a href="#what-moves" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Moves automatically: contexts, projects, project and org settings, project and expression context restrictions, pipeline definitions and triggers (created disabled).&lt;/li&gt;
+&lt;li&gt;Needs a step: secret values, webhook secrets and URLs, the plan and any orb namespace (CircleCI support).&lt;/li&gt;
+&lt;li&gt;Not carried over: fork-PR builds, fork-PR secrets, the OSS flag and &lt;code&gt;pr_only_branch_overrides&lt;/code&gt; have no App equivalent. Use trigger filters in the pipeline definition, and tell contributors.&lt;/li&gt;
+&lt;li&gt;Group context restrictions resolve by group name if the group exists in the destination. Otherwise they become &lt;code&gt;manual&lt;/code&gt;: use expression or project restrictions.&lt;/li&gt;
+&lt;li&gt;Each OAuth project without an App definition gets one synthesized &lt;code&gt;build-and-test&lt;/code&gt; definition. Add other config paths by hand. Trigger names are assigned by CircleCI, not copied.&lt;/li&gt;
+&lt;li&gt;SSO, build history and Insights do not move.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The full list is in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/"&gt;what moves&lt;/a&gt;. This migration is lossy, so read it before you start.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="before-you-start"&gt;Before you start&lt;span class="hx:absolute hx:-mt-20" id="before-you-start"&gt;&lt;/span&gt;
+&lt;a href="#before-you-start" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; You are an admin of both CircleCI orgs and can install and uninstall the CircleCI GitHub App in the GitHub org.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; The destination org exists. You have its Organization ID (Organization Settings &amp;gt; Overview) and a personal API token for each org (User Settings &amp;gt; Personal API Tokens).&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; A GitHub token with &lt;code&gt;repo&lt;/code&gt; read. Any OAuth project without a captured GitHub App pipeline needs it to look up the repo ID, and preflight fails without it.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; The CLI is installed (&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/"&gt;install&lt;/a&gt;). &lt;code&gt;circleci-migrate version&lt;/code&gt; prints v0.19.0 or later.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="set-up"&gt;Set up&lt;span class="hx:absolute hx:-mt-20" id="set-up"&gt;&lt;/span&gt;
+&lt;a href="#set-up" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;SOURCE_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;gh/acme&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;dest-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG_ID&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_SOURCE_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_DEST_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;GITHUB_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;gh/acme&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;dest-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_SOURCE_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_DEST_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:GITHUB_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Commands use &lt;code&gt;\&lt;/code&gt; to continue lines. In PowerShell, end the line with a backtick instead.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="steps"&gt;Steps&lt;span class="hx:absolute hx:-mt-20" id="steps"&gt;&lt;/span&gt;
+&lt;a href="#steps" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="prep-days-before-the-cutover"&gt;Prep (days before the cutover)&lt;span class="hx:absolute hx:-mt-20" id="prep-days-before-the-cutover"&gt;&lt;/span&gt;
+&lt;a href="#prep-days-before-the-cutover" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="1-run-preflight"&gt;1. Run preflight&lt;span class="hx:absolute hx:-mt-20" id="1-run-preflight"&gt;&lt;/span&gt;
+&lt;a href="#1-run-preflight" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Catch bad tokens and unreachable orgs before you touch anything. &lt;code&gt;doctor&lt;/code&gt; is read-only.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate doctor --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: it exits 0 with no hard failures.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="2-export-the-source"&gt;2. Export the source&lt;span class="hx:absolute hx:-mt-20" id="2-export-the-source"&gt;&lt;/span&gt;
+&lt;a href="#2-export-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Export records names and structure, never secret values, and is read-only. Run it while the GitHub App is still installed on the source, so existing App pipelines are captured.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate &lt;span class="nb"&gt;export&lt;/span&gt; --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --output manifest.json --report migration-report.md&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;If you use self-hosted runners or publish orbs, add &lt;code&gt;--runner-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt; and &lt;code&gt;--orb-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Check: read &lt;code&gt;migration-report.md&lt;/code&gt; in full and note the counts of contexts, projects and project env vars.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="3-write-mappingjson"&gt;3. Write mapping.json&lt;span class="hx:absolute hx:-mt-20" id="3-write-mappingjson"&gt;&lt;/span&gt;
+&lt;a href="#3-write-mappingjson" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;The mapping tells &lt;code&gt;sync&lt;/code&gt; which org to write to. The &lt;code&gt;org&lt;/code&gt; line is all you need, because App projects are matched by name.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;cat &amp;gt; mapping.json &lt;span class="s"&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;{ &amp;#34;org&amp;#34;: { &amp;#34;from&amp;#34;: &amp;#34;$SOURCE_ORG&amp;#34;, &amp;#34;to&amp;#34;: &amp;#34;$DEST_ORG&amp;#34; } }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;EOF&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;org&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;from&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="n"&gt;to&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;ConvertTo-Json&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;Set-Content&lt;/span&gt; &lt;span class="n"&gt;mapping&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="n"&gt;json&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;If the repos also move to a new GitHub org, add &lt;code&gt;&amp;quot;github_org&amp;quot;: { &amp;quot;from&amp;quot;: &amp;quot;acme&amp;quot;, &amp;quot;to&amp;quot;: &amp;quot;acme-new&amp;quot; }&lt;/code&gt; to the file and pass &lt;code&gt;--dest-github-org acme-new&lt;/code&gt; to every &lt;code&gt;sync&lt;/code&gt; below. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/mapping/"&gt;mapping&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;Check: &lt;code&gt;mapping.json&lt;/code&gt; has &lt;code&gt;org.to&lt;/code&gt; set to the destination.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="4-create-the-migration-secrets-context"&gt;4. Create the migration-secrets context&lt;span class="hx:absolute hx:-mt-20" id="4-create-the-migration-secrets-context"&gt;&lt;/span&gt;
+&lt;a href="#4-create-the-migration-secrets-context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Secret values can only be read inside a pipeline. The transfer pipeline runs in the source org and gets the destination token from a context. In the source org, go to Organization Settings &amp;gt; Contexts and create &lt;code&gt;migration-secrets&lt;/code&gt; with one variable, &lt;code&gt;CIRCLECI_DEST_TOKEN&lt;/code&gt;, set to the destination token.&lt;/p&gt;
+&lt;p&gt;Check: the context exists in the source org with that one variable.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="5-ask-circleci-support-to-plan-the-moves"&gt;5. Ask CircleCI support to plan the moves&lt;span class="hx:absolute hx:-mt-20" id="5-ask-circleci-support-to-plan-the-moves"&gt;&lt;/span&gt;
+&lt;a href="#5-ask-circleci-support-to-plan-the-moves" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;The plan, and any same-name orb namespace, cannot move through the API. Tell support the destination org ID and the date you will move the GitHub App. The destination org must be on the Free plan and not share another org's plan.&lt;/p&gt;
+&lt;p&gt;Check: support confirms they will run it after the App moves.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="6-dry-run-the-cutover-commands"&gt;6. Dry-run the cutover commands&lt;span class="hx:absolute hx:-mt-20" id="6-dry-run-the-cutover-commands"&gt;&lt;/span&gt;
+&lt;a href="#6-dry-run-the-cutover-commands" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Every command below is a dry run until you add &lt;code&gt;--apply&lt;/code&gt;. Read each plan now.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json --skip-pipelines --skip-orb --skip-runner
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no unexplained &lt;code&gt;error&lt;/code&gt; lines. Every project shows &lt;code&gt;SKIP&lt;/code&gt; in the transfer plan because the destination projects do not exist yet. That is expected.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="cutover-inside-the-freeze-window"&gt;Cutover (inside the freeze window)&lt;span class="hx:absolute hx:-mt-20" id="cutover-inside-the-freeze-window"&gt;&lt;/span&gt;
+&lt;a href="#cutover-inside-the-freeze-window" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="7-freeze-merges-and-create-the-destination-projects"&gt;7. Freeze merges and create the destination projects&lt;span class="hx:absolute hx:-mt-20" id="7-freeze-merges-and-create-the-destination-projects"&gt;&lt;/span&gt;
+&lt;a href="#7-freeze-merges-and-create-the-destination-projects" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Stop merges in the source repos (branch protection, a merge freeze, or an announcement) so nothing lands between the transfer and the switch. Then create the projects: project env vars are written into them, so they must exist first. This creates projects, contexts and settings, but no pipelines or triggers, and needs no GitHub token.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --skip-pipelines --skip-orb --skip-runner --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: every project reports &lt;code&gt;skipped: --skip-pipelines&lt;/code&gt;, and the team confirms the freeze. Re-run the step 6 transfer dry run: no project shows &lt;code&gt;SKIP&lt;/code&gt; now.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="8-transfer-the-secrets"&gt;8. Transfer the secrets&lt;span class="hx:absolute hx:-mt-20" id="8-transfer-the-secrets"&gt;&lt;/span&gt;
+&lt;a href="#8-transfer-the-secrets" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;This runs one pipeline per source project and writes each value straight to the destination over TLS. Nothing touches disk. It must run before you pause the source, because a paused project drops the pipeline.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --enable-trigger --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the log reports every context and project pipeline succeeded. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/secrets/"&gt;secrets&lt;/a&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="9-pause-the-source"&gt;9. Pause the source&lt;span class="hx:absolute hx:-mt-20" id="9-pause-the-source"&gt;&lt;/span&gt;
+&lt;a href="#9-pause-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Pausing stops builds in the source and records every change in &lt;code&gt;cutover-state.json&lt;/code&gt;, so you can undo it. Preview first.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: every source project is listed as paused, and &lt;code&gt;cutover-state.json&lt;/code&gt; exists. Keep it until the cutover is confirmed.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="10-move-the-github-app"&gt;10. Move the GitHub App&lt;span class="hx:absolute hx:-mt-20" id="10-move-the-github-app"&gt;&lt;/span&gt;
+&lt;a href="#10-move-the-github-app" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;A GitHub org connects to one CircleCI org at a time. Uninstall the CircleCI GitHub App from the source org's connection. Then install it from the destination org on the same GitHub org, with every migrating repo selected. Each user opens the new org and clicks Authorize, then Refresh permissions if Projects is empty.&lt;/p&gt;
+&lt;div
+data-alert="caution" class="hextra-alert"
+&gt;
+&lt;p class="hextra-alert-title"&gt;&lt;svg height=20px class="hextra-alert-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"&gt;&lt;path d="M12 16h.01"/&gt;&lt;path d="M12 8v4"/&gt;&lt;path d="M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z"/&gt;&lt;/svg&gt;
+&lt;span class="hextra-alert-title-text"&gt;Caution&lt;/span&gt;
+&lt;/p&gt;
+&lt;div class="hextra-alert-content"&gt;&lt;p&gt;Point of no return. Uninstalling deletes the source org's GitHub App pipelines and triggers, and the export is the only record of them. &lt;code&gt;cutover --undo&lt;/code&gt; can no longer re-enable them.&lt;/p&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Now ask CircleCI support to move the plan to the destination org, and carry on while they work.&lt;/p&gt;
+&lt;p&gt;Check: the destination org lists every repo as connected, and support confirms the plan request. A repo that is not connected still gets a project, but its definition is created only after you connect it and re-run &lt;code&gt;sync&lt;/code&gt; in the next step.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="11-add-pipeline-definitions-and-triggers"&gt;11. Add pipeline definitions and triggers&lt;span class="hx:absolute hx:-mt-20" id="11-add-pipeline-definitions-and-triggers"&gt;&lt;/span&gt;
+&lt;a href="#11-add-pipeline-definitions-and-triggers" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;The App is connected, so definitions can be created. Triggers are created disabled. New webhook URLs and secrets go to &lt;code&gt;webhook-secrets.json&lt;/code&gt; (mode 0600).&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --skip-orb --skip-runner --apply --webhook-secrets-out webhook-secrets.json&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Answer N at the &amp;quot;Enable N trigger(s)&amp;quot; prompt. &lt;code&gt;cutover&lt;/code&gt; enables them in step 13.&lt;/p&gt;
+&lt;p&gt;Check: no line says &amp;quot;connect the repo to the GitHub App&amp;quot;. If one does, connect the repo and re-run.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="12-move-orbs-and-runners-only-if-you-use-them"&gt;12. Move orbs and runners (only if you use them)&lt;span class="hx:absolute hx:-mt-20" id="12-move-orbs-and-runners-only-if-you-use-them"&gt;&lt;/span&gt;
+&lt;a href="#12-move-orbs-and-runners-only-if-you-use-them" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;A namespace belongs to one org. Support moves a same-name namespace, and orb references need no change. For a different namespace, republish and rewrite your orb references. Resource classes are recreated, but runner instances never move, so register agents with new tokens. After a namespace move the classes stay attributed to the source: delete the copies, re-run this &lt;code&gt;sync&lt;/code&gt;, then issue new tokens.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only orb --dest-orb-namespace &amp;lt;new-namespace&amp;gt; --apply
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only runner --dest-runner-namespace &amp;lt;namespace&amp;gt; --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: runners show online in the destination, and &lt;code&gt;validate&lt;/code&gt; lists the orbs (see Verify).&lt;/p&gt;
+&lt;h4 data-hextra-search-id="13-enable-the-destination"&gt;13. Enable the destination&lt;span class="hx:absolute hx:-mt-20" id="13-enable-the-destination"&gt;&lt;/span&gt;
+&lt;a href="#13-enable-the-destination" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;This enables only the triggers that were enabled in the source. Do not run &lt;code&gt;sync --apply --yes&lt;/code&gt; here: it enables triggers without pausing the source, so both orgs build.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --enable-dest
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --enable-dest --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no project reports &lt;code&gt;manual&lt;/code&gt;. If one does, enable that trigger in Project Settings &amp;gt; Triggers. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/cutover/"&gt;cutover&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="verify"&gt;Verify&lt;span class="hx:absolute hx:-mt-20" id="verify"&gt;&lt;/span&gt;
+&lt;a href="#verify" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Push a commit to a migrated repo. Check: a pipeline starts in the destination org, runs green, and a job can read a context variable.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate validate --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --mapping mapping.json --dest-token-context migration-secrets&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;A clean report exits 0 and lists only expected &lt;code&gt;manual&lt;/code&gt; items: group context restrictions, SSO and role bindings. Add &lt;code&gt;--dest-runner-namespace&lt;/code&gt; and &lt;code&gt;--dest-orb-namespace&lt;/code&gt; to compare runners and orbs. Then clean up:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Give each webhook sender and receiver its new value from &lt;code&gt;webhook-secrets.json&lt;/code&gt;, then delete the file (it holds credentials; re-runs merge into it).&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Rotate every transferred secret. Revoke the destination token and delete the &lt;code&gt;migration-secrets&lt;/code&gt; context.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Update cloud OIDC trust policies for the new org ID and any IP allowlists. New SSO users default to Viewer: set Contributor for people who trigger pipelines.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Update service catalogs, badges, Slack apps and required status checks for the new project slugs.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="roll-back"&gt;Roll back&lt;span class="hx:absolute hx:-mt-20" id="roll-back"&gt;&lt;/span&gt;
+&lt;a href="#roll-back" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Before step 10, undo everything: this restores the source flags and triggers and disables the destination triggers it enabled.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --undo --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;After step 10, &lt;code&gt;--undo&lt;/code&gt; restores only the &lt;code&gt;drop-all-build-requests&lt;/code&gt; flag. It does not move the GitHub App. To return, uninstall the App from the destination org and reinstall it from the source.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="if-something-fails"&gt;If something fails&lt;span class="hx:absolute hx:-mt-20" id="if-something-fails"&gt;&lt;/span&gt;
+&lt;a href="#if-something-fails" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Error&lt;/th&gt;
+&lt;th&gt;Fix&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;the project has no SSH key&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;The project has no GitHub App pipeline or checkout key. Add a deploy key in Project Settings &amp;gt; SSH Keys and re-run step 8. Run it before step 10 and this rarely happens.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;source project(s) are paused&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Run the transfer before the pause, or run &lt;code&gt;cutover --undo --apply&lt;/code&gt; and retry.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Empty Projects page for a user&lt;/td&gt;
+&lt;td&gt;The user has not authorized yet. Authorize, then Refresh permissions.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;More in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/reference/troubleshooting/"&gt;troubleshooting&lt;/a&gt;. Flags: &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_sync/"&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_secrets_transfer/"&gt;&lt;code&gt;secrets transfer&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_cutover/"&gt;&lt;code&gt;cutover&lt;/code&gt;&lt;/a&gt;.&lt;/p&gt;</description></item><item><title>GitHub OAuth to GitHub OAuth</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/</guid><description>
+&lt;p&gt;Use this runbook to move one OAuth org (&lt;code&gt;gh/…&lt;/code&gt; or &lt;code&gt;bb/…&lt;/code&gt;) to another OAuth org: a rename, a consolidation, or a move to a new GitHub org. Do the prep ahead of time, then run the cutover inside a freeze window.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="at-a-glance"&gt;At a glance&lt;span class="hx:absolute hx:-mt-20" id="at-a-glance"&gt;&lt;/span&gt;
+&lt;a href="#at-a-glance" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart LR
+subgraph prep [&amp;#34;Prep (days before)&amp;#34;]
+direction TB
+A[&amp;#34;Doctor, export,&amp;lt;br/&amp;gt;mapping&amp;#34;] --&amp;gt; B[&amp;#34;Create contexts and&amp;lt;br/&amp;gt;projects (paused)&amp;#34;]
+end
+subgraph cut [&amp;#34;Cutover&amp;#34;]
+direction TB
+C[&amp;#34;Freeze merges&amp;#34;] --&amp;gt; D[&amp;#34;Transfer secrets&amp;#34;] --&amp;gt; E[&amp;#34;Pause source&amp;#34;]
+end
+prep --&amp;gt; cut --&amp;gt; F[&amp;#34;Enable destination&amp;lt;br/&amp;gt;SWITCH POINT&amp;#34;] --&amp;gt; G[&amp;#34;Smoke test,&amp;lt;br/&amp;gt;validate&amp;#34;]
+classDef sw fill:#8a6100,stroke:#5c4100,stroke-width:2px,color:#fff
+class F sw&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;There is no point of no return. The source is only paused, never changed or deleted, and &lt;code&gt;cutover --undo&lt;/code&gt; puts it back.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="what-moves"&gt;What moves&lt;span class="hx:absolute hx:-mt-20" id="what-moves"&gt;&lt;/span&gt;
+&lt;a href="#what-moves" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Moves&lt;/th&gt;
+&lt;th&gt;Needs a step&lt;/th&gt;
+&lt;th&gt;Does not move&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Contexts, projects, project and org settings, schedules&lt;/td&gt;
+&lt;td&gt;Secret values and SSH keys (&lt;code&gt;secrets transfer&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;Group context restrictions&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Project and expression context restrictions&lt;/td&gt;
+&lt;td&gt;Webhook secrets and URLs (new ones are generated)&lt;/td&gt;
+&lt;td&gt;SSO, build history, Insights&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Self-hosted runner resource classes&lt;/td&gt;
+&lt;td&gt;Orbs, runner instances (see steps 11 and 12)&lt;/td&gt;
+&lt;td&gt;Per-project role grants&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;The full list is in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/"&gt;what moves&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="before-you-start"&gt;Before you start&lt;span class="hx:absolute hx:-mt-20" id="before-you-start"&gt;&lt;/span&gt;
+&lt;a href="#before-you-start" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; You are an admin of both CircleCI orgs, and the destination org already exists.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Two personal API tokens (User Settings &amp;gt; Personal API Tokens), one per org.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; The CLI is installed (&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/"&gt;install&lt;/a&gt;). &lt;code&gt;circleci-migrate version&lt;/code&gt; prints v0.19.0 or later.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Every source project has a checkout key (Project Settings &amp;gt; SSH Keys) or a GitHub App pipeline. The transfer pipeline needs one of them.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Repos moving to a new GitHub org: a GitHub token with &lt;code&gt;repo&lt;/code&gt; read, and the secrets transfer scheduled before the repos move (step 8).&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; A freeze window agreed with the team.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="set-up"&gt;Set up&lt;span class="hx:absolute hx:-mt-20" id="set-up"&gt;&lt;/span&gt;
+&lt;a href="#set-up" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;SOURCE_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;gh/acme&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;gh/acme-new&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG_ID&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_SOURCE_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_DEST_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;GITHUB_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt; &lt;span class="c1"&gt;# only if repos move to a new GitHub org&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;gh/acme&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;gh/acme-new&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_SOURCE_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_DEST_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:GITHUB_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt; &lt;span class="c"&gt;# only if repos move to a new GitHub org&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;The destination org ID is under Organization Settings &amp;gt; Overview. Commands use &lt;code&gt;\&lt;/code&gt; to continue lines. In PowerShell, end the line with a backtick instead.&lt;/p&gt;
+&lt;div
+data-alert="tip" class="hextra-alert"
+&gt;
+&lt;p class="hextra-alert-title"&gt;&lt;svg height=20px class="hextra-alert-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"&gt;&lt;path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/&gt;&lt;path d="M9 18h6"/&gt;&lt;path d="M10 22h4"/&gt;&lt;/svg&gt;
+&lt;span class="hextra-alert-title-text"&gt;Tip&lt;/span&gt;
+&lt;/p&gt;
+&lt;div class="hextra-alert-content"&gt;&lt;p&gt;Prefer prompts? &lt;code&gt;circleci-migrate migrate&lt;/code&gt; runs export, sync, secrets transfer and validation in one guided pass. This runbook is the same flow with a pause between each step.&lt;/p&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;h2 data-hextra-search-id="steps"&gt;Steps&lt;span class="hx:absolute hx:-mt-20" id="steps"&gt;&lt;/span&gt;
+&lt;a href="#steps" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="prep"&gt;Prep&lt;span class="hx:absolute hx:-mt-20" id="prep"&gt;&lt;/span&gt;
+&lt;a href="#prep" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="1-run-preflight"&gt;1. Run preflight&lt;span class="hx:absolute hx:-mt-20" id="1-run-preflight"&gt;&lt;/span&gt;
+&lt;a href="#1-run-preflight" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Catch bad tokens and unreachable orgs early. &lt;code&gt;doctor&lt;/code&gt; is read-only.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate doctor --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: it exits 0 with no hard failures.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="2-export-the-source"&gt;2. Export the source&lt;span class="hx:absolute hx:-mt-20" id="2-export-the-source"&gt;&lt;/span&gt;
+&lt;a href="#2-export-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Export records names and structure, never secret values, and is read-only.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate &lt;span class="nb"&gt;export&lt;/span&gt; --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --output manifest.json --report migration-report.md&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Add &lt;code&gt;--runner-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt; for self-hosted runners and &lt;code&gt;--orb-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt; for orbs. Repos that were never followed in CircleCI are missing from the export. Add &lt;code&gt;--follow-all&lt;/code&gt; (needs &lt;code&gt;GITHUB_TOKEN&lt;/code&gt;) to follow them first.&lt;/p&gt;
+&lt;p&gt;Check: read &lt;code&gt;migration-report.md&lt;/code&gt; in full and note the counts of contexts, projects and project env vars.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="3-write-mappingjson"&gt;3. Write mapping.json&lt;span class="hx:absolute hx:-mt-20" id="3-write-mappingjson"&gt;&lt;/span&gt;
+&lt;a href="#3-write-mappingjson" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Without &lt;code&gt;org.to&lt;/code&gt;, &lt;code&gt;sync&lt;/code&gt; writes to your source org. The mapping prevents that.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;cat &amp;gt; mapping.json &lt;span class="s"&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;{ &amp;#34;org&amp;#34;: { &amp;#34;from&amp;#34;: &amp;#34;$SOURCE_ORG&amp;#34;, &amp;#34;to&amp;#34;: &amp;#34;$DEST_ORG&amp;#34; } }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;EOF&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;org&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;from&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="n"&gt;to&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;ConvertTo-Json&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;Set-Content&lt;/span&gt; &lt;span class="n"&gt;mapping&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="n"&gt;json&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;If the repos moved to a new GitHub org, also add &lt;code&gt;&amp;quot;github_org&amp;quot;: { &amp;quot;from&amp;quot;: &amp;quot;acme&amp;quot;, &amp;quot;to&amp;quot;: &amp;quot;acme-new&amp;quot; }&lt;/code&gt;. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/mapping/"&gt;mapping&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;Check: &lt;code&gt;mapping.json&lt;/code&gt; has &lt;code&gt;org.to&lt;/code&gt; set to the destination.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="4-create-the-migration-secrets-context"&gt;4. Create the migration-secrets context&lt;span class="hx:absolute hx:-mt-20" id="4-create-the-migration-secrets-context"&gt;&lt;/span&gt;
+&lt;a href="#4-create-the-migration-secrets-context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Secret values can only be read inside a pipeline. The transfer pipeline runs in the source org and gets the destination token from a context. In the source org, go to Organization Settings &amp;gt; Contexts and create &lt;code&gt;migration-secrets&lt;/code&gt; with one variable, &lt;code&gt;CIRCLECI_DEST_TOKEN&lt;/code&gt;, set to the destination token.&lt;/p&gt;
+&lt;p&gt;Check: the context exists in the source org with that one variable.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="5-dry-run-the-sync"&gt;5. Dry-run the sync&lt;span class="hx:absolute hx:-mt-20" id="5-dry-run-the-sync"&gt;&lt;/span&gt;
+&lt;a href="#5-dry-run-the-sync" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Without &lt;code&gt;--apply&lt;/code&gt;, nothing is written. Read the plan before you apply.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no unexpected &lt;code&gt;error&lt;/code&gt; lines. &lt;code&gt;manual&lt;/code&gt; lines for secret values are expected, because those move in step 8. Project counts match the report.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="cutover"&gt;Cutover&lt;span class="hx:absolute hx:-mt-20" id="cutover"&gt;&lt;/span&gt;
+&lt;a href="#cutover" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="6-create-the-destination-contexts-and-projects"&gt;6. Create the destination contexts and projects&lt;span class="hx:absolute hx:-mt-20" id="6-create-the-destination-contexts-and-projects"&gt;&lt;/span&gt;
+&lt;a href="#6-create-the-destination-contexts-and-projects" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;This creates contexts, projects, settings, webhooks and schedules in the destination. OAuth projects are created paused: no webhook, no builds.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --apply --webhook-secrets-out webhook-secrets.json&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Answer N at the &amp;quot;Enable builds&amp;quot; prompt. For repos in a new GitHub org, add &lt;code&gt;--dest-github-org acme-new&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Check: re-run step 5. Every line now says &lt;code&gt;exists&lt;/code&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="7-match-source-projects-to-destination-projects"&gt;7. Match source projects to destination projects&lt;span class="hx:absolute hx:-mt-20" id="7-match-source-projects-to-destination-projects"&gt;&lt;/span&gt;
+&lt;a href="#7-match-source-projects-to-destination-projects" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Secret transfer routes project values by slug, and OAuth slugs need an explicit entry per project. This overwrites &lt;code&gt;mapping.json&lt;/code&gt;, so re-add any &lt;code&gt;github_org&lt;/code&gt; line afterwards. It needs the destination token.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate mapping generate --manifest manifest.json --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --output mapping.json&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the report lists each source project under &lt;code&gt;matched&lt;/code&gt;, with none &lt;code&gt;unmatched&lt;/code&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="8-freeze-merges-then-transfer-the-secrets"&gt;8. Freeze merges, then transfer the secrets&lt;span class="hx:absolute hx:-mt-20" id="8-freeze-merges-then-transfer-the-secrets"&gt;&lt;/span&gt;
+&lt;a href="#8-freeze-merges-then-transfer-the-secrets" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Freeze merges in the source repos so the values you copy are the final ones. The transfer runs one pipeline per source project and writes each value straight to the destination over TLS. Nothing touches disk. If your repos move to a new GitHub org, run it before they move, because the pipelines check out code from the old org.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions --enable-trigger
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions --enable-trigger --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the dry run lists no &lt;code&gt;SKIP&lt;/code&gt;. The apply reports every pipeline succeeded. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/secrets/"&gt;secrets&lt;/a&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="9-pause-the-source"&gt;9. Pause the source&lt;span class="hx:absolute hx:-mt-20" id="9-pause-the-source"&gt;&lt;/span&gt;
+&lt;a href="#9-pause-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Pausing stops new builds in the source so both orgs never build the same push. Every change is recorded in &lt;code&gt;cutover-state.json&lt;/code&gt;, so you can undo it.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Add &lt;code&gt;--pause-org&lt;/code&gt; to pause the whole source org. Keep &lt;code&gt;cutover-state.json&lt;/code&gt; until you confirm the cutover.&lt;/p&gt;
+&lt;p&gt;Check: every source project is listed as paused. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/cutover/"&gt;cutover&lt;/a&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="10-enable-the-destination"&gt;10. Enable the destination&lt;span class="hx:absolute hx:-mt-20" id="10-enable-the-destination"&gt;&lt;/span&gt;
+&lt;a href="#10-enable-the-destination" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Following each project installs the GitHub webhook and deploy key, so pushes start building in the destination. &lt;code&gt;--yes&lt;/code&gt; skips the confirmation prompt. &lt;code&gt;cutover --enable-dest&lt;/code&gt; does nothing for an OAuth destination, which is why the source is paused with &lt;code&gt;cutover --pause-source&lt;/code&gt; in the step before.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply --yes&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the destination Projects page shows every project as followed.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="11-move-orbs-only-if-you-publish-orbs"&gt;11. Move orbs (only if you publish orbs)&lt;span class="hx:absolute hx:-mt-20" id="11-move-orbs-only-if-you-publish-orbs"&gt;&lt;/span&gt;
+&lt;a href="#11-move-orbs-only-if-you-publish-orbs" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;A namespace belongs to one org. Ask CircleCI support to move a same-name namespace, and orb references need no change. To publish under a different namespace instead, run:&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only orb --dest-orb-namespace &amp;lt;new-namespace&amp;gt; --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the orbs are listed by &lt;code&gt;validate&lt;/code&gt; (see Verify). If you used a new namespace, rewrite the orb references in your configs.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="12-recreate-runners-only-if-you-use-them"&gt;12. Recreate runners (only if you use them)&lt;span class="hx:absolute hx:-mt-20" id="12-recreate-runners-only-if-you-use-them"&gt;&lt;/span&gt;
+&lt;a href="#12-recreate-runners-only-if-you-use-them" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Resource classes are recreated, but runner instances never move. Register agents with new tokens.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only runner --dest-runner-namespace &amp;lt;namespace&amp;gt; --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: runners register against the destination classes and show online.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="verify"&gt;Verify&lt;span class="hx:absolute hx:-mt-20" id="verify"&gt;&lt;/span&gt;
+&lt;a href="#verify" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Push a commit to a migrated repo. Check: a pipeline starts in the destination org, runs green, and a job can read a context variable.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate validate --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --mapping mapping.json --dest-token-context migration-secrets&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;A clean report exits 0 and lists only expected &lt;code&gt;manual&lt;/code&gt; items: group context restrictions, SSO and role bindings. Add &lt;code&gt;--dest-runner-namespace&lt;/code&gt; and &lt;code&gt;--dest-orb-namespace&lt;/code&gt; to compare runners and orbs.&lt;/p&gt;
+&lt;p&gt;Then clean up:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Give each webhook sender and receiver its new value from &lt;code&gt;webhook-secrets.json&lt;/code&gt;, then delete the file.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Recreate group context restrictions in the destination UI.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Rotate every transferred secret. Rotate the destination token and delete the &lt;code&gt;migration-secrets&lt;/code&gt; context.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; If the source had &lt;code&gt;drop_all_build_requests&lt;/code&gt; or &lt;code&gt;require_context_group_restriction&lt;/code&gt; on, set them now with &lt;code&gt;sync --include-danger-flags --apply&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Update badges, Slack apps and required status checks to the new org.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="roll-back"&gt;Roll back&lt;span class="hx:absolute hx:-mt-20" id="roll-back"&gt;&lt;/span&gt;
+&lt;a href="#roll-back" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Undo restores the source flags and re-enables the source triggers it disabled.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --undo --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;&lt;code&gt;--undo&lt;/code&gt; does not unfollow destination projects. To stop destination builds, unfollow the projects in the destination UI. The source org itself is never deleted or altered beyond the pause.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="if-something-fails"&gt;If something fails&lt;span class="hx:absolute hx:-mt-20" id="if-something-fails"&gt;&lt;/span&gt;
+&lt;a href="#if-something-fails" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Error&lt;/th&gt;
+&lt;th&gt;Fix&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;the project has no SSH key&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;The source project has no checkout key or GitHub App pipeline. Add a deploy key in Project Settings &amp;gt; SSH Keys and re-run step 8.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;source project(s) are paused&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Run the transfer before the pause, or run &lt;code&gt;cutover --undo --apply&lt;/code&gt; and retry.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;SKIP&lt;/code&gt; for a project in the transfer plan&lt;/td&gt;
+&lt;td&gt;No destination project matches. Re-run steps 6 and 7.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;sync&lt;/code&gt; wrote to the source org&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;mapping.json&lt;/code&gt; has no &lt;code&gt;org.to&lt;/code&gt;. Fix it and re-run.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;No pipeline after the push&lt;/td&gt;
+&lt;td&gt;Confirm the project is followed and the GitHub webhook is installed.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;validate&lt;/code&gt; shows the &lt;code&gt;migration-secrets&lt;/code&gt; context missing&lt;/td&gt;
+&lt;td&gt;Pass &lt;code&gt;--dest-token-context migration-secrets&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;More in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/reference/troubleshooting/"&gt;troubleshooting&lt;/a&gt;. Flags: &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_sync/"&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_secrets_transfer/"&gt;&lt;code&gt;secrets transfer&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_cutover/"&gt;&lt;code&gt;cutover&lt;/code&gt;&lt;/a&gt;.&lt;/p&gt;</description></item><item><title>GitHub App to GitHub App</title><link>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/app-to-app/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/app-to-app/</guid><description>
+&lt;p&gt;Use this runbook to move one GitHub App or standalone org (&lt;code&gt;circleci/…&lt;/code&gt;) to another (&lt;code&gt;circleci/…&lt;/code&gt;): a consolidation, a split, or a move to a new GitHub org. Do the prep ahead of time, then run the cutover inside a freeze window.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="at-a-glance"&gt;At a glance&lt;span class="hx:absolute hx:-mt-20" id="at-a-glance"&gt;&lt;/span&gt;
+&lt;a href="#at-a-glance" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="cci-diagram"&gt;&lt;pre class="mermaid hx:mt-6"&gt;flowchart LR
+subgraph prep [&amp;#34;Prep (days before)&amp;#34;]
+direction TB
+A[&amp;#34;Doctor, export&amp;#34;] --&amp;gt; B[&amp;#34;mapping.json,&amp;lt;br/&amp;gt;secrets context&amp;#34;] --&amp;gt; C[&amp;#34;Dry run&amp;#34;]
+end
+subgraph before [&amp;#34;Cutover: source still live&amp;#34;]
+direction TB
+D[&amp;#34;Freeze merges,&amp;lt;br/&amp;gt;create projects&amp;#34;] --&amp;gt; E[&amp;#34;Transfer secrets&amp;#34;] --&amp;gt; F[&amp;#34;Pause source&amp;#34;]
+end
+subgraph after [&amp;#34;Cutover: destination&amp;#34;]
+direction TB
+H[&amp;#34;Add pipelines&amp;lt;br/&amp;gt;and triggers&amp;#34;] --&amp;gt; I[&amp;#34;Enable destination&amp;#34;] --&amp;gt; J[&amp;#34;Smoke test, validate&amp;#34;]
+end
+prep --&amp;gt; before --&amp;gt; G[&amp;#34;Connect repos&amp;lt;br/&amp;gt;same GitHub org: move App,&amp;lt;br/&amp;gt;POINT OF NO RETURN&amp;#34;] --&amp;gt; after
+classDef ponr fill:#b42318,stroke:#7a1a12,stroke-width:2px,color:#fff
+class G ponr&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;If your repos move to a new GitHub org, step 9 uninstalls nothing and there is no point of no return.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="what-moves"&gt;What moves&lt;span class="hx:absolute hx:-mt-20" id="what-moves"&gt;&lt;/span&gt;
+&lt;a href="#what-moves" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;Moves automatically: contexts, projects, project and org settings, pipeline definitions, triggers and schedules (created disabled), org roles and groups, runner resource classes.&lt;/li&gt;
+&lt;li&gt;Needs a step: secret values and SSH keys, webhook secrets and URLs, orbs and runner instances (step 11).&lt;/li&gt;
+&lt;li&gt;Does not move: per-project role grants, SSO, build history, and group context restrictions unless the group exists in the destination.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The full list is in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/what-moves/"&gt;what moves&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="before-you-start"&gt;Before you start&lt;span class="hx:absolute hx:-mt-20" id="before-you-start"&gt;&lt;/span&gt;
+&lt;a href="#before-you-start" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; You are an admin of both CircleCI orgs, the destination org exists, and you have a personal API token for each (User Settings &amp;gt; Personal API Tokens).&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; The CLI is installed (&lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/get-started/install/"&gt;install&lt;/a&gt;). &lt;code&gt;circleci-migrate version&lt;/code&gt; prints v0.19.0 or later.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Every user whose org role should move is already a member of the destination org. Roles apply only to existing members, matched by email. Pass &lt;code&gt;--skip-ciam&lt;/code&gt; to &lt;code&gt;sync&lt;/code&gt; to leave roles and groups alone.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Repos moving to a new GitHub org: a GitHub token with &lt;code&gt;repo&lt;/code&gt; read, and the CircleCI GitHub App installed in the new GitHub org from the destination CircleCI org.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Same GitHub org: you can install and uninstall the CircleCI GitHub App in it. A GitHub org connects to one CircleCI org at a time.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="set-up"&gt;Set up&lt;span class="hx:absolute hx:-mt-20" id="set-up"&gt;&lt;/span&gt;
+&lt;a href="#set-up" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;SOURCE_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;source-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;dest-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;DEST_ORG_ID&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_SOURCE_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;CIRCLECI_DEST_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;export&lt;/span&gt; &lt;span class="nv"&gt;GITHUB_TOKEN&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt; &lt;span class="c1"&gt;# only if repos move to a new GitHub org&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;source-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;circleci/&amp;lt;dest-org-id&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;dest-org-uuid&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_SOURCE_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;source-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:CIRCLECI_DEST_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;destination-org-admin-token&amp;gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;$env:GITHUB_TOKEN&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;&amp;lt;github-pat-with-repo-read&amp;gt;&amp;#34;&lt;/span&gt; &lt;span class="c"&gt;# only if repos move to a new GitHub org&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Find an org ID under Organization Settings &amp;gt; Overview. Commands use &lt;code&gt;\&lt;/code&gt; to continue lines. In PowerShell, end the line with a backtick instead.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="steps"&gt;Steps&lt;span class="hx:absolute hx:-mt-20" id="steps"&gt;&lt;/span&gt;
+&lt;a href="#steps" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;h3 data-hextra-search-id="prep"&gt;Prep&lt;span class="hx:absolute hx:-mt-20" id="prep"&gt;&lt;/span&gt;
+&lt;a href="#prep" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="1-run-preflight"&gt;1. Run preflight&lt;span class="hx:absolute hx:-mt-20" id="1-run-preflight"&gt;&lt;/span&gt;
+&lt;a href="#1-run-preflight" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Catch bad tokens and unreachable orgs early. &lt;code&gt;doctor&lt;/code&gt; is read-only.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate doctor --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: it exits 0 with no hard failures.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="2-export-the-source"&gt;2. Export the source&lt;span class="hx:absolute hx:-mt-20" id="2-export-the-source"&gt;&lt;/span&gt;
+&lt;a href="#2-export-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Export records names and structure, never secret values, and is read-only. Run it while the source still has its pipelines, so the definitions are captured.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate &lt;span class="nb"&gt;export&lt;/span&gt; --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --output manifest.json --report migration-report.md&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Add &lt;code&gt;--runner-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt; for self-hosted runners and &lt;code&gt;--orb-namespace &amp;lt;namespace&amp;gt;&lt;/code&gt; for orbs.&lt;/p&gt;
+&lt;p&gt;Check: read &lt;code&gt;migration-report.md&lt;/code&gt; in full and note the counts of contexts, projects and project env vars.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="3-write-mappingjson"&gt;3. Write mapping.json&lt;span class="hx:absolute hx:-mt-20" id="3-write-mappingjson"&gt;&lt;/span&gt;
+&lt;a href="#3-write-mappingjson" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Without &lt;code&gt;org.to&lt;/code&gt;, &lt;code&gt;sync&lt;/code&gt; writes to your source org. The &lt;code&gt;org&lt;/code&gt; line is all you need, because projects are matched by name.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;cat &amp;gt; mapping.json &lt;span class="s"&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;{ &amp;#34;org&amp;#34;: { &amp;#34;from&amp;#34;: &amp;#34;$SOURCE_ORG&amp;#34;, &amp;#34;to&amp;#34;: &amp;#34;$DEST_ORG&amp;#34; } }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s"&gt;EOF&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-powershell" data-lang="powershell"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;org&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="vm"&gt;@&lt;/span&gt;&lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;from&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="n"&gt;to&lt;/span&gt; &lt;span class="p"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;ConvertTo-Json&lt;/span&gt; &lt;span class="p"&gt;|&lt;/span&gt; &lt;span class="nb"&gt;Set-Content&lt;/span&gt; &lt;span class="n"&gt;mapping&lt;/span&gt;&lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="n"&gt;json&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;If the repos moved to a new GitHub org, add &lt;code&gt;&amp;quot;github_org&amp;quot;: { &amp;quot;from&amp;quot;: &amp;quot;acme&amp;quot;, &amp;quot;to&amp;quot;: &amp;quot;acme-new&amp;quot; }&lt;/code&gt; and pass &lt;code&gt;--dest-github-org acme-new&lt;/code&gt; to every &lt;code&gt;sync&lt;/code&gt; below. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/mapping/"&gt;mapping&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;Check: &lt;code&gt;mapping.json&lt;/code&gt; has &lt;code&gt;org.to&lt;/code&gt; set to the destination.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="4-create-the-migration-secrets-context"&gt;4. Create the migration-secrets context&lt;span class="hx:absolute hx:-mt-20" id="4-create-the-migration-secrets-context"&gt;&lt;/span&gt;
+&lt;a href="#4-create-the-migration-secrets-context" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Secret values can only be read inside a pipeline. The transfer pipeline runs in the source org and gets the destination token from a context. In the source org, go to Organization Settings &amp;gt; Contexts and create &lt;code&gt;migration-secrets&lt;/code&gt; with one variable, &lt;code&gt;CIRCLECI_DEST_TOKEN&lt;/code&gt;, set to the destination token.&lt;/p&gt;
+&lt;p&gt;Check: the context exists in the source org with that one variable.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="5-dry-run-the-cutover-commands"&gt;5. Dry-run the cutover commands&lt;span class="hx:absolute hx:-mt-20" id="5-dry-run-the-cutover-commands"&gt;&lt;/span&gt;
+&lt;a href="#5-dry-run-the-cutover-commands" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Every command below is a dry run until you add &lt;code&gt;--apply&lt;/code&gt;. Read each plan now.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json --skip-pipelines --skip-orb --skip-runner
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no unexplained &lt;code&gt;error&lt;/code&gt; lines. Every project shows &lt;code&gt;SKIP&lt;/code&gt; in the transfer plan because the destination projects do not exist yet. That is expected.&lt;/p&gt;
+&lt;h3 data-hextra-search-id="cutover"&gt;Cutover&lt;span class="hx:absolute hx:-mt-20" id="cutover"&gt;&lt;/span&gt;
+&lt;a href="#cutover" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h3&gt;&lt;h4 data-hextra-search-id="6-freeze-merges-and-create-the-destination-projects"&gt;6. Freeze merges and create the destination projects&lt;span class="hx:absolute hx:-mt-20" id="6-freeze-merges-and-create-the-destination-projects"&gt;&lt;/span&gt;
+&lt;a href="#6-freeze-merges-and-create-the-destination-projects" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Stop merges in the source repos so nothing lands between the transfer and the switch. Then create the projects: project env vars are written into them, so they must exist first. This creates projects, contexts, settings, org roles and groups, but no pipelines or triggers.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --skip-pipelines --skip-orb --skip-runner --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: every project reports &lt;code&gt;skipped: --skip-pipelines&lt;/code&gt;, and the team confirms the freeze. Re-run the step 5 transfer dry run: no project shows &lt;code&gt;SKIP&lt;/code&gt; now.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="7-transfer-the-secrets"&gt;7. Transfer the secrets&lt;span class="hx:absolute hx:-mt-20" id="7-transfer-the-secrets"&gt;&lt;/span&gt;
+&lt;a href="#7-transfer-the-secrets" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;This runs one pipeline per source project and writes each value straight to the destination over TLS. Nothing touches disk. It must run before you pause the source, because a paused project drops the pipeline. If your repos move to a new GitHub org, run it before they move, because the pipelines check out code from the old org.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --dest-org-id &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG_ID&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-token-context migration-secrets &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --include-project-vars --include-ssh-keys --remove-restrictions &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --enable-trigger --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the log reports every context and project pipeline succeeded. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/secrets/"&gt;secrets&lt;/a&gt;.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="8-pause-the-source"&gt;8. Pause the source&lt;span class="hx:absolute hx:-mt-20" id="8-pause-the-source"&gt;&lt;/span&gt;
+&lt;a href="#8-pause-the-source" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Pausing stops builds in the source and records every change in &lt;code&gt;cutover-state.json&lt;/code&gt;, so you can undo it. Preview first.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --pause-source --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: every source project is listed as paused, and &lt;code&gt;cutover-state.json&lt;/code&gt; exists. Keep it until the cutover is confirmed.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="9-connect-the-repos-to-the-destination"&gt;9. Connect the repos to the destination&lt;span class="hx:absolute hx:-mt-20" id="9-connect-the-repos-to-the-destination"&gt;&lt;/span&gt;
+&lt;a href="#9-connect-the-repos-to-the-destination" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Definitions can only be created for repos the destination GitHub App can see.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;New GitHub org: confirm every repo is connected in the destination org's GitHub App installation. Nothing is uninstalled.&lt;/li&gt;
+&lt;li&gt;Same GitHub org: uninstall the CircleCI GitHub App from the source org's connection, then install it from the destination org with every migrating repo selected. Users click Authorize, then Refresh permissions if Projects is empty.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div
+data-alert="caution" class="hextra-alert"
+&gt;
+&lt;p class="hextra-alert-title"&gt;&lt;svg height=20px class="hextra-alert-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"&gt;&lt;path d="M12 16h.01"/&gt;&lt;path d="M12 8v4"/&gt;&lt;path d="M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z"/&gt;&lt;/svg&gt;
+&lt;span class="hextra-alert-title-text"&gt;Caution&lt;/span&gt;
+&lt;/p&gt;
+&lt;div class="hextra-alert-content"&gt;&lt;p&gt;Same GitHub org only. Uninstalling deletes the source org's GitHub App pipelines and triggers, and the export is the only record of them. &lt;code&gt;cutover --undo&lt;/code&gt; can no longer re-enable them.&lt;/p&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: the destination org lists every repo as connected.&lt;/p&gt;
+&lt;div
+data-alert="tip" class="hextra-alert"
+&gt;
+&lt;p class="hextra-alert-title"&gt;&lt;svg height=20px class="hextra-alert-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"&gt;&lt;path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/&gt;&lt;path d="M9 18h6"/&gt;&lt;path d="M10 22h4"/&gt;&lt;/svg&gt;
+&lt;span class="hextra-alert-title-text"&gt;Tip&lt;/span&gt;
+&lt;/p&gt;
+&lt;div class="hextra-alert-content"&gt;&lt;p&gt;New GitHub org only: if you created definitions and triggers earlier (a &lt;code&gt;sync --apply&lt;/code&gt; without &lt;code&gt;--skip-pipelines&lt;/code&gt;), the pause and the enable can run as one command: &lt;code&gt;cutover --pause-source --enable-dest --apply&lt;/code&gt;. Run the transfer first.&lt;/p&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;h4 data-hextra-search-id="10-add-pipeline-definitions-and-triggers"&gt;10. Add pipeline definitions and triggers&lt;span class="hx:absolute hx:-mt-20" id="10-add-pipeline-definitions-and-triggers"&gt;&lt;/span&gt;
+&lt;a href="#10-add-pipeline-definitions-and-triggers" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;Triggers are created disabled. New webhook URLs and secrets go to &lt;code&gt;webhook-secrets.json&lt;/code&gt; (mode 0600). Answer N at the &amp;quot;Enable N trigger(s)&amp;quot; prompt, because &lt;code&gt;cutover&lt;/code&gt; enables them in step 12.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --skip-orb --skip-runner --apply --webhook-secrets-out webhook-secrets.json&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no line says &amp;quot;connect the repo to the GitHub App&amp;quot;. If one does, connect the repo and re-run.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="11-move-orbs-and-runners-only-if-you-use-them"&gt;11. Move orbs and runners (only if you use them)&lt;span class="hx:absolute hx:-mt-20" id="11-move-orbs-and-runners-only-if-you-use-them"&gt;&lt;/span&gt;
+&lt;a href="#11-move-orbs-and-runners-only-if-you-use-them" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;A namespace belongs to one org. Ask CircleCI support to move a same-name namespace, and orb references need no change. For a different namespace, republish. Resource classes are recreated, but runner instances never move, so register agents with new tokens.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only orb --dest-orb-namespace &amp;lt;new-namespace&amp;gt; --apply
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate sync --manifest manifest.json --mapping mapping.json &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --only runner --dest-runner-namespace &amp;lt;namespace&amp;gt; --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: runners show online, and &lt;code&gt;validate&lt;/code&gt; lists the orbs (see Verify). Update cloud OIDC trust policies for the new org ID.&lt;/p&gt;
+&lt;h4 data-hextra-search-id="12-enable-the-destination"&gt;12. Enable the destination&lt;span class="hx:absolute hx:-mt-20" id="12-enable-the-destination"&gt;&lt;/span&gt;
+&lt;a href="#12-enable-the-destination" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h4&gt;&lt;p&gt;This enables only the triggers that were enabled in the source. Do not run &lt;code&gt;sync --apply --yes&lt;/code&gt; here: it enables triggers without pausing the source, so both orgs build.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --enable-dest
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --enable-dest --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;Check: no project reports &lt;code&gt;manual&lt;/code&gt;. If one does, enable that trigger in Project Settings &amp;gt; Triggers. See &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/concepts/cutover/"&gt;cutover&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="verify"&gt;Verify&lt;span class="hx:absolute hx:-mt-20" id="verify"&gt;&lt;/span&gt;
+&lt;a href="#verify" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Push a commit to a migrated repo. Check: a pipeline starts in the destination org, runs green, and a job can read a context variable.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate validate --source-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$SOURCE_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; --dest-org &lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="nv"&gt;$DEST_ORG&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --mapping mapping.json --dest-token-context migration-secrets&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;A clean report exits 0 and lists only expected &lt;code&gt;manual&lt;/code&gt; items: SSO, role bindings and per-project grants. Add &lt;code&gt;--dest-runner-namespace&lt;/code&gt; and &lt;code&gt;--dest-orb-namespace&lt;/code&gt; to compare runners and orbs. Then clean up:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Give each webhook sender and receiver its new value from &lt;code&gt;webhook-secrets.json&lt;/code&gt;, then delete the file.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Recreate per-project role grants in the destination.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Rotate every transferred secret. Rotate the destination token and delete the &lt;code&gt;migration-secrets&lt;/code&gt; context.&lt;/li&gt;
+&lt;li&gt;&lt;input disabled="" type="checkbox"&gt; Update badges, Slack apps and required status checks for the new project slugs.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="roll-back"&gt;Roll back&lt;span class="hx:absolute hx:-mt-20" id="roll-back"&gt;&lt;/span&gt;
+&lt;a href="#roll-back" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;Before the App moves in step 9, undo everything. This restores the source flags and triggers and disables the destination triggers it enabled.&lt;/p&gt;
+&lt;div class="hextra-code-block hx:relative hx:mt-6 hx:first:mt-0 hx:group/code"&gt;
+&lt;div&gt;&lt;div class="highlight"&gt;&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;circleci-migrate cutover --manifest manifest.json --mapping mapping.json --undo --apply&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class="hextra-code-copy-btn-container hx:transition hx:group-hover/code:opacity-100 hx:flex hx:gap-1 hx:absolute hx:m-[11px] hx:right-0 hx:top-0"&gt;
+&lt;button
+class="hextra-code-copy-btn hx:group/copybtn hx:cursor-pointer hx:transition-all hx:active:opacity-50 hx:bg-primary-700/5 hx:border hx:border-black/5 hx:text-gray-600 hx:hover:text-gray-900 hx:rounded-md hx:p-1.5 hx:dark:bg-primary-300/10 hx:dark:border-white/10 hx:dark:text-gray-400 hx:dark:hover:text-gray-50"
+title="Copy code"
+aria-label="Copy code"
+data-copied-label="Copied!"
+&gt;
+&lt;div class="hextra-copy-icon hx:group-[.copied]/copybtn:hidden hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;div class="hextra-success-icon hx:hidden hx:group-[.copied]/copybtn:block hx:pointer-events-none hx:h-4 hx:w-4"&gt;&lt;/div&gt;
+&lt;/button&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;p&gt;After a same-GitHub-org App move, &lt;code&gt;--undo&lt;/code&gt; restores only the &lt;code&gt;drop-all-build-requests&lt;/code&gt; flag. It does not move the App. To return, uninstall it from the destination org and reinstall it from the source.&lt;/p&gt;
+&lt;h2 data-hextra-search-id="if-your-org-is-mixed-oauth-and-app"&gt;If your org is mixed (OAuth and App)&lt;span class="hx:absolute hx:-mt-20" id="if-your-org-is-mixed-oauth-and-app"&gt;&lt;/span&gt;
+&lt;a href="#if-your-org-is-mixed-oauth-and-app" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;p&gt;When one GitHub org has both integrations, CircleCI keeps two org records: &lt;code&gt;gh/&amp;lt;org&amp;gt;&lt;/code&gt; and &lt;code&gt;circleci/&amp;lt;id&amp;gt;&lt;/code&gt;. Migrate each as its own leg, with its own manifest, mapping and state file.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;OAuth leg: follow &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-app/"&gt;OAuth to GitHub App&lt;/a&gt;, or &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/migrations/oauth-to-oauth/"&gt;OAuth to OAuth&lt;/a&gt; if the destination is OAuth.&lt;/li&gt;
+&lt;li&gt;App leg: follow this runbook. Add &lt;code&gt;--skip-org-settings&lt;/code&gt; to its &lt;code&gt;sync&lt;/code&gt; commands if the first leg already wrote the org settings, and &lt;code&gt;--state cutover-state-app.json&lt;/code&gt; to every &lt;code&gt;cutover&lt;/code&gt; command.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 data-hextra-search-id="if-something-fails"&gt;If something fails&lt;span class="hx:absolute hx:-mt-20" id="if-something-fails"&gt;&lt;/span&gt;
+&lt;a href="#if-something-fails" class="subheading-anchor" aria-label="Permalink for this section"&gt;&lt;/a&gt;&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Error&lt;/th&gt;
+&lt;th&gt;Fix&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Pipeline definition is &lt;code&gt;manual&lt;/code&gt;: connect the repo&lt;/td&gt;
+&lt;td&gt;Connect the repo to the destination GitHub App and re-run &lt;code&gt;sync --apply&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;source project(s) are paused&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;Run the transfer before the pause, or run &lt;code&gt;cutover --undo --apply&lt;/code&gt; and retry.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Org roles missing in the destination&lt;/td&gt;
+&lt;td&gt;The user is not yet a destination member. Add them, then re-run &lt;code&gt;sync --apply&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Wrong repo IDs after a GitHub org move&lt;/td&gt;
+&lt;td&gt;Set &lt;code&gt;GITHUB_TOKEN&lt;/code&gt; and pass &lt;code&gt;--dest-github-org&lt;/code&gt; to &lt;code&gt;sync&lt;/code&gt;.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;More in &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/reference/troubleshooting/"&gt;troubleshooting&lt;/a&gt;. Flags: &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_sync/"&gt;&lt;code&gt;sync&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_secrets_transfer/"&gt;&lt;code&gt;secrets transfer&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://awesomecicd.github.io/circleci-org-migration-cli/docs/cli-reference/circleci-migrate_cutover/"&gt;&lt;code&gt;cutover&lt;/code&gt;&lt;/a&gt;.&lt;/p&gt;</description></item></channel></rss>
