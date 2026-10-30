@@ -117,7 +117,7 @@ fi
 echo "secrets merge: OK (SMOKE_VAR_A and SMOKE_VAR_B present in merged output)"
 
 # ---------------------------------------------------------------------------
-# 5. README curl install snippet (verbatim)
+# 5. README curl install snippet (verbatim, with this run's platform)
 #    The README installs to /usr/local/bin; we redirect to a scratch dir
 #    to avoid requiring sudo in CI while still exercising the exact download
 #    path (VERSION resolved from the GitHub API → tarball → binary).
@@ -131,7 +131,7 @@ README_VERSION=$(curl -sfL \
   | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 echo "README_VERSION resolved to: ${README_VERSION}"
 
-curl -sfL "https://github.com/${REPO}/releases/download/${README_VERSION}/circleci-migrate_${README_VERSION#v}_linux_amd64.tar.gz" \
+curl -sfL "https://github.com/${REPO}/releases/download/${README_VERSION}/circleci-migrate_${README_VERSION#v}_${PLATFORM}.tar.gz" \
   | tar -xz -C "$SCRATCH"
 
 README_BIN="${SCRATCH}/circleci-migrate"
