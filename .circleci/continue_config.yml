@@ -9,10 +9,14 @@
 #   ci          — fail-fast DAG: build+lint+coverage → test+security → e2e
 #   release     — goreleaser (tag-only, unchanged)
 #   orb-publish — dev publish (branch, orb changed) + prod publish (tag-only)
+#   docs-site   — build + check the docs site on every branch; publish it to GitHub Pages (gh-pages) on main only
 #
 # Prerequisites:
 #   Context "orb-publishing" must exist in the awesomecicd org containing:
 #     CIRCLE_TOKEN — an org-owner-scoped CircleCI personal API token
+#   Context "docs-site-publish" must exist for the docs-site workflow to publish on main. It holds
+#     GITHUB_TOKEN — a fine-grained token with Contents: write on this repository
+#     (docs/contribute/docs-site.md). Without the token the job publishes nothing and says so.
 #
 # One-time orb creation (run once by an org owner before the first publish):
 #   circleci orb create awesomecicd/circleci-org-migration \
@@ -103,6 +107,48 @@ commands:
           name: "Install << parameters.pkg >>"
           command: go install << parameters.pkg >>
 
+  docs-site:
+    description: >
+      Build and check the docs site (site/, docs/contribute/docs-site.md): Hugo extended and lychee (pinned, SHA-256 verified),
+      the staged Markdown, hugo --minify (a warning fails the build) and the offline link and anchor check. The built site is
+      in site/public afterwards. The Hextra theme comes from the Go module that site/go.mod and site/go.sum pin (GOFLAGS=-mod=readonly
+      keeps Go from changing them), and the Mermaid script from the version that site/hugo.yaml pins.
+    steps:
+      - run:
+          name: Install Hugo (extended) and lychee (SHA-256 verified)
+          command: |
+            mkdir -p "${HOME}/.local/bin"
+            # A new version needs its new SHA-256 value too (docs/contribute/docs-site.md). Renovate keeps the version only.
+            # renovate: datasource=github-releases depName=gohugoio/hugo extractVersion=^v(?<version>.*)$
+            hugo_version=0.168.0
+            hugo_sha256=787f100057328824f38c6ad7c87ff10d6451ae0a7bc39cedaad0dd2bcde17e53
+            # renovate: datasource=github-releases depName=lycheeverse/lychee extractVersion=^lychee-v(?<version>.*)$
+            lychee_version=0.24.2
+            lychee_sha256=73657a111819a30c47c08352896796f23d64e4eb2b3ed39b6d32149241566fc5
+            curl -fsSL --retry 5 --retry-all-errors -o /tmp/hugo.tgz \
+              "https://github.com/gohugoio/hugo/releases/download/v${hugo_version}/hugo_extended_${hugo_version}_linux-amd64.tar.gz"
+            echo "${hugo_sha256}  /tmp/hugo.tgz" | sha256sum -c -
+            tar -xzf /tmp/hugo.tgz -C "${HOME}/.local/bin" hugo
+            curl -fsSL --retry 5 --retry-all-errors -o /tmp/lychee.tgz \
+              "https://github.com/lycheeverse/lychee/releases/download/lychee-v${lychee_version}/lychee-x86_64-unknown-linux-musl.tar.gz"
+            echo "${lychee_sha256}  /tmp/lychee.tgz" | sha256sum -c -
+            tar -xzf /tmp/lychee.tgz -C "${HOME}/.local/bin" --strip-components=1 lychee-x86_64-unknown-linux-musl/lychee
+            echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "${BASH_ENV}"
+            "${HOME}/.local/bin/hugo" version
+            "${HOME}/.local/bin/lychee" --version
+      - run:
+          name: Stage the Markdown as Hugo content (site/stage.sh)
+          command: site/stage.sh
+      - run:
+          name: hugo --minify (warnings fail the build)
+          working_directory: site
+          environment:
+            GOFLAGS: -mod=readonly
+          command: hugo --minify --panicOnWarning
+      - run:
+          name: lychee --offline on the built site (links and heading anchors, site/check.sh)
+          command: site/check.sh
+
 jobs:
   # ===========================================================================
   # WAVE A — Lint (run in parallel with build matrix + coverage, no prerequisites)
@@ -154,9 +200,10 @@ jobs:
           name: doc-flags-check (hand-written docs staleness gate)
           command: |
             # Fail if a released flag in the generated docs/cli/ reference is
-            # not mentioned in the hand-written docs/guide.md walkthrough.
+            # not mentioned in the hand-written docs (docs/ minus docs/cli/,
+            # plus README.md; docs/reference/flags.md lists every flag).
             # Guards against the v0.5-v0.7 doc drift the audit flagged (H3/D2).
-            ./scripts/check-doc-flags.sh docs/cli docs/guide.md
+            ./scripts/check-doc-flags.sh docs/cli docs README.md
       - run:
           name: skill-commands-check (skills/ staleness gate)
           command: |
@@ -710,7 +757,7 @@ jobs:
           # identity URI. The actual subject is:
           #   https://circleci.com/api/v2/projects/<CIRCLE_PROJECT_ID>/pipeline-definitions/<def-id>
           # For the proof job '.*' is sufficient; production verification should
-          # pin the exact project-ID URI (see docs/guide.md Verifying releases).
+          # pin the exact project-ID URI (see docs/get-started/install.md).
           command: |
             ~/go/bin/cosign verify-blob testblob \
               --bundle testblob.bundle \
@@ -912,6 +959,72 @@ jobs:
                     awesomecicd/circleci-org-migration@${semver} \
                     --token "$CIRCLE_TOKEN"
 
+  # ===========================================================================
+  # Docs site (docs/contribute/docs-site.md). Its own workflow, `docs-site`, so that the release never waits for it.
+  # ===========================================================================
+
+  docs-site-build:
+    description: >
+      The docs site builds and its links work: site/stage.sh, hugo --minify and site/check.sh. Runs on every branch. The unit
+      tests of the plan builder (node --test site/tests/*.test.mjs) run with a pinned Node 24 LTS from nodejs.org, SHA-256 verified. The
+      site is stored as the artifact docs-site.tgz and kept in the workspace for docs-site-publish. The job has NO context:
+      no token is in the environment of Hugo, lychee, the Go modules or the scripts of site/.
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install Node 24 LTS (SHA-256 verified)
+          command: |
+            # A new version needs its new SHA-256 value too (docs/contribute/docs-site.md). Renovate keeps the version only.
+            # renovate: datasource=node-version depName=node extractVersion=^v(?<version>.*)$ versioning=node
+            node_version=24.21.0
+            node_sha256=6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff
+            curl -fsSL --retry 5 --retry-all-errors -o /tmp/node.tgz \
+              "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-x64.tar.gz"
+            echo "${node_sha256}  /tmp/node.tgz" | sha256sum -c -
+            mkdir -p "${HOME}/.local/node"
+            tar -xzf /tmp/node.tgz -C "${HOME}/.local/node" --strip-components=1
+            echo 'export PATH="${HOME}/.local/node/bin:${PATH}"' >> "${BASH_ENV}"
+            "${HOME}/.local/node/bin/node" --version
+      - run:
+          name: Test the plan builder (node --test site/tests/*.test.mjs)
+          command: |
+            if [ -d site/tests ]; then
+              node --test site/tests/*.test.mjs
+            else
+              echo "no site/tests: nothing to test"
+            fi
+      - docs-site
+      - run:
+          name: Pack the site
+          command: |
+            mkdir -p /tmp/docs-site
+            tar -czf /tmp/docs-site/docs-site.tgz -C site/public .
+      - store_artifacts:
+          path: /tmp/docs-site
+          destination: docs-site
+      - persist_to_workspace:
+          root: site
+          paths: [public]
+
+  docs-site-publish:
+    description: >
+      Pushes the site that docs-site-build built to the gh-pages branch (site/publish.sh). Runs on main only. The context
+      docs-site-publish holds GITHUB_TOKEN (a fine-grained token with Contents: write on this repository). Without it the job
+      publishes nothing and says so. The job does not build: no token is in the environment of Hugo or lychee.
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-image-tag >>
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace:
+          at: site
+      - run:
+          name: Publish to gh-pages (nothing is published without GITHUB_TOKEN)
+          command: site/publish.sh
+
 workflows:
   # ---------------------------------------------------------------------------
   # release-please — fires on pushes to main ONLY (never on tags, never on PRs).
@@ -924,6 +1037,30 @@ workflows:
       - release-please:
           context:
             - goreleaser
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+
+  # ---------------------------------------------------------------------------
+  # Docs site (docs/contribute/docs-site.md): build and check on every branch, publish to GitHub Pages on main only.
+  # A workflow of its own, so that no ci job has to wait for it. Every job ignores tags (the setup pipeline continues on
+  # tags, for the release). One publication at a time, so that two quick merges cannot push to gh-pages together.
+  # Prerequisite: the context docs-site-publish holds GITHUB_TOKEN (Contents: write on this repository).
+  # ---------------------------------------------------------------------------
+  docs-site:
+    jobs:
+      - docs-site-build:
+          filters:
+            tags:
+              ignore: /.*/
+      - docs-site-publish:
+          requires:
+            - docs-site-build
+          context:
+            - docs-site-publish
+          serial-group: << pipeline.project.slug >>/docs-site-publish
           filters:
             branches:
               only: main

@@ -1,0 +1,96 @@
+{{- /*
+  Landing page: hero, feature cards (why), the three migrations, a short first-steps path, and a support notice.
+  The content of README.md is not shown here: it is the repository landing page on GitHub.
+*/ -}}
+{{ define "main" }}
+  {{- $home := site.Params.home -}}
+  {{- $repo := partial "repo-url.html" . -}}
+
+  {{ partial "sidebar.html" (dict "context" . "disableSidebar" true) }}
+  <main id="content" class="cci-home">
+    {{ partial "custom/page-begin.html" . }}
+
+    <section class="cci-hero" aria-labelledby="cci-hero-title">
+      <div class="cci-wrap cci-hero-grid">
+        <div class="cci-hero-copy">
+          <h1 id="cci-hero-title" class="cci-mega">{{ $home.title }}</h1>
+          <p class="cci-hero-tagline">{{ $home.tagline }}</p>
+          <p class="cci-hero-lead">{{ $home.lead }}</p>
+          <div class="cci-actions">
+            <a class="cci-btn cci-btn-primary" href="{{ "plan/" | relURL }}">Build your plan {{ partial "utils/icon.html" (dict "name" "arrow-right" "attributes" `height=20 aria-hidden="true"`) }}</a>
+            <a class="cci-btn cci-btn-secondary" href="{{ "docs/get-started/choose/" | relURL }}">Choose a migration</a>
+          </div>
+        </div>
+
+        <div class="cci-hero-art">
+          <span class="cci-jelly" aria-hidden="true">{{ (resources.Get "icons/jelly-pixel-default.svg").Content | safeHTML }}</span>
+          <figure class="cci-terminal" aria-label="The commands of a migration">
+            <figcaption><span>Terminal</span></figcaption>
+<pre><code><span class="cci-t-prompt">$</span> circleci-migrate export --source-org "$SOURCE_ORG"
+<span class="cci-t-prompt">$</span> circleci-migrate sync --manifest manifest.json --apply
+<span class="cci-t-prompt">$</span> circleci-migrate cutover --manifest manifest.json --pause-source</code></pre>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="cci-features" aria-labelledby="cci-features-title">
+      <div class="cci-wrap">
+        <h2 id="cci-features-title" class="cci-section-title">Why circleci-migrate</h2>
+        <ul class="cci-cards">
+          {{- range $home.features }}
+            <li class="cci-card">
+              <span class="cci-card-icon" aria-hidden="true">{{ (resources.Get (printf "icons/lucide/%s.svg" .icon)).Content | safeHTML }}</span>
+              <h3>{{ .title }}</h3>
+              <p>{{ .text }}</p>
+              <a class="cci-tertiary" href="{{ .link | relURL }}">{{ .linkText }} {{ partial "utils/icon.html" (dict "name" "arrow-right" "attributes" `height=18 aria-hidden="true"`) }}</a>
+            </li>
+          {{- end }}
+        </ul>
+      </div>
+    </section>
+
+    <section class="cci-readme">
+      <div class="cci-wrap cci-readme-wrap">
+        <div class="content cci-prose">
+          <h2 id="cci-migrations-title" data-hextra-search-id="pick-your-migration">Pick your migration</h2>
+          <p>Each runbook is one page of steps with copy-paste commands. Not sure which one you need? <a href="{{ "docs/get-started/choose/" | relURL }}">Choose a migration</a>.</p>
+          <table>
+            <thead><tr><th>You are moving</th><th>Runbook</th></tr></thead>
+            <tbody>
+              <tr><td>A GitHub OAuth org to a standalone GitHub App org</td><td><a href="{{ "docs/migrations/oauth-to-app/" | relURL }}">OAuth to GitHub App</a></td></tr>
+              <tr><td>A GitHub or Bitbucket OAuth org to another OAuth org</td><td><a href="{{ "docs/migrations/oauth-to-oauth/" | relURL }}">OAuth to OAuth</a></td></tr>
+              <tr><td>A GitHub App or standalone org to another standalone org</td><td><a href="{{ "docs/migrations/app-to-app/" | relURL }}">App to App</a></td></tr>
+            </tbody>
+          </table>
+
+          <section class="cci-first-job" aria-labelledby="cci-first-job-title">
+            <h2 id="cci-first-job-title" data-hextra-search-id="your-first-steps">Your first steps</h2>
+            <ol>
+              <li><a href="{{ "docs/get-started/install/" | relURL }}">Install circleci-migrate</a> and verify the signature of the release.</li>
+              <li>Open the <a href="{{ "plan/" | relURL }}">plan builder</a>, enter your source and destination orgs, and get your commands in order. Or follow a runbook above.</li>
+              <li>Run <code>export</code> and a dry run of <code>sync</code> first. Nothing changes in either org until you pass <code>--apply</code>.</li>
+            </ol>
+            <p class="cci-first-job-more">What moves by itself, what needs a step and what you do by hand is in <a href="{{ "docs/get-started/what-moves/" | relURL }}">What moves</a>.</p>
+          </section>
+
+          <section id="support" aria-labelledby="cci-support-title">
+            <h2 id="cci-support-title" data-hextra-search-id="support">Support</h2>
+            <p>CircleCI support does not cover circleci-migrate. Field engineers handle issues on a best-effort basis, without an SLA.</p>
+            <table>
+              <thead><tr><th>You have</th><th>Go to</th></tr></thead>
+              <tbody>
+                <tr><td>A bug or a feature request</td><td><a href="{{ $repo }}/issues">GitHub issues</a></td></tr>
+                <tr><td>A question</td><td><a href="https://discuss.circleci.com/">CircleCI Discuss</a></td></tr>
+                <tr><td>A problem with the CircleCI platform itself</td><td><a href="https://support.circleci.com/hc/en-us">CircleCI support</a></td></tr>
+                <tr><td>A security vulnerability</td><td><a href="mailto:security@circleci.com">security@circleci.com</a>, never a public issue</td></tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    {{ partial "custom/page-end.html" . }}
+  </main>
+{{ end }}

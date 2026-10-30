@@ -29,6 +29,27 @@ docs-check: docs
 	fi
 	@echo "docs-check: OK (no diff)"
 
+# ---------------------------------------------------------------------------
+# Docs site (site/, docs/contribute/docs-site.md). Needs Hugo extended 0.168.0 and Go; site-check also needs lychee.
+# ---------------------------------------------------------------------------
+
+# site stages the Markdown and builds the site into site/public (warnings fail the build, as in CI).
+.PHONY: site
+site:
+	site/stage.sh
+	cd site && GOFLAGS=-mod=readonly hugo --minify --panicOnWarning
+
+# site-serve stages the Markdown and serves the site at http://localhost:1313/ (restage after you edit a page).
+.PHONY: site-serve
+site-serve:
+	site/stage.sh
+	cd site && GOFLAGS=-mod=readonly hugo server --baseURL http://localhost:1313/ --disableFastRender
+
+# site-check builds the site and checks its links and heading anchors offline.
+.PHONY: site-check
+site-check: site
+	site/check.sh
+
 BINARY   := circleci-migrate
 GOOS     := $(shell go env GOOS)
 GOARCH   := $(shell go env GOARCH)

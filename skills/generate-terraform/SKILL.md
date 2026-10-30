@@ -290,7 +290,7 @@ surprises.
 
 ## See also
 
-- [docs/guide.md](../../docs/guide.md) — full step-by-step walkthrough with all scenarios
-- [docs/cutover-runbook.md](../../docs/cutover-runbook.md) — operator checklist
+- [docs/reference/terraform.md](../../docs/reference/terraform.md) — Terraform output, flags and gap-fill
+- [docs/migrations/](../../docs/migrations/) — the migration runbooks
 - [run-migration/SKILL.md](../run-migration/SKILL.md) — full export → sync orchestrator
 - [capture-secrets/SKILL.md](../capture-secrets/SKILL.md) — secrets capture workflow

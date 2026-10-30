@@ -11,7 +11,7 @@ CLI reference (`docs/cli/`).
 
 ```
 skills/
-  run-migration/SKILL.md          Orchestrator: phases mapped 1:1 to docs/guide.md.
+  run-migration/SKILL.md          Orchestrator: follows the runbooks in docs/migrations/.
                                   Delegates to the other skills. TTY-aware (prefers
                                   the guided walkthrough when interactive; flags when
                                   scripted).
@@ -25,7 +25,7 @@ skills/
   apply-inline-orbs/SKILL.md      Wraps `orb inline`: per-repo PR loop for the
                                   namespace overlap window, post-cutover revert.
 
-  cutover/SKILL.md                Wraps docs/cutover-runbook.md: validation,
+  cutover/SKILL.md                Wraps docs/concepts/cutover.md: validation,
                                   enable-builds sequencing, secret rotation,
                                   decommission.
 
@@ -57,7 +57,7 @@ Every skill follows the conventions from the Labs migrator reference implementat
    - Route all writes through dry-run first
 
 5. **See also** — each skill ends by pointing at the matching documentation
-   (`docs/guide.md`, `docs/cutover-runbook.md`, `docs/cli/` reference).
+   (`docs/migrations/`, `docs/concepts/`, `docs/cli/` reference).
 
 ---
 
@@ -66,7 +66,7 @@ Every skill follows the conventions from the Labs migrator reference implementat
 Every `circleci-migrate` command referenced in `skills/**/*.md` is checked
 by `scripts/check-skill-commands.sh` against the generated CLI reference in
 `docs/cli/`. The check fails if a referenced subcommand or flag is absent from
-the reference docs — the same pattern that protects `docs/guide.md` via
+the reference docs — the same pattern that protects the hand-written docs via
 `scripts/check-doc-flags.sh`.
 
 Run locally:

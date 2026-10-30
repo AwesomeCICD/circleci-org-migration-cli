@@ -296,8 +296,7 @@ must depend on the matrix `alias`, not on individual job names. Add
 
 ## See also
 
-- [docs/guide.md § Step 2 — Capture secret values](../../docs/guide.md#5-step-2--capture-secret-values)
-- [docs/cutover-runbook.md § Step 2](../../docs/cutover-runbook.md#step-2--capture-secret-values-recommended-guided-secrets-capture)
+- [docs/concepts/secrets.md](../../docs/concepts/secrets.md) — transfer vs capture, security notes
 - [CLI reference: secrets capture](../../docs/cli/circleci-migrate_secrets_capture.md)
 - [CLI reference: secrets decrypt](../../docs/cli/circleci-migrate_secrets_decrypt.md)
 - [CLI reference: secrets merge](../../docs/cli/circleci-migrate_secrets_merge.md)

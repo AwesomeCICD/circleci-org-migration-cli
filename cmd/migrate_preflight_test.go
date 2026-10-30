@@ -175,8 +175,8 @@ func TestCheckCrossType_DifferentTypes(t *testing.T) {
 	if !strings.Contains(r.Detail, "cross-type") {
 		t.Errorf("detail should mention 'cross-type': %q", r.Detail)
 	}
-	if !strings.Contains(r.Detail, "playbooks") {
-		t.Errorf("detail should mention 'playbooks' doc link: %q", r.Detail)
+	if !strings.Contains(r.Detail, "docs/migrations") {
+		t.Errorf("detail should mention 'docs/migrations' doc link: %q", r.Detail)
 	}
 }
 

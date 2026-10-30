@@ -160,5 +160,5 @@ size.
 
 ## See also
 
-- [docs/guide.md § Orb-based alternative](../../docs/guide.md#orb-based-alternative-committed-config)
+- [docs/concepts/secrets.md](../../docs/concepts/secrets.md) — the orb-based capture alternative
 - [CLI reference: orb inline](../../docs/cli/circleci-migrate_orb_inline.md)

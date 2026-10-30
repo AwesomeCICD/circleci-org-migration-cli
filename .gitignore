@@ -38,3 +38,10 @@ build.err
 
 # Internal handoff notes (AI session logs); kept locally, never committed
 HANDOFF.md
+
+# Docs site build output (site/.gitignore lists the same)
+/site/content/
+/site/public/
+/site/public-preview/
+/site/resources/
+/site/.hugo_build.lock

@@ -1,0 +1,16 @@
+{{- /*
+  Plan builder: a client-side wizard that turns your migration type, orgs and options into the exact
+  ordered commands and manual steps. All logic runs in the browser: no network calls, no token fields.
+
+  The JS is bundled with js.Build (esbuild, built into Hugo extended) because ui.mjs imports plan.mjs
+  and catalog.mjs; the CSS is minified and fingerprinted like any other asset.
+*/ -}}
+{{- $css := resources.Get "css/plan-builder.css" | minify | fingerprint -}}
+{{- $js := resources.Get "js/plan/ui.mjs" | js.Build (dict "format" "esm" "minify" true "target" "es2020") | fingerprint -}}
+<link rel="stylesheet" href="{{ $css.RelPermalink }}" integrity="{{ $css.Data.Integrity }}">
+<div class="plan-builder not-prose" data-plan-builder>
+  <noscript>
+    <p>The plan builder needs JavaScript. Without it, follow the migration runbooks in the documentation: they hold the same commands for the three common migrations.</p>
+  </noscript>
+</div>
+<script type="module" src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}"></script>

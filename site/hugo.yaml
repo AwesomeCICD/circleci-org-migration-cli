@@ -1,0 +1,156 @@
+# Hugo configuration of the docs site (docs/contribute/docs-site.md). Run site/stage.sh first: it writes content/.
+#
+# The GitHub Pages URL uses the owner and the repository name (AwesomeCICD/circleci-org-migration-cli).
+# baseURL and the GitHub menu link below must match them. Moving the project to CircleCI-Labs means changing
+# exactly these two values (see "Moving to CircleCI-Labs" in docs/contribute/docs-site.md), then the README link.
+# GitHub redirects repository URLs after a rename or a transfer, but not the old Pages path.
+# stage.sh derives the blob and tree links of the pages from the GitHub menu URL.
+baseURL: https://awesomecicd.github.io/circleci-org-migration-cli/
+title: CircleCI org migration
+locale: en-US
+enableRobotsTXT: true
+disableKinds:
+  - taxonomy
+  - term
+
+module:
+  hugoVersion:
+    extended: true
+    min: 0.146.0
+  imports:
+    - path: github.com/imfing/hextra
+
+markup:
+  highlight:
+    # Required by the theme (dark mode of code blocks).
+    noClasses: false
+  goldmark:
+    extensions:
+      # No smart punctuation: it would turn the -- of a flag into an en dash.
+      typographer: false
+    renderer:
+      # The pages are the Markdown of this repository (trusted). A page may use <details> or an HTML comment.
+      unsafe: true
+
+menu:
+  main:
+    - identifier: documentation
+      name: Docs
+      pageRef: /docs
+      weight: 1
+    - name: Search
+      weight: 4
+      params:
+        type: search
+    - name: Theme
+      weight: 5
+      params:
+        type: theme-toggle
+    - name: GitHub
+      weight: 6
+      url: https://github.com/AwesomeCICD/circleci-org-migration-cli
+      params:
+        icon: github
+    # Styled as the call to action of the header (assets/css/custom.css). The page is site/pages/plan.md.
+    - identifier: plan
+      name: Build your plan
+      pageRef: /plan
+      weight: 7
+  sidebar:
+    # The plan builder is not a page of the docs tree: this link puts it in the sidebar of the documentation.
+    - identifier: plan-builder
+      name: Plan builder
+      pageRef: /plan
+      weight: 1
+
+params:
+  description: Move a CircleCI organization to another one, or from GitHub OAuth to the GitHub App, without losing contexts, secrets, projects or settings.
+  externalLinkDecoration: false
+  repo: https://github.com/AwesomeCICD/circleci-org-migration-cli
+
+  # The landing page (layouts/home.html).
+  home:
+    title: CircleCI org migration
+    tagline: Move an organization without losing what is in it
+    lead: >-
+      circleci-migrate exports an organization and rebuilds it in another one: contexts, secrets, projects, settings,
+      pipelines and triggers. Pick a runbook, or build a plan with the commands for your own orgs.
+    features:
+      - icon: list-checks
+        title: Plan builder
+        text: Answer a few questions about your orgs and get the exact commands, in order, ready to copy. It runs in your browser and never asks for a token.
+        link: plan/
+        linkText: Build your plan
+      - icon: arrow-right-left
+        title: OAuth to GitHub App
+        text: Move a GitHub OAuth org to a standalone GitHub App org, with one runbook from the first export to the last check.
+        link: docs/migrations/oauth-to-app/
+        linkText: The OAuth to GitHub App runbook
+      - icon: key-round
+        title: Secrets without touching disk
+        text: Context secrets go from the source org straight to the destination in a pipeline. No bundle file is written, so nothing sits on a laptop.
+        link: docs/concepts/secrets/
+        linkText: How secrets move
+      - icon: undo-2
+        title: A reversible cutover
+        text: Pause the source, enable the destination, and undo it all with one command until you remove the GitHub App from the source org.
+        link: docs/concepts/cutover/
+        linkText: How the cutover works
+      - icon: circle-check-big
+        title: Parity validation
+        text: After the switch, validate compares the destination with the source. It reports what matched, what is missing, and what needs a manual step.
+        link: docs/cli-reference/circleci-migrate_validate/
+        linkText: The validate command
+      - icon: shield-check
+        title: Signed releases
+        text: Binaries for macOS, Linux and Windows come with checksums and a keyless signature that you can verify before you run them.
+        link: docs/get-started/install/
+        linkText: Install and verify
+
+  banner:
+    # The banner cannot be dismissed: custom.css hides the close button, and custom/banner.html renders the text.
+    # A new key shows the banner again to visitors who closed an old one.
+    key: labs-disclaimer-pre-1-0
+    message: >-
+      **CircleCI Labs project, pre-release (0.x).** Not an official CircleCI product and not supported by CircleCI support.
+      These pages track main. Each release is signed.
+
+  navbar:
+    displayTitle: true
+    displayLogo: false
+    width: normal
+
+  theme:
+    default: system
+    # The toggle is in the header (menu item of type theme-toggle), not in the sidebar.
+    displayToggle: false
+
+  footer:
+    enable: true
+    displayCopyright: false
+    displayPoweredBy: false
+    width: normal
+
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+      tokenize: forward
+
+  # The Mermaid script is downloaded at build time and served from the site. Pinned to one exact version.
+  mermaid:
+    base: https://cdn.jsdelivr.net/npm/mermaid@12.0.0/dist
+
+  highlight:
+    copy:
+      enable: true
+      display: always
+
+  page:
+    width: normal
+    contextMenu:
+      enable: false
+
+  toc:
+    displayTags: false

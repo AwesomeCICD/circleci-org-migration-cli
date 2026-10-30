@@ -200,7 +200,7 @@ Examples:
 					"interactive walkthrough requires a TTY; " +
 						"pass --source-org and --dest-org to run non-interactively " +
 						"(e.g. --source-org gh/acme --dest-org gh/acme-new). " +
-						"See docs/guide.md")
+						"See docs/concepts/how-it-works.md")
 			}
 
 			if wantsInteraction {
