@@ -12,9 +12,11 @@ date: "2026"
 **Use this guide when** you are moving CircleCI configuration from one GitHub
 OAuth organization to another — for example, a GitHub org rename, moving to a
 new GitHub org, or consolidating two CircleCI orgs. Both organizations use the
-`gh/<name>` slug format.
+`gh/<name>` slug format. (Moving to a **GitHub App** org, slug
+`circleci/<uuid>`? Use the companion *GitHub OAuth → GitHub App Migration
+Guide* instead.)
 
-**Tooling:** the `circleci-migrate` CLI.
+**Tooling:** the `circleci-migrate` CLI, v0.19.0 or later.
 
 Throughout, the **source** is `gh/acme` and the **destination** is
 `gh/acme-new`. Substitute your own slugs.
@@ -85,7 +87,7 @@ and inspect between steps.
 
 ```bash
 brew install AwesomeCICD/tap/circleci-migrate
-circleci-migrate version    # v0.17.1 or later
+circleci-migrate version    # v0.19.0 or later
 ```
 
 Set tokens for the session:
@@ -298,8 +300,13 @@ Settings, Runners, Orbs, and CIAM. Exit code is non-zero if any item is
 circleci-migrate validate \
   --source-org gh/acme \
   --dest-org gh/acme-new \
-  --mapping mapping.json
+  --mapping mapping.json \
+  --dest-token-context migration-secrets
 ```
+
+`--dest-token-context` leaves the `migration-secrets` context (the one that
+holds the destination token for the Phase 5 transfer) out of the comparison:
+it exists only to run the migration and is never recreated on the destination.
 
 If orbs or runners were migrated, add the destination namespaces so those
 sections are checked (omitting them causes the section to be skipped with a
@@ -310,6 +317,7 @@ circleci-migrate validate \
   --source-org gh/acme \
   --dest-org gh/acme-new \
   --mapping mapping.json \
+  --dest-token-context migration-secrets \
   --dest-orb-namespace acme-new \
   --dest-runner-namespace acme-new
 ```
@@ -412,10 +420,11 @@ circleci-migrate sync --manifest manifest.json --mapping mapping.json --apply   
 circleci-migrate secrets transfer --manifest manifest.json \
   --dest-org-id <dest-org-uuid> --dest-token-context migration-secrets \
   --mapping mapping.json --include-project-vars --enable-trigger --apply
-circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new --mapping mapping.json
+circleci-migrate validate --source-org gh/acme --dest-org gh/acme-new --mapping mapping.json \
+  --dest-token-context migration-secrets
 ```
 
 ---
 
 *© CircleCI. Generated for customer use. Commands assume `circleci-migrate`
-v0.17.1 or later. Nothing in this runbook modifies the source organization.*
+v0.19.0 or later. Nothing in this runbook modifies the source organization.*

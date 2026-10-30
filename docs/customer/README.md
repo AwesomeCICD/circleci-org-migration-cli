@@ -7,9 +7,18 @@ rendered to **CircleCI-branded PDFs**.
 |---|---|
 | [secrets-transfer-guide.md](secrets-transfer-guide.md) | Moving **context + project env vars** between two CircleCI orgs, in-pipeline, with no secrets on disk. |
 | [oauth-to-oauth-migration-guide.md](oauth-to-oauth-migration-guide.md) | A full **GitHub OAuth → OAuth** org migration runbook with checklists and validation gates. |
+| [oauth-to-app-migration-guide.md](oauth-to-app-migration-guide.md) | A **GitHub OAuth → GitHub App** (standalone `circleci/<uuid>` org) cutover runbook: the exact cutover order with `cutover`, what CircleCI Support runs, undo, and troubleshooting. |
 
-Both target `circleci-migrate` **v0.17.1+** and assume GitHub OAuth orgs
-(`gh/<name>` slugs).
+All three target `circleci-migrate` **v0.19.0+** and start from a GitHub OAuth
+org (`gh/<name>` slug). The destination is an OAuth org for the first two guides
+and a GitHub App org (`circleci/<uuid>`) for the OAuth → App guide.
+
+---
+
+> **PDFs.** `secrets-transfer-guide.pdf` and `oauth-to-oauth-migration-guide.pdf`
+> are rendered from these Markdown files and may lag behind them until they are
+> next rebuilt. The Markdown is the source of truth; the OAuth → App guide has no
+> PDF yet.
 
 ---
 
@@ -37,6 +46,11 @@ pandoc oauth-to-oauth-migration-guide.md \
   --css assets/circleci-pdf.css \
   --pdf-engine wkhtmltopdf \
   -o oauth-to-oauth-migration-guide.pdf
+
+pandoc oauth-to-app-migration-guide.md \
+  --css assets/circleci-pdf.css \
+  --pdf-engine wkhtmltopdf \
+  -o oauth-to-app-migration-guide.pdf
 ```
 
 ### Option B — pandoc + weasyprint (better CSS `@page` support)
@@ -48,6 +62,8 @@ pandoc secrets-transfer-guide.md --css assets/circleci-pdf.css \
   --pdf-engine weasyprint -o secrets-transfer-guide.pdf
 pandoc oauth-to-oauth-migration-guide.md --css assets/circleci-pdf.css \
   --pdf-engine weasyprint -o oauth-to-oauth-migration-guide.pdf
+pandoc oauth-to-app-migration-guide.md --css assets/circleci-pdf.css \
+  --pdf-engine weasyprint -o oauth-to-app-migration-guide.pdf
 ```
 
 ### Adding the logo to the header
