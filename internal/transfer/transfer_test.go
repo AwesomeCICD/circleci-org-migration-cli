@@ -1088,6 +1088,8 @@ type multiCallFakeTransferDeps struct {
 	// triggerID is the pipeline UUID returned by each TriggerPipelineRun call.
 	triggerID  string
 	triggerErr error
+	// triggerErrBySlug overrides triggerErr for specific slugs.
+	triggerErrBySlug map[string]error
 
 	// triggerCalls records every TriggerPipelineRun invocation in order.
 	triggerCalls []triggerCall
@@ -1152,6 +1154,9 @@ func (f *multiCallFakeTransferDeps) TriggerPipelineRun(_ context.Context, slug, 
 	f.triggerCalls = append(f.triggerCalls, triggerCall{slug: slug, branch: branch, yaml: configYAML})
 	f.mu.Unlock()
 
+	if err := f.triggerErrBySlug[slug]; err != nil {
+		return "", err
+	}
 	if f.triggerErr != nil {
 		return "", f.triggerErr
 	}
@@ -3192,7 +3197,7 @@ func TestTransfer_AutoPick_SkipsProjectWithoutCheckoutKey(t *testing.T) {
 	log := errOut.String()
 	if !strings.Contains(log, "Auto-picked host project gh/acme/haskey") ||
 		!strings.Contains(log, "checkout key") ||
-		!strings.Contains(log, "gh/acme/nokey (no checkout key and no GitHub App pipeline definition)") {
+		!strings.Contains(log, "gh/acme/nokey (no checkout key)") {
 		t.Errorf("expected pick + reason + skipped project in log, got:\n%s", log)
 	}
 	// The manifest already proved gh/acme/haskey has a key: no live lookup for it.
@@ -3529,7 +3534,7 @@ func TestTransfer_NoSSHKeyAPIError_IsWrappedWithGuidance(t *testing.T) {
 
 	t.Run("other errors untouched", func(t *testing.T) {
 		other := errors.New("boom")
-		if got := explainTriggerError(other, "gh/a/b"); got != other {
+		if got := explainTriggerError(other, "gh/a/b", appDef()); got != other {
 			t.Errorf("unrelated errors must pass through unchanged, got %v", got)
 		}
 	})
@@ -3612,8 +3617,13 @@ func TestTransfer_TriggersPreferAppDefinitionOverOAuth(t *testing.T) {
 	if strings.Count(log, `pipeline definition "app-build" (github_app, id def-app)`) < 2 {
 		t.Errorf("expected both trigger log lines to name the App definition, got:\n%s", log)
 	}
-	if len(deps.keyListCalls) != 0 {
-		t.Errorf("an App definition needs no key lookup, got lookups: %v", deps.keyListCalls)
+	// The host check looks for a key (and warns that there is none); the
+	// per-project path, which runs through the App definition, does not.
+	if len(deps.keyListCalls) != 1 {
+		t.Errorf("want one key lookup (the host check), got lookups: %v", deps.keyListCalls)
+	}
+	if !strings.Contains(log, "WARNING: no manifest project has a checkout key") || !strings.Contains(log, "gh/acme/web has no checkout key") {
+		t.Errorf("expected the no-key host warning, got:\n%s", log)
 	}
 }
 
@@ -3653,22 +3663,50 @@ func TestTransfer_PerProject_AppDefWithoutKey_NotSkipped(t *testing.T) {
 	}
 }
 
-// Auto-pick prefers a project with an App definition over an earlier OAuth
-// project that has a key.
-func TestTransfer_AutoPick_PrefersAppDefinitionProject(t *testing.T) {
+// Auto-pick prefers a project with a checkout key over one that only has a
+// GitHub App definition: CircleCI can refuse a keyless gh/ project even through
+// an App definition ("the project has no SSH key", seen in a rehearsal).
+func TestTransfer_AutoPick_PrefersProjectWithCheckoutKey(t *testing.T) {
 	m := &manifest.Manifest{
 		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
 		Projects: []manifest.Project{
-			{Slug: "gh/acme/oauth", CheckoutKeys: testCheckoutKey},
 			{Slug: "gh/acme/app"},
+			{Slug: "gh/acme/oauth", CheckoutKeys: testCheckoutKey},
 		},
+	}
+	deps := happyMultiDeps()
+	deps.defsBySlug = map[string][]project.PipelineDefinition{
+		"gh/acme/app":   {oauthDef(), appDef()},
+		"gh/acme/oauth": {oauthDef()},
+	}
+	deps.noKeySlugs = map[string]bool{"gh/acme/app": true}
+	opts, _, errOut := applyOpts()
+
+	if err := Transfer(context.Background(), deps, m, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/oauth" {
+		t.Errorf("context pipeline ran under %v, want [gh/acme/oauth]", got)
+	}
+	log := errOut.String()
+	if !strings.Contains(log, "Auto-picked host project gh/acme/oauth") || !strings.Contains(log, "gh/acme/app (no checkout key)") {
+		t.Errorf("expected the checkout-key pick and the skipped App-only project in the log, got:\n%s", log)
+	}
+}
+
+// With no checkout key anywhere, auto-pick falls back to a project with a GitHub
+// App definition and warns that CircleCI may still refuse it.
+func TestTransfer_AutoPick_AppDefinitionOnlyFallbackWarns(t *testing.T) {
+	m := &manifest.Manifest{
+		Contexts: []manifest.Context{{Name: "c", EnvVars: []manifest.ContextEnvVar{{Name: "X"}}}},
+		Projects: []manifest.Project{{Slug: "gh/acme/oauth"}, {Slug: "gh/acme/app"}},
 	}
 	deps := happyMultiDeps()
 	deps.defsBySlug = map[string][]project.PipelineDefinition{
 		"gh/acme/oauth": {oauthDef()},
 		"gh/acme/app":   {oauthDef(), appDef()},
 	}
-	deps.noKeySlugs = map[string]bool{"gh/acme/app": true}
+	deps.noKeySlugs = map[string]bool{"gh/acme/oauth": true, "gh/acme/app": true}
 	opts, _, errOut := applyOpts()
 
 	if err := Transfer(context.Background(), deps, m, opts); err != nil {
@@ -3677,8 +3715,8 @@ func TestTransfer_AutoPick_PrefersAppDefinitionProject(t *testing.T) {
 	if got := slugsFromCalls(deps.triggerCalls); len(got) != 1 || got[0] != "gh/acme/app" {
 		t.Errorf("context pipeline ran under %v, want [gh/acme/app]", got)
 	}
-	if !strings.Contains(errOut.String(), "Auto-picked host project gh/acme/app") || !strings.Contains(errOut.String(), "GitHub App pipeline definition") {
-		t.Errorf("expected the App-definition pick in the log, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "WARNING: no manifest project has a checkout key; auto-picked host project gh/acme/app") {
+		t.Errorf("expected the fallback warning, got:\n%s", errOut.String())
 	}
 }
 
@@ -3701,21 +3739,21 @@ func TestTransfer_AutoPick_FallsBackToOAuthProjectWithKey(t *testing.T) {
 	}
 }
 
-// An explicit host with an App definition and no key passes; with only an OAuth
+// An explicit host with an App definition and no key passes with a warning; with only an OAuth
 // definition and no key it fails fast naming both fixes.
-func TestTransfer_ExplicitHost_AppDefinitionNeedsNoKey(t *testing.T) {
+func TestTransfer_ExplicitHost_AppDefinitionWithoutKeyWarns(t *testing.T) {
 	m := baseManifest()
 	deps := happyMultiDeps()
 	deps.defs = []project.PipelineDefinition{oauthDef(), appDef()}
 	deps.noKeySlugs = map[string]bool{"gh/acme/web": true}
-	opts, _, _ := applyOpts()
+	opts, _, errOut := applyOpts()
 	opts.HostProjectSlug = "gh/acme/web"
 
 	if err := Transfer(context.Background(), deps, m, opts); err != nil {
 		t.Fatalf("explicit host with an App definition should pass, got: %v", err)
 	}
-	if len(deps.keyListCalls) != 0 {
-		t.Errorf("no key lookup expected, got %v", deps.keyListCalls)
+	if !strings.Contains(errOut.String(), "WARNING: gh/acme/web has no checkout key") {
+		t.Errorf("expected the no-key host warning, got:\n%s", errOut.String())
 	}
 
 	deps = happyMultiDeps()
@@ -4293,4 +4331,52 @@ func TestTransfer_AppProjectsAreNotFlagChecked(t *testing.T) {
 	if len(deps.reads) != 0 {
 		t.Errorf("App projects must not be read: %v", deps.reads)
 	}
+}
+
+// A failed context pipeline stops the run before any per-project pipeline
+// starts, so a run never ends with project values copied and contexts not.
+func TestTransfer_ContextPipelineFailure_StartsNoProjectPipelines(t *testing.T) {
+	t.Run("workflow fails", func(t *testing.T) {
+		deps := happyMultiDeps()
+		deps.successWorkflow = project.Workflow{ID: "wf-bad", Name: "transfer", Status: "failed"}
+		opts, _, errOut := perProjectKeyOpts()
+
+		err := Transfer(context.Background(), deps, perProjectKeyManifest(), opts)
+		if err == nil || !errors.Is(err, ErrWorkflowFailed) {
+			t.Fatalf("expected the context workflow failure, got: %v", err)
+		}
+		if len(deps.triggerCalls) != 1 {
+			t.Errorf("only the context pipeline may run, got triggers for %v", slugsFromCalls(deps.triggerCalls))
+		}
+		if !strings.Contains(errOut.String(), "project pipeline(s) were not started") {
+			t.Errorf("expected the not-started notice, got:\n%s", errOut.String())
+		}
+	})
+
+	t.Run("trigger refused for no SSH key on a GitHub App definition", func(t *testing.T) {
+		m := perProjectKeyManifest()
+		deps := happyMultiDeps()
+		deps.defs = []project.PipelineDefinition{oauthDef(), appDef()}
+		host := canonicalSlug(m.Projects[0].Slug)
+		deps.triggerErrBySlug = map[string]error{host: errors.New(`We did not run this pipeline because the project has no SSH key.`)}
+		opts, _, _ := perProjectKeyOpts()
+		opts.HostProjectSlug = host
+
+		err := Transfer(context.Background(), deps, m, opts)
+		if err == nil {
+			t.Fatal("expected the trigger error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"github_app", "even for a GitHub App pipeline definition", "Project Settings → SSH Keys", "--host-project"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error should mention %q, got: %v", want, err)
+			}
+		}
+		if strings.Contains(msg, "give the project a GitHub App pipeline definition") {
+			t.Errorf("must not advise adding a GitHub App definition the project already has, got: %v", err)
+		}
+		if len(deps.triggerCalls) != 1 {
+			t.Errorf("only the context pipeline may be attempted, got %v", slugsFromCalls(deps.triggerCalls))
+		}
+	})
 }

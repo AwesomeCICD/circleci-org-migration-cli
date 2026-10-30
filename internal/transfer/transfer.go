@@ -1151,7 +1151,7 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
 			}
-			return fmt.Errorf("trigger pipeline: %w", explainTriggerError(trigErr, pp.SourceSlug))
+			return fmt.Errorf("trigger pipeline: %w", explainTriggerError(trigErr, pp.SourceSlug, def))
 		}
 
 		fmt.Fprintf(errOut, "  [project vars] pipeline triggered for %s: %s\n", pp.SourceSlug, pipelineID)
@@ -1725,6 +1725,17 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 		}
 	}
 
+	// A failed context pipeline stops the run here, so it never ends with project
+	// values copied and contexts not: fix the context error and re-run the same
+	// command.
+	if ctxErr != nil {
+		if len(activeProjPlans) > 0 {
+			fmt.Fprintf(opts.Stderr, "Context transfer failed, so the %d project pipeline(s) were not started. Fix the error below and re-run the same command.\n",
+				len(activeProjPlans))
+		}
+		return ctxErr
+	}
+
 	var projResults []projectPipelineResult
 	var projErr error
 	if len(activeProjPlans) > 0 {
@@ -1829,7 +1840,7 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("transfer: pipeline run was skipped — check api-trigger-with-config is enabled and the config is valid")
 			}
-			return fmt.Errorf("transfer: trigger pipeline: %w", explainTriggerError(trigErr, opts.HostProjectSlug))
+			return fmt.Errorf("transfer: trigger pipeline: %w", explainTriggerError(trigErr, opts.HostProjectSlug, def))
 		}
 		fmt.Fprintf(opts.Stderr, "Context pipeline triggered: %s\n", pipelineID)
 
@@ -1869,11 +1880,10 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 // so the project needs no checkout key.
 const providerGitHubApp = "github_app"
 
-// checkoutKeyFix is the remediation shared by every checkout-key error.  There
-// are two ways out: give the project a checkout key, or run through a GitHub
-// App pipeline definition (which needs none).
-const checkoutKeyFix = "add a deploy key (or user key) in CircleCI → Project Settings → SSH Keys → Checkout SSH keys, " +
-	"or give the project a GitHub App pipeline definition (install the CircleCI GitHub App on the repo)"
+// checkoutKeyFix is the remediation shared by every checkout-key error: give
+// the project a checkout key.  (A GitHub App pipeline definition is not a
+// reliable alternative on gh/ and bb/ projects; see resolveHostProject.)
+const checkoutKeyFix = "add a deploy key (or user key) in CircleCI → Project Settings → SSH Keys → Checkout SSH keys"
 
 // checkoutKeyWhy explains why the check exists.
 const checkoutKeyWhy = "CircleCI refuses to start a pipeline — even one with inline config — that checks out over SSH " +
@@ -2008,15 +2018,19 @@ func projectHasCheckoutKey(ctx context.Context, lister CheckoutKeyLister, m *man
 // resolveHostProject returns the source project the context-transfer pipeline
 // will run under, verifying (read-only) that it can actually run one.
 //
+// CircleCI can refuse a pipeline on a gh/ or bb/ project that has no checkout
+// key even when it runs through a GitHub App pipeline definition ("the project
+// has no SSH key" — seen in a cutover rehearsal), so a checkout key is the only
+// safe signal for those projects.
+//
 //   - Explicit opts.HostProjectSlug: validated (it must have a pipeline
-//     definition).  For gh/ and bb/ projects it must either have a GitHub App
-//     pipeline definition (no key needed) or a checkout key, else fail fast with
-//     the fix.
-//   - Otherwise the first manifest project that can run a pipeline without a
-//     checkout key is picked: a "circleci/" project, or a gh/ or bb/ project that
-//     has a GitHub App pipeline definition.  Failing that, the first gh/ or bb/
-//     project whose OAuth/Bitbucket definition has a checkout key.  The choice
-//     (and what was skipped) is printed.
+//     definition).  A gh/ or bb/ project with a checkout key passes; one with
+//     only a GitHub App definition passes with a warning; one with neither fails
+//     fast with the fix.
+//   - Otherwise, in manifest order: the first "circleci/" project (it needs no
+//     key); else the first gh/ or bb/ project with a checkout key; else, with a
+//     warning, the first gh/ or bb/ project with a GitHub App definition.  The
+//     choice (and what was skipped) is printed.
 func resolveHostProject(ctx context.Context, deps Deps, m *manifest.Manifest, opts *Options) (string, error) {
 	errOut := opts.Stderr
 	if slug := opts.HostProjectSlug; slug != "" {
@@ -2024,10 +2038,14 @@ func resolveHostProject(ctx context.Context, deps Deps, m *manifest.Manifest, op
 		if err != nil {
 			return "", err
 		}
-		if pipelineNeedsKey(slug, defs) && !projectHasCheckoutKey(ctx, deps, m, slug, errOut) {
+		if !requiresCheckoutKey(slug) || projectHasCheckoutKey(ctx, deps, m, slug, errOut) {
+			return slug, nil
+		}
+		if pipelineNeedsKey(slug, defs) {
 			return "", fmt.Errorf("transfer: --host-project %s has no checkout key and no GitHub App pipeline definition. %s.\nFix: %s on %s, or pass --host-project with a project that already has one",
 				slug, checkoutKeyWhy, checkoutKeyFix, slug)
 		}
+		fmt.Fprintf(errOut, "WARNING: %s\n", appDefOnlyHostWarning(slug))
 		return slug, nil
 	}
 
@@ -2035,51 +2053,62 @@ func resolveHostProject(ctx context.Context, deps Deps, m *manifest.Manifest, op
 		return "", errors.New("transfer: a host project is required; pass --host-project or ensure the manifest contains projects")
 	}
 
-	// Pass 1: prefer a project that needs no checkout key.  Definitions are
-	// cached for pass 2.
-	type lookup struct {
-		defs []project.PipelineDefinition
-		err  error
-	}
-	looked := make(map[string]lookup, len(m.Projects))
+	// Pass 1: a circleci/ project runs a pipeline without a checkout key.
 	for _, mp := range m.Projects {
 		if !requiresCheckoutKey(mp.Slug) {
 			fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline (use --host-project to override).\n", canonicalSlug(mp.Slug))
 			return canonicalSlug(mp.Slug), nil
 		}
-		defs, err := projectDefinitions(ctx, deps, mp.Slug)
-		looked[mp.Slug] = lookup{defs, err}
-		if err == nil && !pipelineNeedsKey(mp.Slug, defs) {
-			fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline: it has a GitHub App pipeline definition (%s), which needs no checkout key (use --host-project to override).\n",
-				canonicalSlug(mp.Slug), definitionProvider(pickPipelineDefinition(defs)))
-			return canonicalSlug(mp.Slug), nil
-		}
 	}
 
-	// Pass 2: a gh/ or bb/ project that runs through its OAuth/Bitbucket
-	// definition needs a checkout key.
+	// Pass 2: a gh/ or bb/ project with a pipeline definition and a checkout key
+	// runs whichever definition is used.  Definitions are cached for pass 3.
+	type lookup struct {
+		defs []project.PipelineDefinition
+		err  error
+	}
+	looked := make(map[string]lookup, len(m.Projects))
 	var skipped []string
 	for _, mp := range m.Projects {
-		l := looked[mp.Slug]
-		if l.err != nil {
-			skipped = append(skipped, fmt.Sprintf("%s (%s)", mp.Slug, strings.TrimPrefix(l.err.Error(), "transfer: ")))
+		defs, err := projectDefinitions(ctx, deps, mp.Slug)
+		looked[mp.Slug] = lookup{defs, err}
+		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", mp.Slug, strings.TrimPrefix(err.Error(), "transfer: ")))
 			continue
 		}
 		if !projectHasCheckoutKey(ctx, deps, m, mp.Slug, errOut) {
-			skipped = append(skipped, fmt.Sprintf("%s (no checkout key and no GitHub App pipeline definition)", mp.Slug))
+			skipped = append(skipped, fmt.Sprintf("%s (no checkout key)", mp.Slug))
 			continue
 		}
 		note := ""
 		if len(skipped) > 0 {
 			note = fmt.Sprintf("; skipped %d earlier project(s): %s", len(skipped), strings.Join(skipped, ", "))
 		}
-		fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline: no project has a GitHub App pipeline definition, so it picked one with a pipeline definition and a checkout key, which GitHub OAuth/Bitbucket definitions need%s (use --host-project to override).\n",
+		fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline: it has a checkout key, which CircleCI needs on GitHub OAuth/Bitbucket projects%s (use --host-project to override).\n",
 			canonicalSlug(mp.Slug), note)
 		return canonicalSlug(mp.Slug), nil
 	}
 
+	// Pass 3: no project has a key.  A GitHub App definition may still run, so
+	// use one rather than fail, and say so.
+	for _, mp := range m.Projects {
+		if l := looked[mp.Slug]; l.err == nil && !pipelineNeedsKey(mp.Slug, l.defs) {
+			fmt.Fprintf(errOut, "WARNING: no manifest project has a checkout key; auto-picked host project %s, which has a GitHub App pipeline definition. %s\n",
+				canonicalSlug(mp.Slug), appDefOnlyHostWarning(canonicalSlug(mp.Slug)))
+			return canonicalSlug(mp.Slug), nil
+		}
+	}
+
 	return "", fmt.Errorf("transfer: no source project can host the transfer pipeline. %s, and none of the %d manifest project(s) qualifies:\n  %s\nFix: %s on one of them, or pass --host-project with a project that already has one",
 		checkoutKeyWhy, len(m.Projects), strings.Join(skipped, "\n  "), checkoutKeyFix)
+}
+
+// appDefOnlyHostWarning explains the risk of a host project that has a GitHub
+// App pipeline definition but no checkout key.
+func appDefOnlyHostWarning(slug string) string {
+	return fmt.Sprintf("%s has no checkout key. The context pipeline will run through its GitHub App pipeline definition, "+
+		"but CircleCI can still refuse it (\"the project has no SSH key\"). To be safe, %s on %s, or pass --host-project with a project that has one",
+		slug, checkoutKeyFix, slug)
 }
 
 // markProjectsMissingCheckoutKey flags every per-project plan that would run an
@@ -2195,14 +2224,19 @@ func unresolvedProjectsError(plan *Plan) error {
 
 // explainTriggerError appends the checkout-key remediation when CircleCI
 // rejects a pipeline trigger with "the project has no SSH key" (the pre-flight
-// could not see it, e.g. the key list was unreadable).  Other errors pass
-// through unchanged.
-func explainTriggerError(err error, slug string) error {
+// could not see it, e.g. the key list was unreadable, or the project ran
+// through a GitHub App definition that CircleCI still refused).  def is the
+// definition that was triggered.  Other errors pass through unchanged.
+func explainTriggerError(err error, slug string, def project.PipelineDefinition) error {
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no ssh key") {
 		return err
 	}
-	return fmt.Errorf("%w\n%s: project %s has no checkout key (and the pipeline definition used was not a GitHub App one).\nFix: %s on %s (or, for the context pipeline, pass --host-project with a project that has one)",
-		err, checkoutKeyWhy, slug, checkoutKeyFix, slug)
+	ran := "its " + describeDefinition(def)
+	if definitionProvider(def) == providerGitHubApp {
+		ran += ". CircleCI can require a checkout key on GitHub OAuth (gh/) and Bitbucket (bb/) projects even for a GitHub App pipeline definition"
+	}
+	return fmt.Errorf("%w\nproject %s has no checkout key, so CircleCI refused the pipeline (it ran through %s).\nFix: %s on %s (or, for the context pipeline, pass --host-project with a project that has one)",
+		err, slug, ran, checkoutKeyFix, slug)
 }
 
 // triggerSlugs returns the deduplicated source project slugs that will run a
