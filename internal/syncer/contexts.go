@@ -3,8 +3,10 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	cctx "github.com/AwesomeCICD/circleci-org-migration-cli/api/context"
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/manifest"
 )
@@ -53,6 +55,8 @@ func (s *Syncer) SyncContexts(ctx context.Context, m *manifest.Manifest, bundle 
 	// this Syncer instance, then accumulate fresh ones for this run. They are
 	// applied later by ApplyDeferredProjectRestrictions (after SyncProjects).
 	s.deferredProjectRestrictions = nil
+	s.restrictionDestOrgID = destOrgID
+	s.restrictionSrcNames = buildSrcSlugToName(m)
 
 	for _, c := range m.Contexts {
 		ctxID, err := s.ensureContext(ctx, report, c.Name, destOrgID, byName, opts)
@@ -76,6 +80,17 @@ func buildSrcUUIDToSlug(m *manifest.Manifest) map[string]string {
 		if p.SourceID != "" {
 			out[p.SourceID] = p.Slug
 		}
+	}
+	return out
+}
+
+// buildSrcSlugToName maps each manifest project's slug to its App project name
+// (the manifest name, else the last slug segment) — the key a GitHub App
+// destination project is matched under.
+func buildSrcSlugToName(m *manifest.Manifest) map[string]string {
+	out := make(map[string]string, len(m.Projects))
+	for _, p := range m.Projects {
+		out[p.Slug] = appProjectName(p)
 	}
 	return out
 }
@@ -165,6 +180,7 @@ func (s *Syncer) syncContextRestrictions(ctx context.Context, report *Report, c 
 				existing:      existing,
 				restriction:   r,
 				srcUUIDToSlug: srcUUIDToSlug,
+				srcNames:      s.restrictionSrcNames,
 				mapping:       mapping,
 			})
 		default:
@@ -258,6 +274,11 @@ func (s *Syncer) resolveDestGroup(ctx context.Context, name, destOrgID string, g
 //  3. dest slug → dest project UUID (via s.Projects.GetProject)
 //  4. CreateRestriction on the dest context with the dest UUID.
 //
+// A GitHub App destination (mapping.org.to = circleci/…) has no derivable slug,
+// so a source project with no explicit mapping entry skips steps 2–3: it is
+// matched BY NAME against the destination org's project list (read once per
+// call) and that project's UUID is used. A mapping entry always wins.
+//
 // If any step fails — including the destination project genuinely not existing
 // (e.g. it was not migrated) — the restriction falls back to "manual" with a
 // clear message explaining which step failed and what the operator should do.
@@ -268,13 +289,84 @@ func (s *Syncer) ApplyDeferredProjectRestrictions(ctx context.Context, report *R
 	if report == nil {
 		report = &Report{Applied: opts.Apply}
 	}
+	var byName *destProjectIndex
+	if len(s.deferredProjectRestrictions) > 0 {
+		byName = &destProjectIndex{}
+	}
 	for _, d := range s.deferredProjectRestrictions {
-		s.applyDeferredProjectRestriction(ctx, report, d, opts)
+		s.applyDeferredProjectRestriction(ctx, report, d, byName, opts)
 	}
 	return report
 }
 
-func (s *Syncer) applyDeferredProjectRestriction(ctx context.Context, report *Report, d deferredProjectRestriction, opts Options) {
+// destProjectIndex lazily loads the destination org's projects by name, once.
+// Names are matched case-insensitively and exactly; a name shared by two
+// destination projects is recorded in ambiguous instead of byName, so it is
+// reported and never guessed.
+type destProjectIndex struct {
+	loaded    bool
+	err       error
+	byName    map[string]project.OrgProject
+	ambiguous map[string][]project.OrgProject
+}
+
+// lookup finds the destination project named name. ambiguous lists every
+// project tied for the name (found is then false and none is picked).
+func (s *Syncer) lookup(ctx context.Context, ix *destProjectIndex, name string) (dp project.OrgProject, found bool, ambiguous []project.OrgProject, err error) {
+	if !ix.loaded {
+		ix.loaded = true
+		if s.restrictionDestOrgID == "" {
+			ix.err = fmt.Errorf("destination org id unknown")
+		} else if projs, err := s.Projects.ListOrgProjects(ctx, s.restrictionDestOrgID); err != nil {
+			ix.err = err
+		} else {
+			ix.byName = make(map[string]project.OrgProject, len(projs))
+			ix.ambiguous = map[string][]project.OrgProject{}
+			for _, p := range projs {
+				key := strings.ToLower(p.Name)
+				if amb, isAmb := ix.ambiguous[key]; isAmb {
+					ix.ambiguous[key] = append(amb, p)
+					continue
+				}
+				if prev, dup := ix.byName[key]; dup {
+					if prev.ID == p.ID && prev.Slug == p.Slug {
+						continue // the same project listed twice
+					}
+					ix.ambiguous[key] = []project.OrgProject{prev, p}
+					delete(ix.byName, key)
+					continue
+				}
+				ix.byName[key] = p
+			}
+		}
+	}
+	if ix.err != nil {
+		return project.OrgProject{}, false, nil, ix.err
+	}
+	key := strings.ToLower(name)
+	if amb, isAmb := ix.ambiguous[key]; isAmb {
+		return project.OrgProject{}, false, amb, nil
+	}
+	p, ok := ix.byName[key]
+	return p, ok, nil, nil
+}
+
+// orgProjectIDs lists the ids of projects for an ambiguity message.
+func orgProjectIDs(ps []project.OrgProject) string {
+	ids := make([]string, 0, len(ps))
+	for _, p := range ps {
+		ids = append(ids, p.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// appDestMapping reports whether the mapping targets a GitHub App ("circleci/")
+// org other than the source — the case where project slugs cannot be derived.
+func appDestMapping(m *manifest.Mapping) bool {
+	return m != nil && strings.HasPrefix(m.Org.To, "circleci/")
+}
+
+func (s *Syncer) applyDeferredProjectRestriction(ctx context.Context, report *Report, d deferredProjectRestriction, ix *destProjectIndex, opts Options) {
 	srcUUID := d.restriction.Value
 	label := restrictionLabel(d.restriction)
 	target := d.target
@@ -294,29 +386,61 @@ func (s *Syncer) applyDeferredProjectRestriction(ctx context.Context, report *Re
 		mapping = manifest.IdentityMapping(srcSlug)
 	}
 	destSlug, ok := mapping.ResolveProjectSlug(srcSlug)
-	if !ok {
+	var destUUID string
+	switch {
+	case ok:
+		// Step 3: dest slug → dest project UUID. By the time this runs the
+		// projects step has executed, so a missing project means it was not migrated.
+		destProj, err := s.Projects.GetProject(ctx, destSlug)
+		if err != nil || destProj == nil || destProj.ID == "" {
+			if err != nil {
+				report.add("restriction", target, "manual",
+					fmt.Sprintf("project restriction %q: destination project %q not found (%v) — "+
+						"migrate that project, then re-run", label, destSlug, err))
+			} else {
+				report.add("restriction", target, "manual",
+					fmt.Sprintf("project restriction %q: destination project %q returned no UUID — "+
+						"migrate that project, then re-run", label, destSlug))
+			}
+			return
+		}
+		destUUID = destProj.ID
+	case appDestMapping(mapping) && ix != nil:
+		// GitHub App destination, no mapping entry: match by project name.
+		name := d.srcNames[srcSlug]
+		if name == "" {
+			name = srcSlug
+		}
+		dp, found, amb, lerr := s.lookup(ctx, ix, name)
+		switch {
+		case len(amb) > 0:
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: %d projects in the destination org are named %q (%s) — cannot tell which one is meant, so none was picked; "+
+					"add a projects entry for %q to your mapping file, then re-run", label, len(amb), name, orgProjectIDs(amb), srcSlug))
+			return
+		case lerr != nil:
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: could not list the destination org's projects to match %q by name (%v) — "+
+					"add a projects entry for %q to your mapping file, then re-run", label, name, lerr, srcSlug))
+			return
+		case found && dp.ID != "":
+			destUUID = dp.ID
+		case !found && !opts.Apply && s.projectsToCreate[name]:
+			report.add("restriction", target, "set",
+				fmt.Sprintf("would add project restriction %q (destination project %q is created earlier in this run)", label, name))
+			return
+		default:
+			report.add("restriction", target, "manual",
+				fmt.Sprintf("project restriction %q: no destination project named %q (and no mapping entry for source slug %q) — "+
+					"run the projects sync first or add a projects entry to your mapping file, then re-run", label, name, srcSlug))
+			return
+		}
+	default:
 		report.add("restriction", target, "manual",
 			fmt.Sprintf("project restriction %q: no destination mapping for source slug %q — "+
 				"add a projects entry to your mapping file, then re-run", label, srcSlug))
 		return
 	}
-
-	// Step 3: dest slug → dest project UUID. By the time this runs the projects
-	// step has executed, so a missing project means the project was not migrated.
-	destProj, err := s.Projects.GetProject(ctx, destSlug)
-	if err != nil || destProj == nil || destProj.ID == "" {
-		if err != nil {
-			report.add("restriction", target, "manual",
-				fmt.Sprintf("project restriction %q: destination project %q not found (%v) — "+
-					"migrate that project, then re-run", label, destSlug, err))
-		} else {
-			report.add("restriction", target, "manual",
-				fmt.Sprintf("project restriction %q: destination project %q returned no UUID — "+
-					"migrate that project, then re-run", label, destSlug))
-		}
-		return
-	}
-	destUUID := destProj.ID
 
 	// Idempotency: skip if the restriction is already present.
 	if hasProjectRestriction(d.existing, destUUID) {

@@ -61,7 +61,8 @@ reported as `manual` or silently omitted:
 | `forks_receive_secret_env_vars` (fork PRs get env vars) | **No App equivalent** | Accept the drop; the App org never injects secrets into fork-PR builds |
 | `oss` flag (open-source free tier) | **No App equivalent** | Accept the drop; contact CircleCI support if OSS access is needed |
 | `pr_only_branch_overrides` (trigger only on PR branches) | **No App equivalent** | Accept the drop; configure trigger filters in the pipeline definition instead |
-| **Multiple pipeline definitions per project** | Each OAuth project maps to **one** pipeline definition using the default config path (`.circleci/config.yml`). OAuth projects have a single config; App orgs can have multiple pipeline defs — but `sync` creates only one. | Review projects that rely on multiple config paths or alternative config sources |
+| **Pipeline definitions of a plain OAuth project** | A plain OAuth project has one implicit pipeline, so `sync` **synthesizes one** `build-and-test` definition (config `.circleci/config.yml`) with a single push trigger. It cannot know about any other config path. | Review projects that rely on multiple config paths; create the extra definitions in the destination |
+| **Pipeline definitions already captured** | If the OAuth org already has GitHub App pipelines, the export captured them and `sync` **recreates every one** (name, description, custom `file_path`, triggers) instead of synthesizing — see [What is recreated](#what-is-recreated-on-the-app-destination). | Nothing to do; verify in Phase 6 |
 
 **Group context restrictions:** group restrictions are an OAuth-only feature.
 When the destination is a standalone/App org, group restrictions in the source
@@ -70,16 +71,25 @@ or project restrictions in the destination. See
 [context-restriction docs](https://circleci.com/docs/contexts/#restricting-a-context).
 
 **Project slug shape changes:** because the org type changes, every project
-slug changes shape: `gh/acme/web` → `circleci/<uuid>/web`. You must supply an
-explicit `projects` mapping for each project — the tool cannot derive App-style
-project slugs automatically.
+slug changes shape: `gh/acme/web` → `circleci/<org-uuid>/<project-uuid>`. The
+project UUID only exists once the project does, so the tool cannot derive
+App-style project slugs; `sync` therefore finds-or-creates App projects **by
+name** and does not need a `projects` mapping to create them. The steps that
+address a destination project by slug (project-type context restrictions and
+`secrets transfer --include-project-vars` / `--include-ssh-keys`) match the
+source project to the destination project **by name** too, so the `projects`
+entries are optional: `mapping generate` (see 0.7) is only needed to review or
+override a match.
 
 ### 0.4 GitHub App repo connections (required before Phase 5)
 
-Every repository must be connected to the destination CircleCI GitHub App
-**before** `sync --apply` creates projects. Repos not yet connected are skipped
-with a warning. Verify in your destination org's GitHub App installation settings
-that all expected repositories are connected.
+Every repository should be connected to the destination CircleCI GitHub App
+**before** `sync --apply` creates projects. For a repo that is not yet connected
+the project is still created, but its pipeline definition fails with a `manual`
+action ("connect the repo to the GitHub App"); connect the repo and **re-run
+`sync --apply`** — the re-run creates the missing definition and trigger (see
+[Re-running sync](#re-running-sync)). Verify in your destination org's GitHub App
+installation settings that all expected repositories are connected.
 
 If repositories have also moved to a **new GitHub organization** (e.g. an EMU
 migration), you will also need `--dest-github-org` and `--github-token` — see
@@ -92,36 +102,56 @@ export CIRCLECI_SOURCE_TOKEN="<source-org-admin-token>"
 export CIRCLECI_DEST_TOKEN="<destination-org-admin-token>"
 ```
 
-### 0.6 GitHub token (required if repos moved to a new GitHub org)
+### 0.6 GitHub token (required for OAuth projects and for moved repos)
 
 ```bash
 export GITHUB_TOKEN="<github-pat-with-repo-read>"
 ```
 
-Supply `--github-token $GITHUB_TOKEN` (or rely on the `$GITHUB_TOKEN` fallback)
-together with `--dest-github-org` when repositories have moved GitHub orgs and
-their numeric IDs have changed. Not needed if repos remain in the same GitHub org.
+A GitHub token (`--github-token`, or the `$GITHUB_TOKEN` fallback) is needed
+whenever `sync` has to look up a repository's numeric GitHub ID:
+
+- **OAuth projects with no captured GitHub App pipeline definition** — i.e.
+  almost every project in an OAuth org. `sync` synthesizes a definition for
+  each, and the OAuth export has no repo ID to reuse, so the ID comes from the
+  GitHub API. **Preflight (`doctor`, `sync`, `migrate`) fails without a token
+  in this case**; with `--skip-preflight` every such project would end up
+  `manual: no external_id available`.
+- **Repos moved to a new GitHub org** (`--dest-github-org` or mapping
+  `github_org`) — their IDs change and are re-resolved through the API.
+
+It is **not** needed when the GitHub org is unchanged *and* the manifest already
+captured the repo IDs (every project had GitHub App pipelines): those IDs are
+reused as-is.
 
 ### 0.7 Build the mapping file
 
-Because the org type changes, project slugs change shape. You MUST provide an
-explicit `projects` entry for every project that has a different slug structure:
+Start with just the destination org — that is all `sync` needs to create the
+App projects (it finds-or-creates them by name):
 
 ```json
 {
   "org": {
     "from": "gh/acme",
     "to": "circleci/22222222-2222-2222-2222-222222222222"
-  },
-  "projects": {
-    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/web",
-    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/api",
-    "gh/acme/frontend": "circleci/22222222-2222-2222-2222-222222222222/frontend"
   }
 }
 ```
 
-If repos moved to a new GitHub org, add `github_org`:
+An App project's slug is `circleci/<org-uuid>/<project-uuid>`, **not**
+`circleci/<org-uuid>/<repo-name>` — the project UUID is assigned when the
+project is created, so you cannot write these entries by hand before Phase 5.
+After `sync --apply` has created the projects, generate the `projects` section:
+
+```bash
+circleci-migrate mapping generate \
+  --manifest manifest.json \
+  --dest-org circleci/22222222-2222-2222-2222-222222222222 \
+  --dest-token $CIRCLECI_DEST_TOKEN \
+  -o mapping.json
+```
+
+which yields entries of the form:
 
 ```json
 {
@@ -130,8 +160,25 @@ If repos moved to a new GitHub org, add `github_org`:
     "to": "circleci/22222222-2222-2222-2222-222222222222"
   },
   "projects": {
-    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/web",
-    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/api"
+    "gh/acme/web": "circleci/22222222-2222-2222-2222-222222222222/3f1c0b52-7d0e-4a57-9a53-0a6d4f1e9b10",
+    "gh/acme/api": "circleci/22222222-2222-2222-2222-222222222222/9b8a6c14-2e7f-4d3b-8c61-5e2a7d0f4c33"
+  }
+}
+```
+
+This step is **optional**. The steps that address a destination project by slug
+(project-type context restrictions, `secrets transfer --include-project-vars`)
+match projects by name when the mapping has no entry for them; use a generated
+mapping to review or override a match, and for re-runs of `sync`.
+
+If repos moved to a new GitHub org, add `github_org` (`mapping generate` writes
+only `org` and `projects`, so re-add it to the generated file):
+
+```json
+{
+  "org": {
+    "from": "gh/acme",
+    "to": "circleci/22222222-2222-2222-2222-222222222222"
   },
   "github_org": { "from": "acme", "to": "acme-new" }
 }
@@ -162,7 +209,8 @@ circleci-migrate version
 - [ ] GitHub App repo connections verified for all repos in destination org
 - [ ] Source token set in `CIRCLECI_SOURCE_TOKEN`; user is org admin
 - [ ] Destination token set in `CIRCLECI_DEST_TOKEN`; user is org admin
-- [ ] `mapping.json` created with correct `org.to` and all `projects` entries
+- [ ] `mapping.json` created with correct `org.to` (`projects` entries are generated after Phase 5)
+- [ ] `GITHUB_TOKEN` set (needed for OAuth projects without captured App pipelines, and for moved repos)
 - [ ] Runner namespace(s) noted (if applicable): `_______________`
 - [ ] `circleci-migrate version` shows v0.10.0 or later
 
@@ -200,13 +248,16 @@ Pay special attention to:
   cross-type sync report
 - Context restrictions: group restrictions will be flagged as `manual`
 - Contexts and their env-var counts
-- Total projects — you must have a `projects` mapping entry for each
+- Total projects, and which already have GitHub App pipeline definitions (these are recreated as captured; the rest get a synthesized one and need a GitHub token)
 
-### 1.2 Verify your mapping file covers all projects
+### 1.2 Check your mapping file
 
-Every project in `migration-report.md` must have a corresponding entry in the
-`projects` section of `mapping.json`. Missing projects will be silently skipped
-at sync time.
+`mapping.json` needs only `org.to` for `sync` to create every project in the
+report in the destination — a project with no `projects` entry is **not**
+skipped (the App destination path finds-or-creates projects by name). The
+`projects` entries (generated after Phase 5, see 0.7) are only needed for the
+slug-addressed follow-up steps. Confirm `org.to` is the destination
+`circleci/<uuid>` slug and, if repos moved GitHub orgs, that `github_org` is set.
 
 ### 1.3 Expected counts
 
@@ -225,7 +276,7 @@ at sync time.
 
 - [ ] `manifest.json` written without errors
 - [ ] `migration-report.md` reviewed in full
-- [ ] All projects in the report have a matching entry in `mapping.json`
+- [ ] `mapping.json` has the correct `org.to` (and `github_org` if repos moved)
 - [ ] OAuth-specific settings reviewed; drop decisions documented
 - [ ] Group restriction plan agreed (drop or recreate as expression restrictions)
 
@@ -297,13 +348,58 @@ circleci-migrate secrets transfer \
 
 SSH keys still require Option A.
 
-> **Project env vars are post-sync.** `secrets transfer --include-project-vars`
-> writes values directly to destination *projects*, which do not exist until
-> `sync --apply` (Phase 5) creates them — so run that step **after Phase 5**, not
-> here. For a GitHub App destination the mapping must contain explicit
-> per-project entries with the destination `circleci/<org-id>/<project-id>`
-> slugs (the standalone transfer routes project vars only via the mapping's
-> `projects` map, never derived from `org.from`/`org.to`).
+> **Each source project needs a checkout key *or* a GitHub App pipeline
+> definition.** CircleCI will not start a pipeline that checks out over SSH on a
+> GitHub OAuth (`gh/`) or Bitbucket (`bb/`) project that has no checkout key
+> (deploy key or user key), even with inline config. In a GitHub OAuth org that
+> also has the CircleCI GitHub App installed, every project has *both* an implicit
+> OAuth definition (needs a key) and GitHub App definitions (check out with the app
+> token, **no key needed**). `secrets transfer` prefers a GitHub App definition
+> whenever one exists and logs which definition it used (OAuth triggers may stay
+> disabled — that does not matter for API-triggered runs). It runs one pipeline
+> under a *host project* (contexts) and one under each source project
+> (`--include-project-vars` / `--include-ssh-keys`), so:
+>
+> - the auto-picked host project is the first manifest project with a GitHub App
+>   definition, else the first with a pipeline definition **and** a checkout key
+>   (pass `--host-project` to choose); an explicit `--host-project` with neither is
+>   rejected up front;
+> - a source project with neither is shown as `SKIP` in the dry-run plan, left out
+>   on `--apply`, and the command exits non-zero listing it.
+>
+> For those, add a deploy key under **Project Settings → SSH Keys**, or give the
+> project a GitHub App definition, and re-run. All of this is checked *before* any
+> context restriction is removed or trigger flag enabled.
+>
+> **Order matters if you uninstall the GitHub App.** Once the App is uninstalled
+> from an OAuth org its App definitions are gone, so project-var and SSH-key
+> transfers after that point need a checkout key on every project; contexts
+> transferred *before* the uninstall do not. Run `secrets transfer` first. See
+> [Troubleshooting](../troubleshooting.md#secrets-transfer-the-project-has-no-ssh-key).
+
+> **Contexts already transferred?** Re-run with `--skip-contexts
+> --include-project-vars --include-ssh-keys` to run only the per-project
+> pipelines: every context is dropped from the plan, so no host project is
+> resolved (or checked for a key), no restriction is removed, and no context
+> pipeline runs. `--skip-contexts` needs `--include-project-vars` and/or
+> `--include-ssh-keys` ("nothing to transfer" otherwise) and cannot be combined
+> with `--context`.
+
+> **Project env vars need the destination projects to exist.**
+> `secrets transfer --include-project-vars` writes values directly to
+> destination *projects*, which do not exist until `sync --apply` creates them.
+> Create them first with `sync --apply --skip-pipelines` (see
+> [5.0](#50-create-the-projects-first---skip-pipelines)), **before** the GitHub
+> App is moved off the source org, then run the project-vars transfer. For a
+> GitHub App destination you do **not** need `mapping generate` or per-project
+> `projects` entries: a source project with no mapping entry is matched **by
+> name** (the manifest project name, else the repo name) against the destination
+> org's projects and written to its real `circleci/<org-id>/<project-id>` slug.
+> A mapping entry still wins. The dry-run plan prints every
+> `source slug → destination slug` pair it will write to (marked `matched by
+> name` when it was not in the mapping). A project that matches neither is shown
+> as `SKIP`, counted as `UNRESOLVED`, and the run exits non-zero naming it —
+> never skipped silently.
 
 ### Restricted contexts
 
@@ -432,9 +528,11 @@ migration:
 `error` lines indicate a problem that will prevent resource creation at apply
 time. Common causes:
 
-- Project missing from `mapping.json` — add the entry
-- Repository not yet connected to destination GitHub App — connect it
+- Repository not yet connected to destination GitHub App — connect it (the
+  project is still created; re-run to create the definition)
 - External repo ID resolution failed — check `--github-token` / `--dest-github-org`
+- No GitHub token for an OAuth project that needs a synthesized definition —
+  preflight blocks this up front; set `--github-token` / `$GITHUB_TOKEN`
 
 ---
 
@@ -484,25 +582,137 @@ circleci-migrate sync \
 ```
 
 App projects are created with pipeline triggers **disabled**. Answer **N** at
-the "Enable builds?" prompt — enable builds in Phase 7 after validation.
+the "Enable N trigger(s) across M project(s)…?" prompt — enable them in Phase 7
+after validation.
+
+### 5.0 Create the projects first: `--skip-pipelines`
+
+`secrets transfer --include-project-vars` and `--include-ssh-keys` run a pipeline
+under each *source* project, and the source project must be able to run one
+without a checkout key. In a GitHub OAuth org that also has the CircleCI GitHub
+App installed that works through the source's GitHub App pipeline definitions —
+which disappear once the App is moved off (or uninstalled from) the source org.
+So the destination projects must exist **before** that move. `sync
+--skip-pipelines` does exactly that: it creates (or reuses) each App project and
+syncs its settings, env-var names and other project data, but creates **no
+pipeline definitions or triggers** — each is reported `skipped: --skip-pipelines`
+— and needs no GitHub token.
+
+Order of operations while the source still has its GitHub App definitions:
+
+```bash
+# 1. Create the App projects (and contexts, org settings, …) — no definitions yet.
+circleci-migrate sync --manifest manifest.json --mapping mapping.json \
+  --apply --skip-pipelines
+
+# 2. Write project env vars (and SSH keys) straight from the source projects.
+#    Projects are matched to the new App projects by name; no per-project mapping.
+circleci-migrate secrets transfer --manifest manifest.json \
+  --dest-org circleci/<org-id> --dest-token-context migration-secrets \
+  --mapping mapping.json --skip-contexts --include-project-vars --enable-trigger --apply
+
+# 3. Move/connect the repos to the destination GitHub App (Phase 0.4).
+
+# 4. Add the definitions and triggers to the existing projects (normal reconcile
+#    path; GitHub token only for projects that need a synthesized definition).
+circleci-migrate sync --manifest manifest.json --secrets secrets.json \
+  --mapping mapping.json --apply
+```
+
+Step 4 is the ordinary re-run described under [Re-running sync](#re-running-sync):
+the projects already exist, so it creates each missing definition and trigger and
+queues the new triggers for enable-builds. The same flag is accepted by `migrate`.
+Context project restrictions are resolved by project name in the same way, so a
+mapping with only the `org` entry no longer leaves them `manual`.
 
 ### 5.1 What `--github-token` and `--dest-github-org` do
 
-When repositories have moved to a new GitHub org, their numeric `external_id`
-in GitHub changes. The `--dest-github-org` flag tells the tool to look up the
-new numeric IDs using the GitHub API, so pipeline definitions are created with
-the correct `external_id`. `--github-token` (or `$GITHUB_TOKEN`) provides the
-PAT with `repo` read access for this lookup.
+The GitHub API is called only to look up a repository's numeric `external_id`
+when the manifest does not already hold a usable one:
 
-Without these flags (same-GitHub-org scenario), the `external_id` captured in
-the manifest is reused as-is.
+- **Synthesized definitions** (plain OAuth projects): the repo ID is looked up
+  from the repo's `owner/name` with `--github-token` / `$GITHUB_TOKEN`.
+- **Repos moved to a new GitHub org** (`--dest-github-org` or mapping
+  `github_org`): the new numeric ID is looked up in the new org.
 
-### 5.2 Projects skipped
+When the GitHub org is unchanged and the ID was captured (projects that already
+had GitHub App pipelines), the captured ID is reused with no GitHub call, token
+or not.
 
-Projects that have no entry in `mapping.json`, or whose repo is not yet
-connected to the GitHub App, will be **skipped** with a warning. Skipped
-projects do not block other resources from being created. Re-run `sync --apply`
-after connecting the repo or adding the mapping entry.
+### What is recreated on the App destination
+
+For every pipeline definition captured in the manifest, `sync` recreates:
+
+| Field | Behaviour |
+|---|---|
+| Name, description | Preserved. |
+| Config source `file_path` | Preserved (e.g. `.circleci/release.yml`); `.circleci/config.yml` only if none was captured. |
+| Config / checkout / trigger repo provider | `github_oauth` → `github_app`; `github_app` and `github_server` kept as-is. Any other provider is reported `manual`. |
+| Trigger `event_preset`, `checkout_ref`, `config_ref` | Preserved. |
+| Webhook triggers | Recreated (sender, `event_name`, refs). The webhook URL **and secret are new** — a `manual` action reminds you to redistribute them to the sender. |
+| Schedule triggers | Recreated (cron expression, `event_name`, refs, pipeline `parameters`). Attribution is set to `system` unless the source recorded `current`/`system`. |
+| Trigger enabled state | Created **disabled**; triggers that were enabled in the source are enabled at the enable-builds step (Phase 7), triggers disabled in the source stay disabled. |
+
+> **Not preserved:** the trigger's `name` and `description`. The CircleCI API
+> assigns a trigger's name itself and accepts neither field when creating a
+> trigger, so recreated triggers carry CircleCI-assigned names. Re-runs match
+> existing triggers by their defining fields (provider, preset, refs, event name,
+> cron, sender) when the names differ.
+
+A plain OAuth project (no captured definitions) gets one synthesized
+`build-and-test` definition + push trigger whose `event_preset` follows the
+project's `build_prs_only` flag (`only-build-prs` or `all-pushes`).
+
+### Re-running sync
+
+`sync` is safe to re-run and **reconciles existing App projects**: for a project
+that already exists in the destination it lists the destination's pipeline
+definitions and triggers and then
+
+- creates any definition missing by name, and any trigger missing from an
+  existing definition (this repairs a project whose definition failed earlier
+  because the repo was not yet connected to the GitHub App);
+- reports everything already present as `exists` — a second run changes nothing;
+- matches triggers by content (provider, preset, event name, refs, cron,
+  schedule parameters, webhook sender, enabled state) — exact matches first, so
+  look-alike triggers (for example two schedules with the same cron) are never
+  swapped and the server filling in default refs never creates a duplicate;
+- reports a definition that exists **by name** but differs from the manifest
+  (provider, repo ID or config `file_path`) as `manual` with the differences. It
+  is not modified and its triggers are not reconciled — align it by hand, then
+  re-run;
+- queues for enable-builds **only the triggers created in this run** that were
+  enabled in the source. A trigger that already exists and is disabled in the
+  destination is left alone, because you may have disabled it on purpose. Its
+  `exists` line says so and names the trigger ID and definition.
+
+A dry run (`sync` without `--apply`) shows exactly this: `would create` for what
+is missing and `exists` for what is present.
+
+**Enabling triggers that already exist.** The usual case is answering **N** at
+the enable prompt on the first run and cutting over later. Triggers created by
+that first run already exist, so a plain `sync --apply --yes` enables nothing.
+Add `--enable-existing-triggers`:
+
+```bash
+circleci-migrate sync --manifest manifest.json --secrets secrets.json \
+  --mapping mapping.json --apply --yes --enable-existing-triggers
+```
+
+It additionally queues every existing destination trigger that is disabled while
+its source trigger was enabled. Each enable prints the trigger ID and the
+pipeline definition name before and after it runs. Triggers disabled in the
+source stay disabled, and a schedule trigger whose pipeline parameters were not
+captured (an older manifest) is never enabled automatically — it gets a
+`manual` note to verify the parameters first. (`--enable-existing-triggers` is
+accepted by `migrate` too.)
+
+### 5.2 Projects with a `manual` pipeline definition
+
+A project whose repo is not yet connected to the GitHub App is still created, but
+its pipeline definition is recorded as `manual`. Skipped definitions do not
+block other resources. After connecting the repo, re-run `sync --apply`; the
+re-run creates the missing definition and trigger.
 
 ---
 
@@ -512,7 +722,7 @@ after connecting the repo or adding the mapping entry.
 - [ ] Context count in destination matches Phase 1 notes
 - [ ] Project count in destination matches Phase 1 notes (accounting for skips)
 - [ ] Pipeline definitions and triggers present in destination
-- [ ] Skipped projects noted and planned for follow-up
+- [ ] `manual` pipeline definitions noted; repos connected and `sync --apply` re-run
 - [ ] Builds NOT yet enabled (triggers disabled)
 
 ### ✅ Resources created; builds not yet enabled — continue to Phase 6
@@ -533,8 +743,22 @@ In the CircleCI UI for the destination org (**Organization Settings → Contexts
 
 For each project in the destination (**Project Settings → Pipelines/Triggers**):
 
-- Pipeline definition present, pointing to the correct config path (`.circleci/config.yml`)
-- Trigger present (in disabled state)
+- Pipeline definition(s) present, pointing to the correct config path (the
+  captured `file_path`, or `.circleci/config.yml` for a synthesized definition)
+- Trigger(s) present (in disabled state); webhook triggers have a new URL/secret
+
+`validate` checks this for you: for a GitHub App destination it adds a **Pipeline
+Definitions & Triggers** section that compares, per project present on the
+destination, each pipeline definition by name (config file path and provider are
+compared too) and its triggers (count, and how many are enabled). A missing
+definition — for example after `sync --skip-pipelines` and before the follow-up
+run — or fewer triggers than the source is `✗ missing`; triggers that exist but
+are still disabled are `⚠ manual` (enable them in Phase 7). Pass
+`--dest-token-context migration-secrets` (or `--ignore-context <name>`,
+repeatable) so the context that only holds the `secrets transfer` token is not
+reported missing. A difference in the org flag `allow_api_trigger_with_config`
+(the migration tools toggle it temporarily) is shown as `ℹ info`, never as
+missing.
 
 ### 6.3 OAuth settings dropped
 
@@ -575,7 +799,7 @@ Work through `manual` items from Phase 4 and `migration-report.md`:
 - [ ] Pipeline definitions and triggers present per project
 - [ ] Context restrictions validated (expression/project types; group types manually recreated)
 - [ ] Dropped OAuth settings documented and communicated to stakeholders
-- [ ] Skipped projects from Phase 5 resolved (repos connected + sync re-run)
+- [ ] `manual` pipeline definitions from Phase 5 resolved (repos connected + sync re-run)
 - [ ] All `manual` items from Phase 4 addressed
 
 ### ✅ Destination validated — continue to Phase 7
@@ -584,7 +808,92 @@ Work through `manual` items from Phase 4 and `migration-report.md`:
 
 ## Phase 7 — Enable builds / cutover
 
-When satisfied the destination is correct, enable builds.
+When satisfied the destination is correct, switch builds from the source to the
+destination. **The order matters** — several steps cannot be done after a later
+one (the secrets transfer needs a source that can still run a pipeline; the
+source's App triggers disappear when the App is uninstalled).
+
+### 7.0 Cutover order
+
+1. **Freeze merges** in the source repos (branch protection, a merge freeze, or
+   an announcement) so nothing lands between the capture and the switch.
+2. **Create the destination projects** (no definitions or triggers yet; if you
+   already ran Phase 5.0 this is a no-op re-check):
+
+   ```bash
+   circleci-migrate sync --manifest manifest.json --mapping mapping.json \
+     --skip-pipelines --apply
+   ```
+
+3. **Transfer the secrets while the source can still build.** The transfer runs
+   a pipeline in each source project, and a project paused with
+   `drop-all-build-requests` drops it. `secrets transfer` fails fast naming any
+   paused project: run it **before** `cutover --pause-source` (or restore the
+   source first with `cutover --undo --apply`).
+
+   ```bash
+   circleci-migrate secrets transfer --manifest manifest.json --mapping mapping.json \
+     --dest-org-id "$DST_UUID" --dest-token-context migration-secrets \
+     --include-project-vars --include-ssh-keys --remove-restrictions \
+     --enable-trigger --apply
+   ```
+
+4. **Pause the source** (reversible, recorded in `cutover-state.json`):
+
+   ```bash
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --pause-source          # preview
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --pause-source --apply
+   ```
+
+5. **Move the GitHub App connection:** uninstall the CircleCI GitHub App from the
+   source GitHub org, then install it from the destination `circleci/<id>` org
+   (Phase 0.4). Only after step 4 — uninstalling removes the source's App
+   triggers.
+6. **Add the pipeline definitions and triggers** (created disabled), saving the
+   new webhook secrets:
+
+   ```bash
+   circleci-migrate sync --manifest manifest.json --mapping mapping.json \
+     --apply --webhook-secrets-out webhook-secrets.json
+   ```
+
+7. **Enable the destination:**
+
+   ```bash
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --enable-dest          # preview
+   circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+     --enable-dest --apply
+   ```
+
+8. **Validate:**
+
+   ```bash
+   circleci-migrate validate --source-org gh/acme \
+     --dest-org circleci/$DST_UUID --mapping mapping.json \
+     --dest-token-context migration-secrets
+   ```
+
+**If something is wrong**, `circleci-migrate cutover --undo --apply` restores the
+source flags and triggers and disables the destination triggers it enabled. Keep
+**both** files safe until the cutover is confirmed: `cutover-state.json` (without
+it `--undo` has nothing to restore from; it fails if the file is missing, and
+refuses a state recorded for a different org) and `webhook-secrets.json` (it
+holds the new webhook signing secrets and URLs — mode 0600, never printed, merged
+into rather than overwritten when you re-run, so earlier entries survive). Store
+the secrets file like any credential and delete it once the senders and
+receivers have the new values.
+
+> **Do not run `sync --apply --yes` instead of step 7 while the source is still
+> building.** It enables destination triggers without pausing the source, so both
+> orgs build. `--yes` is for the simple case with no live source (below).
+
+### 7.0.1 Simple case: no live source builds
+
+If nothing is still building in the source, enable the destination triggers
+directly:
 
 ```bash
 circleci-migrate sync \
@@ -597,6 +906,38 @@ circleci-migrate sync \
 
 `--yes` auto-confirms the enable prompt. For GitHub App projects, this unpauses
 the pipeline triggers — future pushes to configured branches will trigger pipelines.
+
+On a **re-run** (for example after answering **N** the first time) the triggers
+already exist, so add `--enable-existing-triggers` to enable the ones that are
+still disabled — without it a re-run only enables triggers it creates itself, so
+a trigger you disabled on purpose is never re-enabled behind your back. You do
+not need to re-create anything to cut over. If any enable fails, every result is
+still printed and `sync` exits **non-zero**; fix the cause and run the command
+again.
+
+### `cutover` reference
+
+`cutover` is a dry run unless `--apply` is given, and records every change in
+`cutover-state.json` (mode 0600, written atomically) so it can be undone:
+
+| Flag | Does |
+|---|---|
+| `--pause-source` | Sets the v1.1 flag `drop-all-build-requests=true` on each source OAuth project (prior value recorded) and disables the source triggers that are enabled and are not `github_oauth` triggers (ids recorded). Never unfollows a project. |
+| `--pause-org` | Also sets `drop-all-build-requests` on the whole source org (overrides every project). Use with `--pause-source`. |
+| `--enable-dest` | Enables destination triggers whose source counterpart was enabled; a trigger disabled in the source stays disabled. Triggers are matched by name first, then by their defining fields; an ambiguous match (equally good candidates, source triggers that differ in enabled state) and a project the manifest shows as paused (`drop_all_build_requests`) or not followed are reported `manual` and **not** enabled. With `--pause-source` in the same run, a failed pause step stops the run before anything is enabled. Run `sync --apply` first. |
+| `--undo` | Restores everything in the state file. Fails if the file does not exist; a client is built only for the side(s) that have records. |
+
+A state record is kept when a change fails in a way that may have applied it (a
+timeout or 5xx) and dropped only on a definite 4xx rejection; `--undo` is
+idempotent either way. Each item is printed with its outcome, the command exits
+non-zero if any item fails, and re-running is idempotent.
+
+> **Pause the source before uninstalling the GitHub App from the source GitHub
+> org.** Uninstalling removes the source's GitHub App triggers, so they can no
+> longer be disabled or re-enabled; pausing then relies on
+> `drop-all-build-requests` alone, and `--undo` can only restore that flag.
+> `github_oauth` triggers cannot be disabled through the API at all, which is why
+> OAuth projects are paused with the flag.
 
 ### 7.1 Verify triggers are active
 
@@ -615,7 +956,8 @@ Push a commit or trigger a pipeline manually:
 
 ### Phase 7 checklist
 
-- [ ] `sync --apply --yes` run (or triggers enabled via UI)
+- [ ] The 7.0 order followed: `secrets transfer` before `cutover --pause-source`, App moved, then `sync --apply --webhook-secrets-out`, `cutover --enable-dest --apply`, `validate` (or `sync --apply --yes` when the source is not building)
+- [ ] `cutover-state.json` and `webhook-secrets.json` kept safe until the cutover is confirmed
 - [ ] Pipeline triggers show as active in destination
 - [ ] At least one pipeline ran successfully in the destination
 - [ ] Context env vars accessible within a job
@@ -679,8 +1021,10 @@ Key cross-type items to note:
 
 - Fork-PR builds, the OSS flag, and `pr_only_branch_overrides` — no App equivalent
 - Group context restrictions — no direct App equivalent (use expression restrictions)
-- Multiple pipeline definitions per project — `sync` creates one per project;
-  additional definitions must be created manually
+- Pipeline definitions a plain OAuth project never had — `sync` synthesizes one
+  per project; additional definitions must be created manually (definitions
+  already captured from GitHub App pipelines are recreated)
+- Trigger names/descriptions — assigned by CircleCI on creation, not copied
 
 ---
 
@@ -698,8 +1042,92 @@ Key cross-type items to note:
 
 ---
 
+## Namespaces, runners, plan, and deploys
+
+These items sit outside the project/mapping flow above. The migration report
+(`migration-report.md`) contains the same ordered checklist when generated with
+`export --dest-org circleci/<id>` (or via `migrate`).
+
+### Order of operations
+
+1. **Export, capture secrets and dry-run first.** Uninstalling the CircleCI
+   GitHub App from a GitHub org deletes that CircleCI org's GitHub App pipelines
+   and triggers.
+2. **Move the GitHub App connection.** A GitHub org connects to only **one**
+   CircleCI org through the CircleCI GitHub App: uninstall it from the OAuth org's
+   connection, then install it from the new `circleci/<id>` org.
+3. **Transfer the plan** (Support, staff command):
+   `transfer-plan "<from>" :github "<to-short-id>" :circleci`. The destination
+   must be on **Free** and must not be a plan-share rider.
+4. **Move the namespace** (Support, staff command; see below).
+5. **Recreate runner classes** and re-register agents.
+6. **Fix OIDC trust, IP ranges, SSO roles** (checklist in the report).
+7. **Do not build in both orgs** once the destination is live (double billing).
+
+The exact command sequence for steps 1–2 and 7 (freeze, transfer secrets, pause
+the source, move the App, add definitions, enable, validate) is in
+[Phase 7.0](#70-cutover-order).
+
+### Orb namespace
+
+A namespace belongs to exactly one org, so it is **moved**, not recreated:
+
+```text
+change-namespace-owner! "<ns>" "<dest-org-slug>"
+```
+
+The owner slug accepts `gh/<name>`, `github/<name>` or `circleci/<short-id>`.
+The orbs move with the namespace and **config references need no change**. Never
+use `rename-namespace` — it does not free the old name.
+
+`sync` decides what to do from who currently owns the namespace (it reads the
+org-scoped orb list, which carries each orb's `namespace_name`):
+
+| `--dest-orb-namespace` | Owner | Result |
+|---|---|---|
+| same as source | source org | no republish; `manual` action with the exact command |
+| same as source | destination org | orbs already moved; nothing to do |
+| same as source | unknown | no republish; `manual` action asking you to verify |
+| different | n/a | every stable version republished; `manual` notice lists each `old/orb` → `new/orb` to rewrite |
+
+### Runner resource classes
+
+Classes are named `<namespace>/<class>`, but each class stores the org it was
+**created under**; that attribution does **not** follow a namespace move. With an
+unchanged namespace name:
+
+- Source still owns the namespace: `sync` creates nothing and emits the
+  `change-namespace-owner!` command.
+- After the move, the classes still belong to the source org, and creating the
+  same name in the destination returns **409**. `sync` reports such classes as
+  `manual` ("exists but is attributed to another org"). Delete the source copies
+  (or ask Support), re-run `sync`, issue new tokens
+  (`circleci runner token create <class> "<nickname>"`) and re-register agents.
+- With a **different** namespace, classes are created under the new name and a
+  notice lists every `resource_class:` value in config that must be rewritten.
+
+### Org feature flags
+
+`sync` now writes v1.1 feature flags to `circleci/` destinations
+(`/api/v1.1/organization/circleci/<id>/settings`). Flags the server refuses for
+the org type are reported as `manual` with the flag name so you can set them in
+Organization Settings. Danger flags remain opt-in (`--include-danger-flags`).
+
+### Deploys
+
+`export` records Deploys environments, components (linked to their project) and
+which projects have deploy/rollback pipelines. The public Deploys API is
+**read-only** (and experimental), so `sync` reads the destination and lists
+anything missing as `manual`; it never writes. Environments and components are
+also created automatically the first time a job runs
+`circleci run release plan --environment-name=… --component-name=…`. Deployment
+history does not transfer.
+
+---
+
 ## See also
 
+- [Live test plan for this migration](cross-type-oauth-to-app-test-plan.md)
 - [Migration guide — cross-type OAuth → GitHub App scenario](../guide.md#7e-cross-type-oauth--github-app)
 - [Cutover runbook](../cutover-runbook.md)
 - [mapping.json reference](../mapping.md)

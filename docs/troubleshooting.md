@@ -24,7 +24,47 @@ sync runs against your own source org and prints a warning. See
 
 Repos must be connected to the destination CircleCI GitHub App **before**
 `sync --apply`. Check the GitHub App installation in the destination org's
-settings, then re-run.
+settings, then re-run — the project is already created, and the re-run creates
+the missing pipeline definition and trigger (existing ones report `exists`).
+
+## Preflight fails: GitHub token required (OAuth → App)
+
+OAuth projects with no captured GitHub App pipeline definition get a synthesized
+`build-and-test` definition, and its repo ID is only available from the GitHub
+API. Set `--github-token` (or `$GITHUB_TOKEN`, repo read) and re-run. Without it
+each such project would end `manual: no external_id available`. The check does
+not apply with `--skip-projects`, and `sync` only fails it when a project that
+needs synthesis does not already exist in the destination (if the destination's
+projects cannot be listed, it warns instead of failing).
+
+## `sync --apply --yes` exits non-zero after "enabling builds"
+
+At least one trigger/project failed to enable; every result is printed above the
+error (`[error] …`), and the summary (or `--json` output) is still produced —
+the non-zero exit is returned last. Fix the cause and re-run
+`sync --apply --yes --enable-existing-triggers` — the still-disabled triggers
+already exist, and that flag is what queues them again; enabled ones report
+`exists`.
+
+## `sync` / `migrate` exit non-zero after a pipeline-definition or trigger `[error]`
+
+A failed read or write of a project's pipeline definitions or triggers (for
+example `list destination pipeline definitions: …`, `create pipeline definition:
+…`, `create trigger: …`) is recorded as an `error` on that project so the rest of
+the run still happens. After the summary, `sync` and `migrate` now exit non-zero
+if any `project-pipeline-def` or `project-trigger` action ended in `error`, so a
+script or CI job no longer sees a half-configured project as success. Fix the
+cause (API access, a transient failure) and re-run `sync --apply`: what already
+exists reports `exists` and only the missing pieces are created. `manual` items
+(for example a repo not yet connected to the GitHub App) do not fail the exit
+code. Other sections keep their existing exit behaviour.
+
+## A pipeline definition shows `manual`: "already exists … but differs"
+
+`sync` matches an existing definition by name. If its provider, repo ID or
+config `file_path` differ from the manifest, the definition is not modified and
+its triggers are not reconciled (the report lists each difference). Align the
+definition in the destination (or delete it) and re-run.
 
 ## Pipeline definitions show the wrong `external_id`
 
@@ -35,9 +75,16 @@ the new IDs. See the
 
 ## Context restriction shows `manual`
 
-Project-type context restrictions cannot be migrated automatically — source-org
-project UUIDs do not transfer. Recreate them in the destination org settings UI
-after sync. (Expression and group restrictions transfer where the API allows.)
+Project-type context restrictions are remapped in two hops: source project UUID →
+source project, then source project → destination project. For a GitHub App
+destination the second hop matches by **project name** against the destination
+org, so no `projects` mapping entries are needed. A restriction stays `manual`
+when no destination project of that name exists yet (the detail names the project
+and its source slug): create it — `sync --apply --skip-pipelines` makes the App
+projects without pipeline definitions — add a `projects` entry if the name
+differs, then re-run `sync --apply`. For a gh/bb destination a missing mapping
+entry is the usual cause. (Expression and group restrictions transfer where the
+API allows.)
 
 ## `secrets capture` fails with `api-trigger-with-config disabled`
 
@@ -53,6 +100,66 @@ extraction. Either:
 1. Pass `--context` and/or `--project` to scope exactly what is captured.
 2. Pass `--yes` (or `--no-input`) to acknowledge an unattended capture-all.
 3. Run on an interactive TTY (no `--manifest`) for the guided walkthrough.
+
+## `secrets transfer`: "no destination project could be resolved"
+
+```
+Error: transfer: 2 project(s) skipped because no destination project could be resolved …
+```
+
+With `--include-project-vars` / `--include-ssh-keys` each source project needs a
+destination project. For a GitHub App destination it is matched by name against
+the destination org's projects (a `projects` mapping entry wins); a project
+that has neither is listed here, shown as `SKIP` in the plan, and the run exits
+non-zero after the others have run. Create the missing projects with
+`sync --apply --skip-pipelines` — do this **before** the GitHub App leaves the
+source org, or the transfer pipelines will need checkout keys — or add
+`projects` entries to `--mapping`, then re-run (add `--skip-contexts` if the
+contexts already went through).
+
+## `secrets transfer`: "the project has no SSH key"
+
+```
+Error: transfer: trigger pipeline: TriggerPipelineRun "gh/acme/web": We did not run this pipeline because the project has no SSH key.
+```
+
+For **GitHub OAuth (`gh/`) and Bitbucket (`bb/`)** source projects, CircleCI will
+not start a pipeline that checks out over SSH — even one with inline config —
+unless the project has a checkout key (a deploy key or user key). In a GitHub OAuth
+org that also has the CircleCI GitHub App installed, each project additionally has
+**GitHub App pipeline definitions**, which check out through the app installation
+token and need no key. Older versions took the first definition returned (the
+implicit OAuth one) and hit this error; current versions prefer a `github_app`
+definition, fall back to an OAuth/Bitbucket one, and log which definition each run
+used. Disabled OAuth triggers do not matter for API-triggered runs.
+`secrets transfer` runs a pipeline under a **host project** (for contexts) and under
+**each source project** (for `--include-project-vars` / `--include-ssh-keys`), so
+each needs *either* a GitHub App definition *or* a key. `circleci/` projects are
+not affected.
+
+Current versions check this **before** changing anything in the source org (no
+trigger flag is enabled and no context restriction removed on a doomed run):
+
+- **Auto-picked host project** — the first manifest project with a GitHub App
+  definition is used; failing that, the first with a pipeline definition *and* a
+  checkout key. The run prints which one and why. If none qualifies, it stops with
+  the list and the fix.
+- **`--host-project` with neither** — fails fast with the same message.
+- **Per-project transfers** — a project with no App definition and no key is shown
+  as `SKIP` in the plan; with `--apply` it is skipped, the other projects still run,
+  and the command exits non-zero listing the skipped projects.
+
+Fix: in CircleCI open **Project Settings → SSH Keys → Checkout SSH keys** and
+**Add Deploy Key** (or add a user key) for each listed project — or give the project
+a GitHub App pipeline definition ("the project has no GitHub App pipeline
+definition") — then re-run, or pass `--host-project` with a project that already
+qualifies. Keys are read from the manifest's `checkout_keys`; a manifest exported
+with `--skip-extras` has none, so the CLI looks them up live instead.
+
+**After the GitHub App is uninstalled** from an OAuth org, its App pipeline
+definitions are gone. Project-var and SSH-key transfers run after that need a
+checkout key on every `gh/`/`bb/` project; contexts transferred *before* the
+uninstall do not. Run `secrets transfer` before uninstalling the App.
 
 ## Captured values are missing for restricted contexts
 

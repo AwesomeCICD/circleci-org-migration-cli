@@ -13,7 +13,8 @@ import (
 //
 // The scope object identifies the project by UUID ("id") and type "project".
 // signing-secret is REQUIRED by the API but the source value is never
-// readable via the API, so we always send an empty string.
+// readable via the API, so it is empty unless the caller supplies a new one
+// (Webhook.SigningSecret).
 type createWebhookRequest struct {
 	Name          string             `json:"name"`
 	Events        []string           `json:"events"`
@@ -39,8 +40,9 @@ type webhookScopeObject struct {
 //	 "signing-secret":"","scope":{"id":"<destProjectID>","type":"project"}}
 //
 // signing-secret is REQUIRED by the API but is never readable from the source
-// project, so we always send an empty string.  The operator must set the real
-// HMAC secret on the destination webhook manually.
+// project, so an empty string is sent unless w.SigningSecret carries a freshly
+// generated one (sync --webhook-secrets-out). Either way the receiver must be
+// given the secret now configured on the webhook.
 func (c *Client) CreateWebhook(ctx context.Context, destProjectID string, w Webhook) error {
 	if destProjectID == "" {
 		return fmt.Errorf("project: CreateWebhook requires destProjectID")
@@ -56,7 +58,7 @@ func (c *Client) CreateWebhook(ctx context.Context, destProjectID string, w Webh
 		Events:        w.Events,
 		URL:           w.URL,
 		VerifyTLS:     verifyTLS,
-		SigningSecret: "",
+		SigningSecret: w.SigningSecret,
 		Scope: webhookScopeObject{
 			ID:   destProjectID,
 			Type: "project",

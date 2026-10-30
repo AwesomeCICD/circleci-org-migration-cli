@@ -127,7 +127,7 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 		for _, lvl := range eh.Levels {
 			fmt.Fprintf(b, "  %d. %s\n", lvl.Position, orDash(lvl.IntegrationName))
 		}
-		fmt.Fprintf(b, "\n_Recreate manually — deploy-integration IDs are org-specific._\n\n")
+		fmt.Fprintf(b, "\n_`sync` recreates it (environments are matched or created by name); anything it cannot do is listed as manual._\n\n")
 	}
 
 	if len(s.AuditLogConfigs) > 0 {
@@ -142,7 +142,8 @@ func writeOrgSettings(b *strings.Builder, m *manifest.Manifest) {
 	if len(s.Orbs) == 0 {
 		fmt.Fprintf(b, "- No published orbs / claimed namespace for this org.\n\n")
 	} else {
-		fmt.Fprintf(b, "\n%d published orb(s) — orb source YAML is not exportable via REST API (GraphQL only); republish each under the destination namespace manually:\n\n", len(s.Orbs))
+		fmt.Fprintf(b, "\n%d published orb(s) — export with `--orb-namespace` and `sync --dest-orb-namespace <new-ns>` to republish every stable version under a different namespace; "+
+			"a SAME-name namespace cannot be republished and is moved by CircleCI Support (`change-namespace-owner!`):\n\n", len(s.Orbs))
 		for _, o := range s.Orbs {
 			vis := "public"
 			if o.IsPrivate {

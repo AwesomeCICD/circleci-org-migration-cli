@@ -152,12 +152,16 @@ Examples:
 	Name of the source-org context that holds the destination API token (env var: CIRCLECI_DEST_TOKEN). Required when --transfer-secrets is set.
 
 .PP
+\fB--enable-existing-triggers\fP[=false]
+	Also enable triggers that ALREADY exist in the destination and are disabled while their source trigger was enabled (GitHub App destinations). Default: only triggers created in this run are enabled, so a re-run never re-enables a trigger you disabled on purpose. Use it on a re-run after answering N at the enable prompt. Needs --yes (or an interactive yes) to take effect.
+
+.PP
 \fB--follow-all\fP=false
 \[la]GitHub OAuth orgs only\[ra] Before exporting, list all GitHub repos in the source org and follow any not yet set up as CircleCI projects, making them visible to subsequent discovery. Requires --github-token. Archived repos are skipped. Webhook-validation errors on brand-new repos are warned and skipped, not fatal. Not applicable to circleci/ (App/standalone) orgs — a note is printed and this flag is ignored.
 
 .PP
 \fB--github-token\fP=""
-	GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required when repos have been moved to a new GitHub org (--dest-github-org or mapping github_org).
+	GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required (preflight fails without it) when an OAuth source org is migrated to a GitHub App destination — OAuth projects without a GitHub App pipeline definition get a synthesized one whose repo ID only GitHub can supply — and when repos have moved to a new GitHub org (--dest-github-org or mapping github_org); not checked with --skip-projects. Not needed when the GitHub org is unchanged and the export captured the repo IDs: those are reused.
 
 .PP
 \fB-h\fP, \fB--help\fP[=false]
@@ -244,6 +248,10 @@ Examples:
 	Skip syncing org-level settings (feature flags, OIDC, URL-orb allow list, config policies)
 
 .PP
+\fB--skip-pipelines\fP[=false]
+	GitHub App destinations: create or reuse each project and sync its settings, env vars and other project data, but create NO pipeline definitions or triggers (reported as 'skipped: --skip-pipelines'). Use it to create the App projects BEFORE the GitHub App is moved off the source (OAuth) org, so 'secrets transfer --include-project-vars' can run while the source's App pipeline definitions still exist; a later run without the flag adds the definitions and triggers to the existing projects. No GitHub token is needed.
+
+.PP
 \fB--skip-preflight\fP[=false]
 	Skip the startup preflight checks (token validation, org reachability, cross-type warning, api-trigger flag, project discovery). Preflight runs by default before export/sync; use --skip-preflight in CI pipelines or when checks have already been verified manually.
 
@@ -266,6 +274,10 @@ Examples:
 .PP
 \fB--transfer-secrets\fP[=false]
 	After sync, run the in-pipeline secrets transfer to copy context env-var values directly from source to destination without writing a bundle file. Requires --dest-token-context. Mutually exclusive with --secrets.
+
+.PP
+\fB--webhook-secrets-out\fP=""
+	With --apply, write the NEW secrets of recreated webhooks to this file (JSON, mode 0600): a freshly generated signing secret for each outbound webhook created in this run (sent on create) and the new URL of each recreated inbound custom-webhook trigger. An existing file is merged into (earlier entries are kept, never truncated) and saved atomically; it is left untouched when nothing is recreated. The source secrets are unreadable, so every receiver/sender must be given the new values. Secrets are never printed. Without the flag, webhooks are created with an empty signing secret and the manual steps say where to set it. Only affects webhooks created in this run.
 
 .PP
 \fB-y\fP, \fB--yes\fP[=false]

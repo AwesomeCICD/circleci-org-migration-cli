@@ -52,7 +52,7 @@ Examples:
 
 .PP
 \fB--github-token\fP=""
-	GitHub personal access token used to resolve repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN.
+	GitHub personal access token (repo read) used to look up repository IDs when creating pipeline definitions in a GitHub App destination org. Falls back to $GITHUB_TOKEN. Required (checked here) when an OAuth source org is migrated to a GitHub App destination, because OAuth projects without a GitHub App pipeline definition get a synthesized one whose repo ID only GitHub can supply; also required when repos move to a new GitHub org.
 
 .PP
 \fB-h\fP, \fB--help\fP[=false]

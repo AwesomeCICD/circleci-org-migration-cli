@@ -2,8 +2,13 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"sort"
 	"strings"
+
+	"github.com/AwesomeCICD/circleci-org-migration-cli/api/rest"
 )
 
 // v11ProjectSettingsResponse mirrors the relevant parts of the
@@ -124,9 +129,33 @@ func (c *Client) SetV11ProjectFeatureFlags(ctx context.Context, slug string, fla
 	// map[string]interface {}".  A 2xx status is sufficient for success;
 	// the caller never needs the response body.
 	if _, err := c.v11.DoRequest(req, nil); err != nil {
-		return fmt.Errorf("SetV11ProjectFeatureFlags %q: %w", slug, err)
+		return fmt.Errorf("SetV11ProjectFeatureFlags %q%s: %w", slug, flagKeysSuffix(kebab), httpStatusNote(err))
 	}
 	return nil
+}
+
+// flagKeysSuffix names the flags in a failed write (keys only, never values of
+// anything secret — these are booleans) so a rejection can be attributed.
+func flagKeysSuffix(kebab map[string]bool) string {
+	keys := make([]string, 0, len(kebab))
+	for k := range kebab {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return " [flags: " + strings.Join(keys, ", ") + "]"
+}
+
+// httpStatusNote returns err unchanged unless it is an HTTP error whose message
+// is blank (the monolith answers some validation failures — e.g. enabling
+// forks-receive-secret-env-vars on a standalone project — with a bare 403), in
+// which case it returns an error that states the HTTP status.
+func httpStatusNote(err error) error {
+	var he *rest.HTTPError
+	if errors.As(err, &he) && strings.TrimSpace(he.Message) == "" {
+		return fmt.Errorf("HTTP %d %s with an empty response body (CircleCI gave no reason; a rejected flag value is the usual cause)",
+			he.Code, http.StatusText(he.Code))
+	}
+	return err
 }
 
 // IsProjectFollowed returns true when the authenticated user's token is already

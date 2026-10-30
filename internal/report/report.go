@@ -69,9 +69,23 @@ func writeSummary(b *strings.Builder, ren *ui.Renderer, m *manifest.Manifest) {
 	fmt.Fprintf(b, "  leaving CircleCI. See docs/guide.md.\n")
 }
 
+// Options tailors the audit document with facts the manifest does not record.
+type Options struct {
+	// DestOrgSlug is the destination org slug (e.g. "circleci/<id>"). When it is
+	// a circleci/ (GitHub App / standalone) org and the source is a gh/ OAuth
+	// org, the runbook gains the ordered cross-type checklist. Empty when the
+	// destination is not known (for example a plain `export`).
+	DestOrgSlug string
+}
+
 // Markdown returns a full audit document describing everything captured and
 // every warning, suitable for saving and reviewing.
 func Markdown(m *manifest.Manifest) string {
+	return MarkdownWith(m, Options{})
+}
+
+// MarkdownWith is Markdown plus destination-aware sections (see Options).
+func MarkdownWith(m *manifest.Manifest, opts Options) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# CircleCI migration audit\n\n")
 	if m.GeneratedAt != "" {
@@ -316,14 +330,19 @@ func Markdown(m *manifest.Manifest) string {
 	// Cutover runbook — the operator-facing checklist the customer follows to
 	// finish the migration. Everything below the warnings table is derived from
 	// the manifest plus the set of known manual/limitation facts.
-	writeRunbook(&b, m)
+	writeRunbook(&b, m, opts)
 
 	return b.String()
 }
 
 // SaveMarkdown writes the audit document to path.
 func SaveMarkdown(m *manifest.Manifest, path string) error {
-	if err := os.WriteFile(path, []byte(Markdown(m)), 0o644); err != nil {
+	return SaveMarkdownWith(m, path, Options{})
+}
+
+// SaveMarkdownWith writes the destination-aware audit document to path.
+func SaveMarkdownWith(m *manifest.Manifest, path string, opts Options) error {
+	if err := os.WriteFile(path, []byte(MarkdownWith(m, opts)), 0o644); err != nil {
 		return fmt.Errorf("writing audit report %s: %w", path, err)
 	}
 	return nil

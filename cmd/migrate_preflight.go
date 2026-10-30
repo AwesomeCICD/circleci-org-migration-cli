@@ -24,6 +24,27 @@ type preflightDeps struct {
 	destOrg       string
 	githubToken   string
 	destGitHubOrg string
+	// githubOrgMapped is true when the mapping file moves repos to a different
+	// GitHub org (mapping github_org), which needs the GitHub API to re-resolve
+	// repo ids just like --dest-github-org does.
+	githubOrgMapped bool
+	// synthProjects is the number of manifest projects that need a synthesized
+	// App pipeline definition (OAuth source, nothing captured). Only sync knows
+	// this (it has the manifest); migrate/doctor leave it 0 and instead assume
+	// synthesis may be needed for any OAuth-source to App-destination run.
+	synthProjects int
+	// synthUnverified is true when sync could not list the destination's projects
+	// to see which of the synthProjects already exist; the missing-token check is
+	// then a warning instead of a hard failure.
+	synthUnverified bool
+	// skipProjects is true when projects are not being synced (--skip-projects),
+	// so the GitHub-token checks (which only matter for pipeline definitions)
+	// are skipped.
+	skipProjects bool
+	// skipPipelines is true under --skip-pipelines: projects are synced but no
+	// pipeline definitions or triggers are created, so no GitHub repo lookup is
+	// made and the GitHub-token checks are skipped too.
+	skipPipelines bool
 }
 
 // orgGetter retrieves an org by slug or ID.
@@ -99,11 +120,8 @@ func runMigratePreflight(
 	results = append(results, srcResult)
 
 	// ---- Check 4: Cross-type warning ------------------------------------
-	crossType := false
 	if srcOrg != nil && destOrg != nil {
-		xtResult := checkCrossType(srcOrg, destOrg)
-		results = append(results, xtResult)
-		crossType = xtResult.Status == preflight.StatusWarn
+		results = append(results, checkCrossType(srcOrg, destOrg))
 	}
 
 	// ---- Check 5: Source api-trigger flag (best-effort) -----------------
@@ -117,8 +135,20 @@ func runMigratePreflight(
 	}
 
 	// ---- Check 7: GitHub token for repo resolution ----------------------
-	if needsGitHubToken(deps, crossType) {
-		results = append(results, checkGitHubToken(deps.githubToken))
+	// An OAuth source onto a GitHub App destination may need synthesized
+	// pipeline definitions (any OAuth project without GitHub App pipelines),
+	// whose repo id only the GitHub API can supply — a hard requirement. Not
+	// relevant when projects are skipped (--skip-projects).
+	if !deps.skipProjects && !deps.skipPipelines {
+		synth := 0
+		if srcOrg != nil && isOAuthOrgType(srcOrg.VCSType) {
+			synth = -1 // unknown until export; assume at least one
+		}
+		if r := checkSynthesisToken(deps.githubToken, destOrg, synth); r != nil {
+			results = append(results, *r)
+		} else if needsGitHubToken(deps) {
+			results = append(results, checkGitHubToken(deps.githubToken))
+		}
 	}
 
 	// ---- Check 8: Follow-all offer (best-effort, gh/ orgs only) ---------
@@ -341,16 +371,25 @@ func runSyncPreflight(
 	}
 
 	// ---- Check 3: Cross-type warning (manifest source vs dest) ----------
-	crossType := false
 	if destOrg != nil && manifestSourceType != "" {
 		srcOrg := &org.Organization{VCSType: manifestSourceType}
-		xtResult := checkCrossType(srcOrg, destOrg)
-		results = append(results, xtResult)
-		crossType = xtResult.Status == preflight.StatusWarn
+		results = append(results, checkCrossType(srcOrg, destOrg))
 	}
 
 	// ---- Check 4: GitHub token for repo resolution ----------------------
-	if needsGitHubToken(deps, crossType) {
+	// Hard requirement when the manifest has OAuth projects whose App pipeline
+	// definition must be synthesized (no captured repo id).
+	if deps.skipPipelines {
+		// --skip-pipelines creates no definitions, so nothing needs a repo id.
+	} else if r := checkSynthesisToken(deps.githubToken, destOrg, deps.synthProjects); r != nil {
+		if deps.synthUnverified {
+			// Could not tell which projects already exist in the destination
+			// (those need no GitHub lookup), so warn rather than block.
+			r.Status = preflight.StatusWarn
+			r.Detail += " (Could not list the destination's projects to see which already exist — projects that do need no lookup — so this is a warning, not a blocker.)"
+		}
+		results = append(results, *r)
+	} else if needsGitHubToken(deps) {
 		results = append(results, checkGitHubToken(deps.githubToken))
 	}
 
@@ -644,12 +683,15 @@ func checkProjectDiscovery(ctx context.Context, client projectLister, srcOrg *or
 	}
 }
 
-// needsGitHubToken returns true when a GitHub personal token will be needed.
-func needsGitHubToken(deps preflightDeps, crossType bool) bool {
-	return crossType || deps.destGitHubOrg != ""
+// needsGitHubToken returns true when the GitHub org changes, so repo ids must be
+// re-resolved through the GitHub API (captured ids are only valid in the
+// original GitHub org).
+func needsGitHubToken(deps preflightDeps) bool {
+	return deps.destGitHubOrg != "" || deps.githubOrgMapped
 }
 
-// checkGitHubToken warns if a GitHub token appears necessary but is absent.
+// checkGitHubToken warns if a GitHub token is needed to re-resolve repo ids in a
+// new GitHub org but is absent.
 func checkGitHubToken(githubToken string) preflight.Result {
 	if githubToken != "" {
 		return preflight.Result{
@@ -661,8 +703,81 @@ func checkGitHubToken(githubToken string) preflight.Result {
 	return preflight.Result{
 		Name:   "GitHub token for repo resolution",
 		Status: preflight.StatusWarn,
-		Detail: "Cross-type or repo-move migration detected but --github-token is absent. " +
-			"It is required to resolve destination repository IDs when creating pipeline definitions on a GitHub App org. " +
+		Detail: "The GitHub org is changing (--dest-github-org or mapping github_org) but --github-token is absent. " +
+			"It is required to resolve the repository IDs in the new GitHub org when creating pipeline definitions on a GitHub App org. " +
 			"Set --github-token or $GITHUB_TOKEN before running sync.",
 	}
+}
+
+// isOAuthOrgType reports whether vcsType names a GitHub OAuth org.
+func isOAuthOrgType(vcsType string) bool {
+	return normalizeOrgType(vcsType) == "GitHub OAuth"
+}
+
+// isAppOrgType reports whether vcsType names a GitHub App / standalone org.
+func isAppOrgType(vcsType string) bool {
+	switch strings.ToLower(vcsType) {
+	case "circleci", "github_app":
+		return true
+	}
+	return false
+}
+
+// checkSynthesisToken fails when an OAuth project must be onboarded onto a
+// GitHub App destination without any captured pipeline definition. CircleCI
+// synthesizes a "build-and-test" definition for it, which needs the repository's
+// GitHub id — only the GitHub API can supply it, so a token is mandatory (no
+// token means every such project ends up "manual: no external_id available").
+//
+// synthProjects is the number of projects that need synthesis, or a negative
+// number when unknown (migrate/doctor run before export) in which case an
+// OAuth-source to App-destination pairing is assumed to need it. Returns nil
+// when no token is required or one is present.
+func checkSynthesisToken(githubToken string, destOrg *org.Organization, synthProjects int) *preflight.Result {
+	if githubToken != "" || synthProjects == 0 || destOrg == nil || !isAppOrgType(destOrg.VCSType) {
+		return nil
+	}
+	which := fmt.Sprintf("%d OAuth project(s) in the manifest have no captured GitHub App pipeline definition", synthProjects)
+	if synthProjects < 0 {
+		which = "OAuth projects without a GitHub App pipeline definition are onboarded with a synthesized one"
+	}
+	return &preflight.Result{
+		Name:   "GitHub token for repo resolution",
+		Status: preflight.StatusFail,
+		Detail: which + ", so sync must synthesize a pipeline definition for each, and the repository's GitHub ID " +
+			"can only be looked up through the GitHub API. Without a token every such project is left as " +
+			"\"manual: no external_id available\". Set --github-token or $GITHUB_TOKEN (a token with repo read access " +
+			"to the destination GitHub org) and retry.",
+	}
+}
+
+// synthProjectsNeedingCreate returns how many of the named projects (those that
+// need a synthesized pipeline definition) do NOT already exist in the
+// destination org. A project that already exists is reconciled without any
+// GitHub lookup, so only the missing ones make a GitHub token mandatory. It
+// errors when the destination org or its project list cannot be read; callers
+// then fall back to a warning.
+func synthProjectsNeedingCreate(ctx context.Context, names []string, destSlug string, og orgGetter, pl projectLister) (int, error) {
+	if og == nil || pl == nil {
+		return len(names), fmt.Errorf("no destination client available")
+	}
+	o, err := og.GetOrganization(ctx, destSlug)
+	if err != nil {
+		return len(names), fmt.Errorf("resolve destination org %q: %w", destSlug, err)
+	}
+	projs, err := pl.ListOrgProjects(ctx, o.ID)
+	if err != nil {
+		return len(names), fmt.Errorf("list destination projects: %w", err)
+	}
+	existing := make(map[string]bool, len(projs))
+	for _, p := range projs {
+		existing[p.Name] = true
+	}
+	n := 0
+	for _, name := range names {
+		if !existing[name] {
+			n++
+		}
+	}
+	return n, nil
 }

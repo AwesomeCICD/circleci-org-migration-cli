@@ -21,6 +21,11 @@ type OrgOrb struct {
 	Hidden bool `json:"hidden"`
 	// Description is the human-readable orb description.
 	Description string `json:"description,omitempty"`
+	// NamespaceName is the bare name of the namespace that owns this orb
+	// (e.g. "acme"). The list is scoped to orbs whose namespace is OWNED by the
+	// queried org, so this is the signal the syncer uses to tell which org owns
+	// a namespace.
+	NamespaceName string `json:"namespace_name,omitempty"`
 }
 
 // orbListResponse mirrors GET /api/private/orb?org-id={orgUUID}.

@@ -110,3 +110,50 @@ func TestSecretsTransfer_HelpWorks(t *testing.T) {
 		}
 	}
 }
+
+// --skip-contexts needs something else to transfer.
+func TestSecretsTransfer_SkipContexts_NothingToTransfer(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+	_, _, err := runCmd(t,
+		"secrets", "transfer",
+		"--manifest", writeMinimalManifest(t),
+		"--dest-org", "gh/dest-org",
+		"--dest-token-context", "migration-secrets",
+		"--skip-contexts",
+	)
+	if err == nil || !strings.Contains(err.Error(), "nothing to transfer") {
+		t.Fatalf("expected a 'nothing to transfer' error, got: %v", err)
+	}
+}
+
+// --skip-contexts drops every context, so naming one with --context is a conflict.
+func TestSecretsTransfer_SkipContexts_ConflictsWithContext(t *testing.T) {
+	t.Setenv("CIRCLECI_CLI_TOKEN", "")
+	t.Setenv("CIRCLECI_SOURCE_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "")
+	_, _, err := runCmd(t,
+		"secrets", "transfer",
+		"--manifest", writeMinimalManifest(t),
+		"--dest-org", "gh/dest-org",
+		"--dest-token-context", "migration-secrets",
+		"--skip-contexts", "--include-project-vars",
+		"--context", "deploy",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--context") {
+		t.Fatalf("expected a --skip-contexts/--context conflict error, got: %v", err)
+	}
+}
+
+func TestSecretsTransfer_HelpMentionsSkipContexts(t *testing.T) {
+	out, _, err := runCmd(t, "secrets", "transfer", "--help")
+	if err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	for _, phrase := range []string{"--skip-contexts", "Contexts already transferred"} {
+		if !strings.Contains(out, phrase) {
+			t.Errorf("help output missing %q", phrase)
+		}
+	}
+}

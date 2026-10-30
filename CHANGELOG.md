@@ -7,6 +7,19 @@
 
 * **secrets:** resolve the `transfer` pipeline branch per project from the manifest's `vcs.default_branch` (falling back to `main`), so orgs with mixed default branches (some `main`, some `master`) can transfer; `--branch` now defaults to empty and, when set, still forces a single branch for all projects.
 
+## [0.18.0](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.2...v0.18.0) (2026-10-29)
+
+
+### Features
+
+* GitHub OAuth → GitHub App (standalone) migration support ([#310](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/310)) ([b077dac](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/b077dacdf0600e762f233143b9c4a0d5ad701e8d))
+* **release:** publish Windows amd64 and arm64 binaries ([#311](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/311)) ([cff134b](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/cff134b79ce56e74d48a67e2258f7a247956bb2e))
+
+
+### Bug Fixes
+
+* **docs:** pin man page date so docs-check is reproducible ([#314](https://github.com/AwesomeCICD/circleci-org-migration-cli/issues/314)) ([a8e7481](https://github.com/AwesomeCICD/circleci-org-migration-cli/commit/a8e74810dcb4d2ab4369444008e768d2d70639b7))
+
 ## [0.17.2](https://github.com/AwesomeCICD/circleci-org-migration-cli/compare/v0.17.1...v0.17.2) (2026-06-18)
 
 

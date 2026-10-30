@@ -75,9 +75,12 @@ for the full orb-based alternative (committed config, matrix capture).
 > `secrets transfer`, which pushes values directly to the destination. With that
 > method, **context** values can move any time, but **project** env vars and SSH
 > keys (`--include-project-vars` / `--include-ssh-keys`) must be transferred
-> *after* `sync --apply` (Step 4), because they target destination projects that
-> don't exist until sync creates them. Pick one path; don't mix bundle and
-> in-pipeline for the same resources.
+> *after* the destination projects exist, because they target those projects.
+> For a GitHub App destination, create them early with
+> `sync --apply --skip-pipelines` (no pipeline definitions or triggers) so the
+> transfer can run while the source's GitHub App pipeline definitions still
+> exist; a later `sync --apply` adds the definitions. Pick one path; don't mix
+> bundle and in-pipeline for the same resources.
 
 ### Step 3 — Dry run (review the plan)
 
@@ -131,6 +134,39 @@ Bring the destination live:
 - For GitHub App orgs this enables (unpauses) the pipeline triggers.
 - For GitHub OAuth orgs this follows the projects, installing deploy keys and webhooks.
 
+#### Switching traffic with `cutover` (recommended for a live source)
+
+When the source org is still building, switch over in one controlled step with
+the `cutover` command instead of leaving both orgs live. It is a dry run unless
+you pass `--apply`, and it records every change in a state file
+(`cutover-state.json`, mode 0600) so it can be reversed:
+
+```bash
+# 1. Preview, then pause the source and turn the destination on.
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest
+circleci-migrate cutover --manifest manifest.json --mapping mapping.json \
+  --pause-source --enable-dest --apply
+
+# 2. Something wrong? Put everything back from the state file.
+circleci-migrate cutover --undo --apply
+```
+
+- `--pause-source` sets `drop-all-build-requests=true` on each source OAuth
+  project (the prior value is recorded) and disables the source triggers that
+  are enabled (GitHub App, webhook and schedule triggers; `github_oauth`
+  triggers cannot be disabled through the API, so those projects rely on the
+  flag). Add `--pause-org` to also set the flag on the whole source org.
+  Projects are never unfollowed.
+- `--enable-dest` enables the destination triggers whose source counterpart was
+  enabled, matched the way `sync` matches them. A trigger that was disabled in
+  the source stays disabled. Run `sync --apply` first so the triggers exist.
+- Every item is printed with its outcome; the command exits non-zero if any item
+  failed, and re-running is idempotent.
+- **Pause the source before uninstalling the GitHub App from the source GitHub
+  org.** Uninstalling removes the source's App triggers, so afterwards pausing
+  relies on `drop-all-build-requests` alone and `--undo` can only restore that flag.
+
 ### Step 7 — Rotate the captured secrets
 
 Once builds are healthy, rotate every value captured in step 2 and delete:
@@ -163,7 +199,10 @@ Repoint everything that references the old org (see [Section 5](#5-update-extern
   - Spend budgets
   - Block-unregistered-users flag
   - Release-tracker settings
-- Self-hosted runner **resource classes** (when `--runner-namespace` on export and `--dest-runner-namespace` on sync are supplied). Definitions only — runner instances and registration tokens do not transfer.
+  - v1.1 feature flags are also written to `circleci/` (GitHub App / standalone) destinations; a flag the server refuses on such an org is reported as `manual` rather than `error`.
+- Self-hosted runner **resource classes** (when `--runner-namespace` on export and `--dest-runner-namespace` on sync are supplied). Definitions only — runner instances and registration tokens do not transfer. When the destination namespace has the **same name** as the source's, nothing is created while the source org still owns it (a `manual` action carries the exact `change-namespace-owner!` command); classes that already exist under the source org are reported `manual`, not `exists`. When the namespace **differs**, a notice lists every `resource_class:` value to rewrite.
+- **Deploys** (environments, components, per-project deploy settings) are exported and *reconciled read-only*: the public Deploys API has no create endpoint, so `sync` lists what is missing as `manual` (see Section 3).
+- Orbs published by `--orb-namespace` into a **different** destination namespace (every stable version, with a config-rewrite notice). A **same-name** namespace is never republished — it is moved by Support.
 - Project creation: OAuth orgs are onboarded by following the project; App orgs get their pipeline definitions and triggers recreated.
 - Project **API tokens** — only when `--create-project-tokens` is set; each recreated token mints a NEW one-time secret, so every consumer must be repointed. Off by default (manual steps emitted instead).
 
@@ -204,8 +243,27 @@ the relevant ones.
   after sync.
 - **Danger flags** (`require_context_group_restriction`, `drop_all_build_requests`)
   — enable only after validation, or they can silently break or drop builds.
-- **Org orb list** — org-level orbs must be republished in the destination
-  namespace. The report lists each orb name.
+- **Org orbs / namespaces** — a namespace belongs to exactly one org. A
+  **different** destination namespace is republished by `sync --dest-orb-namespace`
+  (rewrite config references afterwards). The **same** namespace name cannot be
+  republished: ask Support to run `change-namespace-owner! "<ns>" "<dest-org-slug>"`
+  (slug accepts `gh/<name>`, `github/<name>`, `circleci/<short-id>`; never
+  `rename-namespace`) — the orbs move with it and config references need no
+  change. `sync` detects who owns the namespace and emits this as a `manual`
+  action.
+- **Runner resource classes (same-name namespace)** — class rows keep the org
+  they were created under and do not follow a namespace move, so after the move
+  delete the source copies (or ask Support) and re-run `sync` to recreate them
+  in the destination, then issue new tokens and re-register agents.
+- **Deploys** — recreate environments (Deploys → Environments, or let the first
+  `circleci run release plan --environment-name=…` create them), components
+  (created by the first `circleci run release plan --component-name=…`), and the
+  per-project deploy setup. The public Deploys API is read-only.
+- **Plan transfer (OAuth → App)** — a Support-run `transfer-plan "<from>" :github "<to-short-id>" :circleci`;
+  the destination must be on Free and not a plan-share rider. Other cross-type
+  steps (GitHub App move, OIDC `sub` claims, IP ranges, SSO default role) are in
+  the ordered checklist the report adds when you pass `--dest-org circleci/<id>`
+  to `export` (or use `migrate`).
 - **Environment hierarchy** — captured as reference data; apply manually if needed.
 - **Repository connections (App destinations)** — repos must exist and be
   connected to the destination CircleCI GitHub App before `sync --apply`, or
@@ -232,6 +290,10 @@ This is the single canonical "does not transfer / data loss" reference for
 | **Audit-log streaming, OTel exporter headers** | Point at source-owned infra / server-redacted. | Recreate against destination infra; re-add OTel headers manually. |
 | **Usage data** | Local baseline only (`--include-usage`). | Not synced — retained as a source-org record. |
 | **Runner instances & registration tokens** | Only resource-class *definitions* transfer. | Re-register runners against the destination resource classes. |
+| **Runner class attribution (same-name namespace)** | A class stores the org it was created under; it does not follow a namespace-owner change, and a duplicate name returns HTTP 409. | After the namespace move, delete the source copies (or ask Support), re-run `sync`, issue new tokens. |
+| **Orb namespace (same name)** | A namespace belongs to one org; it cannot be recreated or republished in a second org. | Support runs `change-namespace-owner! "<ns>" "<dest-org-slug>"`; orbs move with it. |
+| **Deploys environments, components, deploy settings, history** | The public Deploys API is read-only (no create endpoints); pipeline UUIDs are source-specific; deployment history stays in the source. | Recreate by name from the `sync` manual list; first `circleci run release plan` run recreates components/environments. |
+| **Plan / billing (OAuth → App)** | Moved by Support, not the API. | `transfer-plan "<from>" :github "<to-short-id>" :circleci` (destination on Free, not a plan-share rider). |
 | **Cross-type settings (OAuth → App)** | No App equivalent for fork-PR builds, the OSS flag, or `pr_only_branch_overrides`; multiple App pipeline definitions cannot collapse into one OAuth config. | Reconfigure manually where an equivalent exists. |
 | **OSS ("Free and Open Source") flag** | GitHub App projects auto-detect OSS from repo visibility (the PATCH endpoint rejects the `oss` field); OAuth private repos silently no-op. The sync makes a best-effort attempt and records a `manual` note when it cannot confirm the flag. | For GitHub App destinations: no action needed — OSS status is auto-detected from the public/private visibility of the GitHub repo. For OAuth destinations with a public repo: enable "Free and Open Source" in the destination project's **Advanced settings**. |
 

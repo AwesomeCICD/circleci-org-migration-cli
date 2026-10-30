@@ -32,6 +32,7 @@ func (s *Syncer) SyncProjects(ctx context.Context, m *manifest.Manifest, bundle 
 		destSlug = m.Source.Org.Slug
 	}
 	report := &Report{DestOrgSlug: destSlug, Applied: opts.Apply}
+	s.projectsToCreate = map[string]bool{}
 
 	// Resolve the destination org ID once — needed for OIDC PATCH calls.
 	destOrgID, err := s.Org.ResolveOrgID(ctx, destSlug)
@@ -248,6 +249,12 @@ func (s *Syncer) syncAppProject(
 		s.syncProjectOIDCClaims(ctx, report, p, dst, destOrgID, existing.ID, opts)
 		s.syncProjectV11Flags(ctx, report, p, dst, opts)
 		s.syncProjectAPITokens(ctx, report, p, dst, opts)
+
+		// Reconcile pipeline definitions + triggers against the destination so a
+		// re-run repairs a half-created project (e.g. the repo was not yet
+		// connected to the GitHub App) and re-queues disabled triggers for
+		// enable-builds. Idempotent: everything already present is "exists".
+		s.syncAppPipelines(ctx, report, p, name, existing.ID, destSlug, mapping, opts, true)
 		return
 	}
 
@@ -260,7 +267,13 @@ func (s *Syncer) syncAppProject(
 	synthesize := len(p.PipelineDefinitions) == 0
 	nDefs := len(p.PipelineDefinitions)
 	if !opts.Apply {
-		if synthesize {
+		if s.projectsToCreate != nil {
+			s.projectsToCreate[name] = true
+		}
+		if opts.SkipPipelines {
+			report.add("project", name, "created",
+				"would create App project (--skip-pipelines: no pipeline definitions or triggers)")
+		} else if synthesize {
 			report.add("project", name, "created",
 				"would create App project + 1 synthesized pipeline-definition (OAuth source)")
 		} else {
@@ -269,14 +282,9 @@ func (s *Syncer) syncAppProject(
 		}
 		// Run resolve checks so the dry-run preview accurately shows which repos
 		// are found in the destination GH org and which will be skipped.
-		// syncAppPipelineDefinition is read-only at resolve time (no API writes).
+		// syncAppPipelines is read-only at resolve time (no API writes).
 		drySlug := "circleci/" + destOrgID + "/<new>"
-		if synthesize {
-			s.synthesizeOAuthPipelineDefinition(ctx, report, name, "", p, mapping, opts)
-		}
-		for _, def := range p.PipelineDefinitions {
-			s.syncAppPipelineDefinition(ctx, report, name, "", def, destSlug, mapping, opts)
-		}
+		s.syncAppPipelines(ctx, report, p, name, "", destSlug, mapping, opts, false)
 		s.syncProjectSettings(ctx, report, p, drySlug, opts)
 		s.syncProjectVars(ctx, report, p, bundle, drySlug, opts)
 		s.syncProjectSSHKeys(ctx, report, p, bundle, drySlug, opts)
@@ -309,12 +317,7 @@ func (s *Syncer) syncAppProject(
 	// Create pipeline definitions and triggers. OAuth-source projects (no
 	// captured definitions) get one synthesized App pipeline-def + trigger;
 	// App-source projects recreate their captured definitions.
-	if synthesize {
-		s.synthesizeOAuthPipelineDefinition(ctx, report, name, newProjectID, p, mapping, opts)
-	}
-	for _, def := range p.PipelineDefinitions {
-		s.syncAppPipelineDefinition(ctx, report, name, newProjectID, def, destSlug, mapping, opts)
-	}
+	s.syncAppPipelines(ctx, report, p, name, newProjectID, destSlug, mapping, opts, false)
 
 	// Configure settings, vars, etc. on the new slug.
 	s.syncProjectSettings(ctx, report, p, newSlug, opts)
@@ -327,184 +330,48 @@ func (s *Syncer) syncAppProject(
 	s.syncProjectAPITokens(ctx, report, p, newSlug, opts)
 }
 
-// syncAppPipelineDefinition creates one pipeline definition plus its triggers
-// for a freshly-created App project.
-func (s *Syncer) syncAppPipelineDefinition(
-	ctx context.Context,
-	report *Report,
-	projectName, projectID string,
-	def manifest.PipelineDefinition,
-	destSlug string,
-	mapping *manifest.Mapping,
-	opts Options,
-) {
-	// Resolve the external_id for config and checkout sources.
-	configExtID, configOK := s.resolveExternalID(ctx, report, projectName+"/def:"+def.Name+"/config",
-		def.ConfigSource.RepoFullName, def.ConfigSource.RepoExternalID, mapping, opts)
-	if !configOK {
-		return
-	}
-	checkoutExtID, checkoutOK := s.resolveExternalID(ctx, report, projectName+"/def:"+def.Name+"/checkout",
-		def.CheckoutSource.RepoFullName, def.CheckoutSource.RepoExternalID, mapping, opts)
-	if !checkoutOK {
-		return
-	}
-
-	filePath := def.ConfigSource.FilePath
-	if filePath == "" {
-		filePath = ".circleci/config.yml"
-	}
-	configProvider := def.ConfigSource.Provider
-	if configProvider == "" {
-		configProvider = "github_app"
-	}
-	checkoutProvider := def.CheckoutSource.Provider
-	if checkoutProvider == "" {
-		checkoutProvider = "github_app"
-	}
-
-	spec := project.PipelineDefinitionSpec{
-		Name:               def.Name,
-		Description:        def.Description,
-		ConfigProvider:     configProvider,
-		ConfigExternalID:   configExtID,
-		ConfigFilePath:     filePath,
-		CheckoutProvider:   checkoutProvider,
-		CheckoutExternalID: checkoutExtID,
-	}
-
-	// Dry-run or no real project yet (preflight resolve pass): record intent only.
-	if !opts.Apply || projectID == "" {
-		report.add("project-pipeline-def", projectName+"/def:"+def.Name, "created",
-			fmt.Sprintf("would create pipeline definition (config ext-id %s, checkout ext-id %s)", configExtID, checkoutExtID))
-		// Still preview trigger actions.
-		for _, trig := range def.Triggers {
-			s.syncAppTrigger(ctx, report, projectName, projectID, def.Name, "", trig, mapping, opts)
-		}
-		return
-	}
-
-	defID, err := s.Projects.CreatePipelineDefinition(ctx, projectID, spec)
-	if err != nil {
-		// "Installation does not have access to repository" (and similar
-		// access/installation errors) mean the dest GitHub App installation
-		// cannot see the repo — this is an operator action, not a code bug.
-		// Record as "manual" with a clear remediation note so the run continues.
-		if isRepoAccessError(err) {
-			report.add("project-pipeline-def", projectName+"/def:"+def.Name, "manual",
-				fmt.Sprintf("create pipeline definition: %v — "+
-					"the destination GitHub org must have the repository connected to the CircleCI GitHub App; "+
-					"verify the App installation has access to the repo, and that the external_id resolves to a "+
-					"repository the dest installation can access (use --github-token to resolve a moved repo's id)", err))
-		} else {
-			report.add("project-pipeline-def", projectName+"/def:"+def.Name, "error",
-				fmt.Sprintf("create pipeline definition: %v", err))
-		}
-		return
-	}
-	report.add("project-pipeline-def", projectName+"/def:"+def.Name, "created",
-		"created pipeline definition")
-
-	// Create triggers.
-	for _, trig := range def.Triggers {
-		s.syncAppTrigger(ctx, report, projectName, projectID, def.Name, defID, trig, mapping, opts)
-	}
-}
-
-// syncAppTrigger creates one trigger (disabled) on a pipeline definition and
-// queues an App EnableTarget for later enablement.
-func (s *Syncer) syncAppTrigger(
-	ctx context.Context,
-	report *Report,
-	projectName, projectID, defName, defID string,
-	trig manifest.Trigger,
-	mapping *manifest.Mapping,
-	opts Options,
-) {
-	target := projectName + "/def:" + defName + "/trigger:" + trig.Name
-	provider := trig.EventSource.Provider
-
-	// Only github_app / github_server triggers are recreated automatically.
-	// webhook and schedule triggers must be handled manually.
-	switch provider {
-	case "github_app", "github_server":
-		// Continue below.
-	case "webhook":
-		report.add("project-trigger", target, "manual",
-			fmt.Sprintf("trigger %q has provider %q (webhook secret cannot be migrated automatically) — recreate manually", trig.Name, provider))
-		return
-	case "schedule":
-		report.add("project-trigger", target, "manual",
-			fmt.Sprintf("trigger %q has provider %q (schedule-trigger creation is a follow-on) — recreate manually", trig.Name, provider))
-		return
-	default:
-		report.add("project-trigger", target, "manual",
-			fmt.Sprintf("trigger %q has unsupported provider %q — recreate manually", trig.Name, provider))
-		return
-	}
-
-	extID, ok := s.resolveExternalID(ctx, report, target,
-		trig.EventSource.RepoFullName, trig.EventSource.RepoExternalID, mapping, opts)
-	if !ok {
-		return
-	}
-
-	// Dry-run or no real definition yet (preflight resolve pass): record intent only.
-	if !opts.Apply || defID == "" {
-		report.add("project-trigger", target, "created", "would create trigger (disabled — not yet enabled)")
-		return
-	}
-
-	trigSpec := project.TriggerSpec{
-		Provider:    provider,
-		ExternalID:  extID,
-		EventPreset: trig.EventPreset,
-		Disabled:    true,
-	}
-
-	trigID, err := s.Projects.CreateTrigger(ctx, projectID, defID, trigSpec)
-	if err != nil {
-		report.add("project-trigger", target, "error",
-			fmt.Sprintf("create trigger: %v", err))
-		return
-	}
-	report.add("project-trigger", target, "created", "created trigger (disabled — not yet enabled)")
-
-	// Queue for the enable-builds step.
-	report.PendingEnable = append(report.PendingEnable, EnableTarget{
-		Kind:      "trigger",
-		ProjectID: projectID,
-		TriggerID: trigID,
-	})
-}
-
 // resolveExternalID returns the external_id to use for a pipeline-definition or
 // trigger source, implementing the repo-move scenario logic:
 //
 //  1. Compute destFullName: apply GitHubOrg mapping from the Mapping (if set),
 //     then fall back to DestGitHubOrg option, then leave unchanged.
 //
-//  2. If GitHubToken != "" and fullName != "": call ResolveRepoID(destFullName).
-//     - success → use the new external_id (repo found in dest GH org).
-//     - ErrRepoNotFound → emit "manual" with remediation note; return ok=false
-//     (skip project creation — repo not accessible to dest App installation).
-//     - other error → emit "error" action; return ok=false.
+//  2. GitHub org unchanged and an id was captured → reuse the captured id. No
+//     GitHub token and no API call are needed (OAuth and App repos share the
+//     same numeric GitHub repository id).
 //
-//  3. If GitHubToken == "":
-//     - destFullName == fullName (GH org unchanged) → reuse capturedID silently
-//     (current same-org behaviour).
-//     - destFullName != fullName (org changed, no token) → emit "manual"; return
-//     ok=false (cannot resolve without a token).
+//  3. Otherwise (org changed, or no id was captured — i.e. an OAuth-source
+//     definition being synthesized) the id must come from the GitHub API:
+//     - token available → ResolveRepoID(destFullName).
+//     success → use the new external_id; ErrRepoNotFound → "manual"
+//     (repo missing in the dest GH org), ok=false; other error → "error".
+//     - no token → "manual" asking for --github-token, ok=false.
 //
-//  4. If capturedID is non-empty and no name to resolve → reuse capturedID.
-//
-//  5. No external_id at all → emit "manual"; return ok=false.
+//  4. Nothing to resolve from (no captured id, no full name) → "manual".
 func (s *Syncer) resolveExternalID(ctx context.Context, report *Report, target, fullName, capturedID string, mapping *manifest.Mapping, opts Options) (string, bool) {
 	// Step 1: compute destination full-name by applying the GH-org mapping.
 	destFullName := s.mapRepoFullName(ctx, fullName, mapping, opts)
+	orgChanged := destFullName != fullName
 
-	if opts.GitHubToken != "" && destFullName != "" {
-		// Step 2: token available — call the GitHub API.
+	// Step 2: same GitHub org and an id was captured → reuse it, no token needed.
+	if capturedID != "" && !orgChanged {
+		return capturedID, true
+	}
+
+	// Step 3: the id must be looked up via the GitHub API.
+	if destFullName != "" {
+		if opts.GitHubToken == "" {
+			if orgChanged {
+				report.add("project-ext-id", target, "manual",
+					fmt.Sprintf("cannot resolve %s without --github-token; "+
+						"provide a GitHub token (repo read) to verify/resolve repos in the new GitHub org", destFullName))
+			} else {
+				report.add("project-ext-id", target, "manual",
+					fmt.Sprintf("no repo external_id was captured for %s and no --github-token (or $GITHUB_TOKEN) is set; "+
+						"provide a GitHub token (repo read) so the id can be looked up, then re-run", destFullName))
+			}
+			return "", false
+		}
 		id, err := resolveRepoID(ctx, destFullName, opts.GitHubToken, "")
 		if err != nil {
 			if isNotFound(err) {
@@ -519,28 +386,13 @@ func (s *Syncer) resolveExternalID(ctx context.Context, report *Report, target, 
 				fmt.Sprintf("GitHub repo ID resolution failed for %q: %v", destFullName, err))
 			return "", false
 		}
-		// Success: log that the repo was found (helpful in dry-run preview too).
 		// Use "set" (not "resolved") so the action appears in the summary counts.
 		report.add("project-ext-id", target, "set",
 			fmt.Sprintf("repo %s found in destination GitHub org (id %s)", destFullName, id))
 		return id, true
 	}
 
-	// Step 3: no token.
-	if destFullName != "" && destFullName != fullName {
-		// GH org changed but no token to verify — must skip.
-		report.add("project-ext-id", target, "manual",
-			fmt.Sprintf("cannot resolve %s without --github-token; "+
-				"provide a GitHub token (repo read) to verify/resolve repos in the new GitHub org", destFullName))
-		return "", false
-	}
-
-	// Step 4: same GH org (or no full-name) → reuse captured id.
-	if capturedID != "" {
-		return capturedID, true
-	}
-
-	// Step 5: nothing available.
+	// Step 4: nothing available.
 	report.add("project-ext-id", target, "manual",
 		"no external_id available (no GitHub token and no captured id) — create pipeline definition manually")
 	return "", false
@@ -587,12 +439,16 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 	switch t.Kind {
 	case "trigger":
 		target := t.ProjectID + "/trigger/" + t.TriggerID
+		if t.ProjectName != "" {
+			target = t.ProjectName + "/trigger/" + t.TriggerID
+		}
+		label := triggerEnableLabel(t)
 		if !apply {
 			return Action{
 				Kind:   "project",
 				Target: target,
 				Status: "manual",
-				Detail: "would enable trigger (set disabled=false)",
+				Detail: "would enable " + label + " (set disabled=false)",
 			}, nil
 		}
 		if err := s.Projects.EnableTrigger(ctx, t.ProjectID, t.TriggerID); err != nil {
@@ -600,14 +456,14 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 				Kind:   "project",
 				Target: target,
 				Status: "error",
-				Detail: fmt.Sprintf("enable trigger: %v", err),
+				Detail: fmt.Sprintf("enable %s: %v", label, err),
 			}, err
 		}
 		return Action{
 			Kind:   "project",
 			Target: target,
 			Status: "set",
-			Detail: "enabled trigger (disabled=false)",
+			Detail: "enabled " + label + " (disabled=false)",
 		}, nil
 	default: // "follow" or legacy empty Kind
 		if !apply {
@@ -634,6 +490,15 @@ func (s *Syncer) EnableBuilds(ctx context.Context, t EnableTarget, apply bool) (
 			Detail: "enabled builds (followed)",
 		}, nil
 	}
+}
+
+// triggerEnableLabel names a trigger enable target for output: its id and, when
+// known, its pipeline definition.
+func triggerEnableLabel(t EnableTarget) string {
+	if t.DefName != "" {
+		return fmt.Sprintf("trigger %s (definition %q)", t.TriggerID, t.DefName)
+	}
+	return "trigger " + t.TriggerID
 }
 
 func (s *Syncer) syncProjectSettings(ctx context.Context, report *Report, p manifest.Project, dst string, opts Options) {

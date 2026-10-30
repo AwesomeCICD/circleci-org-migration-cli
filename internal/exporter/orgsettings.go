@@ -258,10 +258,10 @@ func (e *Exporter) exportOrgSettings(ctx context.Context, m *manifest.Manifest, 
 			clog.Debugf("block_unregistered_users: enabled=%v", blockEnabled)
 		}
 
-		// Org orb list (best-effort; on error warn and continue). Orbs cannot be
-		// auto-migrated — the destination org has a different namespace and orb
-		// source is only available via GraphQL/republish — so they are surfaced as
-		// manual actions in sync.
+		// Org orb list (best-effort; on error warn and continue). Captured for
+		// visibility; sync surfaces each as a manual action (the orb sources are
+		// exported/republished via --orb-namespace, and a same-name namespace is
+		// moved by support with change-namespace-owner!).
 		clog.Debugf("GetOrgOrbs org_id=%s", o.ID)
 		if orbs, oerr := e.Org.GetOrgOrbs(ctx, o.ID); oerr != nil {
 			m.AddWarning("org", "orbs_unreadable",

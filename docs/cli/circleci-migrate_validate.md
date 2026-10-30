@@ -14,13 +14,26 @@ CircleCI API and intentionally absent from the comparison.
 Sections checked:
   • Contexts        — each source context exists on destination; every env-var
                        NAME is present; restrictions are compared by type.
+                       Contexts that only exist to run the migration — the
+                       'secrets transfer' token context (--dest-token-context)
+                       and any --ignore-context — are left out.
   • Projects        — each source project exists on destination (by mapped slug);
                        every env-var NAME is present; key advanced settings match;
                        additional SSH-key fingerprints and checkout keys are present.
+  • Pipeline Definitions & Triggers
+                     — GitHub App destinations only: for each source project
+                       present on the destination, every pipeline definition
+                       (matched by name; config file path and provider compared)
+                       and its triggers (count, and how many are enabled). A
+                       missing definition or fewer triggers is ✗ missing;
+                       triggers still disabled are ⚠ manual.
   • Org Settings    — feature flags, OIDC claims, URL-orb allow list, config
                        policies, storage retention, release tracker, contacts,
                        OTel exporters. SSO is always reported as manual (DNS
-                       verification + IdP setup required).
+                       verification + IdP setup required). The
+                       allow_api_trigger_with_config flag is toggled by the
+                       migration tools themselves, so a difference is shown as
+                       ℹ informational, never as missing.
   • Runner Classes  — resource classes present in destination namespace. Requires
                        --dest-runner-namespace; skipped with a note when absent.
   • Orbs            — orbs and versions present in destination namespace. Requires
@@ -65,6 +78,11 @@ Examples:
     --dest-runner-namespace acme-new \
     --dest-orb-namespace acme-new
 
+  # Leave out the context that holds the secrets-transfer destination token:
+  circleci-migrate validate \
+    --source-org gh/acme --dest-org circleci/<org-id> \
+    --dest-token-context migration-secrets
+
   # Machine-readable JSON output:
   circleci-migrate validate \
     --source-org gh/acme --dest-org gh/acme-new \
@@ -80,7 +98,9 @@ circleci-migrate validate --source-org <slug> --dest-org <slug> [flags]
       --dest-orb-namespace string      Destination orb namespace to compare orbs against (e.g. 'acme-new'). When omitted the orb section is skipped with an explanatory note.
       --dest-org string                CircleCI organization slug for the destination org, e.g. gh/acme-new (shown in CircleCI → Organization Settings → Overview). (required)
       --dest-runner-namespace string   Destination runner namespace to compare runner resource classes against (e.g. 'acme-new'). When omitted the runner section is skipped with an explanatory note.
+      --dest-token-context string      Name of the source-org context that holds the destination API token for 'secrets transfer'. It exists only to run the migration and is never recreated on the destination, so it is left out of the comparison.
   -h, --help                           help for validate
+      --ignore-context stringArray     Source context name to leave out of the comparison (repeatable) — for contexts that exist only to run the migration.
       --json                           Print a machine-readable JSON result to stdout instead of the human-readable report. The JSON contains sections → items → status for tooling consumption.
       --mapping string                 Path to a source→destination mapping file (JSON, optional). Reuses the same format as 'sync --mapping' so you can use the same file for both commands.
       --no-input                       Disable all interactive prompts; error immediately if a required flag is missing. Implied when stdin is not a TTY (e.g. CI pipelines).
