@@ -31,3 +31,17 @@ paths = [
   '''internal/syncer/projects_test\.go''',
   '''internal/extract/extract_test\.go''',
 ]
+
+[[allowlists]]
+description = """
+Hextra banner key in the docs site config. It is a label that tells the theme
+when to show the banner again after a visitor closes it, not a credential. The
+generic-api-key heuristic matches the `key:` name plus the hyphenated value.
+"""
+condition = "AND"
+paths = [
+  '''site/hugo\.yaml''',
+]
+regexes = [
+  '''labs-disclaimer-[a-z0-9-]+''',
+]
