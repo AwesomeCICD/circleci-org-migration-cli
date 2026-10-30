@@ -265,6 +265,7 @@ func mapTrigger(t project.Trigger) manifest.Trigger {
 		CheckoutRef: t.CheckoutRef,
 		ConfigRef:   t.ConfigRef,
 		EventSource: es,
+		Parameters:  t.Parameters,
 	}
 }
 

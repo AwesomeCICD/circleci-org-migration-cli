@@ -111,3 +111,19 @@ func TestCreateWebhook_ServerError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestCreateWebhook_SendsSuppliedSigningSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["signing-secret"] != "generated-secret" {
+			t.Errorf("signing-secret = %v, want generated-secret", body["signing-secret"])
+		}
+		respondJSON(w, http.StatusCreated, map[string]any{"id": "x"})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if err := c.CreateWebhook(context.Background(), "pid", Webhook{Name: "h", URL: "https://x", Events: []string{"workflow-completed"}, SigningSecret: "generated-secret"}); err != nil {
+		t.Fatal(err)
+	}
+}

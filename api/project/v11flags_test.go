@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -231,5 +232,26 @@ func TestGetV11ProjectFeatureFlags_NonBoolFlagIgnored(t *testing.T) {
 	// drop-all-build-requests was absent, so it should not be in the result.
 	if _, ok := flags["drop-all-build-requests"]; ok {
 		t.Error("drop-all-build-requests should be absent when not in the response")
+	}
+}
+
+// A bare 403 (the monolith's answer to a rejected flag value) must name the
+// status and the flags instead of producing a blank error.
+func TestSetV11ProjectFeatureFlags_EmptyBodyErrorNamesStatusAndFlags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.SetV11ProjectFeatureFlags(context.Background(), "circleci/o/p",
+		map[string]bool{"forks_receive_secret_env_vars": true})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"403", "forks-receive-secret-env-vars", "empty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
 	}
 }

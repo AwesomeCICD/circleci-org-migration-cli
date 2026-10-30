@@ -95,6 +95,7 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 	if len(m.RunnerResourceClasses) > 0 {
 		items = append(items, fmt.Sprintf(
 			"**Runner agent tokens (%d resource class(es))** — agent registration tokens are never retrievable via API. "+
+				"Runner classes keep the org they were created under and do not follow a namespace move; with the SAME namespace name the destination cannot create a same-named class until the source copy is deleted. "+
 				"After recreating each resource class on the destination namespace (`%s`), issue new tokens with "+
 				"`circleci runner token create <resource-class> \"<nickname>\"`, add each token to `launch-agent-config.yml`, "+
 				"and restart the launch-agent. "+
@@ -108,24 +109,40 @@ func writeManualSteps(b *strings.Builder, m *manifest.Manifest) {
 		ns := orDash(s.OrbNamespace)
 		orbsURL := orgSettingsURL(host, orgSlug, "orbs")
 		items = append(items, fmt.Sprintf(
-			"**Org orbs (%d orb(s), source namespace `%s`)** — orb source YAML is not exportable via REST API (GraphQL only) "+
-				"and a namespace lives in one org at a time (transfer is a one-way Support ticket after cutover). "+
+			"**Org orbs (%d orb(s), source namespace `%s`)** — a namespace lives in one org at a time, so there are two paths. "+
+				"(a) **Different destination namespace:** export with `--orb-namespace` and `sync --dest-orb-namespace <new-ns>` republishes every stable version; "+
+				"then rewrite every `<old-ns>/<orb>@x` reference in config. "+
+				"(b) **Same namespace name:** it cannot be republished — ask CircleCI Support to run `change-namespace-owner! \"%s\" \"<dest-org-slug>\"` "+
+				"(owner slug accepts `gh/<name>`, `github/<name>` or `circleci/<short-id>`; never `rename-namespace`); the orbs move with it and config references need no change. "+
+				"`sync` detects a still-source-owned namespace and emits this as a manual action instead of republishing. "+
 				"During the namespace-transfer overlap, consuming repos can keep working by inlining the published orb source "+
 				"(see `orb inline` command — https://circleci.com/docs/orbs/create-an-inline-orb/). "+
-				"Republish each orb under the destination namespace manually using `circleci orb publish` after cutover. "+
 				"Ref: https://support.circleci.com/hc/en-us/articles/21518826780827-Transferring-and-Renaming-Namespaces "+
 				"→ %s (Orbs tab)"+
 				warningSuffix(m, "orbs_require_republish"),
-			len(s.Orbs), ns, orbsURL))
+			len(s.Orbs), ns, ns, orbsURL))
 	}
 
 	// OIDC cloud-provider trust — always add (distinct from the OIDC claim sync we do).
 	// The destination org has a new UUID → new OIDC issuer URL → cloud IAM trust must be updated.
 	items = append(items, "**OIDC cloud-provider trust** — the destination org has a NEW UUID, so its OIDC issuer is "+
 		"`https://oidc.circleci.com/org/<new-uuid>` and the default audience also changes. "+
+		"The `sub` claim embeds project UUIDs (`org/<org-id>/project/<project-id>/user/<user-id>`), which are also NEW on recreated projects, "+
+		"so any trust condition on `sub` (AWS role trust policy, GCP attribute condition, Vault `bound_claims`) must be rewritten with the new project UUIDs. "+
 		"Any AWS IAM OIDC provider, GCP workload-identity pool, or Vault JWT auth mount that trusts the source org's issuer/audience "+
 		"must be reconfigured to trust the destination org, or jobs will fail with AssumeRole / AccessDenied errors. "+
 		"Ref: https://circleci.com/docs/guides/permissions-authentication/openid-connect-tokens/#format-of-the-openid-connect-id-token")
+
+	// Deploys — environments, components, deploy settings. The public Deploys API
+	// is read-only, so none of it can be recreated by sync.
+	if d := m.Deploys; d != nil {
+		items = append(items, fmt.Sprintf(
+			"**Deploys (%d environment(s), %d component(s), %d project deploy setting(s))** — the public Deploys API is read-only, so `sync` only lists what is missing. "+
+				"Recreate environments in Deploys → Environments (or let the first `circleci run release plan --environment-name=…` create them); "+
+				"components are created by the first `circleci run release plan --component-name=…` run in the destination project; "+
+				"re-run the Deploys setup on each project that had deploy/rollback pipelines. Deploy history does not transfer.",
+			len(d.Environments), len(d.Components), len(d.ProjectSettings)))
+	}
 
 	// VCS branch-protection / required-status-check repoint — always add.
 	items = append(items, "**VCS branch-protection / required status checks** — "+
@@ -358,6 +375,9 @@ func writeDataLoss(b *strings.Builder, m *manifest.Manifest) {
 	fmt.Fprintf(b, "- **Identifiers change.** Project, context, and pipeline UUIDs are reassigned by the destination; anything that hard-codes a source UUID must be updated.\n")
 	fmt.Fprintf(b, "- **Captured secrets must be rotated.** Treat every value captured for migration as exposed and rotate it after cutover.\n")
 	fmt.Fprintf(b, "- **Build/workflow/Insights/flaky-test history does not transfer.** Capture baseline screenshots of Insights dashboards and flaky-test reports before cutover; historical data remains only in the source org.\n")
+	if m.Deploys != nil {
+		fmt.Fprintf(b, "- **Deploys history does not transfer.** Environments, components and deploy/rollback pipelines are listed for manual recreation; past deployments and version records remain only in the source org.\n")
+	}
 	fmt.Fprintf(b, "- **Plan/billing tier is not migrated.** Ensure the destination org's plan/credit tier is set to the correct level in the destination org settings UI before enabling builds.\n")
 
 	if isOAuthSource(m) {

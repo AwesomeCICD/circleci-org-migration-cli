@@ -46,16 +46,18 @@ type ValidateJSONSection struct {
 
 // ValidateJSONItem is one comparison result item for --json output.
 type ValidateJSONItem struct {
-	Status string `json:"status"` // "matched" | "missing" | "manual"
+	Status string `json:"status"` // "matched" | "missing" | "manual" | "info"
 	Name   string `json:"name"`
 	Detail string `json:"detail"`
 }
 
-// ValidateJSONCounts holds the item counts for one section.
+// ValidateJSONCounts holds the item counts for one section. Info counts the
+// informational items (expected differences that are not gaps).
 type ValidateJSONCounts struct {
 	Matched int `json:"matched"`
 	Missing int `json:"missing"`
 	Manual  int `json:"manual"`
+	Info    int `json:"info,omitempty"`
 }
 
 // ValidateJSONTotals holds overall counts across all sections.
@@ -63,6 +65,7 @@ type ValidateJSONTotals struct {
 	Matched int `json:"matched"`
 	Missing int `json:"missing"`
 	Manual  int `json:"manual"`
+	Info    int `json:"info,omitempty"`
 }
 
 // buildValidateJSONOutput converts a validate.Result to the JSON output shape.
@@ -78,7 +81,7 @@ func buildValidateJSONOutput(r validate.Result) ValidateJSONOutput {
 			Name:       s.Name,
 			Skipped:    s.Skipped,
 			SkipReason: s.SkipReason,
-			Counts:     ValidateJSONCounts{Matched: matched, Missing: missing, Manual: manual},
+			Counts:     ValidateJSONCounts{Matched: matched, Missing: missing, Manual: manual, Info: s.InfoCount()},
 		}
 		for _, it := range s.Items {
 			js.Items = append(js.Items, ValidateJSONItem{
@@ -91,6 +94,7 @@ func buildValidateJSONOutput(r validate.Result) ValidateJSONOutput {
 		out.Totals.Matched += matched
 		out.Totals.Missing += missing
 		out.Totals.Manual += manual
+		out.Totals.Info += s.InfoCount()
 	}
 	return out
 }
@@ -117,11 +121,22 @@ func printValidateReport(r validate.Result, out *strings.Builder) {
 			fmt.Fprintf(out, "   (nothing to compare)\n\n")
 			continue
 		}
-		fmt.Fprintf(out, "   ✓ %d matched   ✗ %d missing   ⚠ %d manual\n", matched, missing, manual)
+		fmt.Fprintf(out, "   ✓ %d matched   ✗ %d missing   ⚠ %d manual", matched, missing, manual)
+		if n := s.InfoCount(); n > 0 {
+			fmt.Fprintf(out, "   ℹ %d info", n)
+		}
+		fmt.Fprintf(out, "\n")
 		// Show matched items briefly.
 		for _, it := range s.Items {
 			if it.Status == validate.StatusMatched {
 				fmt.Fprintf(out, "   ✓  %-48s  %s\n", truncate(it.Name, 48), it.Detail)
+			}
+		}
+		// Informational items are shown in full: they are not gaps, but the
+		// operator should know why the two sides differ.
+		for _, it := range s.Items {
+			if it.Status == validate.StatusInfo {
+				fmt.Fprintf(out, "   ℹ  %s\n", it.Detail)
 			}
 		}
 		fmt.Fprintf(out, "\n")
@@ -225,6 +240,8 @@ func newValidateCommand() *cobra.Command {
 		destOrbNamespace    string
 		jsonOutput          bool
 		noInput             bool
+		destTokenContext    string
+		ignoreContexts      []string
 	)
 
 	cmd := &cobra.Command{
@@ -240,13 +257,26 @@ CircleCI API and intentionally absent from the comparison.
 Sections checked:
   • Contexts        — each source context exists on destination; every env-var
                        NAME is present; restrictions are compared by type.
+                       Contexts that only exist to run the migration — the
+                       'secrets transfer' token context (--dest-token-context)
+                       and any --ignore-context — are left out.
   • Projects        — each source project exists on destination (by mapped slug);
                        every env-var NAME is present; key advanced settings match;
                        additional SSH-key fingerprints and checkout keys are present.
+  • Pipeline Definitions & Triggers
+                     — GitHub App destinations only: for each source project
+                       present on the destination, every pipeline definition
+                       (matched by name; config file path and provider compared)
+                       and its triggers (count, and how many are enabled). A
+                       missing definition or fewer triggers is ✗ missing;
+                       triggers still disabled are ⚠ manual.
   • Org Settings    — feature flags, OIDC claims, URL-orb allow list, config
                        policies, storage retention, release tracker, contacts,
                        OTel exporters. SSO is always reported as manual (DNS
-                       verification + IdP setup required).
+                       verification + IdP setup required). The
+                       allow_api_trigger_with_config flag is toggled by the
+                       migration tools themselves, so a difference is shown as
+                       ℹ informational, never as missing.
   • Runner Classes  — resource classes present in destination namespace. Requires
                        --dest-runner-namespace; skipped with a note when absent.
   • Orbs            — orbs and versions present in destination namespace. Requires
@@ -290,6 +320,11 @@ Examples:
     --source-org gh/acme --dest-org gh/acme-new \
     --dest-runner-namespace acme-new \
     --dest-orb-namespace acme-new
+
+  # Leave out the context that holds the secrets-transfer destination token:
+  circleci-migrate validate \
+    --source-org gh/acme --dest-org circleci/<org-id> \
+    --dest-token-context migration-secrets
 
   # Machine-readable JSON output:
   circleci-migrate validate \
@@ -414,9 +449,14 @@ Examples:
 			}
 
 			// ── Step 4: compare ──────────────────────────────────────────────
+			ignored := ignoredContexts(destTokenContext, ignoreContexts)
+			if len(ignored) > 0 {
+				fmt.Fprintf(errW, "Ignoring %d migration-only context(s) in the comparison: %s\n", len(ignored), strings.Join(ignored, ", "))
+			}
 			result := validate.Compare(srcManifest, dstManifest, mapping, validate.Options{
 				DestRunnerNamespace: destRunnerNamespace,
 				DestOrbNamespace:    destOrbNamespace,
+				IgnoreContexts:      ignored,
 			})
 
 			// ── Step 5: output ───────────────────────────────────────────────
@@ -456,6 +496,11 @@ Examples:
 	f.StringVar(&destOrbNamespace, "dest-orb-namespace", "",
 		"Destination orb namespace to compare orbs against (e.g. 'acme-new'). "+
 			"When omitted the orb section is skipped with an explanatory note.")
+	f.StringVar(&destTokenContext, "dest-token-context", "",
+		"Name of the source-org context that holds the destination API token for 'secrets transfer'. "+
+			"It exists only to run the migration and is never recreated on the destination, so it is left out of the comparison.")
+	f.StringArrayVar(&ignoreContexts, "ignore-context", nil,
+		"Source context name to leave out of the comparison (repeatable) — for contexts that exist only to run the migration.")
 	f.BoolVar(&jsonOutput, "json", false,
 		"Print a machine-readable JSON result to stdout instead of the human-readable report. "+
 			"The JSON contains sections → items → status for tooling consumption.")
@@ -464,6 +509,21 @@ Examples:
 			"Implied when stdin is not a TTY (e.g. CI pipelines).")
 
 	return cmd
+}
+
+// ignoredContexts merges --dest-token-context and the repeatable
+// --ignore-context values into one de-duplicated, ordered list.
+func ignoredContexts(destTokenContext string, extra []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range append([]string{destTokenContext}, extra...) {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
 }
 
 // exportDestManifest exports the destination org into a manifest using a

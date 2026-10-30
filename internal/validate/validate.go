@@ -16,6 +16,10 @@ const (
 	StatusMatched = "matched" // ✓ present on destination
 	StatusMissing = "missing" // ✗ absent on destination — causes non-zero exit
 	StatusManual  = "manual"  // ⚠ needs manual attention — surface but do not fail
+	// StatusInfo is a difference that is expected and not a migration gap (for
+	// example an org flag the migration tooling itself toggles). It is shown but
+	// is not counted as matched, missing or manual, and never affects the exit code.
+	StatusInfo = "info" // ℹ informational
 )
 
 // Item is one comparison result for a single resource.
@@ -54,6 +58,17 @@ func (s *Section) Counts() (matched, missing, manual int) {
 	return
 }
 
+// InfoCount returns the number of informational items in the section.
+func (s *Section) InfoCount() int {
+	n := 0
+	for _, it := range s.Items {
+		if it.Status == StatusInfo {
+			n++
+		}
+	}
+	return n
+}
+
 // Result is the complete output of Compare.
 type Result struct {
 	SourceOrg string    `json:"source_org"`
@@ -84,8 +99,21 @@ func (r *Result) TotalsLine() string {
 		totalMissing += ms
 		totalManual += mn
 	}
-	return fmt.Sprintf("✓ %d matched  ✗ %d missing  ⚠ %d manual",
+	line := fmt.Sprintf("✓ %d matched  ✗ %d missing  ⚠ %d manual",
 		totalMatched, totalMissing, totalManual)
+	if n := r.InfoTotal(); n > 0 {
+		line += fmt.Sprintf("  ℹ %d info", n)
+	}
+	return line
+}
+
+// InfoTotal returns the number of informational items across all sections.
+func (r *Result) InfoTotal() int {
+	n := 0
+	for i := range r.Sections {
+		n += r.Sections[i].InfoCount()
+	}
+	return n
 }
 
 // Options controls which optional sections are evaluated.
@@ -97,6 +125,11 @@ type Options struct {
 	// DestOrbNamespace, when non-empty, enables the orb comparison. When empty
 	// the orb section is skipped with a note.
 	DestOrbNamespace string
+	// IgnoreContexts lists source context names that are not compared: contexts
+	// that exist only to run the migration (for example the one holding the
+	// destination API token for 'secrets transfer'), which are never recreated on
+	// the destination.
+	IgnoreContexts []string
 }
 
 // Compare diffs src (source manifest) against dst (destination manifest) and
@@ -113,8 +146,11 @@ func Compare(src, dst *manifest.Manifest, mapping *manifest.Mapping, opts Option
 		DestOrg:   dst.Source.Org.Slug,
 	}
 
-	r.Sections = append(r.Sections, compareContexts(src, dst, mapping))
+	r.Sections = append(r.Sections, compareContexts(src, dst, mapping, opts.IgnoreContexts))
 	r.Sections = append(r.Sections, compareProjects(src, dst, mapping))
+	if isAppOrg(dst) {
+		r.Sections = append(r.Sections, comparePipelines(src, dst, mapping))
+	}
 	r.Sections = append(r.Sections, compareOrgSettings(src, dst))
 	r.Sections = append(r.Sections, compareRunners(src, dst, opts.DestRunnerNamespace))
 	r.Sections = append(r.Sections, compareOrbs(src, dst, opts.DestOrbNamespace))
@@ -127,8 +163,12 @@ func Compare(src, dst *manifest.Manifest, mapping *manifest.Mapping, opts Option
 // Contexts
 // ---------------------------------------------------------------------------
 
-func compareContexts(src, dst *manifest.Manifest, mapping *manifest.Mapping) Section {
+func compareContexts(src, dst *manifest.Manifest, mapping *manifest.Mapping, ignore []string) Section {
 	sec := Section{Name: "Contexts"}
+	ignored := make(map[string]bool, len(ignore))
+	for _, n := range ignore {
+		ignored[n] = true
+	}
 
 	// Index destination contexts by name for O(1) lookup.
 	dstByName := make(map[string]manifest.Context, len(dst.Contexts))
@@ -137,6 +177,9 @@ func compareContexts(src, dst *manifest.Manifest, mapping *manifest.Mapping) Sec
 	}
 
 	for _, sc := range src.Contexts {
+		if ignored[sc.Name] {
+			continue // migration-only context (e.g. --dest-token-context); not recreated on the destination
+		}
 		// Determine the expected destination name: explicit mapping wins, then
 		// identity (same name).
 		// Contexts are not in the Projects map. Context-name mapping may be
@@ -276,37 +319,11 @@ func compareContextRestrictions(sc, dc manifest.Context, sec *Section) {
 func compareProjects(src, dst *manifest.Manifest, mapping *manifest.Mapping) Section {
 	sec := Section{Name: "Projects"}
 
-	// Index dest projects by slug for O(1) lookup.
-	dstBySlug := make(map[string]manifest.Project, len(dst.Projects))
-	for _, p := range dst.Projects {
-		dstBySlug[p.Slug] = p
-	}
-	// Also index by name for fallback matching.
-	dstByName := make(map[string]manifest.Project, len(dst.Projects))
-	for _, p := range dst.Projects {
-		if p.Name != "" {
-			dstByName[p.Name] = p
-		}
-	}
+	ix := newProjectIndex(dst)
 
 	for _, sp := range src.Projects {
-		// Resolve the expected destination slug.
-		destSlug := sp.Slug
-		if mapping != nil {
-			if mapped, ok := mapping.ResolveProjectSlug(sp.Slug); ok {
-				destSlug = mapped
-			}
-		}
-
-		dp, ok := dstBySlug[destSlug]
-		if !ok {
-			// Fallback: try by project name (last slug component).
-			name := slugLastComponent(destSlug)
-			if p, found := dstByName[name]; found {
-				dp = p
-				ok = true
-			}
-		}
+		// Resolve the destination project: by the mapped slug, else by name.
+		dp, destSlug, ok := ix.find(sp, mapping)
 
 		if !ok {
 			sec.Items = append(sec.Items, Item{
@@ -584,17 +601,27 @@ func compareOrgSettings(src, dst *manifest.Manifest) Section {
 		}
 	}
 
-	// Environment hierarchy — always manual.
+	// Environment hierarchy — sync recreates hierarchies by environment name; verify on the destination.
 	if ss.EnvironmentHierarchy != nil {
 		sec.Items = append(sec.Items, Item{
 			Status:  StatusManual,
 			Section: "Org Settings",
 			Name:    "environment-hierarchy",
-			Detail:  fmt.Sprintf("environment hierarchy %q is configured on source — cannot be auto-migrated (requires destination deploy-integration IDs)", ss.EnvironmentHierarchy.Name),
+			Detail:  fmt.Sprintf("environment hierarchy %q is configured on source — sync recreates it by environment name; verify its levels and assignments on the destination", ss.EnvironmentHierarchy.Name),
 		})
 	}
 
 	return sec
+}
+
+// informationalOrgFlags are org feature flags whose source/destination values
+// may legitimately differ, mapped to the explanation shown with the difference.
+// allow_api_trigger_with_config is toggled temporarily by the migration tooling
+// itself (secrets capture / transfer enable it and restore it afterwards), so
+// its value on either side reflects when each org was last read, not a gap.
+var informationalOrgFlags = map[string]string{
+	"allow_api_trigger_with_config": "the migration tools enable it temporarily for secrets capture/transfer and restore it afterwards; " +
+		"set it on the destination yourself only if you want unversioned API-triggered configs there",
 }
 
 func compareFeatureFlags(ss, ds *manifest.OrgSettings, sec *Section) {
@@ -606,6 +633,15 @@ func compareFeatureFlags(ss, ds *manifest.OrgSettings, sec *Section) {
 	for k, sv := range ss.FeatureFlags {
 		dv := ds.FeatureFlags[k] // zero value false when absent
 		name := "feature-flag/" + k
+		if _, info := informationalOrgFlags[k]; info && sv != dv {
+			sec.Items = append(sec.Items, Item{
+				Status:  StatusInfo,
+				Section: "Org Settings",
+				Name:    name,
+				Detail:  fmt.Sprintf("org flag %s differs (source=%t, dest=%t) — informational, not a gap: %s", k, sv, dv, informationalOrgFlags[k]),
+			})
+			continue
+		}
 		if sv == dv {
 			sec.Items = append(sec.Items, Item{
 				Status:  StatusMatched,

@@ -3,11 +3,27 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/internal/clog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 )
+
+// manPageDate is the date stamped into every generated man page header. It is
+// pinned (rather than time.Now, cobra's default) so regenerating the docs is
+// byte-for-byte reproducible and the docs-check CI gate does not fail every
+// time the calendar month changes. SOURCE_DATE_EPOCH overrides it, per the
+// reproducible-builds convention.
+func manPageDate() time.Time {
+	if v := os.Getenv("SOURCE_DATE_EPOCH"); v != "" {
+		if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return time.Unix(secs, 0).UTC()
+		}
+	}
+	return time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC)
+}
 
 // newGenDocsCommand returns a hidden cobra command that regenerates the
 // man pages and markdown CLI reference from the live command tree.
@@ -55,7 +71,9 @@ It is called by 'make docs' and 'make man' during development.`,
 
 			// Generate man pages.
 			clog.Infof("Generating man pages → %s", manDir)
+			date := manPageDate()
 			header := &doc.GenManHeader{
+				Date:    &date,
 				Title:   "CIRCLECI-MIGRATE",
 				Section: "1",
 				Source:  "circleci-migrate",

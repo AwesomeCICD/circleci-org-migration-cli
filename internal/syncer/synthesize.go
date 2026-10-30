@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/AwesomeCICD/circleci-org-migration-cli/api/project"
@@ -16,6 +15,9 @@ const synthAppProvider = "github_app"
 // synthDefName is the name given to the single pipeline definition synthesized
 // for an OAuth-source project onboarded into a GitHub App destination.
 const synthDefName = "build-and-test"
+
+// synthTriggerName is the name given to the synthesized push trigger.
+const synthTriggerName = "push"
 
 // synthConfigPath is the OAuth implicit-pipeline config path; OAuth projects
 // have no pipeline definitions and always read .circleci/config.yml.
@@ -57,108 +59,75 @@ func oauthSourceFullName(slug string) (string, bool) {
 	}
 }
 
-// synthesizeOAuthPipelineDefinition onboards an OAuth-source project (one with
-// no captured pipeline definitions) into a GitHub App destination by creating a
-// single "build-and-test" pipeline definition plus one disabled trigger whose
-// event_preset is translated from the project's OAuth build flags.
-//
-// The repo external_id is resolved via the shared resolveExternalID helper using
-// the full_name derived from the OAuth slug (which applies the GH-org mapping and
-// --github-token logic, returning found/missing/manual). A 404 (repo missing in
-// the destination GitHub org) records a "manual" action and skips creation.
-//
-// Data-loss / behavior-change warnings are emitted for OAuth flags that have no
-// GitHub App equivalent (fork builds, OSS, pr_only_branch_overrides).
-//
-// projectID is the destination project UUID; it is empty during the dry-run /
-// preflight resolve pass, in which case no API writes occur and the planned
-// actions are recorded instead.
-func (s *Syncer) synthesizeOAuthPipelineDefinition(
-	ctx context.Context,
-	report *Report,
-	projectName, projectID string,
-	p manifest.Project,
-	mapping *manifest.Mapping,
-	opts Options,
-) {
-	fullName, ok := oauthSourceFullName(p.Slug)
-	if !ok {
-		report.add("project-pipeline-def", projectName, "manual",
-			fmt.Sprintf("cannot derive a GitHub repo from OAuth slug %q — create the App pipeline definition manually", p.Slug))
-		return
+// synthesizedDefinition builds the single "build-and-test" pipeline definition
+// (one push trigger, event_preset translated from the project's OAuth build
+// flags) that onboards an OAuth-source project — one with no captured pipeline
+// definitions — into a GitHub App destination. It carries no repo external_id
+// (OAuth has none captured), so creating it always needs the GitHub API and
+// therefore a GitHub token; fullName is the "{org}/{repo}" derived from the
+// OAuth slug, to which the GH-org mapping is applied at resolve time.
+func synthesizedDefinition(p manifest.Project, fullName string) manifest.PipelineDefinition {
+	return manifest.PipelineDefinition{
+		Name:           synthDefName,
+		ConfigSource:   manifest.PipelineSource{Provider: synthAppProvider, RepoFullName: fullName, FilePath: synthConfigPath},
+		CheckoutSource: manifest.PipelineSource{Provider: synthAppProvider, RepoFullName: fullName},
+		Triggers: []manifest.Trigger{{
+			Name:        synthTriggerName,
+			EventPreset: translateEventPreset(p.Settings),
+			EventSource: manifest.TriggerEventSource{Provider: synthAppProvider, RepoFullName: fullName},
+		}},
 	}
+}
 
-	// Emit data-loss / behavior-change warnings before creation so they surface
-	// even when the repo resolves and the definition is created.
-	s.warnOAuthOnlyFlags(ctx, report, projectName, p.Settings)
-
-	target := projectName + "/def:" + synthDefName
-	extID, ok := s.resolveExternalID(ctx, report, target+"/config", fullName, "", mapping, opts)
-	if !ok {
-		// resolveExternalID already recorded a "manual"/"error" action (e.g. the
-		// repo was not found in the destination GitHub org). Skip onboarding.
-		return
+// needsSynthesizedDefinition reports whether onboarding this project into a
+// GitHub App org requires a synthesized pipeline definition (and therefore a
+// GitHub-resolved repo id): an OAuth-source project with no captured pipeline
+// definitions. It is used by sync preflight to demand --github-token up front.
+func needsSynthesizedDefinition(p manifest.Project) bool {
+	if len(p.PipelineDefinitions) > 0 {
+		return false
 	}
+	_, ok := oauthSourceFullName(p.Slug)
+	return ok
+}
 
-	preset := translateEventPreset(p.Settings)
-
-	// Dry-run or no real project yet (preflight resolve pass): record intent only.
-	if !opts.Apply || projectID == "" {
-		report.add("project-pipeline-def", target, "created",
-			fmt.Sprintf("would synthesize App pipeline definition %q (file %s, repo ext-id %s) for OAuth source",
-				synthDefName, synthConfigPath, extID))
-		report.add("project-trigger", target+"/trigger:push", "created",
-			fmt.Sprintf("would synthesize trigger (event_preset %q, disabled — not yet enabled)", preset))
-		return
-	}
-
-	spec := project.PipelineDefinitionSpec{
-		Name:               synthDefName,
-		ConfigProvider:     synthAppProvider,
-		ConfigExternalID:   extID,
-		ConfigFilePath:     synthConfigPath,
-		CheckoutProvider:   synthAppProvider,
-		CheckoutExternalID: extID,
-	}
-
-	defID, err := s.Projects.CreatePipelineDefinition(ctx, projectID, spec)
-	if err != nil {
-		if isRepoAccessError(err) {
-			report.add("project-pipeline-def", target, "manual",
-				fmt.Sprintf("create pipeline definition: %v — "+
-					"the destination GitHub org must have the repository connected to the CircleCI GitHub App; "+
-					"verify the App installation has access to the repo", err))
-		} else {
-			report.add("project-pipeline-def", target, "error",
-				fmt.Sprintf("create pipeline definition: %v", err))
+// CountSynthesizedProjects returns how many manifest projects would need a
+// synthesized App pipeline definition (see needsSynthesizedDefinition).
+func CountSynthesizedProjects(m *manifest.Manifest) int {
+	n := 0
+	for _, p := range m.Projects {
+		if needsSynthesizedDefinition(p) {
+			n++
 		}
-		return
 	}
-	report.add("project-pipeline-def", target, "created",
-		fmt.Sprintf("synthesized App pipeline definition %q (file %s) for OAuth source", synthDefName, synthConfigPath))
+	return n
+}
 
-	trigSpec := project.TriggerSpec{
-		Provider:    synthAppProvider,
-		ExternalID:  extID,
-		EventPreset: preset,
-		Disabled:    true,
+// SynthesizedProjectNames returns the destination project name (the name sync
+// finds-or-creates the App project under) of every manifest project that would
+// need a synthesized definition, so a caller can tell which of them already
+// exist in the destination.
+func SynthesizedProjectNames(m *manifest.Manifest) []string {
+	var names []string
+	for _, p := range m.Projects {
+		if !needsSynthesizedDefinition(p) {
+			continue
+		}
+		names = append(names, appProjectName(p))
 	}
+	return names
+}
 
-	trigID, err := s.Projects.CreateTrigger(ctx, projectID, defID, trigSpec)
-	if err != nil {
-		report.add("project-trigger", target+"/trigger:push", "error",
-			fmt.Sprintf("create trigger: %v", err))
-		return
+// appProjectName is the name an App-destination project is found or created
+// under: the manifest name, else the last component of the source slug.
+func appProjectName(p manifest.Project) string {
+	if p.Name != "" {
+		return p.Name
 	}
-	report.add("project-trigger", target+"/trigger:push", "created",
-		fmt.Sprintf("synthesized trigger (event_preset %q, disabled — not yet enabled)", preset))
-
-	// Queue for the enable-builds step (mirrors syncAppTrigger).
-	report.PendingEnable = append(report.PendingEnable, EnableTarget{
-		Kind:      "trigger",
-		ProjectID: projectID,
-		TriggerID: trigID,
-	})
+	if _, _, repo, err := project.SplitSlug(p.Slug); err == nil {
+		return repo
+	}
+	return p.Slug
 }
 
 // warnOAuthOnlyFlags records "manual" actions for OAuth advanced-settings flags

@@ -208,6 +208,7 @@ func newExportCommand() *cobra.Command {
 		orgSlug         string
 		output          string
 		reportPath      string
+		destOrg         string
 		projectSlugs    []string
 		projectsAlias   []string // hidden alias --projects (StringSlice back-compat)
 		skipContexts    bool
@@ -345,6 +346,7 @@ Examples:
 				Org:      orgClient,
 				Contexts: ctxClient,
 				Projects: projClient,
+				Deploy:   orgClient, // best-effort read of Deploys (envs/components/settings)
 				Out:      cmd.ErrOrStderr(),
 			}
 
@@ -382,7 +384,7 @@ Examples:
 			if err := m.Save(output); err != nil {
 				return fmt.Errorf("writing manifest: %w", err)
 			}
-			if err := report.SaveMarkdown(m, reportPath); err != nil {
+			if err := report.SaveMarkdownWith(m, reportPath, report.Options{DestOrgSlug: destOrg}); err != nil {
 				return err
 			}
 
@@ -449,6 +451,9 @@ Examples:
 		"Path to write the JSON manifest (always written; use -o to change the path)")
 	f.StringVar(&reportPath, "report", "migration-report.md",
 		"Path to write the human-readable audit report")
+	f.StringVar(&destOrg, "dest-org", "",
+		"Optional destination org slug (e.g. circleci/<id>). Does not change what is exported; "+
+			"when the source is gh/ and the destination is circleci/ it adds the ordered cross-type checklist to the report")
 	f.StringArrayVar(&projectSlugs, "project", nil,
 		"Explicit project slug to export (repeat to export multiple: --project gh/acme/web --project gh/acme/api)")
 	f.BoolVar(&skipContexts, "skip-contexts", false, "Skip exporting contexts")

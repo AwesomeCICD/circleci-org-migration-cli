@@ -133,6 +133,9 @@ type Exporter struct {
 	// When nil, orb capture is silently skipped even if Options.OrbNamespace
 	// is set.
 	Orb OrbAPI
+	// Deploy, when set, is used to capture Deploys (environments, components,
+	// per-project deploy settings). When nil, deploy capture is silently skipped.
+	Deploy DeployAPI
 	// Out receives human-readable progress lines. If nil, progress is silent.
 	Out io.Writer
 }
@@ -186,6 +189,8 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*manifest.Manifest
 
 	e.exportRunnerResourceClasses(ctx, m, opts)
 	e.exportOrbs(ctx, m, opts)
+	e.exportDeploys(ctx, m, o)
+	e.exportEnvironmentHierarchies(ctx, m, o)
 	e.exportCIAM(ctx, m, o)
 
 	m.SortStable()

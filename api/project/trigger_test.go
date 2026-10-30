@@ -266,3 +266,46 @@ func TestListTriggers_Error(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// TestListTriggers_ScheduleActorObjectOrString: the API documents
+// attribution_actor as an object {id} in responses; a plain string must also
+// decode, and parameters are captured.
+func TestListTriggers_ScheduleActorObjectOrString(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id": "t1", "event_name": "nightly", "checkout_ref": "main", "config_ref": "main",
+					"parameters": map[string]any{"deploy_env": "staging"},
+					"event_source": map[string]any{"provider": "schedule", "schedule": map[string]any{
+						"cron_expression": "0 9 * * *", "attribution_actor": map[string]any{"id": "user-uuid-1"},
+					}},
+				},
+				{
+					"id": "t2",
+					"event_source": map[string]any{"provider": "schedule", "schedule": map[string]any{
+						"cron_expression": "0 10 * * *", "attribution_actor": "system",
+					}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).ListTriggers(context.Background(), "p", "d")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 triggers, got %d", len(got))
+	}
+	if a := got[0].EventSource.Schedule.AttributionActor; a != "user-uuid-1" {
+		t.Errorf("object actor: got %q want user-uuid-1", a)
+	}
+	if got[0].Parameters["deploy_env"] != "staging" {
+		t.Errorf("parameters: %v", got[0].Parameters)
+	}
+	if a := got[1].EventSource.Schedule.AttributionActor; a != "system" {
+		t.Errorf("string actor: got %q want system", a)
+	}
+}

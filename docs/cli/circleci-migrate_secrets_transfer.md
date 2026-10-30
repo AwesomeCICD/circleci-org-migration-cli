@@ -40,13 +40,20 @@ ADDITIONAL SSH KEY TRANSFER (opt-in with --include-ssh-keys):
   shared host-project pipeline would silently produce blank values for every
   project that is not the host project (the bug this design explicitly prevents).
 
-  The destination project must already be onboarded/exist. Resolution of
-  source project slug → destination project slug requires an explicit --mapping
-  entry (keys containing "/" in the projects map). Projects without a
-  resolvable destination slug are SKIPPED and flagged in the plan:
+  The destination project must already exist. Source project slug →
+  destination project slug is resolved from an explicit --mapping entry (keys
+  containing "/" in the projects map) first. For a GitHub App ("circleci/")
+  destination, a project with no mapping entry is matched BY NAME against the
+  destination org's projects (the real circleci/<org-uuid>/<project-uuid> slug
+  is used), so 'mapping generate' is optional; the plan prints each source →
+  destination pair. Create the destination projects first with
+  'sync --apply --skip-pipelines' (it makes projects without pipeline
+  definitions, so the GitHub App can stay installed on the source until the
+  transfer has run). A project with no mapping entry and no match is SKIPPED,
+  flagged in the plan, and the run exits non-zero naming it:
 
-    SKIP project "gh/acme/api": dest project for "gh/acme/api" unknown
-    — provide --mapping or onboard it first; skipped
+    SKIP project "gh/acme/api": no destination project named "api" in the
+    destination org and no mapping entry for "gh/acme/api" — create it first …
 
 TRIGGER FLAGS (REQUIRED FOR --apply):
   For the in-pipeline unversioned-config trigger to work, BOTH of the following
@@ -76,9 +83,32 @@ PREREQUISITES:
        context name: "migration-secrets"
        env var:       CIRCLECI_DEST_TOKEN = <dest-org-api-token>
      Pass that context name via --dest-token-context.
-  3. (Optional) To transfer project env vars, prepare a mapping.json with
-     entries for each source project slug → destination project slug.
-  4. Run 'secrets transfer --apply' to execute the transfer pipeline.
+  3. (Optional) To transfer project env vars into a gh/ or bb/ destination,
+     prepare a mapping.json with an entry per source project slug → destination
+     project slug. A GitHub App destination matches projects by name instead.
+  4. GitHub OAuth (gh/) and Bitbucket (bb/) source projects: CircleCI refuses to
+     start a pipeline that checks out over SSH on a project with no CHECKOUT KEY
+     ("the project has no SSH key"), even with inline config. In a GitHub OAuth org
+     that also has the CircleCI GitHub App installed, each project also has GitHub
+     App pipeline definitions, which check out with the app token and need no key;
+     transfer prefers those automatically (the log says which definition ran).
+     So a project needs a key only if it has NO GitHub App pipeline definition:
+     add a deploy key under Project Settings → SSH Keys → Checkout SSH keys, or
+     give it an App definition. OAuth triggers may stay disabled. circleci/
+     projects are not affected. This is checked BEFORE any context restriction is
+     removed or trigger flag enabled: the auto-picked host is the first manifest
+     project with a GitHub App definition, else one with a pipeline definition and
+     a checkout key; an explicit --host-project with neither is rejected; a
+     per-project transfer with neither is shown as SKIP, skipped on --apply, and
+     the command exits non-zero listing it. Keys come from the manifest's
+     checkout_keys, or are looked up live when the manifest was exported with
+     --skip-extras. NOTE: once the GitHub App is uninstalled from the org its
+     App definitions are gone, so project-var / SSH-key transfers then need
+     checkout keys; contexts transferred before the uninstall do not.
+  5. Contexts already transferred? Pass --skip-contexts with --include-project-vars
+     and/or --include-ssh-keys to run only the per-project pipelines (no host
+     project, no restriction removal, no context pipeline).
+  6. Run 'secrets transfer --apply' to execute the transfer pipeline.
 
 DRY RUN (default — safe to run without --apply):
   Without --apply, transfer prints a plan: which contexts and variables would
@@ -132,6 +162,14 @@ Examples:
     --include-project-vars \
     --apply
 
+  # Contexts already transferred — project vars and SSH keys only:
+  circleci-migrate secrets transfer --manifest manifest.json \
+    --dest-org gh/dest-org \
+    --dest-token-context migration-secrets \
+    --mapping mapping.json \
+    --skip-contexts --include-project-vars --include-ssh-keys \
+    --apply
+
   # Transfer specific contexts only:
   circleci-migrate secrets transfer --manifest manifest.json \
     --dest-org gh/dest-org \
@@ -176,13 +214,14 @@ circleci-migrate secrets transfer [--manifest <file>] (--dest-org <slug> | --des
       --dest-token-env-var string   Name of the env var inside --dest-token-context that holds the destination API token (default: CIRCLECI_DEST_TOKEN) (default "CIRCLECI_DEST_TOKEN")
       --enable-trigger              Automatically enable api-trigger-with-config (both org-level and per-project) if not already on, and restore the prior values after the transfer completes. In interactive mode you are prompted for each flag; in non-interactive mode this flag is required when any trigger flag is off.
   -h, --help                        help for transfer
-      --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works. Auto-picked from the manifest when omitted.
-      --include-project-vars        Also transfer project env-var values to the destination projects (default: off, context-only). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped with a warning. Destination project must already be onboarded/exist in the destination org.
-      --include-ssh-keys            Also transfer additional project SSH keys to the destination projects via the in-pipeline zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with jq --rawfile and POSTed to the destination — never echoed to logs). Requires each source project to be resolvable to a destination project slug via --mapping; projects without a mapping entry are skipped. A project with SSH keys but no env vars still triggers a per-project pipeline. Destination project must already be onboarded/exist in the destination org.
+      --host-project string         Source-org project slug under which the context-transfer pipeline runs. Any project with api-trigger-with-config enabled works, but a GitHub OAuth (gh/) or Bitbucket (bb/) project must have a GitHub App pipeline definition or a checkout key (deploy key or user key — Project Settings → SSH Keys), or CircleCI refuses to run the pipeline; a project with neither is rejected before anything is changed. When omitted, the first manifest project with a GitHub App pipeline definition is picked, else the first with a pipeline definition and a checkout key.
+      --include-project-vars        Also transfer project env-var values to the destination projects (default: off, context-only). Each source project is resolved to a destination project via --mapping, or, for a GitHub App destination, by name; a project that cannot be resolved is skipped and the run exits non-zero naming it. Destination project must already be onboarded/exist in the destination org (sync --skip-pipelines creates them).
+      --include-ssh-keys            Also transfer additional project SSH keys to the destination projects via the in-pipeline zero-disk path (add_ssh_keys materializes each key; private key is read verbatim with jq --rawfile and POSTed to the destination — never echoed to logs). Projects are resolved like --include-project-vars (mapping entry, else name match for a GitHub App destination); unresolvable projects are skipped and make the run exit non-zero. A project with SSH keys but no env vars still triggers a per-project pipeline. Destination project must already be onboarded/exist in the destination org.
       --manifest string             Path to the export manifest (required)
-      --mapping string              Path to mapping.json for context name overrides (optional). Entries in the 'projects' map whose keys do not contain '/' are treated as context name → destination name mappings.
+      --mapping string              Path to mapping.json (optional). Entries in the 'projects' map whose keys do not contain '/' are context name → destination name mappings; keys containing '/' are source project slug → destination project slug entries, which win over the by-name match used for GitHub App destinations.
       --poll-timeout duration       Maximum time to wait for the transfer pipeline to complete (0 = no timeout) (default 30m0s)
       --remove-restrictions         Temporarily remove project/expression restrictions from source contexts before the transfer pipeline runs, then restore them afterwards (best-effort). A context with a project or expression restriction causes the transfer pipeline to come back 'unauthorized' when the host project is not in the allowed set. The default 'All members' group restriction and all other group restrictions are NEVER removed (they are org-type specific and cannot always be recreated via API). Without this flag, Transfer fails fast with an actionable error when blocking restrictions are detected instead of triggering a pipeline that will be unauthorized.
+      --skip-contexts               Drop every context from the plan so only the per-project pipelines run — for when contexts were already transferred. Requires --include-project-vars and/or --include-ssh-keys; cannot be combined with --context. No host project is resolved and no context restriction is touched.
 ```
 
 ### Options inherited from parent commands

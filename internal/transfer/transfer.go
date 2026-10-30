@@ -102,6 +102,29 @@ type ContextRestrictionManager interface {
 	DeleteRestriction(ctx context.Context, contextID, restrictionID string) error
 }
 
+// CheckoutKeyLister lists a project's checkout keys (deploy keys / user keys).
+// It is used for the pre-flight check that GitHub OAuth and Bitbucket projects
+// have a checkout key — CircleCI refuses to start any pipeline without one.
+type CheckoutKeyLister interface {
+	ListCheckoutKeys(ctx context.Context, slug string) ([]project.CheckoutKey, error)
+}
+
+// ProjectFlagReader reads a project's v1.1 feature flags (kebab-case keys).
+// It is asserted optionally on Deps (the project client implements it): the
+// pre-flight check that no pipeline-running source project is paused is skipped
+// for a Deps that cannot read flags.
+type ProjectFlagReader interface {
+	GetV11ProjectFeatureFlags(ctx context.Context, slug string) (map[string]bool, error)
+}
+
+// DestProjectLister lists the projects of the destination org.  It is used to
+// resolve destination project slugs by name for GitHub App ("circleci/")
+// destinations, whose slugs carry UUIDs that cannot be derived from a repo name.
+// Production uses the destination-token *project.Client.
+type DestProjectLister interface {
+	ListOrgProjects(ctx context.Context, orgID string) ([]project.OrgProject, error)
+}
+
 // Deps bundles all source-side API dependencies so callers can pass a single
 // concrete *project.Client or a fake in tests.
 type Deps interface {
@@ -109,6 +132,7 @@ type Deps interface {
 	WorkflowPoller
 	PipelineDefLister
 	ProjectGetter
+	CheckoutKeyLister
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +143,10 @@ type Deps interface {
 type Options struct {
 	// HostProjectSlug is the source-org project that the inline pipeline runs
 	// under.  Any project works — build history is irrelevant, only the pipeline
-	// execution environment matters.
+	// execution environment matters — with one exception: GitHub OAuth (gh/) and
+	// Bitbucket (bb/) projects must have a checkout key (deploy key or user key),
+	// or CircleCI refuses to start the pipeline.  When empty, Transfer auto-picks
+	// the first manifest project that satisfies that requirement.
 	HostProjectSlug string
 
 	// Branch is checked out for the transfer run (default "main").
@@ -150,17 +177,40 @@ type Options struct {
 	// Empty means all contexts with at least one variable.
 	SelectedContextNames map[string]bool
 
+	// SkipContexts drops every context from the plan, so only the per-project
+	// pipelines (IncludeProjectVars / IncludeSSHKeys) run: no host project is
+	// resolved, no restriction is removed, and no context pipeline is triggered.
+	// For when contexts were already transferred.  Requires IncludeProjectVars
+	// or IncludeSSHKeys and cannot be combined with SelectedContextNames.
+	SkipContexts bool
+
 	// Mapping is an optional source→dest context/project name mapping.  When a
 	// source context name has an entry (key without "/"), the destination context
 	// is looked up by the mapped name.  When a source project slug has an entry
 	// (key containing "/"), the destination project slug is the value.
 	Mapping map[string]string
 
+	// DestProjects, when non-nil, lets Transfer resolve a source project that has
+	// NO Mapping entry to its destination project by NAME (the manifest project
+	// name, else the last segment of its slug) from the destination org's project
+	// list.  Set it only for GitHub App ("circleci/") destinations, where the
+	// slug (circleci/<org-uuid>/<project-uuid>) cannot be derived.  A Mapping
+	// entry always wins over a name match.  Nil keeps the mapping-only behaviour.
+	DestProjects DestProjectLister
+
+	// destByName is the lower-cased name -> destination project slug index
+	// Transfer builds from DestProjects before planning (nil when DestProjects
+	// is unset). A name shared by two destination projects is NOT in it: it is
+	// in destAmbiguous (name -> the matching slugs) so it is never guessed.
+	destByName    map[string]string
+	destAmbiguous map[string][]string
+
 	// IncludeProjectVars controls whether project env-var values are also
 	// transferred.  Default false (context-only).  When true, each source project
 	// that has env vars AND can be resolved to a destination project slug is
 	// included in the transfer pipeline.  Projects without a resolvable dest slug
-	// are skipped with a WARN line in the plan.
+	// are skipped with a SKIP line in the plan, and Transfer exits non-zero
+	// naming them once the resolvable projects have run.
 	IncludeProjectVars bool
 
 	// IncludeSSHKeys controls whether additional project SSH keys are also
@@ -190,6 +240,15 @@ type Options struct {
 	// recreate restrictions when RemoveRestrictions is true.  May be nil when
 	// RemoveRestrictions is false.
 	ContextClient ContextRestrictionManager
+
+	// BeforeMutate, when non-nil, is called by Transfer on --apply AFTER every
+	// read-only pre-flight check has passed (host project resolved, checkout keys
+	// verified) and BEFORE anything in the source org is changed — it is the place
+	// to enable the api-trigger-with-config flags.  slugs are the source projects
+	// that will actually run a pipeline.  The returned cleanup (may be nil) is
+	// deferred by Transfer so the flags are restored after the run.  Not called
+	// for dry-runs or when no pipeline will run.
+	BeforeMutate func(slugs []string) (cleanup func(), err error)
 
 	// DryRun controls whether the transfer is actually executed.
 	// When true (the default), only a plan is printed and no pipeline is triggered.
@@ -275,6 +334,148 @@ func (o *Options) destProjectSlug(srcSlug string) (string, bool) {
 	return "", false
 }
 
+// Resolution sources recorded on ProjectVarPlan.ResolvedBy.
+const (
+	resolvedByMapping = "mapping"
+	resolvedByName    = "name"
+)
+
+// manifestProjectName is the name a project is matched under in the destination
+// org: the manifest name, else the last segment of the source slug.
+func manifestProjectName(mp manifest.Project) string {
+	if mp.Name != "" {
+		return mp.Name
+	}
+	return lastSegment(mp.Slug)
+}
+
+func lastSegment(slug string) string {
+	if i := strings.LastIndex(slug, "/"); i >= 0 {
+		return slug[i+1:]
+	}
+	return slug
+}
+
+// resolveDestProject resolves a manifest project to its destination slug: an
+// explicit Mapping entry first, then (App destinations, when DestProjects was
+// listed) a name match.  by reports which one matched.
+func (o *Options) resolveDestProject(mp manifest.Project) (slug, by string, ok bool) {
+	if dst, found := o.destProjectSlug(mp.Slug); found {
+		return dst, resolvedByMapping, true
+	}
+	if o.destByName != nil {
+		for _, name := range o.nameCandidates(mp) {
+			key := strings.ToLower(name)
+			if _, amb := o.destAmbiguous[key]; amb {
+				return "", "", false // never pick between two equally named projects
+			}
+			if dst, found := o.destByName[key]; found {
+				return dst, resolvedByName, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// nameCandidates are the names tried, in order, to match a manifest project to
+// a destination project: the manifest name, then (only when different) the
+// slug tail.
+func (o *Options) nameCandidates(mp manifest.Project) []string {
+	names := []string{}
+	if n := manifestProjectName(mp); n != "" {
+		names = append(names, n)
+	}
+	if tail := lastSegment(mp.Slug); tail != "" && !strings.EqualFold(tail, manifestProjectName(mp)) {
+		names = append(names, tail)
+	}
+	return names
+}
+
+// ambiguousDestSlugs returns the destination slugs that tie for a manifest
+// project's name (nil when the name is not ambiguous).
+func (o *Options) ambiguousDestSlugs(mp manifest.Project) []string {
+	if o.destByName == nil {
+		return nil
+	}
+	for _, name := range o.nameCandidates(mp) {
+		key := strings.ToLower(name)
+		if slugs, amb := o.destAmbiguous[key]; amb {
+			return slugs
+		}
+		if _, found := o.destByName[key]; found {
+			return nil
+		}
+	}
+	return nil
+}
+
+// unresolvedReason explains why a project has no destination slug.
+func (o *Options) unresolvedReason(mp manifest.Project) string {
+	if slugs := o.ambiguousDestSlugs(mp); len(slugs) > 0 {
+		return fmt.Sprintf("%d projects in the destination org are named %q (%s) — cannot tell which one is meant, so none was picked; "+
+			"add a mapping entry for %q to choose, or rename/remove the duplicate; skipped",
+			len(slugs), manifestProjectName(mp), strings.Join(slugs, ", "), mp.Slug)
+	}
+	if o.destByName != nil {
+		return fmt.Sprintf("no destination project named %q in the destination org and no mapping entry for %q — "+
+			"create it first (sync --skip-pipelines creates projects without pipeline definitions) or add a mapping entry; skipped",
+			manifestProjectName(mp), mp.Slug)
+	}
+	return fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+}
+
+// resolveDestProjectsByName lists the destination org's projects (when
+// opts.DestProjects is set and some project that has data to transfer has no
+// Mapping entry) and indexes them by name for BuildPlan.  A failed listing is an
+// error: silently falling back to mapping-only would skip every project.
+func resolveDestProjectsByName(ctx context.Context, m *manifest.Manifest, opts *Options) error {
+	if opts.DestProjects == nil || (!opts.IncludeProjectVars && !opts.IncludeSSHKeys) {
+		return nil
+	}
+	needed := false
+	for _, mp := range m.Projects {
+		hasData := (opts.IncludeProjectVars && len(mp.EnvVars) > 0) || (opts.IncludeSSHKeys && len(mp.SSHKeys) > 0)
+		if _, mapped := opts.destProjectSlug(mp.Slug); hasData && !mapped {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil
+	}
+	projs, err := opts.DestProjects.ListOrgProjects(ctx, opts.DestOrgID)
+	if err != nil {
+		return fmt.Errorf("transfer: list destination org projects to resolve project slugs by name: %w\n"+
+			"tip: pass --mapping with a projects entry per source project to skip the lookup", err)
+	}
+	opts.destByName = make(map[string]string, len(projs))
+	opts.destAmbiguous = map[string][]string{}
+	for _, p := range projs {
+		slug := p.Slug
+		if slug == "" && p.ID != "" {
+			slug = "circleci/" + opts.DestOrgID + "/" + p.ID
+		}
+		if p.Name == "" || slug == "" {
+			continue
+		}
+		key := strings.ToLower(p.Name)
+		if amb, isAmb := opts.destAmbiguous[key]; isAmb {
+			opts.destAmbiguous[key] = append(amb, slug)
+			continue
+		}
+		if prev, dup := opts.destByName[key]; dup {
+			if prev == slug {
+				continue // the same project listed twice
+			}
+			opts.destAmbiguous[key] = []string{prev, slug}
+			delete(opts.destByName, key)
+			continue
+		}
+		opts.destByName[key] = slug
+	}
+	return nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plan — what would be transferred
 // ─────────────────────────────────────────────────────────────────────────────
@@ -327,6 +528,18 @@ type ProjectVarPlan struct {
 	Skipped bool
 	// SkipReason is a human-readable explanation of why Skipped is true.
 	SkipReason string
+	// ResolvedBy says how DestSlug was found: "mapping" (an explicit Mapping
+	// entry) or "name" (matched by project name in the destination org).
+	ResolvedBy string
+	// Unresolved is true (together with Skipped) when the project has data to
+	// transfer but no destination project could be found for it.  Transfer
+	// returns an error listing these projects after the others have run.
+	Unresolved bool
+	// MissingCheckoutKey is true (together with Skipped) when the project was
+	// skipped because it is a GitHub OAuth/Bitbucket project with no checkout
+	// key, so CircleCI would refuse to run its transfer pipeline.  Transfer
+	// returns an error listing these projects after the others have run.
+	MissingCheckoutKey bool
 }
 
 // Plan describes what Transfer would do (dry-run output).
@@ -907,7 +1120,8 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 	if len(defs) == 0 {
 		return fmt.Errorf("project %s has no pipeline definitions — is the repo connected to a GitHub App?", pp.SourceSlug)
 	}
-	defID := defs[0].ID
+	def := pickPipelineDefinition(defs)
+	defID := def.ID
 
 	configYAML := buildSingleProjectTransferConfigWithVersion(pp, opts)
 
@@ -930,14 +1144,14 @@ func triggerAndPollProjectPipeline(ctx context.Context, deps Deps, pp ProjectVar
 			}
 		}
 
-		fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s (definition %s)…\n", pp.SourceSlug, defID)
+		fmt.Fprintf(errOut, "  [project vars] triggering pipeline under %s using %s…\n", pp.SourceSlug, describeDefinition(def))
 
 		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, pp.SourceSlug, defID, opts.branchFor(pp.DefaultBranch), configYAML, nil)
 		if trigErr != nil {
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("pipeline run was skipped — check api-trigger-with-config is enabled")
 			}
-			return fmt.Errorf("trigger pipeline: %w", trigErr)
+			return fmt.Errorf("trigger pipeline: %w", explainTriggerError(trigErr, pp.SourceSlug))
 		}
 
 		fmt.Fprintf(errOut, "  [project vars] pipeline triggered for %s: %s\n", pp.SourceSlug, pipelineID)
@@ -1182,8 +1396,20 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 		return Plan{}, errors.New("transfer: --dest-token-context is required (name of the source context holding the dest API token)")
 	}
 
+	if opts.SkipContexts {
+		if len(opts.SelectedContextNames) > 0 {
+			return Plan{}, errors.New("transfer: --skip-contexts cannot be combined with --context")
+		}
+		if !opts.IncludeProjectVars && !opts.IncludeSSHKeys {
+			return Plan{}, errors.New("transfer: --skip-contexts without --include-project-vars or --include-ssh-keys leaves nothing to transfer")
+		}
+	}
+
 	var ctxPlans []ContextPlan
 	for _, mc := range m.Contexts {
+		if opts.SkipContexts {
+			break
+		}
 		if len(opts.SelectedContextNames) > 0 && !opts.SelectedContextNames[mc.Name] {
 			continue
 		}
@@ -1235,6 +1461,7 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 	// into a single plan entry, then append to projPlans in stable manifest order.
 	type partialPlan struct {
 		destSlug      string
+		resolvedBy    string
 		varNames      []string
 		sshKeys       []SSHKeyPlan
 		defaultBranch string
@@ -1260,13 +1487,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 			}
 			p := ensureEntry(mp.Slug)
 			p.defaultBranch = mp.VCS.DefaultBranch
-			destSlug, ok := opts.destProjectSlug(mp.Slug)
+			destSlug, by, ok := opts.resolveDestProject(mp)
 			if !ok {
 				p.skipped = true
-				p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+				p.skipMsg = opts.unresolvedReason(mp)
 				continue
 			}
-			p.destSlug = destSlug
+			p.destSlug, p.resolvedBy = destSlug, by
 			varNames := make([]string, 0, len(mp.EnvVars))
 			for _, ev := range mp.EnvVars {
 				varNames = append(varNames, ev.Name)
@@ -1289,13 +1516,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				continue
 			}
 			if p.destSlug == "" {
-				destSlug, ok := opts.destProjectSlug(mp.Slug)
+				destSlug, by, ok := opts.resolveDestProject(mp)
 				if !ok {
 					p.skipped = true
-					p.skipMsg = fmt.Sprintf("dest project for %q unknown — provide --mapping or onboard it first; skipped", mp.Slug)
+					p.skipMsg = opts.unresolvedReason(mp)
 					continue
 				}
-				p.destSlug = destSlug
+				p.destSlug, p.resolvedBy = destSlug, by
 			}
 			keys := make([]SSHKeyPlan, 0, len(mp.SSHKeys))
 			for _, k := range mp.SSHKeys {
@@ -1318,11 +1545,13 @@ func BuildPlan(m *manifest.Manifest, opts *Options) (Plan, error) {
 				DefaultBranch: p.defaultBranch,
 				Skipped:       true,
 				SkipReason:    p.skipMsg,
+				Unresolved:    true,
 			})
 		} else {
 			projPlans = append(projPlans, ProjectVarPlan{
 				SourceSlug:    slug,
 				DestSlug:      p.destSlug,
+				ResolvedBy:    p.resolvedBy,
 				VarNames:      p.varNames,
 				SSHKeys:       p.sshKeys,
 				DefaultBranch: p.defaultBranch,
@@ -1400,17 +1629,66 @@ var ErrWorkflowFailed = errors.New("transfer workflow did not succeed")
 //
 // SECURITY: no secret values are logged or returned.
 func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options) error {
+	// App destinations: resolve projects with no mapping entry by name before
+	// planning (a read-only call on the destination org).
+	if err := resolveDestProjectsByName(ctx, m, &opts); err != nil {
+		return err
+	}
 	plan, err := BuildPlan(m, &opts)
 	if err != nil {
 		return err
 	}
 
+	// ── Pre-flight (read-only) ───────────────────────────────────────────────
+	// Everything that can doom the run is checked BEFORE the first mutation
+	// (trigger flags, restriction removal) so a failing run changes nothing in
+	// the source org.
+	//
+	// GitHub OAuth (gh/) and Bitbucket (bb/) projects need a checkout key before
+	// CircleCI will start ANY pipeline on them, even with inline config.
+	if len(plan.Contexts) > 0 {
+		hostSlug, herr := resolveHostProject(ctx, deps, m, &opts)
+		if herr != nil {
+			return herr
+		}
+		opts.HostProjectSlug = hostSlug
+	}
+	markProjectsMissingCheckoutKey(ctx, deps, m, &plan, &opts)
+	keyErr := errors.Join(missingCheckoutKeyError(&plan), unresolvedProjectsError(&plan))
+
+	// A source project paused with drop-all-build-requests (cutover
+	// --pause-source) accepts no pipeline, so the transfer would fail after it
+	// had already started changing things. Find them before any mutation.
+	pausedErr := pausedSourceProjectsError(ctx, deps, &plan, &opts)
+
 	// Always print the plan.
 	printPlan(opts.Stdout, opts.Stderr, &plan, &opts)
 
 	if opts.DryRun {
+		if pausedErr != nil {
+			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would fail:\n%v\n", pausedErr)
+		}
+		if keyErr != nil {
+			fmt.Fprintf(opts.Stderr, "\nWARNING: --apply would skip project(s) it cannot transfer and then fail:\n%v\n", keyErr)
+		}
 		fmt.Fprintln(opts.Stdout, "\nDry-run mode: no pipeline triggered. Pass --apply to execute the transfer.")
 		return nil
+	}
+
+	if pausedErr != nil {
+		return pausedErr
+	}
+
+	// ── Mutations start here ─────────────────────────────────────────────────
+	// Trigger flags (api-trigger-with-config), enabled by the caller's hook.
+	if slugs := plan.triggerSlugs(opts.HostProjectSlug); opts.BeforeMutate != nil && len(slugs) > 0 {
+		flagCleanup, ferr := opts.BeforeMutate(slugs)
+		if ferr != nil {
+			return ferr
+		}
+		if flagCleanup != nil {
+			defer flagCleanup()
+		}
 	}
 
 	// ── Restriction pre-check / removal ──────────────────────────────────────
@@ -1478,22 +1756,29 @@ func Transfer(ctx context.Context, deps Deps, m *manifest.Manifest, opts Options
 			successes, len(activeProjPlans), plan.TotalProjectVars(), plan.TotalSSHKeys())
 	}
 
-	// Return the first non-nil error (context error takes precedence).
+	// Return the first non-nil error (context error takes precedence). The
+	// missing-checkout-key error comes last: those projects were skipped, and the
+	// run must still end non-zero so the operator fixes and re-runs them.
 	if ctxErr != nil {
 		return ctxErr
 	}
-	return projErr
+	if projErr != nil {
+		return projErr
+	}
+	return keyErr
 }
 
 // runContextPipeline triggers and polls the single host-project pipeline that
 // carries all context transfer jobs.
 func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, plan *Plan, opts *Options) error {
 	if opts.HostProjectSlug == "" {
-		if len(m.Projects) == 0 {
-			return errors.New("transfer: a host project is required; pass --host-project or ensure the manifest contains projects")
+		// Transfer resolves (and pre-flight checks) the host before any mutation;
+		// this fallback only serves direct callers.
+		hostSlug, herr := resolveHostProject(ctx, deps, m, opts)
+		if herr != nil {
+			return herr
 		}
-		opts.HostProjectSlug = m.Projects[0].Slug
-		fmt.Fprintf(opts.Stderr, "Auto-picked host project %s for transfer pipeline (use --host-project to override).\n", opts.HostProjectSlug)
+		opts.HostProjectSlug = hostSlug
 	}
 
 	proj, err := deps.GetProject(ctx, opts.HostProjectSlug)
@@ -1508,7 +1793,8 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 	if len(defs) == 0 {
 		return fmt.Errorf("transfer: project %s has no pipeline definitions — is the repo connected to a GitHub App?", opts.HostProjectSlug)
 	}
-	defID := defs[0].ID
+	def := pickPipelineDefinition(defs)
+	defID := def.ID
 
 	// Build context-only config (pass nil project plans — project vars are
 	// handled separately by per-project pipelines).
@@ -1536,14 +1822,14 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 			}
 		}
 
-		fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s (definition %s)…\n", opts.HostProjectSlug, defID)
+		fmt.Fprintf(opts.Stderr, "Triggering context transfer pipeline under %s using %s…\n", opts.HostProjectSlug, describeDefinition(def))
 
 		pipelineID, trigErr := deps.TriggerPipelineRun(ctx, opts.HostProjectSlug, defID, opts.branchFor(hostDefaultBranch(m, opts.HostProjectSlug)), configYAML, nil)
 		if trigErr != nil {
 			if errors.Is(trigErr, project.ErrPipelineSkipped) {
 				return fmt.Errorf("transfer: pipeline run was skipped — check api-trigger-with-config is enabled and the config is valid")
 			}
-			return fmt.Errorf("transfer: trigger pipeline: %w", trigErr)
+			return fmt.Errorf("transfer: trigger pipeline: %w", explainTriggerError(trigErr, opts.HostProjectSlug))
 		}
 		fmt.Fprintf(opts.Stderr, "Context pipeline triggered: %s\n", pipelineID)
 
@@ -1574,6 +1860,374 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 	return fmt.Errorf("%w: exhausted retries", ErrWorkflowFailed)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Checkout-key pre-flight
+// ─────────────────────────────────────────────────────────────────────────────
+
+// providerGitHubApp is the checkout/config provider of a GitHub App pipeline
+// definition.  Such a definition checks out through the app installation token,
+// so the project needs no checkout key.
+const providerGitHubApp = "github_app"
+
+// checkoutKeyFix is the remediation shared by every checkout-key error.  There
+// are two ways out: give the project a checkout key, or run through a GitHub
+// App pipeline definition (which needs none).
+const checkoutKeyFix = "add a deploy key (or user key) in CircleCI → Project Settings → SSH Keys → Checkout SSH keys, " +
+	"or give the project a GitHub App pipeline definition (install the CircleCI GitHub App on the repo)"
+
+// checkoutKeyWhy explains why the check exists.
+const checkoutKeyWhy = "CircleCI refuses to start a pipeline — even one with inline config — that checks out over SSH " +
+	"(a GitHub OAuth gh/ or Bitbucket bb/ pipeline definition) on a project that has no checkout key, " +
+	"and the project has no GitHub App pipeline definition to use instead"
+
+// requiresCheckoutKey reports whether the project's slug is one whose OAuth /
+// Bitbucket pipeline definition needs a checkout key before CircleCI will run a
+// pipeline: GitHub OAuth and Bitbucket projects do; "circleci/" (GitHub App /
+// GitLab / standalone) projects do not.  Whether a key is actually required
+// also depends on the definition chosen (see pipelineNeedsKey).
+func requiresCheckoutKey(slug string) bool {
+	for _, p := range []string{"gh/", "github/", "bb/", "bitbucket/"} {
+		if strings.HasPrefix(slug, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// definitionProvider returns the provider that decides how a pipeline
+// definition checks out code: the checkout source's, falling back to the config
+// source's when the checkout source is empty.
+func definitionProvider(d project.PipelineDefinition) string {
+	if d.CheckoutSource.Provider != "" {
+		return d.CheckoutSource.Provider
+	}
+	return d.ConfigSource.Provider
+}
+
+// isOAuthProvider reports whether the provider checks out over SSH with a
+// project checkout key (GitHub OAuth, Bitbucket).
+func isOAuthProvider(provider string) bool {
+	return provider == "github_oauth" || strings.HasPrefix(provider, "bitbucket")
+}
+
+// pickPipelineDefinition chooses the definition to trigger.  A project in a
+// GitHub OAuth org that also has the CircleCI GitHub App installed has both an
+// implicit OAuth definition (needs a checkout key) and GitHub App definitions
+// (checkout through the app token, no key), and the API lists them in no
+// guaranteed order.  Preference: a github_app definition, then an OAuth /
+// Bitbucket one, then the first.  defs must be non-empty.
+func pickPipelineDefinition(defs []project.PipelineDefinition) project.PipelineDefinition {
+	for _, d := range defs {
+		if definitionProvider(d) == providerGitHubApp {
+			return d
+		}
+	}
+	for _, d := range defs {
+		if isOAuthProvider(definitionProvider(d)) {
+			return d
+		}
+	}
+	return defs[0]
+}
+
+// describeDefinition renders a definition for the run log: name, provider, id.
+func describeDefinition(d project.PipelineDefinition) string {
+	provider := definitionProvider(d)
+	if provider == "" {
+		provider = "unknown provider"
+	}
+	return fmt.Sprintf("pipeline definition %q (%s, id %s)", d.Name, provider, d.ID)
+}
+
+// pipelineNeedsKey reports whether running a pipeline on slug with the
+// definition that would be picked from defs requires a project checkout key:
+// only for gh/ and bb/ projects, and only when that definition is not a GitHub
+// App one.  Empty defs (unknown) conservatively need a key.
+func pipelineNeedsKey(slug string, defs []project.PipelineDefinition) bool {
+	if !requiresCheckoutKey(slug) {
+		return false
+	}
+	if len(defs) == 0 {
+		return true
+	}
+	return definitionProvider(pickPipelineDefinition(defs)) != providerGitHubApp
+}
+
+// projectDefinitions returns the project's pipeline definitions (read-only).
+func projectDefinitions(ctx context.Context, deps interface {
+	ProjectGetter
+	PipelineDefLister
+}, slug string) ([]project.PipelineDefinition, error) {
+	proj, err := deps.GetProject(ctx, slug)
+	if err != nil {
+		return nil, fmt.Errorf("transfer: get project %s: %w", slug, err)
+	}
+	defs, err := deps.ListPipelineDefinitions(ctx, proj.ID)
+	if err != nil {
+		return nil, fmt.Errorf("transfer: list pipeline definitions for %s: %w", slug, err)
+	}
+	if len(defs) == 0 {
+		return nil, fmt.Errorf("transfer: project %s has no pipeline definitions — is the repo connected to a GitHub App?", slug)
+	}
+	return defs, nil
+}
+
+// canonicalSlug folds the long VCS prefixes into the short ones so manifest
+// slugs ("github/…") and CLI-supplied slugs ("gh/…") compare equal.
+func canonicalSlug(slug string) string {
+	if rest, ok := strings.CutPrefix(slug, "github/"); ok {
+		return "gh/" + rest
+	}
+	if rest, ok := strings.CutPrefix(slug, "bitbucket/"); ok {
+		return "bb/" + rest
+	}
+	return slug
+}
+
+// projectHasCheckoutKey reports whether the project has at least one checkout
+// key.  The manifest's checkout_keys are authoritative when present; when the
+// manifest has none for the project (e.g. exported with --skip-extras) it asks
+// the API.  A failed live lookup is treated as "unknown → assume present" with
+// a warning, so a flaky or under-privileged read never blocks a run on its own;
+// explainTriggerError is the backstop if the key really is missing.
+func projectHasCheckoutKey(ctx context.Context, lister CheckoutKeyLister, m *manifest.Manifest, slug string, errOut io.Writer) bool {
+	want := canonicalSlug(slug)
+	for i := range m.Projects {
+		if canonicalSlug(m.Projects[i].Slug) == want && len(m.Projects[i].CheckoutKeys) > 0 {
+			return true
+		}
+	}
+	keys, err := lister.ListCheckoutKeys(ctx, slug)
+	if err != nil {
+		fmt.Fprintf(errOut, "WARNING: could not list checkout keys for %s: %v — assuming it has one\n", slug, err)
+		return true
+	}
+	return len(keys) > 0
+}
+
+// resolveHostProject returns the source project the context-transfer pipeline
+// will run under, verifying (read-only) that it can actually run one.
+//
+//   - Explicit opts.HostProjectSlug: validated (it must have a pipeline
+//     definition).  For gh/ and bb/ projects it must either have a GitHub App
+//     pipeline definition (no key needed) or a checkout key, else fail fast with
+//     the fix.
+//   - Otherwise the first manifest project that can run a pipeline without a
+//     checkout key is picked: a "circleci/" project, or a gh/ or bb/ project that
+//     has a GitHub App pipeline definition.  Failing that, the first gh/ or bb/
+//     project whose OAuth/Bitbucket definition has a checkout key.  The choice
+//     (and what was skipped) is printed.
+func resolveHostProject(ctx context.Context, deps Deps, m *manifest.Manifest, opts *Options) (string, error) {
+	errOut := opts.Stderr
+	if slug := opts.HostProjectSlug; slug != "" {
+		defs, err := projectDefinitions(ctx, deps, slug)
+		if err != nil {
+			return "", err
+		}
+		if pipelineNeedsKey(slug, defs) && !projectHasCheckoutKey(ctx, deps, m, slug, errOut) {
+			return "", fmt.Errorf("transfer: --host-project %s has no checkout key and no GitHub App pipeline definition. %s.\nFix: %s on %s, or pass --host-project with a project that already has one",
+				slug, checkoutKeyWhy, checkoutKeyFix, slug)
+		}
+		return slug, nil
+	}
+
+	if len(m.Projects) == 0 {
+		return "", errors.New("transfer: a host project is required; pass --host-project or ensure the manifest contains projects")
+	}
+
+	// Pass 1: prefer a project that needs no checkout key.  Definitions are
+	// cached for pass 2.
+	type lookup struct {
+		defs []project.PipelineDefinition
+		err  error
+	}
+	looked := make(map[string]lookup, len(m.Projects))
+	for _, mp := range m.Projects {
+		if !requiresCheckoutKey(mp.Slug) {
+			fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline (use --host-project to override).\n", canonicalSlug(mp.Slug))
+			return canonicalSlug(mp.Slug), nil
+		}
+		defs, err := projectDefinitions(ctx, deps, mp.Slug)
+		looked[mp.Slug] = lookup{defs, err}
+		if err == nil && !pipelineNeedsKey(mp.Slug, defs) {
+			fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline: it has a GitHub App pipeline definition (%s), which needs no checkout key (use --host-project to override).\n",
+				canonicalSlug(mp.Slug), definitionProvider(pickPipelineDefinition(defs)))
+			return canonicalSlug(mp.Slug), nil
+		}
+	}
+
+	// Pass 2: a gh/ or bb/ project that runs through its OAuth/Bitbucket
+	// definition needs a checkout key.
+	var skipped []string
+	for _, mp := range m.Projects {
+		l := looked[mp.Slug]
+		if l.err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", mp.Slug, strings.TrimPrefix(l.err.Error(), "transfer: ")))
+			continue
+		}
+		if !projectHasCheckoutKey(ctx, deps, m, mp.Slug, errOut) {
+			skipped = append(skipped, fmt.Sprintf("%s (no checkout key and no GitHub App pipeline definition)", mp.Slug))
+			continue
+		}
+		note := ""
+		if len(skipped) > 0 {
+			note = fmt.Sprintf("; skipped %d earlier project(s): %s", len(skipped), strings.Join(skipped, ", "))
+		}
+		fmt.Fprintf(errOut, "Auto-picked host project %s for transfer pipeline: no project has a GitHub App pipeline definition, so it picked one with a pipeline definition and a checkout key, which GitHub OAuth/Bitbucket definitions need%s (use --host-project to override).\n",
+			canonicalSlug(mp.Slug), note)
+		return canonicalSlug(mp.Slug), nil
+	}
+
+	return "", fmt.Errorf("transfer: no source project can host the transfer pipeline. %s, and none of the %d manifest project(s) qualifies:\n  %s\nFix: %s on one of them, or pass --host-project with a project that already has one",
+		checkoutKeyWhy, len(m.Projects), strings.Join(skipped, "\n  "), checkoutKeyFix)
+}
+
+// markProjectsMissingCheckoutKey flags every per-project plan that would run an
+// OAuth/Bitbucket pipeline on a gh/ or bb/ project without a checkout key (and
+// without a GitHub App pipeline definition to use instead) as Skipped (so the
+// plan prints a SKIP line and the apply leaves it out) with MissingCheckoutKey
+// set, so Transfer can fail at the end listing them.
+func markProjectsMissingCheckoutKey(ctx context.Context, deps Deps, m *manifest.Manifest, plan *Plan, opts *Options) {
+	for i := range plan.Projects {
+		pp := &plan.Projects[i]
+		if pp.Skipped || (len(pp.VarNames) == 0 && len(pp.SSHKeys) == 0) || !requiresCheckoutKey(pp.SourceSlug) {
+			continue
+		}
+		// A GitHub App definition checks out via the app token: no key needed, and
+		// no key lookup.  A failed definition lookup is "unknown": fall through to
+		// the key check (the trigger step reports the real error).
+		if defs, err := projectDefinitions(ctx, deps, pp.SourceSlug); err == nil && !pipelineNeedsKey(pp.SourceSlug, defs) {
+			continue
+		}
+		if projectHasCheckoutKey(ctx, deps, m, pp.SourceSlug, opts.Stderr) {
+			continue
+		}
+		pp.Skipped = true
+		pp.MissingCheckoutKey = true
+		pp.SkipReason = "no checkout key and no GitHub App pipeline definition — " + checkoutKeyWhy + "; " + checkoutKeyFix + " on this project, then re-run"
+	}
+}
+
+// pausedFlag is the v1.1 flag (kebab-case, as the settings GET returns it) that
+// makes CircleCI drop every build request of a project.
+const pausedFlag = "drop-all-build-requests"
+
+// pausedSourceProjectsError reads the v1.1 feature flags of every source project
+// that will run a transfer pipeline (the host project and each non-skipped
+// per-project plan) and returns an error naming those whose drop-all-build-
+// requests flag is true, or nil. GitHub App ("circleci/") projects are not
+// paused by that flag and are not read. A project whose flags cannot be read
+// is warned about and not treated as paused.
+func pausedSourceProjectsError(ctx context.Context, deps Deps, plan *Plan, opts *Options) error {
+	reader, ok := deps.(ProjectFlagReader)
+	if !ok {
+		return nil
+	}
+	var slugs []string
+	seen := map[string]bool{}
+	add := func(slug string) {
+		if slug != "" && !seen[slug] && !strings.HasPrefix(slug, "circleci/") {
+			seen[slug] = true
+			slugs = append(slugs, slug)
+		}
+	}
+	if len(plan.Contexts) > 0 {
+		add(opts.HostProjectSlug)
+	}
+	for _, pp := range plan.Projects {
+		if !pp.Skipped && (len(pp.VarNames) > 0 || len(pp.SSHKeys) > 0) {
+			add(pp.SourceSlug)
+		}
+	}
+	var paused []string
+	for _, slug := range slugs {
+		flags, err := reader.GetV11ProjectFeatureFlags(ctx, slug)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "WARNING: could not read the feature flags of %s to check it is not paused: %v\n", slug, err)
+			continue
+		}
+		if flags[pausedFlag] {
+			paused = append(paused, slug)
+		}
+	}
+	if len(paused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("transfer: %d source project(s) are paused (%s=true), so CircleCI would drop the transfer pipeline:\n  %s\n"+
+		"Run the secrets transfer BEFORE 'cutover --pause-source', or restore the projects first with 'cutover --undo --apply', then re-run",
+		len(paused), pausedFlag, strings.Join(paused, "\n  "))
+}
+
+// missingCheckoutKeyError returns an error listing the projects skipped for
+// lacking a checkout key, or nil when there are none.
+func missingCheckoutKeyError(plan *Plan) error {
+	var slugs []string
+	for _, pp := range plan.Projects {
+		if pp.MissingCheckoutKey {
+			slugs = append(slugs, pp.SourceSlug)
+		}
+	}
+	if len(slugs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("transfer: %d project(s) skipped because they have no checkout key and no GitHub App pipeline definition — %s:\n  %s\nFix: %s on each, then re-run",
+		len(slugs), checkoutKeyWhy, strings.Join(slugs, "\n  "), checkoutKeyFix)
+}
+
+// unresolvedProjectsError returns an error listing the projects that have data
+// to transfer but no destination project, or nil when there are none.  Such a
+// project is never skipped silently: the plan shows a SKIP line and the run
+// ends non-zero so the operator creates or maps it and re-runs.
+func unresolvedProjectsError(plan *Plan) error {
+	var slugs []string
+	for _, pp := range plan.Projects {
+		if pp.Unresolved {
+			slugs = append(slugs, pp.SourceSlug)
+		}
+	}
+	if len(slugs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("transfer: %d project(s) skipped because no destination project could be resolved (no mapping entry, no project of that name in the destination org):\n  %s\n"+
+		"Fix: run 'sync --apply --skip-pipelines' to create the destination projects (or add projects entries to --mapping), then re-run",
+		len(slugs), strings.Join(slugs, "\n  "))
+}
+
+// explainTriggerError appends the checkout-key remediation when CircleCI
+// rejects a pipeline trigger with "the project has no SSH key" (the pre-flight
+// could not see it, e.g. the key list was unreadable).  Other errors pass
+// through unchanged.
+func explainTriggerError(err error, slug string) error {
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no ssh key") {
+		return err
+	}
+	return fmt.Errorf("%w\n%s: project %s has no checkout key (and the pipeline definition used was not a GitHub App one).\nFix: %s on %s (or, for the context pipeline, pass --host-project with a project that has one)",
+		err, checkoutKeyWhy, slug, checkoutKeyFix, slug)
+}
+
+// triggerSlugs returns the deduplicated source project slugs that will run a
+// pipeline: the host project (when there are contexts to transfer) and every
+// non-skipped per-project plan.  Used to enable the project-level trigger flag.
+func (p *Plan) triggerSlugs(hostSlug string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(p.Contexts) > 0 {
+		add(hostSlug)
+	}
+	for _, pp := range p.Projects {
+		if !pp.Skipped && (len(pp.VarNames) > 0 || len(pp.SSHKeys) > 0) {
+			add(pp.SourceSlug)
+		}
+	}
+	return out
+}
+
 // hostDefaultBranch returns the recorded default branch (vcs.default_branch)
 // for the host project slug from the manifest, or "" when the slug is not
 // present or has no recorded default branch. The caller passes the result to
@@ -1581,7 +2235,7 @@ func runContextPipeline(ctx context.Context, deps Deps, m *manifest.Manifest, pl
 // value falls back to "main".
 func hostDefaultBranch(m *manifest.Manifest, hostSlug string) string {
 	for i := range m.Projects {
-		if m.Projects[i].Slug == hostSlug {
+		if canonicalSlug(m.Projects[i].Slug) == canonicalSlug(hostSlug) {
 			return m.Projects[i].VCS.DefaultBranch
 		}
 	}
@@ -1639,8 +2293,12 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 				if len(pp.SSHKeys) > 0 {
 					sshNote = fmt.Sprintf(", %d ssh key(s)", len(pp.SSHKeys))
 				}
-				label := fmt.Sprintf("project %q → %q (%d variable(s)%s) [pipeline under %s]",
-					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, pp.SourceSlug)
+				via := ""
+				if pp.ResolvedBy == resolvedByName {
+					via = ", matched by name"
+				}
+				label := fmt.Sprintf("project %q → %q (%d variable(s)%s%s) [pipeline under %s]",
+					pp.SourceSlug, pp.DestSlug, len(pp.VarNames), sshNote, via, pp.SourceSlug)
 				ren.Item("created", label, "")
 				for _, v := range pp.VarNames {
 					fmt.Fprintf(out, "      var: %s\n", v)
@@ -1669,6 +2327,16 @@ func printPlan(out, errOut io.Writer, plan *Plan, opts *Options) {
 			len(plan.Contexts), plan.TotalVars(), activeProjCount, plan.TotalProjectVars(), plan.TotalSSHKeys())
 	} else {
 		fmt.Fprintf(out, "  Total: %d context(s), %d variable(s)\n", len(plan.Contexts), plan.TotalVars())
+	}
+
+	unresolved := 0
+	for _, pp := range plan.Projects {
+		if pp.Unresolved {
+			unresolved++
+		}
+	}
+	if unresolved > 0 {
+		fmt.Fprintf(out, "  UNRESOLVED: %d project(s) have no destination project and will be skipped (--apply then exits non-zero)\n", unresolved)
 	}
 
 	// ── Security note on stderr ───────────────────────────────────────────────
