@@ -3,13 +3,13 @@ module github.com/AwesomeCICD/circleci-org-migration-cli
 go 1.26.0
 
 // Pin a vuln-free patch toolchain (latest stdlib security fixes; see govulncheck).
-toolchain go1.26.10
+toolchain go1.27.3
 
 require (
 	filippo.io/age v1.3.2
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
