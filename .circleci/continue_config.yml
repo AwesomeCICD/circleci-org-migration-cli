@@ -59,12 +59,12 @@ parameters:
     default: "1.26.10"
 
 orbs:
-  go: circleci/go@4.0.3
+  go: circleci/go@4.0.4
   trivy: cci-labs/trivy@1.0.0
   # Orb authoring toolchain — used by the orb-test jobs to lint, validate, and
   # review the orb BEFORE it is published. Pinned to majors per the task.
   orb-tools: circleci/orb-tools@12.5.0
-  shellcheck: circleci/shellcheck@3.4.0
+  shellcheck: circleci/shellcheck@3.5.1
 
 # ---------------------------------------------------------------------------
 # Executors
@@ -670,7 +670,7 @@ jobs:
   release-please:
     docker:
       # Exact tag: the org policy approved_language_images rejects "lts".
-      - image: cimg/node:24.22.2
+      - image: cimg/node:24.22.3
     resource_class: small
     steps:
       - run:
